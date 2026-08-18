@@ -61,16 +61,31 @@ fn delete_args(path: &str) -> Vec<String> {
 
 /// Поставить/снять блокировку для списка приложений. Идемпотентна: перед
 /// добавлением правило удаляется, чтобы не плодить дубликаты при рестартах.
+///
+/// Список проходится целиком, даже если на каком-то приложении netsh отказал:
+/// выход по первой ошибке оставил бы весь хвост списка без правил — то есть в
+/// открытой сети при включённом приватном режиме. Наружу отдаётся первый отказ,
+/// и его достаточно: вызывающий всё равно не запоминает частичный успех и
+/// повторит всю операцию.
 pub fn set_blocked(paths: &[String], blocked: bool) -> io::Result<()> {
+    let mut failure = None;
     for path in paths {
-        run(&delete_args(path))?;
-        if blocked {
+        let outcome = run(&delete_args(path)).and_then(|()| {
+            if !blocked {
+                return Ok(());
+            }
             // В сообщение идёт приложение и причина, а не вся строка netsh:
             // читать её в журнале невозможно, а полезного в ней — хвост.
-            run(&add_args(path)).map_err(|e| io::Error::other(format!("{path}: {e}")))?;
+            run(&add_args(path)).map_err(|e| io::Error::other(format!("{path}: {e}")))
+        });
+        if let Err(e) = outcome {
+            failure.get_or_insert(e);
         }
     }
-    Ok(())
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 #[cfg(windows)]

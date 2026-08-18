@@ -17,6 +17,18 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::net::{TcpListener, TcpStream};
 
 pub const ADDR: &str = "127.0.0.1:48291";
+/// Потолок одной строки протокола. Без него строка без перевода строки растёт
+/// до предела памяти процесса: у службы это отказ обслуживания от любого
+/// локального процесса, у клиента — от подставного канала. Восемь мегабайт
+/// заведомо больше самого толстого ответа (статус с иконкой), но конечны.
+pub const MAX_LINE: u64 = 8 << 20;
+/// Служба создаёт экземпляры канала по одному, и между отданным клиенту
+/// экземпляром и следующим канала нет вовсе. Уйти в этот момент на TCP —
+/// соврать «служба не запущена», поэтому клиент пробует ещё несколько раз.
+#[cfg(windows)]
+const PIPE_TRIES: u32 = 5;
+#[cfg(windows)]
+const PIPE_PAUSE: std::time::Duration = std::time::Duration::from_millis(20);
 /// Имя канала на Windows.
 pub const PIPE: &str = r"\\.\pipe\privacy-gateway";
 /// Имя службы в SCM. Живёт в контракте, потому что нужно и службе (регистрация),
@@ -256,10 +268,15 @@ fn connect() -> io::Result<Stream> {
     {
         // Канал открывается обычным File: серверная сторона — единственное
         // место, где нужен WinAPI.
-        match std::fs::OpenOptions::new().read(true).write(true).open(PIPE) {
-            Ok(f) => return Ok(Stream(Inner::Pipe(f))),
-            // Канала нет — возможно, служба откатилась на сокет.
-            Err(_) => {}
+        for attempt in 0..PIPE_TRIES {
+            match std::fs::OpenOptions::new().read(true).write(true).open(PIPE) {
+                Ok(f) => return Ok(Stream(Inner::Pipe(f))),
+                // Не последняя попытка: скорее всего это щель между экземплярами
+                // канала, а не отсутствие службы.
+                Err(_) if attempt + 1 < PIPE_TRIES => std::thread::sleep(PIPE_PAUSE),
+                // Канала нет совсем — возможно, служба откатилась на сокет.
+                Err(_) => {}
+            }
         }
     }
     Ok(Stream(Inner::Tcp(TcpStream::connect(ADDR)?)))
@@ -272,7 +289,7 @@ pub fn call(req: &Request) -> io::Result<Response> {
     writeln!(stream, "{line}")?;
     stream.flush()?;
     let mut reply = String::new();
-    BufReader::new(stream).read_line(&mut reply)?;
+    BufReader::new(stream).take(MAX_LINE).read_line(&mut reply)?;
     serde_json::from_str(&reply).map_err(io::Error::other)
 }
 
