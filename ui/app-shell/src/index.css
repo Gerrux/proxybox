@@ -51,6 +51,17 @@ body {
   user-select: none;
 }
 
+/* Заставка до первого рендера. Живёт в общем файле стилей, а не в теге
+   <style>: инлайновые стили запрещены CSP окна. */
+.boot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  block-size: 100%;
+  inline-size: min(260px, 60vw);
+  margin-inline: auto;
+}
+
 /* Пути и ссылки — единственное, что осмысленно выделять и копировать. */
 .selectable {
   user-select: text;
