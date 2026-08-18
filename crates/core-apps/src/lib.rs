@@ -1,8 +1,9 @@
 //! Автообнаружение установленных приложений и их иконки.
 //!
-//! Два источника, и оба отвечают сразу путём — каталогов мы не обходим. Обход
-//! `Program Files` стоил бы секунды и всё равно не отличил бы главный exe от
-//! служебного.
+//! Три источника, и первые два отвечают сразу путём: обход `Program Files`
+//! стоил бы секунды и всё равно не отличил бы главный exe от служебного.
+//! Третий каталог всё-таки читает — но ровно один, на один уровень, и другого
+//! способа там нет (см. ниже).
 //!
 //! 1. Вшитый каталог (`include_str!`) — консольные инструменты и программы,
 //!    которые не регистрируются в реестре: без сети, без файла рядом с exe.
@@ -10,6 +11,11 @@
 //!    `Uninstall` (имя + `DisplayIcon`, почти всегда главный exe) и `App Paths`
 //!    (имя exe → полный путь). Каталог покрывал три десятка программ, реестр —
 //!    всё, что человек ставил сам.
+//! 3. Пакеты MSIX (Store, winget) — их нет ни в `Uninstall`, ни в `App Paths`,
+//!    а путь вида `…\WindowsApps\Claude_1.6608.0.0_x64__pzs8sxrjxfjjc\app` несёт
+//!    в себе версию и меняется при каждом обновлении, так что шаблоном каталога
+//!    его тоже не поймать. Список пакетов знает AppModel-репозиторий, а какой
+//!    exe в пакете главный — только манифест внутри самого пакета.
 //!
 //! Обнаружение выполняется в службе, а служба работает под LocalSystem: её
 //! `%USERPROFILE%` — это профиль SYSTEM внутри System32, `%APPDATA%` и
@@ -51,8 +57,8 @@ pub fn catalog() -> Vec<Known> {
     serde_json::from_str::<Catalog>(CATALOG).expect("каталог приложений разбирается").apps
 }
 
-/// Каталог первым: имена там человеческие и выверенные, а реестр только
-/// дополняет. Один и тот же exe из двух источников — одна запись.
+/// Каталог первым: имена там человеческие и выверенные, а реестр и пакеты
+/// только дополняют. Один и тот же exe из разных источников — одна запись.
 ///
 /// `env` — окружение спрашивающего (см. `Request::Discover`). Без него в списке
 /// на общей машине оказывались бы и чужие приложения: правила брандмауэра всё
@@ -70,6 +76,7 @@ pub fn discover(env: &BTreeMap<String, String>) -> Vec<Found> {
         found.extend(discover_from(&catalog, &user_vars(&profile)));
     }
     found.extend(from_registry());
+    found.extend(from_packages());
     let mut seen = std::collections::HashSet::new();
     found.retain(|f| seen.insert(f.path.to_lowercase()));
     found
@@ -311,6 +318,119 @@ fn from_registry() -> Vec<Found> {
     out
 }
 
+/// Пакеты MSIX лежат в одном общем каталоге, папкой на пакет, и какой exe в
+/// пакете главный — знает только манифест внутри самой папки. Поэтому здесь
+/// каталог всё-таки читается: на один уровень, по кнопке, и деваться некуда —
+/// имя папки несёт версию (`Claude_1.6608.0.0_x64__pzs8sxrjxfjjc`), поимённо
+/// такое не перечислить. Учёт пакетов ведёт ещё и реестр (`AppModel\Repository`),
+/// но это та же работа через ключ, который виден одному лишь SYSTEM.
+fn from_packages() -> Vec<Found> {
+    let Some(root) = expand(r"%ProgramFiles%\WindowsApps", &[]) else { return Vec::new() };
+    packages_in(Path::new(&root))
+}
+
+/// Сам каталог закрыт ACL: под администратором тут отказ, под службой — список.
+/// Отказ и отсутствие каталога одинаково значат «пакетов не нашлось».
+fn packages_in(root: &Path) -> Vec<Found> {
+    let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
+    let mut out = Vec::new();
+    for package in entries.flatten() {
+        let dir = package.path();
+        // Нет манифеста — нет и пакета; у фреймворков и языковых довесков он
+        // есть, но приложений внутри не окажется, и они отсеются сами.
+        let Ok(manifest) = std::fs::read_to_string(dir.join("AppxManifest.xml")) else { continue };
+        let name = package_name(&manifest, &dir);
+        out.extend(package_exes(&manifest, &dir).into_iter().map(|path| Found { name: name.clone(), path }));
+    }
+    out
+}
+
+/// Имя пакета Windows хранит ссылкой на ресурс (`ms-resource:AppName`), а
+/// разрешать её без запущенного пакета нечем. Тогда сойдёт первое поле имени
+/// папки: человек узнаёт «Claude» и в `Claude_1.6608.0.0_x64__pzs8sxrjxfjjc`.
+fn package_name(manifest: &str, dir: &Path) -> String {
+    manifest
+        .split_once("<DisplayName>")
+        .and_then(|(_, rest)| rest.split_once("</DisplayName>"))
+        .map(|(name, _)| name.trim().to_string())
+        .filter(|name| !name.is_empty() && !name.starts_with("ms-resource:"))
+        .unwrap_or_else(|| {
+            let folder = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            folder.split('_').next().unwrap_or(&folder).to_string()
+        })
+}
+
+/// Из манифеста нужен ровно один атрибут — `Executable` у `<Application>`.
+///
+/// ponytail: разбор подстрокой вместо XML. Потолок — манифест, где `<Application`
+/// встретится внутри комментария или CDATA; апгрейд — `quick-xml`, если такой
+/// однажды попадётся. Полноценный разбор ради одного атрибута не окупается.
+fn package_exes(manifest: &str, dir: &Path) -> Vec<String> {
+    manifest
+        .split("<Application ")
+        .skip(1)
+        .filter_map(|app| {
+            let app = app.split("</Application>").next().unwrap_or(app);
+            // Приложение, которого нет в «Пуске», — служебное: хелпер обновления,
+            // фоновая задача. В списке человек его всё равно не опознает.
+            if app.contains(r#"AppListEntry="none""#) {
+                return None;
+            }
+            let exe = attr(app, "Executable")?;
+            let path = dir.join(exe.replace('\\', std::path::MAIN_SEPARATOR_STR)).to_string_lossy().into_owned();
+            is_exe(&path).then_some(path)
+        })
+        .collect()
+}
+
+/// Пакет MSIX переезжает при каждом обновлении: версия стоит прямо в имени
+/// папки. Выбранное приложение после обновления просто исчезло бы из обоих
+/// слоёв разом — sing-box не нашёл бы его `process_path`, брандмауэр не нашёл
+/// бы свой `program=`, — и оно пошло бы напрямую, никому об этом не сказав.
+/// Поэтому путь переспрашивается: в имени `Claude_1.6608.0.0_x64__pzs8sxrjxfjjc`
+/// неизменны первое поле и хвост после `__` (хеш издателя), по ним новая папка
+/// и находится. Хвост пути внутри пакета остаётся тем же.
+pub fn rebind(path: &str) -> Option<String> {
+    // Файл на месте — значит и переезда не было; это же и весь расход в мирное время.
+    if Path::new(path).is_file() {
+        return None;
+    }
+    let (root, sep, rest) = split_windowsapps(path)?;
+    let (old, tail) = rest.split_once(['\\', '/'])?;
+    let identity = package_identity(old)?;
+    std::fs::read_dir(root).ok()?.flatten().find_map(|entry| {
+        let folder = entry.file_name().to_string_lossy().into_owned();
+        if package_identity(&folder)? != identity {
+            return None;
+        }
+        let candidate = format!("{root}{sep}{folder}{sep}{tail}");
+        Path::new(&candidate).is_file().then_some(candidate)
+    })
+}
+
+/// `to_ascii_lowercase` вместо `to_lowercase` не ради скорости: он не меняет
+/// длину строки, и байтовые смещения из копии остаются годными для оригинала —
+/// в пути бывает и кириллица (имя профиля).
+fn split_windowsapps(path: &str) -> Option<(&str, char, &str)> {
+    let lower = path.to_ascii_lowercase();
+    let at = lower.find(r"\windowsapps\").or_else(|| lower.find("/windowsapps/"))?;
+    let sep = path[at..].chars().next()?;
+    let end = at + 1 + "windowsapps".len();
+    Some((&path[..end], sep, path.get(end + 1..)?))
+}
+
+/// Имя папки пакета — `Имя_Версия_Архитектура__Хеш`; между версиями держатся
+/// только края. Нет `__` — это не пакет, и переспрашивать нечего.
+fn package_identity(folder: &str) -> Option<(String, String)> {
+    let (name, rest) = folder.split_once('_')?;
+    let (_, hash) = rest.rsplit_once("__")?;
+    Some((name.to_lowercase(), hash.to_lowercase()))
+}
+
+fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    tag.split_once(&format!("{name}=\""))?.1.split('"').next()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,6 +588,79 @@ mod tests {
         assert_eq!(exe_from_icon_resource(&format!("{dir}/app.ico")), None, "у иконки перехватывать нечего");
         assert_eq!(exe_from_icon_resource(&format!("{dir}/нет.exe")), None, "несуществующий exe");
         assert_eq!(exe_from_icon_resource(&format!("{exe},x")), None, "«,x» — часть имени, такого файла нет");
+    }
+
+    /// Ради этого источника всё и затевалось: путь пакета несёт версию, шаблоном
+    /// каталога его не поймать, а в `Uninstall` пакетов нет вовсе.
+    #[test]
+    fn finds_msix_packages() {
+        let root = std::env::temp_dir().join("pg-windowsapps-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let claude = root.join("Claude_1.6608.0.0_x64__pzs8sxrjxfjjc");
+        std::fs::create_dir_all(claude.join("app")).unwrap();
+        std::fs::write(claude.join("app/Claude.exe"), b"").unwrap();
+        std::fs::write(claude.join("Updater.exe"), b"").unwrap();
+        std::fs::write(
+            claude.join("AppxManifest.xml"),
+            r#"<Package><Properties><DisplayName>ms-resource:AppName</DisplayName></Properties><Applications>
+               <Application Id="App" Executable="app\Claude.exe" EntryPoint="Windows.FullTrustApplication">
+                 <uap:VisualElements DisplayName="Claude" /></Application>
+               <Application Id="Upd" Executable="Updater.exe">
+                 <uap:VisualElements AppListEntry="none" /></Application>
+               </Applications></Package>"#,
+        )
+        .unwrap();
+        // Фреймворк: манифест есть, приложений нет — в списке ему не место.
+        let vclibs = root.join("Microsoft.VCLibs.140.00_14.0.33728.0_x64__8wekyb3d8bbwe");
+        std::fs::create_dir_all(&vclibs).unwrap();
+        std::fs::write(vclibs.join("AppxManifest.xml"), "<Package><Properties/></Package>").unwrap();
+        // Пакет с человеческим именем в манифесте — оно и должно победить папку.
+        let tg = root.join("TelegramMessengerLLP.TelegramDesktop_5.1.0_x64__t4vj0pshhgkwm");
+        std::fs::create_dir_all(&tg).unwrap();
+        std::fs::write(tg.join("Telegram.exe"), b"").unwrap();
+        std::fs::write(
+            tg.join("AppxManifest.xml"),
+            r#"<Package><Properties><DisplayName>Telegram Desktop</DisplayName></Properties>
+               <Applications><Application Id="App" Executable="Telegram.exe"/></Applications></Package>"#,
+        )
+        .unwrap();
+
+        let mut found = packages_in(&root);
+        found.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(found.len(), 2, "служебное приложение и фреймворк не берутся: {found:?}");
+        assert_eq!(found[0].name, "Claude", "имя-ресурс не разрешить — берётся первое поле папки");
+        assert!(found[0].path.ends_with(&native("app/Claude.exe".into())), "{:?}", found[0].path);
+        assert_eq!(found[1].name, "Telegram Desktop", "имя из манифеста лучше имени папки");
+        assert!(packages_in(&root.join("нет")).is_empty(), "нет каталога — нет и пакетов");
+    }
+
+    /// Обновление пакета переносит exe в папку с новой версией. Выбранное
+    /// приложение обязано переехать за ним: по старому пути его не увидят ни
+    /// sing-box, ни брандмауэр — то есть оно молча пошло бы напрямую.
+    #[test]
+    fn rebinds_updated_package() {
+        let sep = std::path::MAIN_SEPARATOR;
+        let apps = std::env::temp_dir().join("pg-rebind-test").join("WindowsApps");
+        let _ = std::fs::remove_dir_all(&apps);
+        let new = apps.join("Claude_1.7.0.0_x64__pzs8sxrjxfjjc");
+        std::fs::create_dir_all(new.join("app")).unwrap();
+        std::fs::write(new.join("app").join("Claude.exe"), b"").unwrap();
+        // Тёзка от другого издателя: имя совпало, хеш — нет, и это чужой пакет.
+        let stranger = apps.join("Claude_9.9.9.9_x64__aaaaaaaaaaaaa");
+        std::fs::create_dir_all(stranger.join("app")).unwrap();
+        std::fs::write(stranger.join("app").join("Claude.exe"), b"").unwrap();
+        let root = apps.display();
+
+        let old = format!("{root}{sep}Claude_1.6608.0.0_x64__pzs8sxrjxfjjc{sep}app{sep}Claude.exe");
+        let moved = rebind(&old).expect("папка находится по имени и хешу издателя");
+        assert!(moved.contains("1.7.0.0"), "{moved}");
+        assert_eq!(rebind(&moved), None, "файл на месте — переезда не было");
+        assert_eq!(
+            rebind(&format!("{root}{sep}Telegram_1.0_x64__zzzzzzzzzzzzz{sep}Telegram.exe")),
+            None,
+            "пакет удалён совсем — заменять нечем"
+        );
+        assert_eq!(rebind(&format!("C:{sep}Program Files{sep}app.exe")), None, "обычная программа не переезжает");
     }
 
     /// Дедуп по пути: каталог и реестр находят одно и то же, в списке это одна строка.
