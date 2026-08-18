@@ -8,7 +8,7 @@
 #[cfg(windows)]
 mod service;
 
-use core_ipc::{t, App, Endpoint, Listener, Request, Response, Status, Stream, Tunnel as TunnelState, ADDR};
+use core_ipc::{t, App, Endpoint, Listener, Probe, Request, Response, Status, Stream, Tunnel as TunnelState, ADDR};
 use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -469,6 +469,36 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
         Request::Off => {
             s.stop();
             Response::Done
+        }
+        Request::TestProfiles => {
+            // Список снимается под замком, а меряется без него: профиль тратит
+            // до нескольких секунд, а под этим замком стоит весь GUI.
+            let profiles: Vec<(String, Value)> =
+                s.profiles.iter().map(|(name, node)| (name.clone(), node.clone())).collect();
+            drop(s);
+            // Свой каталог: в общем с туннелем прогон добил бы по singbox.pid
+            // ровно тот процесс, который проверяет.
+            let probe_dir = dir().join("probe");
+            let probes: Vec<Probe> = profiles
+                .iter()
+                .map(|(name, node)| {
+                    let (host, port) = probe_target(node);
+                    let (latency_ms, error) = match core_tunnel::measure(node, &probe_dir, (&host, port)) {
+                        Ok(ms) => (Some(ms), None),
+                        Err(e) => (None, Some(e.to_string())),
+                    };
+                    Probe { name: name.clone(), latency_ms, error }
+                })
+                .collect();
+            let mut s = svc.lock().unwrap();
+            let live = probes.iter().filter(|p| p.latency_ms.is_some()).count();
+            let all = probes.len();
+            s.log(t(
+                &format!("прогон профилей: отвечают {live} из {all}"),
+                &format!("profile run: {live} of {all} alive"),
+            ));
+            s.status.probes = probes;
+            Response::Status(s.status.clone())
         }
     }
 }
