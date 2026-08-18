@@ -98,6 +98,10 @@ pub enum Request {
     Icon { path: String },
     SetApp { path: String, enabled: bool },
     RemoveApp { path: String },
+    /// Переключить охват: весь трафик машины через туннель либо только
+    /// выбранные приложения. Список приложений при этом не трогается — он
+    /// просто не участвует, пока охват «весь трафик».
+    SetAllTraffic { enabled: bool },
     /// Импорт профиля из share-link (vless://, vmess://, trojan://, ss://, hy2://,
     /// wg://) либо из JSON-конфига sing-box. `http(s)://` — это подписка: служба
     /// скачает её и заведёт профиль на каждый узел. Повторный импорт того же
@@ -158,6 +162,10 @@ pub struct Status {
     pub rx: u64,
     pub tx: u64,
     pub apps: Vec<App>,
+    /// Весь трафик машины идёт в туннель, а не только выбранные приложения.
+    /// Список `apps` в этом режиме не применяется, но и не теряется.
+    #[serde(default)]
+    pub all_traffic: bool,
     pub profiles: Vec<String>,
     /// Адреса подписок. Какие профили с какой пришли, знает только служба —
     /// окну хватает списка, чтобы дать обновить и отписаться.
@@ -316,6 +324,7 @@ mod tests {
             Request::AddProfile { link: "vless://u@a.com:443".into() },
             Request::RemoveProfile { name: "myvpn".into() },
             Request::RemoveSubscription { url: "https://panel.example/sub?token=1".into() },
+            Request::SetAllTraffic { enabled: true },
             Request::SetLang { lang: Lang::En },
             Request::TestProfiles,
         ];
@@ -328,6 +337,7 @@ mod tests {
             Response::Status(Status {
                 tunnel: Tunnel::Down,
                 profile: Some("myvpn".into()),
+                all_traffic: true,
                 country: Some("Нидерланды, Амстердам".into()),
                 apps: vec![App { path: r"C:\app.exe".into(), name: "app".into(), enabled: true }],
                 profiles: vec!["myvpn".into()],
