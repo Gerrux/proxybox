@@ -49,7 +49,22 @@ fn parse(args: &[String]) -> Result<Request, String> {
     }
 }
 
+/// Консоль Windows живёт в кодовой странице 866/1251, и русский вывод в ней
+/// превращается в мусор. Переключаем на UTF-8 — kernel32 линкуется всегда,
+/// ради одного вызова тянуть крейт незачем.
+#[cfg(windows)]
+fn utf8_console() {
+    extern "system" {
+        fn SetConsoleOutputCP(code_page: u32) -> i32;
+    }
+    unsafe { SetConsoleOutputCP(65001) };
+}
+
+#[cfg(not(windows))]
+fn utf8_console() {}
+
 fn main() -> std::process::ExitCode {
+    utf8_console();
     let args: Vec<String> = std::env::args().skip(1).collect();
     // Единственная команда мимо службы: она нужна как раз когда служба молчит.
     if args.first().is_some_and(|a| a == "doctor") {

@@ -1,4 +1,4 @@
-# Кладёт sing-box для Windows в src-tauri\binaries\ — туда, где его ждут и
+﻿# Кладёт sing-box для Windows в src-tauri\binaries\ — туда, где его ждут и
 # сборка установщика, и служба при разработке. Вместе с бинарником забирается
 # LICENSE: sing-box под GPL-3.0, распространять его без текста лицензии нельзя.
 #
@@ -8,6 +8,10 @@ param(
   [string]$Version = ""
 )
 $ErrorActionPreference = "Stop"
+# Windows PowerShell 5.1: TLS 1.2 по умолчанию не включён на старых системах,
+# а полоса прогресса Invoke-WebRequest замедляет закачку в разы.
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$ProgressPreference = "SilentlyContinue"
 $root = Split-Path -Parent $PSScriptRoot
 $bin  = Join-Path $root "src-tauri\binaries"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
@@ -26,6 +30,8 @@ $zip = Join-Path $tmp "$name.zip"
 Invoke-WebRequest -Uri $url -OutFile $zip
 Expand-Archive -Path $zip -DestinationPath $tmp -Force
 
+# libcronet.dll из архива не берём: он нужен только outbound-у naive, которого
+# мы не поддерживаем, а весит 9 МБ в каждом установщике.
 Copy-Item (Join-Path $tmp "$name\sing-box.exe") (Join-Path $bin "sing-box.exe") -Force
 Copy-Item (Join-Path $tmp "$name\LICENSE")      (Join-Path $bin "LICENSE-sing-box.txt") -Force
 Remove-Item $tmp -Recurse -Force

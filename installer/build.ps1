@@ -1,4 +1,4 @@
-# Сборка установщика Privacy Gateway. Только Windows: нужен WebView2 и MSVC.
+﻿# Сборка установщика Privacy Gateway. Только Windows: нужен WebView2 и MSVC.
 #
 #   pwsh installer\build.ps1 [-Triple x86_64-pc-windows-msvc] [-SingBox путь\к\sing-box.exe]
 #

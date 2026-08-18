@@ -90,7 +90,9 @@ rem Служба поднимается в отдельном окне: она �
 call cargo build -p pg-service -p pg-cli
 if errorlevel 1 ( echo   ОШИБКА сборки службы. & exit /b 1 )
 echo   - служба запускается в отдельном окне ^(закройте его, чтобы остановить^)
-start "Privacy Gateway - служба" cmd /k "set PG_SINGBOX=%SINGBOX%&& target\debug\pg-service.exe"
+rem chcp в новом окне обязателен: без него русский вывод службы превращается
+rem в мусор — окно от start наследует кодовую страницу системы, а не эту.
+start "Privacy Gateway - служба" cmd /k "chcp 65001 >nul && set PG_SINGBOX=%SINGBOX%&& target\debug\pg-service.exe"
 rem Дать службе занять порт до первого запроса от интерфейса.
 timeout /t 2 >nul
 exit /b 0
