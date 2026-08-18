@@ -18,6 +18,7 @@ export type Status = {
   tx: number;
   apps: App[];
   profiles: string[];
+  subscriptions: string[];
   lang: Lang;
   log: string[];
 };
@@ -34,7 +35,10 @@ export type Request =
   | { cmd: "remove-app"; arg: { path: string } }
   | { cmd: "set-lang"; arg: { lang: Lang } }
   | { cmd: "add-profile"; arg: { link: string } }
-  | { cmd: "remove-profile"; arg: { name: string } };
+  | { cmd: "remove-profile"; arg: { name: string } }
+  /** Подписки заводятся через add-profile с http(s)-адресом; повторный импорт
+   *  того же адреса её обновляет. Отдельная команда нужна только на «отписаться». */
+  | { cmd: "remove-subscription"; arg: { url: string } };
 
 export type Response =
   | { reply: "status"; data: Status }

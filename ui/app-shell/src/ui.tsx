@@ -54,6 +54,11 @@ export function Button({
   );
 }
 
+/** Вид поля ввода — один на все поля: внутри строки-формы `flex-1` растягивает,
+ *  отдельно стоящее поле держит `w-full`. */
+const FIELD =
+  "selectable h-8 w-full min-w-0 flex-1 rounded-lg border border-edge bg-surface-2 px-3 text-[13px] outline-none transition-colors placeholder:text-muted focus:border-accent";
+
 /** Поле «ввести и добавить»: своё состояние держит само — снаружи оно не нужно. */
 export function AddField({
   placeholder,
@@ -81,12 +86,36 @@ export function AddField({
         onChange={(e) => setValue(e.target.value)}
         placeholder={placeholder}
         spellCheck={false}
-        className="selectable h-8 min-w-0 flex-1 rounded-lg border border-edge bg-surface-2 px-3 text-[13px] outline-none transition-colors placeholder:text-muted focus:border-accent"
+        className={FIELD}
       />
       <Button type="submit" variant="primary" disabled={!value.trim()}>
         {label}
       </Button>
     </form>
+  );
+}
+
+/** Поиск по списку. `type="search"` — не украшение: WebView2 сам рисует крестик
+ *  очистки и чистит поле по Esc, своего кода на это не нужно. Значение живёт
+ *  снаружи: фильтрует тот, кто владеет списком. */
+export function SearchField({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+}) {
+  return (
+    <input
+      type="search"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      spellCheck={false}
+      className={FIELD}
+    />
   );
 }
 
