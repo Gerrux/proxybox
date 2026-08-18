@@ -4,3 +4,4 @@ dist/
 *.log
 src-tauri/binaries/
 src-tauri/gen/
+.claude/

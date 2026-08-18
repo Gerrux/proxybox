@@ -19,6 +19,7 @@ const USAGE: &str = "privacy-gateway <команда>
   enable --path <exe>    пустить приложение в туннель
   disable --path <exe>   убрать приложение из-под управления
   add-profile --link <l> импортировать share-link (vless/vmess/trojan/ss/hy2/wg)
+                         или JSON-конфиг sing-box
   profiles               список профилей";
 
 fn flag(args: &[String], name: &str) -> Option<String> {
@@ -110,6 +111,7 @@ fn main() -> std::process::ExitCode {
                 core_ipc::Tunnel::Down => "недоступен — выбранные приложения без сети".to_string(),
             });
             println!("профиль:    {}", s.profile.unwrap_or_else(|| "—".into()));
+            println!("страна:     {}", s.country.unwrap_or_else(|| "—".into()));
             println!("трафик:     ↓{} ↑{} байт", s.rx, s.tx);
             println!("приложения: {} (в туннеле {})", s.apps.len(), s.apps.iter().filter(|a| a.enabled).count());
             if let Some(last) = s.log.first() {

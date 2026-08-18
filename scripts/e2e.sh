@@ -57,6 +57,14 @@ BODY=$(curl -s --socks5-hostname 127.0.0.1:48292 http://127.0.0.1:18080/)
 sleep 4  # счётчики обновляются раз в тик присмотра
 ./target/debug/privacy-gateway status | grep -qE 'трафик: +↓[1-9]' || fail "счётчики трафика пусты"
 
+step "перезапуск службы: приватный режим восстанавливается сам"
+SVC=$(ss -ltnp 2>/dev/null | grep ':48291 ' | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+kill "$SVC"; sleep 1
+./target/debug/pg-service >>"$WORK/service.log" 2>&1 &
+sleep 6
+./target/debug/privacy-gateway status
+./target/debug/privacy-gateway status | grep -q "поднят" || fail "после перезапуска туннель не поднялся сам"
+
 step "fail-closed: сервер убит"
 kill $SERVER; wait $SERVER 2>/dev/null || true
 sleep 5

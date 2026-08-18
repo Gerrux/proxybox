@@ -80,6 +80,7 @@ export function StatusBar({ status, onToggle }: { status: Status | null; onToggl
 
       <dl className="mt-4 flex flex-wrap gap-x-8 gap-y-2 border-t border-edge pt-3 text-[13px]">
         <Metric name="Профиль" value={status?.profile ?? "не выбран"} />
+        <Metric name="Страна" value={status?.country ?? "—"} />
         <Metric name="Задержка" value={status?.latency_ms != null ? `${status.latency_ms} мс` : "—"} />
         <Metric name="Принято" value={status ? bytes(status.rx) : "—"} />
         <Metric name="Отправлено" value={status ? bytes(status.tx) : "—"} />

@@ -29,7 +29,8 @@ pub enum Request {
     AddApp { path: String },
     SetApp { path: String, enabled: bool },
     RemoveApp { path: String },
-    /// Импорт профиля из share-link (vless://, vmess://, trojan://, ss://, hy2://, wg://).
+    /// Импорт профиля из share-link (vless://, vmess://, trojan://, ss://, hy2://,
+    /// wg://) либо из JSON-конфига sing-box.
     AddProfile { link: String },
     RemoveProfile { name: String },
 }
@@ -59,6 +60,10 @@ pub struct Status {
     pub tunnel: Tunnel,
     pub profile: Option<String>,
     pub latency_ms: Option<u32>,
+    /// Страна точки выхода, как её видит внешний сервис. None — ещё не
+    /// спрашивали, не дозвонились или туннель не поднят.
+    #[serde(default)]
+    pub country: Option<String>,
     pub rx: u64,
     pub tx: u64,
     pub apps: Vec<App>,
@@ -114,6 +119,7 @@ mod tests {
             Response::Status(Status {
                 tunnel: Tunnel::Down,
                 profile: Some("myvpn".into()),
+                country: Some("Нидерланды, Амстердам".into()),
                 apps: vec![App { path: r"C:\app.exe".into(), name: "app".into(), enabled: true }],
                 profiles: vec!["myvpn".into()],
                 ..Default::default()

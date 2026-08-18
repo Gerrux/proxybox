@@ -22,6 +22,11 @@ pub struct Profile {
 
 pub fn parse(link: &str) -> Result<Profile, String> {
     let link = link.trim();
+    // JSON принимаем наравне со ссылкой: у продвинутых узлов (свои transport,
+    // ECH, мультиплекс) share-link просто нет — их отдают конфигом.
+    if link.starts_with('{') {
+        return from_json(link);
+    }
     let scheme = link.split("://").next().unwrap_or_default().to_ascii_lowercase();
     match scheme.as_str() {
         "vless" => vless(link),
@@ -33,6 +38,31 @@ pub fn parse(link: &str) -> Result<Profile, String> {
         "" => Err("не ссылка: нет схемы".into()),
         s => Err(format!("протокол не поддерживается: {s}")),
     }
+}
+
+/// Конфиг sing-box: либо целиком (берём первый рабочий outbound), либо один
+/// узел объектом. Служебные outbound'ы (direct/block/dns и группы) — не узлы.
+fn from_json(text: &str) -> Result<Profile, String> {
+    let value: Value = serde_json::from_str(text).map_err(|e| format!("не разбирается как JSON: {e}"))?;
+    const SERVICE: [&str; 6] = ["direct", "block", "dns", "selector", "urltest", "socks"];
+
+    let node = match value.get("outbounds").and_then(Value::as_array) {
+        Some(outbounds) => outbounds
+            .iter()
+            .find(|o| o["type"].as_str().is_some_and(|t| !SERVICE.contains(&t)))
+            .cloned()
+            .ok_or("в конфиге нет ни одного узла — только служебные outbound")?,
+        None => value.clone(),
+    };
+    let kind = node["type"].as_str().ok_or("в узле нет поля type")?.to_string();
+    if node["server"].as_str().is_none() && node["peers"][0]["address"].as_str().is_none() {
+        return Err(format!("в узле {kind} не указан сервер"));
+    }
+    let name = match node["tag"].as_str() {
+        Some(tag) if !tag.is_empty() && tag != "proxy" => tag.to_string(),
+        _ => format!("{kind}-{}", node["server"].as_str().unwrap_or("узел")),
+    };
+    Ok(Profile { name, node })
 }
 
 // --- разбор общей части ссылки -------------------------------------------
@@ -519,12 +549,30 @@ mod tests {
     }
 
     #[test]
+    fn json_node_and_full_config() {
+        let node = parse(r#"{"type":"vless","tag":"Мой узел","server":"a.com","server_port":443,"uuid":"u"}"#).unwrap();
+        assert_eq!(node.name, "Мой узел");
+        assert_eq!(node.node["type"], "vless");
+
+        let full = parse(
+            r#"{"outbounds":[{"type":"direct","tag":"direct"},{"type":"trojan","server":"b.com","server_port":443,"password":"p"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(full.node["type"], "trojan", "служебные outbound пропускаются");
+        assert_eq!(full.name, "trojan-b.com", "имени нет — собираем из типа и сервера");
+    }
+
+    #[test]
     fn errors_are_explained() {
         for (link, expect) in [
             ("", "нет схемы"),
             ("magnet://x", "не поддерживается"),
             ("vless://@a.com:443", "нет UUID"),
             ("ss://not-base64-at-all", "не разбирается"),
+            ("{не json}", "не разбирается как JSON"),
+            (r#"{"server":"a.com"}"#, "нет поля type"),
+            (r#"{"type":"vless"}"#, "не указан сервер"),
+            (r#"{"outbounds":[{"type":"direct"}]}"#, "нет ни одного узла"),
         ] {
             let err = parse(link).unwrap_err();
             assert!(err.contains(expect), "ссылка {link:?} дала {err:?}, ожидали {expect:?}");

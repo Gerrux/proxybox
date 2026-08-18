@@ -7,12 +7,12 @@ export function Profiles({ status, act, className }: { status: Status | null; ac
     <Panel className={className} title="Профили" note={profiles.length > 0 && <span className="text-muted">{profiles.length}</span>}>
       <div className="flex flex-col gap-3">
         <AddField
-          placeholder="Вставьте share-link"
+          placeholder="Вставьте share-link или JSON узла"
           label="Импорт"
           onSubmit={(link) => act({ cmd: "add-profile", arg: { link } })}
         />
         {profiles.length === 0 ? (
-          <Empty>Профилей нет. Вставьте share-link — он разберётся сам.</Empty>
+          <Empty>Профилей нет. Вставьте share-link или JSON-конфиг — разберётся сам.</Empty>
         ) : (
           <ul className="flex flex-col gap-1">
             {profiles.map((name) => {

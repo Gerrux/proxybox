@@ -223,8 +223,64 @@ impl Drop for Tunnel {
 /// Свободная функция, а не метод: служба пробует туннель, не держа общий замок.
 pub fn probe(socks_port: u16, target: (&str, u16)) -> io::Result<u32> {
     let started = Instant::now();
-    socks5_connect(socks_port, target)?;
+    let s = socks5_connect(socks_port, target)?;
+    let _ = s.shutdown(Shutdown::Both);
     Ok(started.elapsed().as_millis() as u32)
+}
+
+/// Хост, у которого спрашиваем точку выхода. Единственный внешний адрес,
+/// который трогает служба.
+pub const GEO_HOST: &str = "ip-api.com";
+
+/// Страна точки выхода. Запрос идёт **через туннель**: спросить напрямую значит
+/// узнать страну самого пользователя и заодно показать ему третью сторону.
+///
+/// Это единственное место, где проект ходит наружу, и сделано это по явному
+/// решению: иначе точку выхода не узнать никак — она известна только тому, кто
+/// видит наш адрес снаружи.
+///
+/// ponytail: обычный HTTP, а не TLS. Ответ содержит наш же исходящий адрес,
+/// который и так стоит в заголовке пакета, поэтому шифрование тут почти ничего
+/// не прячет. Чего оно бы дало — защиту от подмены ответа: по пути от выходного
+/// узла до сервиса страну можно подделать. Если это станет важно, менять на
+/// https://www.cloudflare.com/cdn-cgi/trace, но это тянет TLS-стек в зависимости.
+pub fn exit_country(socks_port: u16) -> io::Result<String> {
+    let mut s = socks5_connect(socks_port, (GEO_HOST, 80))?;
+    s.write_all(
+        format!(
+            "GET /json/?fields=status,message,country,city&lang=ru HTTP/1.0\r\n\
+             Host: {GEO_HOST}\r\nConnection: close\r\n\r\n"
+        )
+        .as_bytes(),
+    )?;
+    let mut raw = String::new();
+    s.read_to_string(&mut raw)?;
+    parse_country(&raw)
+}
+
+/// Из HTTP-ответа ip-api — «Страна, Город». Сервис отвечает 200 и на отказ,
+/// уводя причину в поле status, так что код ответа тут ничего не решает.
+fn parse_country(raw: &str) -> io::Result<String> {
+    // Ответ обязан начинаться со статусной строки. Иначе в потоке остался
+    // невычитанный хвост SOCKS, и молча резать по первому \r\n\r\n нельзя:
+    // тело разберётся как ни в чём не бывало, а ошибка уедет в тихую.
+    if !raw.starts_with("HTTP/") {
+        return Err(io::Error::other(format!("{GEO_HOST}: ответ не похож на HTTP")));
+    }
+    let body = raw.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or_default();
+    let v: Value = serde_json::from_str(body.trim()).map_err(io::Error::other)?;
+    if v["status"] != "success" {
+        let why = v["message"].as_str().unwrap_or("причина не названа");
+        return Err(io::Error::other(format!("{GEO_HOST}: {why}")));
+    }
+    let country = v["country"].as_str().unwrap_or_default();
+    if country.is_empty() {
+        return Err(io::Error::other(format!("{GEO_HOST}: в ответе нет страны")));
+    }
+    Ok(match v["city"].as_str().unwrap_or_default() {
+        "" => country.to_string(),
+        city => format!("{country}, {city}"),
+    })
 }
 
 /// Счётчики трафика из Clash API sing-box: (принято, отправлено) байт за сеанс.
@@ -240,7 +296,9 @@ pub fn traffic(api_port: u16) -> io::Result<(u64, u64)> {
     Ok((v["downloadTotal"].as_u64().unwrap_or(0), v["uploadTotal"].as_u64().unwrap_or(0)))
 }
 
-fn socks5_connect(port: u16, (host, target_port): (&str, u16)) -> io::Result<()> {
+/// SOCKS5 CONNECT через локальный вход sing-box. Отдаёт установленный поток:
+/// проба его сразу закрывает, запрос страны — пишет в него дальше.
+fn socks5_connect(port: u16, (host, target_port): (&str, u16)) -> io::Result<TcpStream> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let mut s = TcpStream::connect_timeout(&addr, PROBE_TIMEOUT)?;
     s.set_read_timeout(Some(PROBE_TIMEOUT))?;
@@ -264,14 +322,98 @@ fn socks5_connect(port: u16, (host, target_port): (&str, u16)) -> io::Result<()>
     if head[1] != 0x00 {
         return Err(io::Error::other(format!("туннель не пропустил соединение (код {})", head[1])));
     }
-    // Хвост ответа (BND.ADDR) не нужен — соединение установлено, этого достаточно.
-    let _ = s.shutdown(Shutdown::Both);
-    Ok(())
+    // Хвост ответа (BND.ADDR + BND.PORT) обязателен к вычитыванию: иначе он
+    // останется в потоке и слипнется с телом следующего чтения.
+    let bnd = match head[3] {
+        0x01 => 4,
+        0x04 => 16,
+        0x03 => {
+            let mut len = [0u8; 1];
+            s.read_exact(&mut len)?;
+            len[0] as usize
+        }
+        atyp => return Err(io::Error::other(format!("SOCKS5: неизвестный тип адреса {atyp}"))),
+    };
+    s.read_exact(&mut vec![0u8; bnd + 2])?;
+    Ok(s)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn country_from_reply() {
+        let ok = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n\
+                  {\"status\":\"success\",\"country\":\"Нидерланды\",\"city\":\"Амстердам\"}";
+        assert_eq!(parse_country(ok).unwrap(), "Нидерланды, Амстердам");
+
+        let no_city = "HTTP/1.1 200 OK\r\n\r\n{\"status\":\"success\",\"country\":\"Нидерланды\",\"city\":\"\"}";
+        assert_eq!(parse_country(no_city).unwrap(), "Нидерланды");
+    }
+
+    /// Хвост ответа SOCKS (BND.ADDR+BND.PORT) обязан быть вычитан до тела HTTP.
+    /// Забудь это — и первые байты тела окажутся мусором из адреса привязки,
+    /// причём молча: JSON просто перестанет разбираться.
+    #[test]
+    fn socks_reply_tail_does_not_leak_into_body() {
+        use std::io::Read as _;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut c, _) = listener.accept().unwrap();
+            let mut greeting = [0u8; 3];
+            c.read_exact(&mut greeting).unwrap();
+            c.write_all(&[0x05, 0x00]).unwrap();
+
+            let mut head = [0u8; 5];
+            c.read_exact(&mut head).unwrap();
+            let mut rest = vec![0u8; head[4] as usize + 2];
+            c.read_exact(&mut rest).unwrap();
+
+            // Отвечаем доменным BND.ADDR — самый длинный хвост из возможных.
+            let bnd = b"proxy.local";
+            let mut reply = vec![0x05, 0x00, 0x00, 0x03, bnd.len() as u8];
+            reply.extend_from_slice(bnd);
+            reply.extend_from_slice(&80u16.to_be_bytes());
+            c.write_all(&reply).unwrap();
+
+            // Запрос надо вычитать целиком: закрыть сокет с недочитанными
+            // байтами — значит послать клиенту RST вместо FIN, и тест упадёт
+            // на обрыве связи, а не на том, что проверяет.
+            let mut req = Vec::new();
+            let mut byte = [0u8; 1];
+            while !req.ends_with(b"\r\n\r\n") && c.read_exact(&mut byte).is_ok() {
+                req.push(byte[0]);
+            }
+            // Не байтовый литерал: кириллица в b"..." не помещается.
+            c.write_all(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n\
+                 {\"status\":\"success\",\"country\":\"Нидерланды\",\"city\":\"Амстердам\"}"
+                    .as_bytes(),
+            )
+            .unwrap();
+        });
+
+        assert_eq!(exit_country(port).unwrap(), "Нидерланды, Амстердам");
+        server.join().unwrap();
+    }
+
+    /// Отказ приезжает с кодом 200 — разбирать надо тело, а не статус HTTP.
+    #[test]
+    fn refusal_is_an_error_not_a_country() {
+        let quota = "HTTP/1.1 200 OK\r\n\r\n{\"status\":\"fail\",\"message\":\"private range\"}";
+        let e = parse_country(quota).unwrap_err().to_string();
+        assert!(e.contains("private range"), "причина отказа должна дойти до журнала: {e}");
+
+        assert!(parse_country("HTTP/1.1 200 OK\r\n\r\nне json").is_err());
+        assert!(
+            parse_country("HTTP/1.1 200 OK\r\n\r\n{\"status\":\"success\"}").is_err(),
+            "успех без страны — всё равно нечего показывать"
+        );
+    }
     use std::net::TcpListener;
 
     fn node() -> Value {

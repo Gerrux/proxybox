@@ -11,6 +11,7 @@ export type Status = {
   tunnel: Tunnel;
   profile: string | null;
   latency_ms: number | null;
+  country: string | null;
   rx: number;
   tx: number;
   apps: App[];

@@ -48,6 +48,11 @@ struct Saved {
     apps: Vec<App>,
     profiles: BTreeMap<String, Value>,
     profile: Option<String>,
+    /// Был ли включён приватный режим. Переживает перезапуск намеренно: иначе
+    /// после перезагрузки машины выбранные приложения молча оказались бы в
+    /// сети напрямую — ровно то, чего продукт обещает не допускать.
+    #[serde(default)]
+    private: bool,
 }
 
 struct Service {
@@ -77,7 +82,7 @@ impl Service {
                 ..Default::default()
             },
             profiles: saved.profiles,
-            private: false,
+            private: saved.private,
             tunnel: None,
             probe_target: (String::new(), 0),
             retry_at: None,
@@ -92,6 +97,7 @@ impl Service {
             apps: self.status.apps.clone(),
             profiles: self.profiles.clone(),
             profile: self.status.profile.clone(),
+            private: self.private,
         };
         let _ = std::fs::create_dir_all(dir());
         if let Ok(raw) = serde_json::to_string_pretty(&saved) {
@@ -166,8 +172,10 @@ impl Service {
 
     fn stop(&mut self) {
         self.private = false;
+        self.save();
         self.tunnel = None;
         self.status.tunnel = TunnelState::Off;
+        self.status.country = None;
         self.status.latency_ms = None;
         (self.status.rx, self.status.tx) = (0, 0);
         self.guard(false);
@@ -183,6 +191,12 @@ impl Service {
             }
         }
     }
+}
+
+/// Единственный запрос наружу должен выключаться: продукт про приватность, и
+/// решение обращаться к третьей стороне принадлежит пользователю, а не нам.
+fn geo_enabled() -> bool {
+    std::env::var("PG_GEO").as_deref() != Ok("0")
 }
 
 /// Есть ли у службы права администратора. Без них не поднять TUN и не тронуть
@@ -337,6 +351,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             let mut s = svc.lock().unwrap();
             s.status.tunnel = TunnelState::Down;
             s.status.latency_ms = None;
+            s.status.country = None;
             s.guard(true);
             if s.retry_at.is_some_and(|at| Instant::now() < at) {
                 continue; // ждём паузы: отказ повторяется, а не проходит сам
@@ -355,6 +370,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
         if !s.private {
             continue;
         }
+        let mut just_up = false;
         match result {
             Ok(latency) => {
                 if s.status.tunnel != TunnelState::Up {
@@ -366,6 +382,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
                         s.log(format!("рядом поднят чужой туннель «{name}» — выберите один: маршруты уйдут к тому, кто выиграет"));
                     }
                     s.guard(false); // дальше маршрутизацией занимается сам sing-box
+                    just_up = true;
                 }
                 s.status.tunnel = TunnelState::Up;
                 s.status.latency_ms = Some(latency);
@@ -377,11 +394,88 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
                 }
                 s.status.tunnel = TunnelState::Down;
                 s.status.latency_ms = None;
+                s.status.country = None;
             }
         }
         if let Some((rx, tx)) = traffic {
             (s.status.rx, s.status.tx) = (rx, tx);
         }
+        drop(s);
+
+        // Единственный запрос наружу за всю работу службы — и только на переходе
+        // в «поднят»: дёргать чужой сервис каждые три секунды незачем, он и сам
+        // считает это флудом. Замок на это время отпущен: сеть медленная, а под
+        // ним стоит весь GUI.
+        if just_up && geo_enabled() {
+            let found = core_tunnel::exit_country(socks_port);
+            let mut s = svc.lock().unwrap();
+            match found {
+                Ok(country) => {
+                    s.log(format!("точка выхода: {country}"));
+                    s.status.country = Some(country);
+                }
+                // Страна — украшение статуса; не узнали, значит не показываем.
+                // На fail-closed это не влияет никак.
+                Err(e) => {
+                    s.log(format!("страну выхода узнать не удалось ({e})"));
+                    s.status.country = None;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tun_failures_named_correctly() {
+        let denied = explain("configure tun interface: Access is denied.");
+        assert!(denied.contains("права администратора"), "{denied}");
+        let busy = explain("configure tun interface: file already exists");
+        assert!(busy.contains("другой VPN"), "{busy}");
+        assert_eq!(explain("порт занят"), "порт занят", "не про TUN — не додумываем");
+    }
+
+    #[test]
+    fn probe_goes_to_own_server() {
+        std::env::remove_var("PG_PROBE");
+        let vless = json!({ "type": "vless", "server": "a.com", "server_port": 8443 });
+        assert_eq!(probe_target(&vless), ("a.com".to_string(), 8443));
+        // У WireGuard сервер описан узлом peers, а не полем server.
+        let wg = json!({ "type": "wireguard", "peers": [{ "address": "b.com", "port": 51820 }] });
+        assert_eq!(probe_target(&wg), ("b.com".to_string(), 51820));
+    }
+
+    /// Перезапуск не должен ни тихо возвращать выбранные приложения в открытую
+    /// сеть, ни поднимать туннель после того, как его выключили. Обе половины
+    /// в одном тесте: они делят каталог состояния, а тесты идут параллельно.
+    #[test]
+    fn private_mode_survives_restart() {
+        let tmp = std::env::temp_dir().join("pg-state-test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::env::set_var("XDG_CONFIG_HOME", &tmp);
+        std::env::set_var("ProgramData", &tmp);
+
+        let mut s = Service::load();
+        s.status.apps.push(App { path: "/bin/true".into(), name: "true".into(), enabled: true });
+        s.profiles.insert("p".into(), json!({ "type": "trojan", "server": "a.com", "server_port": 443 }));
+        s.status.profile = Some("p".into());
+        s.private = true;
+        s.save();
+
+        let restored = Service::load();
+        assert!(restored.private, "приватный режим обязан пережить перезапуск");
+        assert_eq!(restored.status.profile.as_deref(), Some("p"));
+        assert_eq!(restored.status.apps.len(), 1);
+        assert_eq!(restored.status.tunnel, TunnelState::Off, "туннель после старта ещё не поднят");
+        assert_eq!(restored.status.rx, 0, "счётчики трафика не переносятся");
+
+        let mut s = restored;
+        s.stop();
+        assert!(!Service::load().private, "выключение — тоже решение, и оно тоже запоминается");
     }
 }
 
@@ -411,9 +505,18 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
         if !elevated() {
             s.log("ВНИМАНИЕ: служба запущена без прав администратора — TUN и правила брандмауэра работать не будут");
         }
-        // Служба, убитая прошлый раз, могла оставить блокирующие правила: без
-        // этого выбранные приложения остались бы без сети и снять их было бы нечем.
-        s.guard(false);
+        match (s.private, s.status.profile.clone()) {
+            // Приватный режим пережил перезапуск — восстанавливаем его сами.
+            // start() сначала блокирует, потом поднимает туннель, поэтому окна
+            // прямого доступа между загрузкой системы и туннелем не возникает.
+            (true, Some(profile)) => {
+                s.log(format!("приватный режим был включён — восстанавливаю профиль «{profile}»"));
+                let _ = s.start(&profile);
+            }
+            // Служба, убитая прошлый раз, могла оставить блокирующие правила: без
+            // этого выбранные приложения остались бы без сети и снять их было бы нечем.
+            _ => s.guard(false),
+        }
     }
 
     let watched = Arc::clone(&svc);
