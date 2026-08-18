@@ -23,12 +23,15 @@ call :check "Rust/cargo" "cargo --version" "https://rustup.rs"
 rem --- права: службе нужны админские (TUN и правила брандмауэра) ---
 net session >nul 2>nul
 if errorlevel 1 (
-  set "ELEVATED="
-  echo   [ ! ]  права обычного пользователя - служба НЕ поднимет TUN и не поставит
-  echo          правила брандмауэра. Для пунктов 1 и 2 запустите run.bat от
-  echo          имени администратора ^(правый клик - "Запуск от имени администратора"^).
+  echo   [ ! ]  права обычного пользователя - служба НЕ поднимет TUN и не
+  echo          поставит правила брандмауэра. Приватный режим не заработает.
+  set "ASK="
+  set /p "ASK=         Перезапустить от имени администратора? [Y/n]: "
+  if /i not "!ASK!"=="n" (
+    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    exit /b 0
+  )
 ) else (
-  set "ELEVATED=1"
   echo   [OK]   права администратора
 )
 

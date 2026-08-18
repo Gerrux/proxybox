@@ -17,11 +17,16 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Как часто служба проверяет, жив ли туннель. Это же — окно, в котором
 /// выбранные приложения могут успеть уйти напрямую после падения sing-box.
 const PROBE_EVERY: Duration = Duration::from_secs(3);
+/// Пауза перед повторной попыткой поднять туннель: удваивается до максимума.
+/// Без неё отказ, который сам не пройдёт (нет прав, занят порт), превращается
+/// в бесконечный поток одинаковых ошибок в журнале.
+const RETRY_BASE: Duration = Duration::from_secs(3);
+const RETRY_MAX: Duration = Duration::from_secs(60);
 
 fn dir() -> PathBuf {
     // Служба работает под LocalSystem, и её %APPDATA% — это системный профиль
@@ -53,6 +58,11 @@ struct Service {
     private: bool,
     tunnel: Option<Process>,
     probe_target: (String, u16),
+    retry_at: Option<Instant>,
+    retry_delay: Duration,
+    /// Что уже применено к брандмауэру. Без этой памяти надзор дёргал бы netsh
+    /// каждые три секунды и засыпал журнал одинаковыми отказами.
+    applied: Option<(bool, Vec<String>)>,
 }
 
 impl Service {
@@ -70,6 +80,9 @@ impl Service {
             private: false,
             tunnel: None,
             probe_target: (String::new(), 0),
+            retry_at: None,
+            retry_delay: RETRY_BASE,
+            applied: None,
         }
     }
 
@@ -103,8 +116,17 @@ impl Service {
 
     /// Блокировка выбранных приложений на всё время, пока туннель не подтверждён.
     fn guard(&mut self, blocked: bool) {
-        if let Err(e) = core_filter::set_blocked(&self.selected(), blocked) {
-            self.log(format!("не удалось изменить правила брандмауэра: {e}"));
+        let want = (blocked, self.selected());
+        if self.applied.as_ref() == Some(&want) {
+            return;
+        }
+        match core_filter::set_blocked(&want.1, blocked) {
+            Ok(()) => self.applied = Some(want),
+            Err(e) => {
+                // Неудачу не запоминаем: на следующей смене состояния попробуем снова.
+                self.applied = None;
+                self.log(format!("правила брандмауэра не поставлены — {e}"));
+            }
         }
     }
 
@@ -125,13 +147,19 @@ impl Service {
             Ok(t) => {
                 self.tunnel = Some(t);
                 self.status.tunnel = TunnelState::Connecting;
+                self.retry_at = None;
+                self.retry_delay = RETRY_BASE;
                 self.log(format!("профиль «{profile}»: sing-box запущен, приложений в туннеле: {}", opts.apps.len()));
                 Ok(())
             }
             Err(e) => {
                 self.status.tunnel = TunnelState::Down;
-                self.log(format!("sing-box не запустился: {e}"));
-                Err(e.to_string())
+                self.retry_at = Some(Instant::now() + self.retry_delay);
+                let wait = self.retry_delay.as_secs();
+                self.retry_delay = (self.retry_delay * 2).min(RETRY_MAX);
+                let reason = explain(&e.to_string());
+                self.log(format!("sing-box не запустился: {reason}; следующая попытка через {wait} с"));
+                Err(reason)
             }
         }
     }
@@ -155,6 +183,34 @@ impl Service {
             }
         }
     }
+}
+
+/// Есть ли у службы права администратора. Без них не поднять TUN и не тронуть
+/// брандмауэр — а узнать об этом лучше сразу, а не из потока отказов.
+#[cfg(windows)]
+fn elevated() -> bool {
+    std::process::Command::new("net")
+        .arg("session")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+#[cfg(not(windows))]
+fn elevated() -> bool {
+    true
+}
+
+/// Отказ на стадии TUN означает одно: службу запустили без прав администратора.
+/// Голый FATAL из sing-box об этом не говорит, а причина всегда одна и та же.
+fn explain(error: &str) -> String {
+    if error.contains("configure tun interface") {
+        return format!(
+            "{error} — нужны права администратора: без них не поднять TUN и не поставить правила брандмауэра"
+        );
+    }
+    error.to_string()
 }
 
 fn probe_target(node: &Value) -> (String, u16) {
@@ -240,10 +296,15 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             s.save();
             Response::Done
         }
-        Request::On { profile } => match s.start(&profile) {
-            Ok(()) => Response::Done,
-            Err(message) => Response::Error { message },
-        },
+        Request::On { profile } => {
+            // Команда пользователя — пробуем сразу, накопленная пауза не в счёт.
+            s.retry_at = None;
+            s.retry_delay = RETRY_BASE;
+            match s.start(&profile) {
+                Ok(()) => Response::Done,
+                Err(message) => Response::Error { message },
+            }
+        }
         Request::Off => {
             s.stop();
             Response::Done
@@ -273,6 +334,9 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             s.status.tunnel = TunnelState::Down;
             s.status.latency_ms = None;
             s.guard(true);
+            if s.retry_at.is_some_and(|at| Instant::now() < at) {
+                continue; // ждём паузы: отказ повторяется, а не проходит сам
+            }
             s.log("sing-box не работает: выбранные приложения без сети, перезапуск");
             if let Some(profile) = s.status.profile.clone() {
                 let _ = s.start(&profile);
@@ -334,6 +398,9 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
         let mut s = svc.lock().unwrap();
         let (apps, profiles) = (s.status.apps.len(), s.profiles.len());
         s.log(format!("служба слушает {ADDR}; приложений: {apps}, профилей: {profiles}"));
+        if !elevated() {
+            s.log("ВНИМАНИЕ: служба запущена без прав администратора — TUN и правила брандмауэра работать не будут");
+        }
         // Служба, убитая прошлый раз, могла оставить блокирующие правила: без
         // этого выбранные приложения остались бы без сети и снять их было бы нечем.
         s.guard(false);

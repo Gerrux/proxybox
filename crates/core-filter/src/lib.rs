@@ -65,7 +65,9 @@ pub fn set_blocked(paths: &[String], blocked: bool) -> io::Result<()> {
     for path in paths {
         run(&delete_args(path))?;
         if blocked {
-            run(&add_args(path))?;
+            // В сообщение идёт приложение и причина, а не вся строка netsh:
+            // читать её в журнале невозможно, а полезного в ней — хвост.
+            run(&add_args(path)).map_err(|e| io::Error::other(format!("{path}: {e}")))?;
         }
     }
     Ok(())
@@ -76,11 +78,7 @@ fn run(args: &[String]) -> io::Result<()> {
     let out = std::process::Command::new("netsh").args(args).output()?;
     // «Ни одно правило не соответствует» при удалении — не ошибка.
     if !out.status.success() && args.contains(&"add".to_string()) {
-        return Err(io::Error::other(format!(
-            "netsh {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stdout).trim()
-        )));
+        return Err(io::Error::other(String::from_utf8_lossy(&out.stdout).trim().to_string()));
     }
     Ok(())
 }
