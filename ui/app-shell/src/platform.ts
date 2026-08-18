@@ -33,10 +33,10 @@ export type Request =
   | { cmd: "on"; arg: { profile: string } }
   | { cmd: "off" }
   | { cmd: "list-apps" }
-  /** Профиль пользователя подставляет оболочка (src-tauri): фронтенд в вебвью,
-   *  окружения у него нет. В браузере при разработке уходит null — служба тогда
-   *  перебирает все профили машины. */
-  | { cmd: "discover"; arg: { home: string | null } }
+  /** Профиль пользователя и его PATH подставляет оболочка (src-tauri): фронтенд
+   *  в вебвью, окружения у него нет. В браузере при разработке уходят null —
+   *  служба тогда перебирает все профили машины и ищет по своему PATH. */
+  | { cmd: "discover"; arg: { home: string | null; path: string | null } }
   | { cmd: "add-app"; arg: { path: string } }
   | { cmd: "icon"; arg: { path: string } }
   | { cmd: "set-app"; arg: { path: string; enabled: boolean } }

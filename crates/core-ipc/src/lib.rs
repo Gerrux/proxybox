@@ -69,11 +69,12 @@ pub fn t(ru: &str, en: &str) -> String {
     .to_string()
 }
 
-/// Профиль пользователя, от имени которого работает клиент, — для `Discover`.
-/// Живёт в контракте, потому что нужен обоим клиентам и означает ровно то, что
+/// Окружение пользователя, от имени которого работает клиент, — для `Discover`.
+/// Живёт в контракте, потому что нужно обоим клиентам и означает ровно то, что
 /// написано у команды. `HOME` — для разработки не на Windows.
-pub fn home() -> Option<String> {
-    std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok()
+pub fn whoami() -> (Option<String>, Option<String>) {
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok();
+    (home, std::env::var("PATH").ok())
 }
 
 /// Язык из окружения — для клиентов, которым не у кого спросить (usage, doctor).
@@ -99,12 +100,15 @@ pub enum Request {
     /// Найти установленные приложения по стандартным путям и добавить в список
     /// выключенными: перехватывать что-то без ведома пользователя мы не будем.
     ///
-    /// `home` — профиль того, кто спрашивает (`%USERPROFILE%`). Служба работает
-    /// под LocalSystem, её собственный профиль лежит внутри System32, а спросить
-    /// «кто там на том конце» ей нечем — зато клиент работает от имени человека
-    /// и знает это про себя. Не передали — служба перебирает все профили машины,
-    /// как делала раньше, и в список попадут чужие приложения.
-    Discover { home: Option<String> },
+    /// `home` — профиль того, кто спрашивает (`%USERPROFILE%`), `path` — его же
+    /// `PATH`. Служба работает под LocalSystem: её собственный профиль лежит
+    /// внутри System32, а пользовательская ветка `PATH` (`HKCU\Environment`) в
+    /// её окружение не попадает вовсе. Спросить «кто там на том конце» службе
+    /// нечем — зато клиент работает от имени человека и знает это про себя. Не
+    /// передали — служба перебирает все профили машины и ищет по своему `PATH`,
+    /// как делала раньше: в списке окажутся чужие приложения, а инструмент,
+    /// прописанный только в пользовательском `PATH`, не найдётся.
+    Discover { home: Option<String>, path: Option<String> },
     AddApp { path: String },
     /// Иконка приложения отдельным запросом, а не полем в `App`: картинки
     /// весят килобайты, а статус окно опрашивает каждые две секунды.
@@ -324,8 +328,8 @@ mod tests {
             Request::AddApp { path: r"C:\app.exe".into() },
             Request::SetApp { path: r"C:\app.exe".into(), enabled: false },
             Request::RemoveApp { path: r"C:\app.exe".into() },
-            Request::Discover { home: Some(r"C:\Users\ilya".into()) },
-            Request::Discover { home: None },
+            Request::Discover { home: Some(r"C:\Users\ilya".into()), path: Some(r"C:\bin;C:\Windows".into()) },
+            Request::Discover { home: None, path: None },
             Request::Icon { path: r"C:\app.exe".into() },
             Request::AddProfile { link: "vless://u@a.com:443".into() },
             Request::RemoveProfile { name: "myvpn".into() },

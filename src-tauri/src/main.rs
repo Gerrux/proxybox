@@ -7,10 +7,14 @@ use core_ipc::{call, Request, Response};
 
 #[tauri::command]
 fn ipc(req: Request) -> Result<Response, String> {
-    // Единственное, что оболочка добавляет от себя: свой профиль. Фронтенду его
-    // взять неоткуда — он в вебвью, — а служба под LocalSystem видит System32.
+    // Единственное, что оболочка добавляет от себя: своё окружение. Фронтенду
+    // его взять неоткуда — он в вебвью, — а служба под LocalSystem видит
+    // System32 и системный PATH.
     let req = match req {
-        Request::Discover { .. } => Request::Discover { home: core_ipc::home() },
+        Request::Discover { .. } => {
+            let (home, path) = core_ipc::whoami();
+            Request::Discover { home, path }
+        }
         req => req,
     };
     call(&req).map_err(|e| format!("служба недоступна: {e}"))
