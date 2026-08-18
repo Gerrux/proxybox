@@ -205,12 +205,16 @@ fn elevated() -> bool {
 /// Отказ на стадии TUN означает одно: службу запустили без прав администратора.
 /// Голый FATAL из sing-box об этом не говорит, а причина всегда одна и та же.
 fn explain(error: &str) -> String {
-    if error.contains("configure tun interface") {
-        return format!(
-            "{error} — нужны права администратора: без них не поднять TUN и не поставить правила брандмауэра"
-        );
+    if !error.contains("tun") {
+        return error.to_string();
     }
-    error.to_string()
+    // «Отказано в доступе» — это всегда права. Остальные отказы TUN — почти
+    // всегда чужой туннель: занятое имя адаптера или пересечение адресов.
+    let denied = ["Access is denied", "denied", "elevation", "Отказано в доступе"];
+    if denied.iter().any(|d| error.contains(d)) {
+        return format!("{error} — нужны права администратора: без них не поднять TUN и не поставить правила брандмауэра");
+    }
+    format!("{error} — проверьте, не поднят ли рядом другой VPN: два TUN спорят за имя адаптера и маршруты")
 }
 
 fn probe_target(node: &Value) -> (String, u16) {
@@ -355,6 +359,12 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             Ok(latency) => {
                 if s.status.tunnel != TunnelState::Up {
                     s.log(format!("туннель поднят, задержка {latency} мс"));
+                    // Проверяем именно здесь: чужой туннель не мешает нам
+                    // подняться, но может забрать маршруты — и тогда «Защищено»
+                    // окажется правдой только про нас, а не про приложения.
+                    for name in core_filter::foreign_tunnels() {
+                        s.log(format!("рядом поднят чужой туннель «{name}» — выберите один: маршруты уйдут к тому, кто выиграет"));
+                    }
                     s.guard(false); // дальше маршрутизацией занимается сам sing-box
                 }
                 s.status.tunnel = TunnelState::Up;

@@ -10,4 +10,5 @@ path = "src/main.rs"
 
 [dependencies]
 core-ipc.workspace = true
+core-filter.workspace = true
 core-tunnel.workspace = true

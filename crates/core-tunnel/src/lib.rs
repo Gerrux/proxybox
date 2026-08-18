@@ -15,6 +15,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 pub const TAG_PROXY: &str = "proxy";
+/// Имя нашего TUN-адаптера: по нему его видно в системе и не спутать с чужим.
+pub const TUN_NAME: &str = "Privacy Gateway";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Столько ждём, прежде чем поверить, что sing-box действительно поднялся.
 const STARTUP_GRACE: Duration = Duration::from_millis(400);
@@ -54,7 +56,12 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
         inbounds.push(json!({
             "type": "tun",
             "tag": "tun-in",
-            "address": ["172.19.0.1/30"],
+            // 172.19.0.1/30 — умолчание sing-box, а значит и NekoBox, Hiddify,
+            // v2rayN: с любым из них адрес и имя адаптера столкнулись бы лоб в
+            // лоб. Берём свои, чтобы конфликт был виден как чужой туннель, а не
+            // как загадочный отказ TUN.
+            "interface_name": TUN_NAME,
+            "address": ["172.27.234.1/30"],
             "auto_route": true,
             "strict_route": true,
             "stack": "mixed",
@@ -294,6 +301,8 @@ mod tests {
     fn tun_optional() {
         let with = build_config(&node(), &Options::default());
         assert_eq!(with["inbounds"][1]["type"], "tun");
+        assert_eq!(with["inbounds"][1]["interface_name"], TUN_NAME);
+        assert_ne!(with["inbounds"][1]["address"][0], "172.19.0.1/30", "умолчание чужих клиентов");
         let without = build_config(&node(), &Options { tun: false, ..Default::default() });
         assert_eq!(without["inbounds"].as_array().unwrap().len(), 1);
     }
@@ -396,4 +405,21 @@ mod tests {
             assert!(out.status.success(), "{link}: {}", String::from_utf8_lossy(&out.stderr));
         }
     }
+
+    /// Конфиг с включённым TUN тоже должен проходить проверку sing-box:
+    /// именно его увидит Windows, а остальные тесты гоняют вариант без TUN.
+    #[test]
+    fn tun_config_passes_singbox_check() {
+        let node = core_config::parse("trojan://p@a.com:443").unwrap().node;
+        let cfg = build_config(&node, &Options { apps: vec![r"C:\app.exe".into()], ..Default::default() });
+        let dir = std::env::temp_dir().join("pg-tun-check");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("c.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&cfg).unwrap()).unwrap();
+        let Ok(out) = Command::new(binary()).arg("check").arg("-c").arg(&path).output() else {
+            return; // sing-box не установлен
+        };
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+
 }

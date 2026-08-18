@@ -89,6 +89,47 @@ fn run(_args: &[String]) -> io::Result<()> {
     Ok(())
 }
 
+/// Поднятые адаптеры, похожие на чужой туннель. Два TUN в системе спорят за
+/// маршрут по умолчанию, и выигравший забирает трафик себе — наш статус при
+/// этом остаётся «Защищено», хотя приложения могут уйти в чужой туннель.
+pub fn foreign_tunnels() -> Vec<String> {
+    detect(&adapters())
+}
+
+fn detect(adapters: &str) -> Vec<String> {
+    const MARKERS: [&str; 6] = ["wintun", "tap-", "tun", "wireguard", "openvpn", "vpn"];
+    adapters
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        // Свой адаптер в этот список попадать не должен: он именован явно.
+        .filter(|l| !l.contains("Privacy Gateway"))
+        .filter(|l| {
+            let low = l.to_lowercase();
+            MARKERS.iter().any(|m| low.contains(m))
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(windows)]
+fn adapters() -> String {
+    std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | ForEach-Object {$_.InterfaceDescription}",
+        ])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+#[cfg(not(windows))]
+fn adapters() -> String {
+    String::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,6 +141,13 @@ mod tests {
         assert_eq!(policy(false, true), Policy::Direct);
         assert_eq!(policy(true, true), Policy::Tunnel);
         assert_eq!(policy(true, false), Policy::Drop);
+    }
+
+    #[test]
+    fn only_tunnel_adapters_are_flagged() {
+        let adapters = "Intel(R) Wi-Fi 6 AX201 160MHz\nWireGuard Tunnel\nRealtek PCIe GbE Family Controller\nTAP-Windows Adapter V9\nPrivacy Gateway Tunnel\n\n";
+        assert_eq!(detect(adapters), vec!["WireGuard Tunnel", "TAP-Windows Adapter V9"]);
+        assert!(detect("Intel(R) Wi-Fi 6 AX201 160MHz\n").is_empty());
     }
 
     #[test]

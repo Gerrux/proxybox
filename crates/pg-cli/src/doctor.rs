@@ -65,22 +65,6 @@ fn proxy_enabled(out: &str) -> bool {
         .is_some_and(|v| v != 0)
 }
 
-/// Из списка поднятых адаптеров — те, что похожи на чужой туннель. С ними
-/// конфликтует `strict_route` нашего TUN: маршруты уводит то одному, то другому.
-fn foreign_tunnels(adapters: &str) -> Vec<String> {
-    const MARKERS: [&str; 6] = ["wintun", "tap-", "tun", "wireguard", "openvpn", "vpn"];
-    adapters
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .filter(|l| {
-            let low = l.to_lowercase();
-            MARKERS.iter().any(|m| low.contains(m))
-        })
-        .map(str::to_string)
-        .collect()
-}
-
 #[cfg(windows)]
 fn out(cmd: &str, args: &[&str]) -> Option<String> {
     let o = std::process::Command::new(cmd).args(args).output().ok()?;
@@ -161,16 +145,8 @@ fn windows_checks() -> Vec<Check> {
         _ => check("системный прокси", Level::Ok, "выключен"),
     });
 
-    let adapters = out(
-        "powershell",
-        &[
-            "-NoProfile",
-            "-Command",
-            "Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | ForEach-Object {$_.InterfaceDescription}",
-        ],
-    )
-    .unwrap_or_default();
-    let foreign = foreign_tunnels(&adapters);
+    // Разбор и запуск — в core-filter: тем же списком пользуется служба.
+    let foreign = core_filter::foreign_tunnels();
     v.push(if foreign.is_empty() {
         check("чужие туннели", Level::Ok, "поднятых TUN/VPN-адаптеров нет")
     } else {
@@ -250,13 +226,6 @@ mod tests {
         assert!(proxy_enabled(on));
         assert!(!proxy_enabled(off));
         assert!(!proxy_enabled(""), "ключа нет — прокси не настроен");
-    }
-
-    #[test]
-    fn only_tunnel_adapters_are_flagged() {
-        let adapters = "Intel(R) Wi-Fi 6 AX201 160MHz\nWireGuard Tunnel\nRealtek PCIe GbE Family Controller\nTAP-Windows Adapter V9\n\n";
-        assert_eq!(foreign_tunnels(adapters), vec!["WireGuard Tunnel", "TAP-Windows Adapter V9"]);
-        assert!(foreign_tunnels("Intel(R) Wi-Fi 6 AX201 160MHz\n").is_empty());
     }
 
     /// Ненулевой код возврата — только на Fail: предупреждения скрипт не ломают.
