@@ -43,13 +43,21 @@ extern "system" {
         security: *const SecurityAttributes,
     ) -> Handle;
     fn ConnectNamedPipe(pipe: Handle, overlapped: *mut c_void) -> i32;
+    fn LocalFree(mem: *mut c_void) -> *mut c_void;
+}
+
+// Отдельным блоком не для красоты: kernel32 приносит с собой std, а advapi32 —
+// нет, и без явного #[link] SDDL-функция не находится на этапе линковки
+// (LNK2019). Сама она давно живёт в sechost.dll, но импорт по-прежнему через
+// advapi32.lib — так эту пару и линкуют.
+#[link(name = "advapi32")]
+extern "system" {
     fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
         sddl: *const u16,
         revision: u32,
         descriptor: *mut *mut c_void,
         size: *mut u32,
     ) -> i32;
-    fn LocalFree(mem: *mut c_void) -> *mut c_void;
 }
 
 fn wide(s: &str) -> Vec<u16> {
