@@ -18,6 +18,7 @@ const USAGE_RU: &str = "privacy-gateway <команда>
   add-app --path <exe>   добавить приложение по пути к .exe
   enable --path <exe>    пустить приложение в туннель
   disable --path <exe>   убрать приложение из-под управления
+  scope apps|all         охват: только выбранные приложения либо весь трафик
   add-profile --link <l> импортировать share-link (vless/vmess/trojan/ss/hy2/wg),
                          JSON-конфиг sing-box или подписку по http(s)-адресу;
                          тот же адрес повторно — обновить подписку
@@ -38,6 +39,7 @@ const USAGE_EN: &str = "privacy-gateway <command>
   add-app --path <exe>   add an app by path to its .exe
   enable --path <exe>    let the app into the tunnel
   disable --path <exe>   take the app out of control
+  scope apps|all         scope: selected apps only or all machine traffic
   add-profile --link <l> import a share-link (vless/vmess/trojan/ss/hy2/wg),
                          a sing-box JSON config or a subscription http(s) URL;
                          the same URL again refreshes the subscription
@@ -75,6 +77,11 @@ fn parse(args: &[String]) -> Result<Request, String> {
         Some("add-profile") => flag(args, "--link")
             .map(|link| Request::AddProfile { link })
             .ok_or_else(|| t("нужен --link <share-link>", "needs --link <share-link>")),
+        Some("scope") => match args.get(1).map(String::as_str) {
+            Some("all") => Ok(Request::SetAllTraffic { enabled: true }),
+            Some("apps") => Ok(Request::SetAllTraffic { enabled: false }),
+            _ => Err(t("нужен охват: apps или all", "pick a scope: apps or all")),
+        },
         Some("profiles") => Ok(Request::Status),
         Some("test") => Ok(Request::TestProfiles),
         Some("browse") => flag(args, "--profile")
@@ -192,6 +199,14 @@ fn main() -> std::process::ExitCode {
             };
             let on = s.apps.iter().filter(|a| a.enabled).count();
             println!("{:<11} {state}", t("туннель:", "tunnel:"));
+            println!(
+                "{:<11} {}",
+                t("охват:", "scope:"),
+                match s.all_traffic {
+                    true => t("весь трафик компьютера", "all computer traffic"),
+                    false => t("выбранные приложения", "selected apps"),
+                }
+            );
             println!("{:<11} {}", t("профиль:", "profile:"), s.profile.unwrap_or_else(|| "—".into()));
             println!("{:<11} {}", t("страна:", "exit:"), s.country.unwrap_or_else(|| "—".into()));
             println!("{:<11} ↓{} ↑{} {}", t("трафик:", "traffic:"), s.rx, s.tx, t("байт", "bytes"));

@@ -5,12 +5,17 @@
 //! перезапуском TUN исчезает, и выбранные приложения ушли бы напрямую — вот на
 //! это окно и ставится блокирующее правило брандмауэра Windows.
 //!
+//! В охвате «весь компьютер» блокировать поимённо нечего, и то же окно
+//! закрывается политикой по умолчанию: весь исходящий запрещён, разрешён один
+//! sing-box (`set_killswitch`).
+//!
 //! ponytail: правила ставятся через `netsh advfirewall` — это тот же WFP, только
 //! без драйвера, подписи и unsafe-FFI. Окно утечки — время между смертью
 //! процесса и постановкой правил (проверка раз в PROBE_EVERY). Собственный
 //! WFP-фильтр в ядре службы закрыл бы и его, но это драйвер и подпись.
 
 use std::io;
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Policy {
@@ -49,14 +54,8 @@ fn add_args(path: &str) -> Vec<String> {
     ]
 }
 
-fn delete_args(path: &str) -> Vec<String> {
-    vec![
-        "advfirewall".into(),
-        "firewall".into(),
-        "delete".into(),
-        "rule".into(),
-        format!("name={}", rule_name(path)),
-    ]
+fn delete_args(name: &str) -> Vec<String> {
+    vec!["advfirewall".into(), "firewall".into(), "delete".into(), "rule".into(), format!("name={name}")]
 }
 
 /// Поставить/снять блокировку для списка приложений. Идемпотентна: перед
@@ -70,7 +69,7 @@ fn delete_args(path: &str) -> Vec<String> {
 pub fn set_blocked(paths: &[String], blocked: bool) -> io::Result<()> {
     let mut failure = None;
     for path in paths {
-        let outcome = run(&delete_args(path)).and_then(|()| {
+        let outcome = run(&delete_args(&rule_name(path))).and_then(|()| {
             if !blocked {
                 return Ok(());
             }
@@ -88,11 +87,59 @@ pub fn set_blocked(paths: &[String], blocked: bool) -> io::Result<()> {
     }
 }
 
+/// Имя разрешающего правила для sing-box. Своё, отдельное от правил приложений:
+/// снимается оно вместе с политикой, а не вместе со списком.
+const ALLOW_RULE: &str = "Privacy Gateway: sing-box";
+
+fn policy_args(outbound: &str) -> Vec<String> {
+    vec!["advfirewall".into(), "set".into(), "allprofiles".into(), "firewallpolicy".into(), format!("blockinbound,{outbound}")]
+}
+
+fn allow_args(singbox: &Path) -> Vec<String> {
+    vec![
+        "advfirewall".into(),
+        "firewall".into(),
+        "add".into(),
+        "rule".into(),
+        format!("name={ALLOW_RULE}"),
+        "dir=out".into(),
+        "action=allow".into(),
+        format!("program={}", singbox.display()),
+        "enable=yes".into(),
+    ]
+}
+
+/// Fail-closed для режима «весь компьютер»: поимённо блокировать там нечего,
+/// поэтому запрещается весь исходящий трафик, кроме самого sing-box.
+///
+/// Запрещающим правилом это не делается: в Windows блокировка сильнее
+/// разрешения, и правило «запретить всё» перебило бы разрешение для sing-box —
+/// туннелю нечем было бы подняться. Поэтому меняется политика по умолчанию:
+/// её разрешающие правила как раз перекрывают.
+///
+/// ponytail: политика возвращается в умолчание Windows
+/// (`blockinbound,allowoutbound`), а не в то, что стояло у пользователя, — свою
+/// настройку исходящего он потеряет. Потолок снимается разбором вывода
+/// `netsh advfirewall show allprofiles` перед первым включением.
+pub fn set_killswitch(on: bool, singbox: &Path) -> io::Result<()> {
+    let delete = delete_args(ALLOW_RULE);
+    if !on {
+        // Сначала политика, потом снятие правила: в обратном порядке sing-box
+        // на мгновение остался бы без сети под ещё действующим запретом.
+        run(&policy_args("allowoutbound"))?;
+        return run(&delete);
+    }
+    run(&delete)?;
+    run(&allow_args(singbox))?;
+    run(&policy_args("blockoutbound"))
+}
+
 #[cfg(windows)]
 fn run(args: &[String]) -> io::Result<()> {
     let out = std::process::Command::new("netsh").args(args).output()?;
-    // «Ни одно правило не соответствует» при удалении — не ошибка.
-    if !out.status.success() && args.contains(&"add".to_string()) {
+    // «Ни одно правило не соответствует» при удалении — не ошибка; всё
+    // остальное (add, set) обязано отработать.
+    if !out.status.success() && !args.contains(&"delete".to_string()) {
         return Err(io::Error::other(String::from_utf8_lossy(&out.stdout).trim().to_string()));
     }
     Ok(())
@@ -173,6 +220,21 @@ mod tests {
         assert!(add.contains(&r"program=C:\Program Files\app.exe".to_string()));
         // Имя правила совпадает у add и delete — иначе снять его нечем.
         let name = |v: &Vec<String>| v.iter().find(|a| a.starts_with("name=")).unwrap().clone();
-        assert_eq!(name(&add), name(&delete_args(r"C:\Program Files\app.exe")));
+        assert_eq!(name(&add), name(&delete_args(&rule_name(r"C:\Program Files\app.exe"))));
+    }
+
+    /// Kill-switch держится на политике по умолчанию, а не на запрещающем
+    /// правиле: иначе он закрыл бы сеть и самому sing-box.
+    #[test]
+    fn killswitch_blocks_everything_but_singbox() {
+        let allow = allow_args(Path::new(r"C:\pg\sing-box.exe"));
+        assert!(allow.contains(&"action=allow".to_string()));
+        assert!(allow.contains(&r"program=C:\pg\sing-box.exe".to_string()));
+        assert!(policy_args("blockoutbound").contains(&"firewallpolicy".to_string()));
+        assert_eq!(policy_args("blockoutbound").last().unwrap(), "blockinbound,blockoutbound");
+        assert_eq!(policy_args("allowoutbound").last().unwrap(), "blockinbound,allowoutbound");
+        // Снять правило нечем, если имена разойдутся.
+        let name = |v: &Vec<String>| v.iter().find(|a| a.starts_with("name=")).unwrap().clone();
+        assert_eq!(name(&allow), name(&delete_args(ALLOW_RULE)));
     }
 }

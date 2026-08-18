@@ -21,6 +21,8 @@ export type Status = {
   rx: number;
   tx: number;
   apps: App[];
+  /** Весь трафик машины в туннеле: список `apps` тогда не применяется. */
+  all_traffic: boolean;
   profiles: string[];
   subscriptions: string[];
   lang: Lang;
@@ -41,6 +43,8 @@ export type Request =
   | { cmd: "icon"; arg: { path: string } }
   | { cmd: "set-app"; arg: { path: string; enabled: boolean } }
   | { cmd: "remove-app"; arg: { path: string } }
+  /** Охват: весь трафик машины либо только выбранные приложения. */
+  | { cmd: "set-all-traffic"; arg: { enabled: boolean } }
   | { cmd: "set-lang"; arg: { lang: Lang } }
   | { cmd: "add-profile"; arg: { link: string } }
   | { cmd: "remove-profile"; arg: { name: string } }

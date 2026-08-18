@@ -79,6 +79,11 @@ struct Saved {
     /// сети напрямую — ровно то, чего продукт обещает не допускать.
     #[serde(default)]
     private: bool,
+    /// Охват: весь трафик машины вместо списка приложений. Переживает
+    /// перезапуск по той же причине, что и `private`: молча сузить охват после
+    /// перезагрузки значило бы выпустить наружу то, что пользователь закрыл.
+    #[serde(default)]
+    all_traffic: bool,
 }
 
 struct Service {
@@ -92,9 +97,10 @@ struct Service {
     probe_target: (String, u16),
     retry_at: Option<Instant>,
     retry_delay: Duration,
-    /// Что уже применено к брандмауэру. Без этой памяти надзор дёргал бы netsh
-    /// каждые три секунды и засыпал журнал одинаковыми отказами.
-    applied: Option<(bool, Vec<String>)>,
+    /// Что уже применено к брандмауэру: (блокировать, охват «весь трафик»,
+    /// список приложений). Без этой памяти надзор дёргал бы netsh каждые три
+    /// секунды и засыпал журнал одинаковыми отказами.
+    applied: Option<(bool, bool, Vec<String>)>,
     /// Инстанс под окно браузера: профиль и его процесс. Один на службу —
     /// ponytail: запуск другого профиля заменяет прошлый, и открытое окно
     /// остаётся с портом, который больше никто не слушает (браузер покажет
@@ -121,6 +127,7 @@ impl Service {
                 lang: saved.lang,
                 profile: saved.profile,
                 apps: saved.apps,
+                all_traffic: saved.all_traffic,
                 profiles: saved.profiles.keys().cloned().collect(),
                 subscriptions: saved.subscriptions.keys().cloned().collect(),
                 ..Default::default()
@@ -148,6 +155,7 @@ impl Service {
             profile: self.status.profile.clone(),
             lang: self.status.lang,
             private: self.private,
+            all_traffic: self.status.all_traffic,
         };
         let _ = std::fs::create_dir_all(dir());
         if let Ok(raw) = serde_json::to_string_pretty(&saved) {
@@ -185,13 +193,29 @@ impl Service {
         self.status.apps.iter().filter(|a| a.enabled).map(|a| a.path.clone()).collect()
     }
 
-    /// Блокировка выбранных приложений на всё время, пока туннель не подтверждён.
+    /// Блокировка на всё время, пока туннель не подтверждён: выбранных
+    /// приложений — правилами по путям, всей машины — политикой брандмауэра.
+    ///
+    /// Режимы взаимоисключающие, и снимаются оба сразу: смена охвата на ходу
+    /// иначе оставила бы правила прошлого режима висеть — а это либо
+    /// заблокированные навсегда приложения, либо машина без сети.
     fn guard(&mut self, blocked: bool) {
-        let want = (blocked, self.selected());
+        let want = (blocked, self.status.all_traffic, self.selected());
         if self.applied.as_ref() == Some(&want) {
             return;
         }
-        match core_filter::set_blocked(&want.1, blocked) {
+        // Политику брандмауэра трогаем, только пока она может быть нашей: в
+        // охвате «выбранные приложения» настройка машины нас не касается, и
+        // возвращать её в умолчание Windows значило бы стереть чужую. Условие
+        // держится на том, что охват сохраняется на диск: служба, упавшая с
+        // запретом всего исходящего, на следующем старте видит `all_traffic` и
+        // снимает его — сразу, если приватный режим был выключен.
+        let ours = want.1 || self.applied.as_ref().is_some_and(|(blocked, all, _)| *blocked && *all);
+        let outcome = core_filter::set_blocked(&want.2, blocked && !want.1).and_then(|()| match ours {
+            true => core_filter::set_killswitch(blocked && want.1, &core_tunnel::binary()),
+            false => Ok(()),
+        });
+        match outcome {
             Ok(()) => self.applied = Some(want),
             Err(e) => {
                 // Неудачу не запоминаем: на следующей смене состояния попробуем снова.
@@ -215,7 +239,7 @@ impl Service {
         self.tunnel = None; // старый процесс убивается Drop'ом до запуска нового
         self.generation += 1; // всё, что проба знала о прошлом процессе, устарело
 
-        let opts = Options { tun: tun_enabled(), apps: self.selected(), ..Default::default() };
+        let opts = Options { tun: tun_enabled(), apps: self.selected(), all: self.status.all_traffic, ..Default::default() };
         let config = build_config(&node, &opts);
         self.probe_target = probe_target(&node);
         match Process::start(&config, &dir()) {
@@ -225,9 +249,13 @@ impl Service {
                 self.retry_at = None;
                 self.retry_delay = RETRY_BASE;
                 let count = opts.apps.len();
+                let scope = match opts.all {
+                    true => t("весь трафик компьютера", "all computer traffic"),
+                    false => t(&format!("приложений в туннеле: {count}"), &format!("apps in the tunnel: {count}")),
+                };
                 self.log(t(
-                    &format!("профиль «{profile}»: sing-box запущен, приложений в туннеле: {count}"),
-                    &format!("profile \"{profile}\": sing-box started, apps in the tunnel: {count}"),
+                    &format!("профиль «{profile}»: sing-box запущен, {scope}"),
+                    &format!("profile \"{profile}\": sing-box started, {scope}"),
                 ));
                 Ok(())
             }
@@ -580,6 +608,22 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             }
             Response::Done
         }
+        Request::SetAllTraffic { enabled } => {
+            if s.status.all_traffic != enabled {
+                s.status.all_traffic = enabled;
+                s.log(match enabled {
+                    true => t("охват: весь трафик компьютера", "scope: all computer traffic"),
+                    false => t("охват: только выбранные приложения", "scope: selected apps only"),
+                });
+                s.save();
+                // Охват живёт в конфиге sing-box (маршрут по умолчанию), а не
+                // только в статусе: без перезапуска трафик пошёл бы по-старому.
+                // Правила прошлого охвата снимет ближайший цикл надзора — при
+                // выключенном приватном режиме блокировать всё равно нечего.
+                s.reapply();
+            }
+            Response::Done
+        }
         Request::SetApp { path, enabled } => match s.status.apps.iter_mut().find(|a| a.path == path) {
             Some(app) => {
                 app.enabled = enabled;
@@ -870,10 +914,12 @@ mod tests {
         s.profiles.insert("p".into(), json!({ "type": "trojan", "server": "a.com", "server_port": 443 }));
         s.status.profile = Some("p".into());
         s.private = true;
+        s.status.all_traffic = true;
         s.save();
 
         let restored = Service::load();
         assert!(restored.private, "приватный режим обязан пережить перезапуск");
+        assert!(restored.status.all_traffic, "охват тоже: сузить его молча значило бы выпустить трафик наружу");
         assert_eq!(restored.status.profile.as_deref(), Some("p"));
         assert_eq!(restored.status.apps.len(), 1);
         assert_eq!(restored.status.tunnel, TunnelState::Off, "туннель после старта ещё не поднят");
