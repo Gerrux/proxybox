@@ -14,7 +14,10 @@
       {
         "title": "Privacy Gateway",
         "width": 1000,
-        "height": 700
+        "height": 700,
+        "minWidth": 900,
+        "minHeight": 620,
+        "decorations": false
       }
     ],
     "security": {

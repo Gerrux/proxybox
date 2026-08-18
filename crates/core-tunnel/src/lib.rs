@@ -254,16 +254,27 @@ fn free_port() -> io::Result<u16> {
 /// Трафик этого инстанса при поднятом основном туннеле уходит через TUN и
 /// попадает под `final: direct` — цепочки из двух туннелей не выходит, и
 /// задержка меряется настоящая.
-pub fn measure(node: &Value, dir: &Path, target: (&str, u16)) -> io::Result<u32> {
+///
+/// `geo` — спрашивать ли заодно точку выхода. Решает это служба (`PG_GEO`):
+/// адрес наружу один на весь проект, и распоряжаться им должно одно место.
+pub fn measure(node: &Value, dir: &Path, target: (&str, u16), geo: bool) -> io::Result<(u32, Option<String>)> {
     let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, apps: Vec::new() };
     let mut proc = Tunnel::start(&build_config(node, &opts), dir)?;
     let result = probe(opts.socks_port, target);
+    // Пока инстанс жив, страна стоит одного запроса; поднимать ядро второй раз
+    // ради неё дороже самой пробы. Спрашиваем только у ответившего профиля —
+    // через мёртвый некого. Не узнали — не показываем: вердикт профиля решает
+    // задержка, а не страна.
+    let country = match (&result, geo) {
+        (Ok(_), true) => exit_country(opts.socks_port).ok(),
+        _ => None,
+    };
     proc.stop();
     // Оставленный PID — это шанс, что следующий прогон добьёт по
     // переиспользованному номеру чужой процесс, а по имени sing-box проверочного
     // от sing-box живого туннеля не отличить.
     let _ = std::fs::remove_file(dir.join("singbox.pid"));
-    result
+    result.map(|ms| (ms, country))
 }
 
 /// Хост, у которого спрашиваем точку выхода. Единственный внешний адрес,
@@ -542,7 +553,7 @@ mod tests {
     fn measure_fails_on_a_dead_node() {
         let dir = std::env::temp_dir().join("pg-measure-test");
         let dead = json!({ "type": "trojan", "server": "127.0.0.1", "server_port": 1, "password": "p" });
-        assert!(measure(&dead, &dir, ("127.0.0.1", 1)).is_err(), "мёртвый узел обязан стать ошибкой");
+        assert!(measure(&dead, &dir, ("127.0.0.1", 1), false).is_err(), "мёртвый узел обязан стать ошибкой");
         assert_ne!(free_port().unwrap(), 0, "порт должен быть настоящим");
     }
 

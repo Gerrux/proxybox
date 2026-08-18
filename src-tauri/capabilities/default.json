@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Права главного окна. Своя титульная полоса безрамочного окна (`decorations: false`) — перетаскивание за полосу и кнопки свернуть/развернуть/закрыть; в `core:default` этих прав НЕТ, и без них Tauri молча отклоняет вызовы. Больше окну не нужно ничего: со службой оно говорит своими командами `ipc`/`open_url`, а те правами не гейтятся.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized",
+    "core:window:allow-close"
+  ]
+}

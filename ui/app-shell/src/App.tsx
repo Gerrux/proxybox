@@ -6,6 +6,7 @@ import { Journal } from "./Journal";
 import { Profiles } from "./Profiles";
 import { StatusBar } from "./StatusBar";
 import { Updates } from "./Updates";
+import { TitleBar } from "./TitleBar";
 import { Button } from "./ui";
 
 /** Опрос статуса. Служба тикает раз в 3 с, чаще спрашивать нечего. */
@@ -70,37 +71,51 @@ export function App() {
   };
 
   return (
-    <div className="mx-auto flex h-full max-w-5xl flex-col gap-4 overflow-hidden p-5">
-      <StatusBar
-        status={status}
-        busy={busy > 0}
-        onToggle={toggle}
-        onLang={(lang: Lang) => act({ cmd: "set-lang", arg: { lang } })}
-      />
+    <div className="flex h-full flex-col overflow-hidden">
+      <TitleBar title="Privacy Gateway" lang={status?.lang} />
+      {/* Содержимое не растягивается на всю ширину монитора: строки метрик и
+          списков читаются глазом, а не рулеткой. Но и 1024 px на 27" — окно в
+          окне, поэтому широкому экрану даётся третья колонка. */}
+      <div className="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col gap-4 p-5 xl:max-w-[1600px]">
+        <StatusBar
+          status={status}
+          busy={busy > 0}
+          onToggle={toggle}
+          onLang={(lang: Lang) => act({ cmd: "set-lang", arg: { lang } })}
+        />
 
-      {error && (
-        <div className="enter flex shrink-0 items-start gap-3 rounded-xl border border-edge bg-closed-soft px-4 py-3 text-[13px] text-closed">
-          <p className="selectable min-w-0 flex-1">{error}</p>
-          <Button variant="quiet" aria-label={strings(status?.lang).hideMessage} onClick={() => setError(null)}>
-            ✕
-          </Button>
-        </div>
-      )}
+        {error && (
+          <div className="enter flex shrink-0 items-start gap-3 rounded-xl border border-edge bg-closed-soft px-4 py-3 text-[13px] text-closed">
+            <p className="selectable min-w-0 flex-1">{error}</p>
+            <Button variant="quiet" aria-label={strings(status?.lang).hideMessage} onClick={() => setError(null)}>
+              ✕
+            </Button>
+          </div>
+        )}
 
-      {/* Окно 1000×700: две колонки, каждая панель прокручивается сама, страница —
-          никогда. Список приложений после автообнаружения самый длинный, ему и
-          отдана широкая колонка целиком. */}
-      <div className="grid min-h-0 flex-1 gap-4 md:grid-cols-[minmax(240px,0.8fr)_1.2fr]">
-        <div className="flex min-h-0 flex-col gap-4">
-          <Profiles status={status} act={act} busy={busy > 0} className="min-h-0 flex-1" />
-          <Journal lines={status?.log ?? []} lang={status?.lang} className="h-[38%] shrink-0" />
+        {/* Окно 1000×700: две колонки, журнал под профилями. Каждая панель
+            прокручивается сама, страница — никогда. Список приложений после
+            автообнаружения самый длинный, ему и отдана широкая колонка целиком.
+
+            С 1280 px журнал уезжает в свою колонку: до этого он забирал у профилей
+            больше трети высоты, а профилей с парой подписок бывает под сотню. */}
+        <div
+          className="grid min-h-0 flex-1 gap-4 md:grid-cols-[minmax(260px,0.9fr)_1.2fr] md:grid-rows-[1.6fr_1fr]
+                     xl:grid-cols-[minmax(320px,1fr)_1.4fr_minmax(280px,0.9fr)] xl:grid-rows-1"
+        >
+          <Profiles status={status} act={act} busy={busy > 0} className="min-h-0" />
+          <Apps status={status} act={act} className="min-h-0 md:col-start-2 md:row-start-1 md:row-span-2 xl:row-span-1" />
+          <Journal
+            lines={status?.log ?? []}
+            lang={status?.lang}
+            className="min-h-0 md:col-start-1 md:row-start-2 xl:col-start-3 xl:row-start-1"
+          />
         </div>
-        <Apps status={status} act={act} className="min-h-0" />
+
+        {/* Версия и обновления — подвал: смотрят туда раз в месяц, а состояние
+            туннеля видно всё время. */}
+        <Updates lang={status?.lang} />
       </div>
-
-      {/* Версия и обновления — подвал: смотрят туда раз в месяц, а состояние
-          туннеля видно всё время. */}
-      <Updates lang={status?.lang} />
     </div>
   );
 }

@@ -143,7 +143,10 @@ fn main() -> std::process::ExitCode {
             adopt(s.lang);
             for p in &s.probes {
                 let verdict = match (p.latency_ms, &p.error) {
-                    (Some(ms), _) => t(&format!("{ms} мс"), &format!("{ms} ms")),
+                    (Some(ms), _) => match &p.country {
+                        Some(c) => t(&format!("{ms} мс — {c}"), &format!("{ms} ms — {c}")),
+                        None => t(&format!("{ms} мс"), &format!("{ms} ms")),
+                    },
                     (None, Some(e)) => e.clone(),
                     (None, None) => t("не проверен", "not checked"),
                 };

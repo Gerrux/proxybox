@@ -479,15 +479,21 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             // Свой каталог: в общем с туннелем прогон добил бы по singbox.pid
             // ровно тот процесс, который проверяет.
             let probe_dir = dir().join("probe");
+            // Точка выхода — та же третья сторона и тот же выключатель, что у
+            // живого туннеля. Прогон идёт по профилю за раз и по запросу на
+            // профиль: сервис считает флудом десятки запросов в минуту, а
+            // столько подряд у нас и не выходит — каждый профиль стоит секунд.
+            let geo = geo_enabled();
             let probes: Vec<Probe> = profiles
                 .iter()
                 .map(|(name, node)| {
                     let (host, port) = probe_target(node);
-                    let (latency_ms, error) = match core_tunnel::measure(node, &probe_dir, (&host, port)) {
-                        Ok(ms) => (Some(ms), None),
-                        Err(e) => (None, Some(e.to_string())),
-                    };
-                    Probe { name: name.clone(), latency_ms, error }
+                    let (latency_ms, country, error) =
+                        match core_tunnel::measure(node, &probe_dir, (&host, port), geo) {
+                            Ok((ms, country)) => (Some(ms), country, None),
+                            Err(e) => (None, None, Some(e.to_string())),
+                        };
+                    Probe { name: name.clone(), latency_ms, country, error }
                 })
                 .collect();
             let mut s = svc.lock().unwrap();

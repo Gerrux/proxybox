@@ -9,8 +9,9 @@ export type Lang = "ru" | "en";
 
 export type App = { path: string; name: string; enabled: boolean };
 
-/** Итог прогона одного профиля: либо задержка, либо причина отказа. */
-export type Probe = { name: string; latency_ms: number | null; error: string | null };
+/** Итог прогона одного профиля: либо задержка, либо причина отказа. Точку
+ *  выхода прогон спрашивает у ответивших — при `PG_GEO=0` её не будет ни у кого. */
+export type Probe = { name: string; latency_ms: number | null; country: string | null; error: string | null };
 
 export type Status = {
   tunnel: Tunnel;
