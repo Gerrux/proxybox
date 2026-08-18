@@ -217,6 +217,9 @@ fn main() -> std::process::ExitCode {
                 t("в туннеле", "in tunnel"),
                 on
             );
+            if let Some(profile) = &s.browser {
+                println!("{:<11} {profile}", t("браузер:", "browser:"));
+            }
             if let Some(last) = s.log.first() {
                 println!("{:<11} {last}", t("последнее:", "last:"));
             }

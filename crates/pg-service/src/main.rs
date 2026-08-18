@@ -574,7 +574,17 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
     }
     let mut s = lock(svc);
     match req {
-        Request::Status => Response::Status(s.status.clone()),
+        Request::Status => {
+            // Прокси под окно браузера не помнится в статусе, а спрашивается
+            // здесь: процесс мог умереть сам, и запомненное «открыто» пережило
+            // бы его — ровно та же ложь, что и «туннель поднят» после падения.
+            let open = match &mut s.browser {
+                Some((profile, proc)) => proc.alive().then(|| profile.clone()),
+                None => None,
+            };
+            s.status.browser = open;
+            Response::Status(s.status.clone())
+        }
         Request::ListApps => Response::Apps(s.status.apps.clone()),
         Request::Discover { env } => {
             let found = core_apps::discover(&env);

@@ -219,6 +219,11 @@ pub struct Status {
     /// сохраняется на диск: это измерение, а не состояние.
     #[serde(default)]
     pub probes: Vec<Probe>,
+    /// Профиль, под которым сейчас поднят прокси для окна браузера. Мимо
+    /// туннеля и мимо `tunnel`: окно браузера живёт своей жизнью, и узнать о
+    /// нём в интерфейсе больше неоткуда.
+    #[serde(default)]
+    pub browser: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -384,6 +389,7 @@ mod tests {
                 country: Some("Нидерланды, Амстердам".into()),
                 apps: vec![App { path: r"C:\app.exe".into(), name: "app".into(), enabled: true }],
                 profiles: vec!["myvpn".into()],
+                browser: Some("myvpn".into()),
                 probes: vec![Probe {
                     name: "myvpn".into(),
                     latency_ms: Some(42),

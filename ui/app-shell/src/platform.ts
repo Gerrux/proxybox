@@ -28,6 +28,9 @@ export type Status = {
   lang: Lang;
   log: string[];
   probes: Probe[];
+  /** Профиль, под которым сейчас поднят прокси окна браузера; null — окна нет.
+   *  С `tunnel` не связан: браузер ходит своим sing-box мимо общего режима. */
+  browser: string | null;
 };
 
 export type Request =
