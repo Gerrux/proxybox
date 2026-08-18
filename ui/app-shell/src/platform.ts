@@ -1,0 +1,45 @@
+// Единственная точка связи фронтенда со службой — та же core-ipc, что у CLI.
+// ponytail: типы контракта продублированы с Rust вручную. Генератор (ts-rs)
+// оправдан, когда типов станет заметно больше шести.
+import { invoke } from "@tauri-apps/api/core";
+
+export type Tunnel = "off" | "connecting" | "up" | "down";
+
+export type App = { path: string; name: string; enabled: boolean };
+
+export type Status = {
+  tunnel: Tunnel;
+  profile: string | null;
+  latency_ms: number | null;
+  rx: number;
+  tx: number;
+  apps: App[];
+  profiles: string[];
+  log: string[];
+};
+
+export type Request =
+  | { cmd: "status" }
+  | { cmd: "on"; arg: { profile: string } }
+  | { cmd: "off" }
+  | { cmd: "list-apps" }
+  | { cmd: "discover" }
+  | { cmd: "add-app"; arg: { path: string } }
+  | { cmd: "set-app"; arg: { path: string; enabled: boolean } }
+  | { cmd: "add-profile"; arg: { link: string } }
+  | { cmd: "remove-profile"; arg: { name: string } };
+
+export type Response =
+  | { reply: "status"; data: Status }
+  | { reply: "apps"; data: App[] }
+  | { reply: "done" }
+  | { reply: "error"; data: { message: string } };
+
+export const isTauri = () => "__TAURI_INTERNALS__" in window;
+
+export async function call(req: Request): Promise<Response> {
+  if (!isTauri()) {
+    throw new Error("нет связи со службой: откройте десктоп-приложение");
+  }
+  return invoke<Response>("ipc", { req });
+}

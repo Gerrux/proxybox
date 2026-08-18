@@ -1,0 +1,17 @@
+[package]
+name = "pg-service"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+core-ipc.workspace = true
+core-config.workspace = true
+core-apps.workspace = true
+core-tunnel.workspace = true
+core-filter.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8"

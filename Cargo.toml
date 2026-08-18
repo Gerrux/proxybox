@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core-ipc",
+    "crates/core-config",
+    "crates/core-apps",
+    "crates/core-tunnel",
+    "crates/core-filter",
+    "crates/pg-service",
+    "crates/pg-cli",
+]
+exclude = ["src-tauri"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "UNLICENSED"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+core-ipc = { path = "crates/core-ipc" }
+core-config = { path = "crates/core-config" }
+core-apps = { path = "crates/core-apps" }
+core-tunnel = { path = "crates/core-tunnel" }
+core-filter = { path = "crates/core-filter" }
+url = "2"
+base64 = "0.22"
+percent-encoding = "2"

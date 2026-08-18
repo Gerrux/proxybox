@@ -1,0 +1,14 @@
+{
+  "name": "privacy-gateway-ui",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Privacy Gateway — контроль исходящего трафика выбранных приложений, fail-closed",
+  "license": "UNLICENSED",
+  "type": "module",
+  "packageManager": "pnpm@9.15.9",
+  "scripts": {
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "validate": "pnpm lint && pnpm build && cargo test --workspace"
+  }
+}

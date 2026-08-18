@@ -1,0 +1,16 @@
+[package]
+name = "pg-desktop"
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+
+# Отдельный Cargo-проект, не член корневого воркспейса: собирается только на
+# Windows (WebView2), на Linux нет webkit2gtk.
+[workspace]
+
+[build-dependencies]
+tauri-build = "2"
+
+[dependencies]
+core-ipc = { path = "../crates/core-ipc" }
+tauri = "2"

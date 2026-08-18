@@ -1,0 +1,11 @@
+[package]
+name = "core-tunnel"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+
+[dev-dependencies]
+core-config.workspace = true

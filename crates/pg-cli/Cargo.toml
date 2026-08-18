@@ -1,0 +1,13 @@
+[package]
+name = "pg-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "privacy-gateway"
+path = "src/main.rs"
+
+[dependencies]
+core-ipc.workspace = true
+core-tunnel.workspace = true

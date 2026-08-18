@@ -1,0 +1,57 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Privacy Gateway",
+  "version": "0.1.0",
+  "identifier": "ru.privacygateway.desktop",
+  "build": {
+    "frontendDist": "../ui/app-shell/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "pnpm --filter app-shell dev",
+    "beforeBuildCommand": "pnpm --filter app-shell build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Privacy Gateway",
+        "width": 1000,
+        "height": 700
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.ico"
+    ],
+    "category": "Utility",
+    "shortDescription": "Выбранные приложения — только через туннель",
+    "longDescription": "Контроль исходящего трафика: выбранные приложения ходят в сеть только через туннель пользователя, а без туннеля не ходят вовсе.",
+    "publisher": "Privacy Gateway",
+    "externalBin": [
+      "binaries/pg-service",
+      "binaries/privacy-gateway",
+      "binaries/sing-box"
+    ],
+    "resources": [
+      "binaries/LICENSE-sing-box.txt"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "../installer/hooks.nsh",
+        "languages": [
+          "Russian",
+          "English"
+        ]
+      }
+    }
+  }
+}

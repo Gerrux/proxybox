@@ -1,0 +1,7 @@
+packages:
+  - "ui/app-shell"
+  - "ui/modules/*"
+  - "ui/packages/*"
+
+onlyBuiltDependencies:
+  - esbuild

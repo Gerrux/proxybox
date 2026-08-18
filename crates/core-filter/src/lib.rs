@@ -1,0 +1,117 @@
+//! Страховка fail-closed на те моменты, когда sing-box не работает.
+//!
+//! Пока туннель поднят, маршрутизацию выбранных приложений держит сам sing-box
+//! (TUN + правила по `process_path`). Но между падением процесса и его
+//! перезапуском TUN исчезает, и выбранные приложения ушли бы напрямую — вот на
+//! это окно и ставится блокирующее правило брандмауэра Windows.
+//!
+//! ponytail: правила ставятся через `netsh advfirewall` — это тот же WFP, только
+//! без драйвера, подписи и unsafe-FFI. Окно утечки — время между смертью
+//! процесса и постановкой правил (проверка раз в PROBE_EVERY). Собственный
+//! WFP-фильтр в ядре службы закрыл бы и его, но это драйвер и подпись.
+
+use std::io;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Policy {
+    /// Приватный режим выключен — приложение ходит как обычно.
+    Direct,
+    /// Туннель поднят — трафик уходит в него.
+    Tunnel,
+    /// Приватный режим включён, туннеля нет — сети нет.
+    Drop,
+}
+
+/// Единственное место, где решается судьба выбранных приложений.
+pub fn policy(private_mode: bool, tunnel_up: bool) -> Policy {
+    match (private_mode, tunnel_up) {
+        (false, _) => Policy::Direct,
+        (true, true) => Policy::Tunnel,
+        (true, false) => Policy::Drop,
+    }
+}
+
+fn rule_name(path: &str) -> String {
+    format!("Privacy Gateway: {path}")
+}
+
+fn add_args(path: &str) -> Vec<String> {
+    vec![
+        "advfirewall".into(),
+        "firewall".into(),
+        "add".into(),
+        "rule".into(),
+        format!("name={}", rule_name(path)),
+        "dir=out".into(),
+        "action=block".into(),
+        format!("program={path}"),
+        "enable=yes".into(),
+    ]
+}
+
+fn delete_args(path: &str) -> Vec<String> {
+    vec![
+        "advfirewall".into(),
+        "firewall".into(),
+        "delete".into(),
+        "rule".into(),
+        format!("name={}", rule_name(path)),
+    ]
+}
+
+/// Поставить/снять блокировку для списка приложений. Идемпотентна: перед
+/// добавлением правило удаляется, чтобы не плодить дубликаты при рестартах.
+pub fn set_blocked(paths: &[String], blocked: bool) -> io::Result<()> {
+    for path in paths {
+        run(&delete_args(path))?;
+        if blocked {
+            run(&add_args(path))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn run(args: &[String]) -> io::Result<()> {
+    let out = std::process::Command::new("netsh").args(args).output()?;
+    // «Ни одно правило не соответствует» при удалении — не ошибка.
+    if !out.status.success() && args.contains(&"add".to_string()) {
+        return Err(io::Error::other(format!(
+            "netsh {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stdout).trim()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn run(_args: &[String]) -> io::Result<()> {
+    // Брандмауэр есть только на целевой платформе; на разработке — пусто.
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Прямого доступа при включённом приватном режиме не существует.
+    #[test]
+    fn no_direct_while_private() {
+        assert_eq!(policy(false, false), Policy::Direct);
+        assert_eq!(policy(false, true), Policy::Direct);
+        assert_eq!(policy(true, true), Policy::Tunnel);
+        assert_eq!(policy(true, false), Policy::Drop);
+    }
+
+    #[test]
+    fn rules_are_per_app_and_blocking() {
+        let add = add_args(r"C:\Program Files\app.exe");
+        assert!(add.contains(&"action=block".to_string()));
+        assert!(add.contains(&"dir=out".to_string()));
+        assert!(add.contains(&r"program=C:\Program Files\app.exe".to_string()));
+        // Имя правила совпадает у add и delete — иначе снять его нечем.
+        let name = |v: &Vec<String>| v.iter().find(|a| a.starts_with("name=")).unwrap().clone();
+        assert_eq!(name(&add), name(&delete_args(r"C:\Program Files\app.exe")));
+    }
+}
