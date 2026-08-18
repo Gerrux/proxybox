@@ -22,10 +22,11 @@ function bytes(n: number): string {
   return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
 }
 
-/** Число не подменяется, а доезжает до нового значения. Статус приходит раз в
- *  две секунды и приносит сразу десятки килобайт: скачок читается как подмена
- *  цифры, доезд — как измерение. Заодно видно, что счётчик живой, а не замер
- *  вместе со службой. */
+/** Число не подменяется, а доезжает до нового значения: скачок читается как
+ *  подмена цифры, доезд — как измерение, и заодно видно, что счётчик живой, а
+ *  не замер вместе со службой. Доезд стоит покадрового ре-рендера панели,
+ *  поэтому достаётся только задержке — она и меняется на единицы миллисекунд,
+ *  на которых доезд вообще читается. */
 function useCounted(value: number | null): number | null {
   const [shown, setShown] = useState(value);
   const from = useRef(value);
@@ -78,24 +79,31 @@ export function StatusBar({
   onLang: (lang: Lang) => void;
 }) {
   const s = strings(status?.lang);
+  const all = status?.all_traffic ?? false;
   const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
   const latency = useCounted(status?.latency_ms ?? null);
-  const rx = useCounted(status?.rx ?? null);
-  const tx = useCounted(status?.tx ?? null);
+  // Байты не доезжают: между двумя статусами их набегают десятки килобайт, и
+  // доезд читался бы не как измерение, а как перебор случайных цифр. Считать
+  // его было втрое дороже самого дорогого, что делает окно: пока туннель жив,
+  // счётчики меняются с каждым статусом, и панель перерисовывалась покадрово.
+  const rx = status?.rx ?? null;
+  const tx = status?.tx ?? null;
 
   // Служба не отвечает — это единственная настоящая поломка из пяти состояний,
   // и она единственная требует человека. Остальные четыре — работа продукта.
   const view: { state: State; title: string; hint: string } = !status
     ? { state: "fault", title: s.serviceDown, hint: s.serviceDownHint }
     : {
-        off: { state: "off" as const, title: s.off, hint: s.offHint },
-        connecting: { state: "connecting" as const, title: s.connecting, hint: s.connectingHint },
+        // Охват меняет не состояние, а того, о ком оно: подсказка про
+        // «выбранные приложения» при включённом «весь компьютер» была бы враньём.
+        off: { state: "off" as const, title: s.off, hint: all ? s.offHintAll : s.offHint },
+        connecting: { state: "connecting" as const, title: s.connecting, hint: all ? s.connectingHintAll : s.connectingHint },
         up: {
           state: "up" as const,
           title: s.up,
-          hint: inTunnel > 0 ? s.upHint(inTunnel) : s.upNoApps,
+          hint: all ? s.upHintAll : inTunnel > 0 ? s.upHint(inTunnel) : s.upNoApps,
         },
-        down: { state: "down" as const, title: s.down, hint: s.downHint },
+        down: { state: "down" as const, title: s.down, hint: all ? s.downHintAll : s.downHint },
       }[status.tunnel];
 
   const on = status != null && status.tunnel !== "off";
@@ -151,7 +159,7 @@ export function StatusBar({
           штрихи; заперто — он перерублен и стоит. Другого способа показать
           инвариант продукта одной картинкой у нас нет. */}
       <div className="mt-5 flex items-center gap-2.5">
-        <span className="engraved shrink-0 text-muted">{s.conduitFrom}</span>
+        <span className="engraved shrink-0 text-muted">{all ? s.conduitFromAll : s.conduitFrom}</span>
         <span className="conduit-lamp smooth" />
         <span className="conduit-line smooth" />
         <span className="conduit-end smooth" />

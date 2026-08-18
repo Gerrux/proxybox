@@ -21,6 +21,8 @@ export type Status = {
   rx: number;
   tx: number;
   apps: App[];
+  /** Весь трафик машины в туннеле: список `apps` тогда не применяется. */
+  all_traffic: boolean;
   profiles: string[];
   subscriptions: string[];
   lang: Lang;
@@ -33,11 +35,16 @@ export type Request =
   | { cmd: "on"; arg: { profile: string } }
   | { cmd: "off" }
   | { cmd: "list-apps" }
-  | { cmd: "discover" }
+  /** Окружение пользователя подставляет оболочка (src-tauri): фронтенд в
+   *  вебвью, окружения у него нет. В браузере при разработке уходит пустая
+   *  карта — служба тогда перебирает все профили машины. */
+  | { cmd: "discover"; arg: { env: Record<string, string> } }
   | { cmd: "add-app"; arg: { path: string } }
   | { cmd: "icon"; arg: { path: string } }
   | { cmd: "set-app"; arg: { path: string; enabled: boolean } }
   | { cmd: "remove-app"; arg: { path: string } }
+  /** Охват: весь трафик машины либо только выбранные приложения. */
+  | { cmd: "set-all-traffic"; arg: { enabled: boolean } }
   | { cmd: "set-lang"; arg: { lang: Lang } }
   | { cmd: "add-profile"; arg: { link: string } }
   | { cmd: "remove-profile"; arg: { name: string } }
@@ -46,7 +53,9 @@ export type Request =
   | { cmd: "remove-subscription"; arg: { url: string } }
   /** Прогон всех профилей: каждый проверяется отдельным подключением, живой
    *  туннель при этом не трогается. */
-  | { cmd: "test-profiles" };
+  | { cmd: "test-profiles" }
+  /** Отдельный прокси под профиль — для окна браузера. Ответ: порт. */
+  | { cmd: "browse"; arg: { profile: string } };
 
 export type Response =
   | { reply: "status"; data: Status }
@@ -54,6 +63,8 @@ export type Response =
   /** PNG в data-URL; null — иконки у файла нет. */
   | { reply: "icon"; data: string | null }
   | { reply: "done" }
+  /** Порт локального прокси, поднятого под профиль. */
+  | { reply: "proxy"; data: { port: number } }
   | { reply: "error"; data: { message: string } };
 
 /** Подставляется сборкой из src-tauri/tauri.conf.json (см. vite.config.ts). */
@@ -71,6 +82,23 @@ export async function openUrl(url: string): Promise<void> {
     return;
   }
   window.open(url, "_blank", "noopener");
+}
+
+/** Вкладка браузера через отдельный туннель профиля: служба поднимает прокси и
+ *  отдаёт порт, браузер запускает оболочка — фронтенд живёт в вебвью, процессов
+ *  ему не завести. */
+export async function browse(profile: string): Promise<void> {
+  const r = await call({ cmd: "browse", arg: { profile } });
+  if (r.reply !== "proxy") {
+    throw new Error(r.reply === "error" ? r.data.message : "служба не вернула порт");
+  }
+  // В браузере при разработке запускать нечем — показываем адрес как есть, он
+  // и есть всё, что нужно: подставить в --proxy-server руками. Текст без слов
+  // намеренно, строки живут в i18n, а тот импортирует типы отсюда.
+  if (!isTauri()) {
+    throw new Error(`socks5://127.0.0.1:${r.data.port}`);
+  }
+  await invoke("open_browser", { port: r.data.port, profile });
 }
 
 export async function call(req: Request): Promise<Response> {

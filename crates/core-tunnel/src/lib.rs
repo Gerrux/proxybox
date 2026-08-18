@@ -6,6 +6,10 @@
 //! маршрутизации по `process_path`. Приложения не из списка уходят в `direct`,
 //! выбранные — только в `proxy`, без запасного маршрута. Это и есть fail-closed:
 //! упал сервер — соединения выбранных приложений просто не устанавливаются.
+//!
+//! Второй охват — `Options::all`: маршрут по умолчанию сам становится `proxy`,
+//! и отбирать некого. Это не «выбрать все приложения» списком: `process_path`
+//! сверяется с путём процесса, а под `final` попадает и то, у чего пути нет.
 
 use core_ipc::t;
 use serde_json::{json, Value};
@@ -31,12 +35,17 @@ pub struct Options {
     /// TUN поднимается только на Windows под службой; в разработке — без него.
     pub tun: bool,
     /// Полные пути к .exe, которым разрешён выход только через туннель.
+    /// В режиме `all` не участвуют: там перехватывать поимённо нечего.
     pub apps: Vec<String>,
+    /// Весь трафик машины в туннель — вместо перехвата по списку приложений.
+    /// Это не «выбрать все»: маршрут по умолчанию просто становится `proxy`,
+    /// и sing-box не сверяет ни одного `process_path`.
+    pub all: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { socks_port: 48292, api_port: 48293, tun: true, apps: Vec::new() }
+        Self { socks_port: 48292, api_port: 48293, tun: true, apps: Vec::new(), all: false }
     }
 }
 
@@ -70,9 +79,14 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
     }
 
     let mut rules = vec![json!({ "inbound": ["local"], "action": "route", "outbound": TAG_PROXY })];
-    if !opts.apps.is_empty() {
+    if !opts.all && !opts.apps.is_empty() {
         rules.push(json!({ "process_path": opts.apps, "action": "route", "outbound": TAG_PROXY }));
     }
+    // Весь компьютер в туннель — это один маршрут по умолчанию, а не список из
+    // всех установленных .exe: правило по `process_path` сверяет каждое
+    // соединение с путём процесса, а `final` не сверяет ничего. Заодно под
+    // туннель попадает и то, у чего пути нет вовсе, — служба, драйвер, DNS.
+    let default_route = if opts.all { TAG_PROXY } else { "direct" };
 
     let mut cfg = json!({
         "log": { "level": "warn" },
@@ -83,7 +97,8 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
         "route": {
             "rules": rules,
             // Всё, что не выбрано, идёт напрямую: чужой трафик мы не трогаем.
-            "final": "direct",
+            // В режиме «весь трафик» невыбранных не бывает.
+            "final": default_route,
             "auto_detect_interface": true,
         },
     });
@@ -258,7 +273,7 @@ fn free_port() -> io::Result<u16> {
 /// `geo` — спрашивать ли заодно точку выхода. Решает это служба (`PG_GEO`):
 /// адрес наружу один на весь проект, и распоряжаться им должно одно место.
 pub fn measure(node: &Value, dir: &Path, target: (&str, u16), geo: bool) -> io::Result<(u32, Option<String>)> {
-    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, apps: Vec::new() };
+    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, apps: Vec::new(), all: false };
     let mut proc = Tunnel::start(&build_config(node, &opts), dir)?;
     let result = probe(opts.socks_port, target);
     // Пока инстанс жив, страна стоит одного запроса; поднимать ядро второй раз
@@ -275,6 +290,29 @@ pub fn measure(node: &Value, dir: &Path, target: (&str, u16), geo: bool) -> io::
     // от sing-box живого туннеля не отличить.
     let _ = std::fs::remove_file(dir.join("singbox.pid"));
     result.map(|ms| (ms, country))
+}
+
+/// Инстанс под одно окно браузера: свой sing-box, свои порты, свой каталог.
+/// Возвращается он живым — гасить его решает служба, а не мы.
+///
+/// TUN здесь не просто не нужен, а вреден: второй TUN с `auto_route` и
+/// `strict_route` перехватил бы и исходящее соединение основного sing-box —
+/// туннели выстроились бы в цепочку, и к задержке добавился бы целый RTT до
+/// чужого сервера. TUN держит ровно один инстанс, общий режим.
+///
+/// Правил по `process_path` тоже нет: кто хочет в этот туннель, тот и указывает
+/// прокси (`--proxy-server=socks5://127.0.0.1:<порт>`). Остального трафика
+/// машины этот инстанс не касается вообще, а умрёт — браузер просто останется
+/// без сети: прокси откажет, и мимо туннеля не уйдёт ничего.
+///
+/// Каталог свой по той же причине, что у прогона: `Tunnel::start` добивает
+/// процесс из `singbox.pid`, и общий каталог означал бы, что окно браузера
+/// гасит основной туннель.
+pub fn sidecar(node: &Value, dir: &Path) -> io::Result<Tunnel> {
+    // `all` тут бессмысленно: маршрута по умолчанию у инстанса без TUN нет,
+    // в туннель идёт только тот, кто сам пришёл на его порт.
+    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, apps: Vec::new(), all: false };
+    Tunnel::start(&build_config(node, &opts), dir)
 }
 
 /// Хост, у которого спрашиваем точку выхода. Единственный внешний адрес,
@@ -486,6 +524,19 @@ mod tests {
             "у выбранных приложений не должно быть маршрута мимо туннеля",
         );
         assert_eq!(cfg["outbounds"][0]["tag"], TAG_PROXY);
+    }
+
+    /// «Весь трафик» — не «выбрать все приложения»: правил по пути процесса
+    /// нет вовсе, туннель забирает маршрут по умолчанию.
+    #[test]
+    fn all_traffic_takes_the_default_route() {
+        let cfg = build_config(&node(), &Options { all: true, apps: vec![r"C:\app.exe".into()], ..Default::default() });
+        assert_eq!(cfg["route"]["final"], TAG_PROXY);
+        let rules = cfg["route"]["rules"].as_array().unwrap();
+        assert!(
+            !rules.iter().any(|r| r["process_path"].is_array()),
+            "в режиме «весь трафик» список приложений не попадает в конфиг",
+        );
     }
 
     #[test]

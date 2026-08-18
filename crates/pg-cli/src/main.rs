@@ -18,11 +18,14 @@ const USAGE_RU: &str = "privacy-gateway <команда>
   add-app --path <exe>   добавить приложение по пути к .exe
   enable --path <exe>    пустить приложение в туннель
   disable --path <exe>   убрать приложение из-под управления
+  scope apps|all         охват: только выбранные приложения либо весь трафик
   add-profile --link <l> импортировать share-link (vless/vmess/trojan/ss/hy2/wg),
                          JSON-конфиг sing-box или подписку по http(s)-адресу;
                          тот же адрес повторно — обновить подписку
   profiles               список профилей
   test                   прогнать все профили: кто отвечает и за сколько
+  browse --profile <имя> поднять отдельный прокси под этот профиль и напечатать
+                         его адрес: браузер с --proxy-server пойдёт в него
   lang ru|en             язык сообщений службы и окна";
 
 const USAGE_EN: &str = "privacy-gateway <command>
@@ -36,11 +39,14 @@ const USAGE_EN: &str = "privacy-gateway <command>
   add-app --path <exe>   add an app by path to its .exe
   enable --path <exe>    let the app into the tunnel
   disable --path <exe>   take the app out of control
+  scope apps|all         scope: selected apps only or all machine traffic
   add-profile --link <l> import a share-link (vless/vmess/trojan/ss/hy2/wg),
                          a sing-box JSON config or a subscription http(s) URL;
                          the same URL again refreshes the subscription
   profiles               list profiles
   test                   run every profile: who answers and how fast
+  browse --profile <name> bring up a separate proxy for that profile and print
+                         its address: a browser with --proxy-server goes there
   lang ru|en             language of service and window messages";
 
 fn usage() -> String {
@@ -57,7 +63,8 @@ fn parse(args: &[String]) -> Result<Request, String> {
         Some("status") => Ok(Request::Status),
         Some("off") => Ok(Request::Off),
         Some("list-apps") => Ok(Request::ListApps),
-        Some("discover") => Ok(Request::Discover),
+        // Своё окружение CLI знает сам: он работает от имени человека.
+        Some("discover") => Ok(Request::Discover { env: core_ipc::whoami() }),
         Some("on") => flag(args, "--profile")
             .map(|profile| Request::On { profile })
             .ok_or_else(|| t("нужен --profile <имя>", "needs --profile <name>")),
@@ -70,8 +77,16 @@ fn parse(args: &[String]) -> Result<Request, String> {
         Some("add-profile") => flag(args, "--link")
             .map(|link| Request::AddProfile { link })
             .ok_or_else(|| t("нужен --link <share-link>", "needs --link <share-link>")),
+        Some("scope") => match args.get(1).map(String::as_str) {
+            Some("all") => Ok(Request::SetAllTraffic { enabled: true }),
+            Some("apps") => Ok(Request::SetAllTraffic { enabled: false }),
+            _ => Err(t("нужен охват: apps или all", "pick a scope: apps or all")),
+        },
         Some("profiles") => Ok(Request::Status),
         Some("test") => Ok(Request::TestProfiles),
+        Some("browse") => flag(args, "--profile")
+            .map(|profile| Request::Browse { profile })
+            .ok_or_else(|| t("нужен --profile <имя>", "needs --profile <name>")),
         Some("lang") => match args.get(1).map(String::as_str) {
             Some("ru") => Ok(Request::SetLang { lang: core_ipc::Lang::Ru }),
             Some("en") => Ok(Request::SetLang { lang: core_ipc::Lang::En }),
@@ -133,6 +148,11 @@ fn main() -> std::process::ExitCode {
         }
         // Иконок CLI не спрашивает — печатать в терминал нечего.
         Ok(Response::Done | Response::Icon(_)) => std::process::ExitCode::SUCCESS,
+        // Адрес целиком: его вставляют в --proxy-server как есть.
+        Ok(Response::Proxy { port }) => {
+            println!("socks5://127.0.0.1:{port}");
+            std::process::ExitCode::SUCCESS
+        }
         Ok(Response::Apps(apps)) => {
             for a in apps {
                 println!("[{}] {} — {}", if a.enabled { "x" } else { " " }, a.name, a.path);
@@ -179,6 +199,14 @@ fn main() -> std::process::ExitCode {
             };
             let on = s.apps.iter().filter(|a| a.enabled).count();
             println!("{:<11} {state}", t("туннель:", "tunnel:"));
+            println!(
+                "{:<11} {}",
+                t("охват:", "scope:"),
+                match s.all_traffic {
+                    true => t("весь трафик компьютера", "all computer traffic"),
+                    false => t("выбранные приложения", "selected apps"),
+                }
+            );
             println!("{:<11} {}", t("профиль:", "profile:"), s.profile.unwrap_or_else(|| "—".into()));
             println!("{:<11} {}", t("страна:", "exit:"), s.country.unwrap_or_else(|| "—".into()));
             println!("{:<11} ↓{} ↑{} {}", t("трафик:", "traffic:"), s.rx, s.tx, t("байт", "bytes"));

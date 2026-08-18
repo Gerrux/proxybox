@@ -13,4 +13,7 @@ tauri-build = "2"
 
 [dependencies]
 core-ipc = { path = "../crates/core-ipc" }
+# Только ради поиска браузера для «открыть вкладку через профиль»: где что
+# установлено, знает каталог core-apps, а не оболочка.
+core-apps = { path = "../crates/core-apps" }
 tauri = "2"

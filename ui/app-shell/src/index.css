@@ -51,6 +51,17 @@ body {
   user-select: none;
 }
 
+/* Заставка до первого рендера. Живёт в общем файле стилей, а не в теге
+   <style>: инлайновые стили запрещены CSP окна. */
+.boot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  block-size: 100%;
+  inline-size: min(260px, 60vw);
+  margin-inline: auto;
+}
+
 /* Пути и ссылки — единственное, что осмысленно выделять и копировать. */
 .selectable {
   user-select: text;
@@ -124,17 +135,29 @@ body {
 }
 
 /* Поток: штрихи, уходящие вправо. Края растворяются, чтобы движение не
-   упиралось в лампу и в терминал. */
+   упиралось в лампу и в терминал.
+
+   Маска висит на самом канале, а не на штрихах: двигаются именно штрихи, и
+   уехавшая вместе с ними маска пульсировала бы краями. `no-repeat` тут
+   обязателен — по умолчанию маска замостила бы себя и проявила тот запас
+   узора, который уходит за левый край. */
+[data-state="up"] .conduit-line,
+[data-state="connecting"] .conduit-line {
+  mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
+  mask-repeat: no-repeat;
+}
+
 [data-state="up"] .conduit-line::after,
 [data-state="connecting"] .conduit-line::after {
   content: "";
   position: absolute;
-  inset-inline: 0;
+  /* Запас слева ровно в один период узора: штрихи уезжают вправо на 26px, и
+     место, откуда они ушли, всё это время занято. */
+  inset-inline: -26px 0;
   top: 50%;
   height: 2px;
   translate: 0 -50%;
   background: repeating-linear-gradient(90deg, currentColor 0 10px, transparent 10px 26px);
-  mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
 }
 
 /* Подключение — то же движение, но тише: путь ещё не подтверждён. */
@@ -233,9 +256,12 @@ body {
     animation: conduit 3s linear infinite;
   }
 
+  /* Сдвиг, а не background-position: положение фона не композитится, и слой
+     перерисовывался бы все 60 кадров в секунду всё время, пока приватный
+     режим включён. Один период узора — и картинка снова та же. */
   @keyframes conduit {
     to {
-      background-position-x: 26px;
+      translate: 26px -50%;
     }
   }
 
@@ -245,18 +271,22 @@ body {
     content: "";
     position: absolute;
     inset-block: 0;
+    inset-inline-start: 0;
     inline-size: 35%;
     border-radius: inherit;
     background: currentColor;
     animation: creep 1.2s ease-in-out infinite;
   }
 
+  /* Проценты у translate считаются от самого бегунка (35% полосы): -100% —
+     это край слева за полосой, 285.7% — за правым. Сдвигом, а не краем:
+     inset-inline-start пересчитывает раскладку каждый кадр, сдвиг — нет. */
   @keyframes creep {
     from {
-      inset-inline-start: -35%;
+      translate: -100%;
     }
     to {
-      inset-inline-start: 100%;
+      translate: 285.7%;
     }
   }
 }

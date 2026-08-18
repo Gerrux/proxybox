@@ -26,6 +26,12 @@ const PROBE_EVERY: Duration = Duration::from_secs(3);
 /// в бесконечный поток одинаковых ошибок в журнале.
 const RETRY_BASE: Duration = Duration::from_secs(3);
 const RETRY_MAX: Duration = Duration::from_secs(60);
+/// Как часто служба сама сверяет подписки. Шесть часов — это про списки узлов,
+/// которые панели правят днями, а не минутами; чаще значило бы дёргать чужой
+/// сервер без повода.
+/// ponytail: срок прибит гвоздями и отсчитывается от старта службы — настройка
+/// появится тогда же, когда её будет где показать.
+const REFRESH_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Замок службы, переживающий панику в чужом потоке. Поток обслуживания клиента
 /// вправе упасть — вместе со своим соединением; надзор упасть не вправе. С
@@ -73,6 +79,11 @@ struct Saved {
     /// сети напрямую — ровно то, чего продукт обещает не допускать.
     #[serde(default)]
     private: bool,
+    /// Охват: весь трафик машины вместо списка приложений. Переживает
+    /// перезапуск по той же причине, что и `private`: молча сузить охват после
+    /// перезагрузки значило бы выпустить наружу то, что пользователь закрыл.
+    #[serde(default)]
+    all_traffic: bool,
 }
 
 struct Service {
@@ -86,9 +97,17 @@ struct Service {
     probe_target: (String, u16),
     retry_at: Option<Instant>,
     retry_delay: Duration,
-    /// Что уже применено к брандмауэру. Без этой памяти надзор дёргал бы netsh
-    /// каждые три секунды и засыпал журнал одинаковыми отказами.
-    applied: Option<(bool, Vec<String>)>,
+    /// Что уже применено к брандмауэру: (блокировать, охват «весь трафик»,
+    /// список приложений). Без этой памяти надзор дёргал бы netsh каждые три
+    /// секунды и засыпал журнал одинаковыми отказами.
+    applied: Option<(bool, bool, Vec<String>)>,
+    /// Инстанс под окно браузера: профиль и его процесс. Один на службу —
+    /// ponytail: запуск другого профиля заменяет прошлый, и открытое окно
+    /// остаётся с портом, который больше никто не слушает (браузер покажет
+    /// отказ прокси, наружу не уйдёт ничего). Потолок — одно окно за раз;
+    /// апгрейд — держать карту профиль → процесс и гасить по закрытию браузера,
+    /// а закрытие ещё надо как-то заметить.
+    browser: Option<(String, Process)>,
     /// Номер поколения туннеля: растёт на каждом запуске и на каждом гашении.
     /// Проба идёт без замка и занимает секунды — за это время туннель успевают
     /// перезапустить, а порты у нас постоянные. Номер отличает ответ про
@@ -108,6 +127,7 @@ impl Service {
                 lang: saved.lang,
                 profile: saved.profile,
                 apps: saved.apps,
+                all_traffic: saved.all_traffic,
                 profiles: saved.profiles.keys().cloned().collect(),
                 subscriptions: saved.subscriptions.keys().cloned().collect(),
                 ..Default::default()
@@ -120,6 +140,7 @@ impl Service {
             retry_at: None,
             retry_delay: RETRY_BASE,
             applied: None,
+            browser: None,
             generation: 0,
         }
     }
@@ -134,6 +155,7 @@ impl Service {
             profile: self.status.profile.clone(),
             lang: self.status.lang,
             private: self.private,
+            all_traffic: self.status.all_traffic,
         };
         let _ = std::fs::create_dir_all(dir());
         if let Ok(raw) = serde_json::to_string_pretty(&saved) {
@@ -157,6 +179,10 @@ impl Service {
     /// выключить приватный режим руками, и приложения остаются защищёнными.
     fn forget_profile(&mut self, name: &str) {
         self.profiles.remove(name);
+        // Инстанс под браузер держал бы удалённый узел живым — а его больше нет.
+        if self.browser.as_ref().is_some_and(|(profile, _)| profile == name) {
+            self.browser = None;
+        }
         if self.status.profile.as_deref() == Some(name) {
             self.stop();
             self.status.profile = None;
@@ -167,13 +193,29 @@ impl Service {
         self.status.apps.iter().filter(|a| a.enabled).map(|a| a.path.clone()).collect()
     }
 
-    /// Блокировка выбранных приложений на всё время, пока туннель не подтверждён.
+    /// Блокировка на всё время, пока туннель не подтверждён: выбранных
+    /// приложений — правилами по путям, всей машины — политикой брандмауэра.
+    ///
+    /// Режимы взаимоисключающие, и снимаются оба сразу: смена охвата на ходу
+    /// иначе оставила бы правила прошлого режима висеть — а это либо
+    /// заблокированные навсегда приложения, либо машина без сети.
     fn guard(&mut self, blocked: bool) {
-        let want = (blocked, self.selected());
+        let want = (blocked, self.status.all_traffic, self.selected());
         if self.applied.as_ref() == Some(&want) {
             return;
         }
-        match core_filter::set_blocked(&want.1, blocked) {
+        // Политику брандмауэра трогаем, только пока она может быть нашей: в
+        // охвате «выбранные приложения» настройка машины нас не касается, и
+        // возвращать её в умолчание Windows значило бы стереть чужую. Условие
+        // держится на том, что охват сохраняется на диск: служба, упавшая с
+        // запретом всего исходящего, на следующем старте видит `all_traffic` и
+        // снимает его — сразу, если приватный режим был выключен.
+        let ours = want.1 || self.applied.as_ref().is_some_and(|(blocked, all, _)| *blocked && *all);
+        let outcome = core_filter::set_blocked(&want.2, blocked && !want.1).and_then(|()| match ours {
+            true => core_filter::set_killswitch(blocked && want.1, &core_tunnel::binary()),
+            false => Ok(()),
+        });
+        match outcome {
             Ok(()) => self.applied = Some(want),
             Err(e) => {
                 // Неудачу не запоминаем: на следующей смене состояния попробуем снова.
@@ -197,7 +239,7 @@ impl Service {
         self.tunnel = None; // старый процесс убивается Drop'ом до запуска нового
         self.generation += 1; // всё, что проба знала о прошлом процессе, устарело
 
-        let opts = Options { tun: tun_enabled(), apps: self.selected(), ..Default::default() };
+        let opts = Options { tun: tun_enabled(), apps: self.selected(), all: self.status.all_traffic, ..Default::default() };
         let config = build_config(&node, &opts);
         self.probe_target = probe_target(&node);
         match Process::start(&config, &dir()) {
@@ -207,9 +249,13 @@ impl Service {
                 self.retry_at = None;
                 self.retry_delay = RETRY_BASE;
                 let count = opts.apps.len();
+                let scope = match opts.all {
+                    true => t("весь трафик компьютера", "all computer traffic"),
+                    false => t(&format!("приложений в туннеле: {count}"), &format!("apps in the tunnel: {count}")),
+                };
                 self.log(t(
-                    &format!("профиль «{profile}»: sing-box запущен, приложений в туннеле: {count}"),
-                    &format!("profile \"{profile}\": sing-box started, apps in the tunnel: {count}"),
+                    &format!("профиль «{profile}»: sing-box запущен, {scope}"),
+                    &format!("profile \"{profile}\": sing-box started, {scope}"),
                 ));
                 Ok(())
             }
@@ -239,6 +285,32 @@ impl Service {
         (self.status.rx, self.status.tx) = (0, 0);
         self.guard(false);
         self.log(t("приватный режим выключен: правила сняты", "private mode off: rules removed"));
+    }
+
+    /// Отдельный прокси под окно браузера. Тот же профиль второй раз — тот же
+    /// порт: окно уже открыто, поднимать ему второй sing-box незачем.
+    fn browse(&mut self, profile: &str) -> Result<u16, String> {
+        let node = self
+            .profiles
+            .get(profile)
+            .cloned()
+            .ok_or_else(|| t(&format!("нет профиля «{profile}»"), &format!("no profile \"{profile}\"")))?;
+        if let Some((name, proc)) = &mut self.browser {
+            if name == profile && proc.alive() {
+                return Ok(proc.socks_port);
+            }
+        }
+        // Старый инстанс гасится Drop'ом до запуска нового: каталог и pid у них
+        // общие, и живой предшественник был бы добит уже изнутри Tunnel::start.
+        self.browser = None;
+        let proc = core_tunnel::sidecar(&node, &dir().join("browser")).map_err(|e| e.to_string())?;
+        let port = proc.socks_port;
+        self.log(t(
+            &format!("профиль «{profile}» поднят под браузер: 127.0.0.1:{port}"),
+            &format!("profile \"{profile}\" is up for the browser: 127.0.0.1:{port}"),
+        ));
+        self.browser = Some((profile.to_string(), proc));
+        Ok(port)
     }
 
     /// Перезапуск с новым списком приложений — иначе только что добавленное
@@ -305,15 +377,31 @@ fn probe_target(node: &Value) -> (String, u16) {
     (server.to_string(), u16::try_from(port).unwrap_or(443))
 }
 
-/// Скачивание подписки. Напрямую, а не через туннель: первую подписку
-/// импортируют ровно тогда, когда туннеля ещё нет.
-/// ponytail: если панель заблокирована провайдером, это не поможет — тогда
-/// нужен вариант «качать через уже поднятый туннель» на mixed-порт 48292.
-fn fetch(url: &str) -> Result<String, String> {
+/// Скачивание подписки. Живой туннель используем, если он есть: панель,
+/// закрытую провайдером, напрямую не достать, да и её адрес незачем показывать
+/// провайдеру — это тот же трафик пользователя, что и остальной. Первую
+/// подписку импортируют ровно тогда, когда туннеля ещё нет, поэтому без него
+/// идём напрямую; а не вышло через туннель — пробуем напрямую, потому что отказ
+/// сервера от блокировки здесь ничем не отличается.
+fn fetch(url: &str, via_tunnel: bool) -> Result<String, String> {
+    let direct = || get(url, None);
+    if !via_tunnel {
+        return direct();
+    }
+    // mixed-инбаунд отвечает и на HTTP CONNECT, поэтому socks-фича ureq не нужна.
+    get(url, Some(&format!("http://127.0.0.1:{}", Options::default().socks_port))).or_else(|_| direct())
+}
+
+fn get(url: &str, proxy: Option<&str>) -> Result<String, String> {
     let fail = |e: &dyn std::fmt::Display| {
         t(&format!("подписка не скачалась: {e}"), &format!("subscription download failed: {e}"))
     };
+    let proxy = match proxy.map(ureq::Proxy::new).transpose() {
+        Ok(proxy) => proxy,
+        Err(e) => return Err(fail(&e)),
+    };
     let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(proxy)
         // TLS берём у системы (на Windows это SChannel): корни те же, что у
         // остальных программ на машине, и сборка не тянет за собой C-компилятор
         // ради rustls-ring — с ним `cargo check --target …-msvc` не проходит.
@@ -323,8 +411,9 @@ fn fetch(url: &str) -> Result<String, String> {
         // Глобальный тайм-аут, а не только на соединение: молчащий сервер не
         // должен держать импорт бесконечно.
         .timeout_global(Some(Duration::from_secs(20)))
-        // Панели отдают формат по User-Agent. Своё имя — значит список ссылок,
-        // а не clash-конфиг, которого мы не понимаем.
+        // Панели отдают формат по User-Agent, и на незнакомое имя почти все
+        // выдают список ссылок. Clash-YAML разбирается тоже, так что промах
+        // с форматом здесь больше не отказ импорта.
         .user_agent(concat!("privacy-gateway/", env!("CARGO_PKG_VERSION")))
         .build()
         .into();
@@ -343,10 +432,20 @@ fn free_name(taken: &BTreeMap<String, Value>, want: &str) -> String {
 /// Импорт и обновление подписки — одно и то же действие: скачать и заменить
 /// набор профилей целиком. Узла, которого в подписке больше нет, не должно
 /// остаться и в списке.
-fn subscribe(svc: &Mutex<Service>, url: &str) -> Response {
+///
+/// `scheduled` — сверка по расписанию, а не нажатие. Разница ровно одна: узел,
+/// который из подписки исчез, у человека выключает приватный режим (он видит
+/// это и решает сам), а в фоне — оставляет его включённым без туннеля, то есть
+/// выбранные приложения без сети. Выключить приватный режим за спящего
+/// пользователя значило бы вернуть его приложения в открытую сеть по чужому
+/// решению — панель правит список, а не режим.
+fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Response {
     // Сеть — до захвата замка. Иначе окно на все двадцать секунд перестало бы
     // получать статус, а служба — выглядеть живой.
-    let body = match fetch(url) {
+    // Замок берём на одно поле и сразу отпускаем: знать, жив ли туннель, надо
+    // до сети, а держать состояние на все двадцать секунд запроса — нельзя.
+    let via_tunnel = lock(svc).status.tunnel == TunnelState::Up;
+    let body = match fetch(url, via_tunnel) {
         Ok(body) => body,
         Err(message) => return Response::Error { message },
     };
@@ -363,14 +462,15 @@ fn subscribe(svc: &Mutex<Service>, url: &str) -> Response {
         return Response::Error { message };
     }
 
-    // Обновление подписки заменяет набор целиком, в том числе тот узел, через
-    // который прямо сейчас идёт трафик: forget_profile гасит его и выключает
-    // приватный режим. Для удаления руками это осознанное решение пользователя,
-    // а для плановой сверки списка — нет: узел почти всегда возвращается тем же
-    // именем, и режим обязан вернуться вместе с ним.
-    let was_active = s.status.profile.clone().filter(|_| s.private);
+    // Набор заменяется целиком, но живой туннель на это время не гасится:
+    // между снятыми правилами и поднятым заново sing-box выбранные приложения
+    // ушли бы напрямую — щель узкая, но это ровно та щель, которой продукт не
+    // допускает. Поэтому профили сначала подменяются молча, а судьба активного
+    // узла решается уже по готовому списку.
+    let active = s.status.profile.clone();
+    let before = active.as_ref().and_then(|name| s.profiles.get(name)).cloned();
     for name in s.subscriptions.remove(url).unwrap_or_default() {
-        s.forget_profile(&name);
+        s.profiles.remove(&name);
     }
     let names: Vec<String> = found
         .into_iter()
@@ -385,11 +485,82 @@ fn subscribe(svc: &Mutex<Service>, url: &str) -> Response {
         &format!("subscription updated, nodes — {}", names.len()),
     ));
     s.subscriptions.insert(url.to_string(), names);
+    // Окно браузера могло висеть на узле, которого в подписке больше нет:
+    // держать его живым не за что, ровно как и активный профиль.
+    if s.browser.as_ref().is_some_and(|(name, _)| !s.profiles.contains_key(name)) {
+        s.browser = None;
+    }
     s.save();
-    if let Some(name) = was_active.filter(|n| !s.private && s.profiles.contains_key(n)) {
-        let _ = s.start(&name); // start сам вернёт private и поднимет туннель
+    if let Some(name) = active {
+        let after = s.profiles.get(&name).cloned();
+        if after.is_none() {
+            s.status.profile = None;
+        }
+        match after_refresh(before.as_ref(), after.as_ref(), s.private, scheduled) {
+            Active::Keep => {}
+            // start() сам ставит правила впереди всего, порядок здесь безопасен.
+            Active::Restart => {
+                s.log(t(
+                    &format!("узел «{name}» изменился, туннель перезапускается"),
+                    &format!("node \"{name}\" changed, restarting the tunnel"),
+                ));
+                let _ = s.start(&name);
+            }
+            Active::Stop => s.stop(),
+            Active::Drop => {
+                s.log(t(
+                    &format!("узел «{name}» пропал из подписки: приватный режим оставлен включённым, выбранные приложения без сети"),
+                    &format!("node \"{name}\" is gone from the subscription: private mode left on, selected apps have no network"),
+                ));
+                s.tunnel = None; // надзор увидит отсутствие процесса и заблокирует приложения
+                s.generation += 1;
+                s.save();
+            }
+        }
     }
     Response::Done
+}
+
+/// Судьба активного профиля после того, как подписка заменила набор. Вынесено
+/// из subscribe() ради теста: перепутать здесь ветку — значит вернуть выбранные
+/// приложения в открытую сеть, а это ровно то, чего продукт не допускает.
+#[derive(Debug, PartialEq)]
+enum Active {
+    /// Узел не изменился (или режим и так выключен) — трогать нечего.
+    Keep,
+    /// Узел вернулся с другими параметрами: туннель обязан перечитать конфиг.
+    Restart,
+    /// Узел исчез, и решение принимал человек — гасим и снимаем правила.
+    Stop,
+    /// Узел исчез на фоновой сверке: приватный режим остаётся, туннеля нет,
+    /// выбранные приложения в DROP.
+    Drop,
+}
+
+fn after_refresh(before: Option<&Value>, after: Option<&Value>, private: bool, scheduled: bool) -> Active {
+    match (after, before == after, private, scheduled) {
+        (_, true, _, _) => Active::Keep,
+        (_, _, false, _) => Active::Keep, // приватного режима нет — и рвать нечего
+        (Some(_), ..) => Active::Restart,
+        (None, _, _, true) => Active::Drop,
+        (None, ..) => Active::Stop,
+    }
+}
+
+/// Сверка подписок по расписанию. Отдельным потоком, а не тиком надзора:
+/// запрос к панели длится до двадцати секунд, и на это время присмотр за
+/// туннелем встал бы — окно утечки после падения sing-box выросло бы с трёх
+/// секунд до двадцати с лишним.
+fn refresh_loop(svc: Arc<Mutex<Service>>) {
+    loop {
+        std::thread::sleep(REFRESH_EVERY);
+        let urls: Vec<String> = lock(&svc).subscriptions.keys().cloned().collect();
+        for url in urls {
+            // Ошибку сверки глотаем намеренно: панель бывает недоступна, и
+            // существующие профили в этом случае остаются как есть.
+            let _ = subscribe(&svc, &url, true);
+        }
+    }
 }
 
 fn handle(svc: &Mutex<Service>, req: Request) -> Response {
@@ -398,15 +569,15 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
     if let Request::AddProfile { link } = &req {
         let link = link.trim();
         if link.starts_with("http://") || link.starts_with("https://") {
-            return subscribe(svc, link);
+            return subscribe(svc, link, false);
         }
     }
     let mut s = lock(svc);
     match req {
         Request::Status => Response::Status(s.status.clone()),
         Request::ListApps => Response::Apps(s.status.apps.clone()),
-        Request::Discover => {
-            let found = core_apps::discover();
+        Request::Discover { env } => {
+            let found = core_apps::discover(&env);
             let added: Vec<App> = found
                 .into_iter()
                 .filter(|f| !s.status.apps.iter().any(|a| a.path == f.path))
@@ -433,6 +604,22 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                     .to_string();
                 s.status.apps.push(App { path, name, enabled: true });
                 s.save();
+                s.reapply();
+            }
+            Response::Done
+        }
+        Request::SetAllTraffic { enabled } => {
+            if s.status.all_traffic != enabled {
+                s.status.all_traffic = enabled;
+                s.log(match enabled {
+                    true => t("охват: весь трафик компьютера", "scope: all computer traffic"),
+                    false => t("охват: только выбранные приложения", "scope: selected apps only"),
+                });
+                s.save();
+                // Охват живёт в конфиге sing-box (маршрут по умолчанию), а не
+                // только в статусе: без перезапуска трафик пошёл бы по-старому.
+                // Правила прошлого охвата снимет ближайший цикл надзора — при
+                // выключенном приватном режиме блокировать всё равно нечего.
                 s.reapply();
             }
             Response::Done
@@ -507,6 +694,12 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             s.stop();
             Response::Done
         }
+        // Инстанс под браузер живёт отдельно от приватного режима: он ничего не
+        // маршрутизирует сам и не трогает ни правил, ни TUN.
+        Request::Browse { profile } => match s.browse(&profile) {
+            Ok(port) => Response::Proxy { port },
+            Err(message) => Response::Error { message },
+        },
         Request::TestProfiles => {
             // Список снимается под замком, а меряется без него: профиль тратит
             // до нескольких секунд, а под этим замком стоит весь GUI.
@@ -692,6 +885,20 @@ mod tests {
         assert_eq!(probe_target(&wg), ("b.com".to_string(), 51820));
     }
 
+    /// Фоновая сверка подписки не вправе выключить приватный режим: панель
+    /// правит список узлов, а не решение пользователя про его приложения.
+    #[test]
+    fn scheduled_refresh_never_opens_the_apps() {
+        let (old, new) = (json!({ "server": "a.com" }), json!({ "server": "b.com" }));
+        for scheduled in [true, false] {
+            assert_eq!(after_refresh(Some(&old), Some(&old), true, scheduled), Active::Keep, "узел не менялся");
+            assert_eq!(after_refresh(Some(&old), Some(&new), true, scheduled), Active::Restart, "новый конфиг узла");
+            assert_eq!(after_refresh(Some(&old), None, false, scheduled), Active::Keep, "режим и так выключен");
+        }
+        assert_eq!(after_refresh(Some(&old), None, true, true), Active::Drop, "в фоне режим остаётся, приложения без сети");
+        assert_eq!(after_refresh(Some(&old), None, true, false), Active::Stop, "нажатие человека — он видит, что узла нет");
+    }
+
     /// Перезапуск не должен ни тихо возвращать выбранные приложения в открытую
     /// сеть, ни поднимать туннель после того, как его выключили. Обе половины
     /// в одном тесте: они делят каталог состояния, а тесты идут параллельно.
@@ -707,10 +914,12 @@ mod tests {
         s.profiles.insert("p".into(), json!({ "type": "trojan", "server": "a.com", "server_port": 443 }));
         s.status.profile = Some("p".into());
         s.private = true;
+        s.status.all_traffic = true;
         s.save();
 
         let restored = Service::load();
         assert!(restored.private, "приватный режим обязан пережить перезапуск");
+        assert!(restored.status.all_traffic, "охват тоже: сузить его молча значило бы выпустить трафик наружу");
         assert_eq!(restored.status.profile.as_deref(), Some("p"));
         assert_eq!(restored.status.apps.len(), 1);
         assert_eq!(restored.status.tunnel, TunnelState::Off, "туннель после старта ещё не поднят");
@@ -814,6 +1023,11 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
     let watched = Arc::clone(&svc);
     std::thread::spawn(move || supervise(&watched));
 
+    if std::env::var("PG_REFRESH").as_deref() != Ok("0") {
+        let refreshed = Arc::clone(&svc);
+        std::thread::spawn(move || refresh_loop(refreshed));
+    }
+
     let accepting = Arc::clone(&svc);
     std::thread::spawn(move || loop {
         match listener.accept() {
@@ -829,8 +1043,11 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
     match stop {
         Some(rx) => {
             let _ = rx.recv();
-            // Остановка по команде — гасим туннель и снимаем правила.
-            lock(&svc).stop();
+            // Остановка по команде — гасим туннель и снимаем правила. Инстанс
+            // под браузер тоже наш процесс: сиротой он бы остался жить.
+            let mut s = lock(&svc);
+            s.browser = None;
+            s.stop();
         }
         None => loop {
             std::thread::park();
