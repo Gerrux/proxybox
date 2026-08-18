@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { call, type Lang, type Request, type Status } from "./platform";
+import { browse as openBrowser, call, type Lang, type Request, type Status } from "./platform";
 import { strings } from "./i18n";
 import { Apps } from "./Apps";
 import { Journal } from "./Journal";
@@ -54,6 +54,16 @@ export function App() {
     },
     [send, refresh],
   );
+
+  // Браузер запускает оболочка, а не служба, поэтому это не обычная команда:
+  // ответ со статусом сюда не приходит, и показать нечего, кроме отказа.
+  const browse = useCallback((profile: string) => {
+    setBusy((n) => n + 1);
+    void openBrowser(profile)
+      .then(() => setError(null))
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy((n) => n - 1));
+  }, []);
 
   // Решение принято в момент нажатия, а служба ответит через секунды. Показываем
   // намерение сразу — ближайший статус всё равно перепишет его правдой, и врать
@@ -110,7 +120,7 @@ export function App() {
           className="grid gap-4 md:min-h-0 md:flex-1 md:grid-cols-[minmax(260px,0.9fr)_1.2fr] md:grid-rows-[1.6fr_1fr]
                      xl:grid-cols-[minmax(320px,1fr)_1.4fr_minmax(280px,0.9fr)] xl:grid-rows-1"
         >
-          <Profiles status={status} act={act} busy={busy > 0} className="md:min-h-0" />
+          <Profiles status={status} act={act} browse={browse} busy={busy > 0} className="md:min-h-0" />
           <Apps
             status={status}
             act={act}
