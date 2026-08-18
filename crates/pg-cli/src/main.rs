@@ -62,10 +62,7 @@ fn parse(args: &[String]) -> Result<Request, String> {
         Some("off") => Ok(Request::Off),
         Some("list-apps") => Ok(Request::ListApps),
         // Своё окружение CLI знает сам: он работает от имени человека.
-        Some("discover") => {
-            let (home, path) = core_ipc::whoami();
-            Ok(Request::Discover { home, path })
-        }
+        Some("discover") => Ok(Request::Discover { env: core_ipc::whoami() }),
         Some("on") => flag(args, "--profile")
             .map(|profile| Request::On { profile })
             .ok_or_else(|| t("нужен --profile <имя>", "needs --profile <name>")),

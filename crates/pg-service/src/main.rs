@@ -543,8 +543,8 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
     match req {
         Request::Status => Response::Status(s.status.clone()),
         Request::ListApps => Response::Apps(s.status.apps.clone()),
-        Request::Discover { home, path } => {
-            let found = core_apps::discover(home.as_deref(), path.as_deref());
+        Request::Discover { env } => {
+            let found = core_apps::discover(&env);
             let added: Vec<App> = found
                 .into_iter()
                 .filter(|f| !s.status.apps.iter().any(|a| a.path == f.path))

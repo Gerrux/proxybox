@@ -12,6 +12,7 @@
 mod windows_pipe;
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::net::{TcpListener, TcpStream};
@@ -71,10 +72,24 @@ pub fn t(ru: &str, en: &str) -> String {
 
 /// Окружение пользователя, от имени которого работает клиент, — для `Discover`.
 /// Живёт в контракте, потому что нужно обоим клиентам и означает ровно то, что
-/// написано у команды. `HOME` — для разработки не на Windows.
-pub fn whoami() -> (Option<String>, Option<String>) {
-    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok();
-    (home, std::env::var("PATH").ok())
+/// написано у команды.
+///
+/// Переменные перечислены поимённо, а не отдаются целиком: службе нужны ровно
+/// эти четыре, а всё остальное окружение клиента — не её дело. `HOME` — для
+/// разработки не на Windows.
+pub fn whoami() -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    for name in ["USERPROFILE", "LOCALAPPDATA", "APPDATA", "PATH"] {
+        if let Some(value) = std::env::var(name).ok().filter(|v| !v.is_empty()) {
+            env.insert(name.to_string(), value);
+        }
+    }
+    if !env.contains_key("USERPROFILE") {
+        if let Ok(home) = std::env::var("HOME") {
+            env.insert("USERPROFILE".into(), home);
+        }
+    }
+    env
 }
 
 /// Язык из окружения — для клиентов, которым не у кого спросить (usage, doctor).
@@ -100,15 +115,16 @@ pub enum Request {
     /// Найти установленные приложения по стандартным путям и добавить в список
     /// выключенными: перехватывать что-то без ведома пользователя мы не будем.
     ///
-    /// `home` — профиль того, кто спрашивает (`%USERPROFILE%`), `path` — его же
-    /// `PATH`. Служба работает под LocalSystem: её собственный профиль лежит
-    /// внутри System32, а пользовательская ветка `PATH` (`HKCU\Environment`) в
-    /// её окружение не попадает вовсе. Спросить «кто там на том конце» службе
-    /// нечем — зато клиент работает от имени человека и знает это про себя. Не
-    /// передали — служба перебирает все профили машины и ищет по своему `PATH`,
-    /// как делала раньше: в списке окажутся чужие приложения, а инструмент,
-    /// прописанный только в пользовательском `PATH`, не найдётся.
-    Discover { home: Option<String>, path: Option<String> },
+    /// `env` — окружение того, кто спрашивает (`whoami()`). Служба работает под
+    /// LocalSystem: её собственный `%USERPROFILE%` лежит внутри System32, её
+    /// `%APPDATA%` — там же, а пользовательская ветка `PATH` (`HKCU\Environment`)
+    /// в её окружение не попадает вовсе. Спросить «кто там на том конце» службе
+    /// нечем — зато клиент работает от имени человека и знает это про себя, в
+    /// том числе куда перенесли его AppData групповой политикой.
+    ///
+    /// Пустая карта — старый ответ: перебрать все профили из `ProfileList`,
+    /// считая подкаталоги профиля стандартными, и искать по своему `PATH`.
+    Discover { env: BTreeMap<String, String> },
     AddApp { path: String },
     /// Иконка приложения отдельным запросом, а не полем в `App`: картинки
     /// весят килобайты, а статус окно опрашивает каждые две секунды.
@@ -336,8 +352,8 @@ mod tests {
             Request::AddApp { path: r"C:\app.exe".into() },
             Request::SetApp { path: r"C:\app.exe".into(), enabled: false },
             Request::RemoveApp { path: r"C:\app.exe".into() },
-            Request::Discover { home: Some(r"C:\Users\ilya".into()), path: Some(r"C:\bin;C:\Windows".into()) },
-            Request::Discover { home: None, path: None },
+            Request::Discover { env: BTreeMap::from([("USERPROFILE".into(), r"C:\Users\ilya".into())]) },
+            Request::Discover { env: BTreeMap::new() },
             Request::Icon { path: r"C:\app.exe".into() },
             Request::AddProfile { link: "vless://u@a.com:443".into() },
             Request::RemoveProfile { name: "myvpn".into() },

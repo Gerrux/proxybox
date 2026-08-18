@@ -11,10 +11,7 @@ fn ipc(req: Request) -> Result<Response, String> {
     // его взять неоткуда — он в вебвью, — а служба под LocalSystem видит
     // System32 и системный PATH.
     let req = match req {
-        Request::Discover { .. } => {
-            let (home, path) = core_ipc::whoami();
-            Request::Discover { home, path }
-        }
+        Request::Discover { .. } => Request::Discover { env: core_ipc::whoami() },
         req => req,
     };
     call(&req).map_err(|e| format!("служба недоступна: {e}"))

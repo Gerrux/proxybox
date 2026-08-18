@@ -15,14 +15,14 @@
 //! `%USERPROFILE%` — это профиль SYSTEM внутри System32, `%APPDATA%` и
 //! `%LOCALAPPDATA%` — его же. Раскрывать пользовательские переменные из своего
 //! окружения ей бесполезно: Telegram, Spotify, Claude Code и всё прочее, что
-//! ставится в домашний каталог, лежит не там. Профиль человека и его `PATH`
-//! приходят от клиента — он-то и работает от его имени; своё окружение службы
-//! отвечает только за общесистемное (`%ProgramFiles%`, `%SystemRoot%`). Клиент
-//! ничего не передал — остаётся старый ответ: пройти все профили из
-//! `ProfileList` и поискать по своему `PATH`, потому что спросить больше не у
-//! кого.
+//! ставится в домашний каталог, лежит не там. Окружение человека приходит от
+//! клиента — он-то и работает от его имени; своё окружение службы отвечает
+//! только за общесистемное (`%ProgramFiles%`, `%SystemRoot%`). Клиент ничего не
+//! передал — остаётся старый ответ: пройти все профили из `ProfileList`, считая
+//! их подкаталоги стандартными, потому что спросить больше не у кого.
 
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 const CATALOG: &str = include_str!("../../../resources/apps/catalog.v1.json");
@@ -54,20 +54,20 @@ pub fn catalog() -> Vec<Known> {
 /// Каталог первым: имена там человеческие и выверенные, а реестр только
 /// дополняет. Один и тот же exe из двух источников — одна запись.
 ///
-/// `home` и `path` — окружение спрашивающего (см. `Request::Discover`). Без
-/// профиля в списке на общей машине оказывались бы и чужие приложения: правила
-/// брандмауэра всё равно ставятся по пути, то есть на всю машину, но предлагать
-/// человеку чужой Telegram — не то же самое, что найти его собственный.
-pub fn discover(home: Option<&str>, path: Option<&str>) -> Vec<Found> {
+/// `env` — окружение спрашивающего (см. `Request::Discover`). Без него в списке
+/// на общей машине оказывались бы и чужие приложения: правила брандмауэра всё
+/// равно ставятся по пути, то есть на всю машину, но предлагать человеку чужой
+/// Telegram — не то же самое, что найти его собственный.
+pub fn discover(env: &BTreeMap<String, String>) -> Vec<Found> {
     let catalog = catalog();
-    // Окружение самой службы отвечает за общесистемное: %ProgramFiles% и прочее.
-    let mut found = discover_from(&catalog, &vars(None, path));
-    let profiles = match home {
-        Some(home) => vec![home.to_string()],
-        None => user_profiles(),
-    };
+    // Чего в присланном окружении нет, то возьмётся из окружения службы:
+    // %ProgramFiles% и прочее общесистемное у них и так одно на двоих.
+    let client: Vec<(&str, String)> = env.iter().map(|(name, value)| (name.as_str(), value.clone())).collect();
+    let mut found = discover_from(&catalog, &client);
+    // Клиент представился — чужие профили не наше дело.
+    let profiles = if env.contains_key("USERPROFILE") { Vec::new() } else { user_profiles() };
     for profile in profiles {
-        found.extend(discover_from(&catalog, &vars(Some(&profile), path)));
+        found.extend(discover_from(&catalog, &user_vars(&profile)));
     }
     found.extend(from_registry());
     let mut seen = std::collections::HashSet::new();
@@ -92,23 +92,16 @@ pub fn discover_from(apps: &[Known], vars: &[(&str, String)]) -> Vec<Found> {
         .collect()
 }
 
-/// Переменные каталога, раскрытые в конкретный профиль. Подкаталоги AppData
-/// внутри профиля Windows не переименовывает; перенос папок политикой домена мы
-/// не разбираем — там уже не про поиск exe. `PATH` пользовательский, если
-/// клиент его прислал: своя ветка `HKCU\Environment` службе не видна.
-fn vars(profile: Option<&str>, path: Option<&str>) -> Vec<(&'static str, String)> {
-    let mut vars: Vec<(&'static str, String)> = match profile {
-        Some(profile) => vec![
-            ("USERPROFILE", profile.to_string()),
-            ("LOCALAPPDATA", format!(r"{profile}\AppData\Local")),
-            ("APPDATA", format!(r"{profile}\AppData\Roaming")),
-        ],
-        None => Vec::new(),
-    };
-    if let Some(path) = path {
-        vars.push(("PATH", path.to_string()));
-    }
-    vars
+/// Переменные каталога, собранные из одного лишь пути к профилю, — это ответ
+/// для случая, когда клиент не представился. Подкаталоги AppData считаются
+/// стандартными: куда их перенесла групповая политика, знает только сам
+/// пользователь, и приходит это в `Discover` его окружением.
+fn user_vars(profile: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("USERPROFILE", profile.to_string()),
+        ("LOCALAPPDATA", format!(r"{profile}\AppData\Local")),
+        ("APPDATA", format!(r"{profile}\AppData\Roaming")),
+    ]
 }
 
 /// Профиль живого человека — это SID машины или домена (`S-1-5-21-…`). В
@@ -345,13 +338,23 @@ mod tests {
         assert_eq!(expand("%незакрытая/x", &[]), None);
     }
 
+    /// Окружение клиента, каким его шлёт `core_ipc::whoami()`. Свой крейт ради
+    /// одного теста не подключаем — собираем те же переменные руками.
+    fn core_ipc_env() -> BTreeMap<String, String> {
+        ["USERPROFILE", "HOME", "PATH"]
+            .iter()
+            .filter_map(|name| Some((name.to_string(), std::env::var(name).ok()?)))
+            .map(|(name, value)| (if name == "HOME" { "USERPROFILE".to_string() } else { name }, value))
+            .collect()
+    }
+
     /// Ради этого всё и затевалось: у службы под LocalSystem свой `%USERPROFILE%`,
     /// и он не должен побеждать профиль человека.
     #[test]
     fn profile_vars_win_over_service_environment() {
         std::env::set_var("USERPROFILE", "/системный/профиль");
         std::env::set_var("PG_TEST_ROOT", "/root");
-        let vars = vars(Some("/дом/петя"), None);
+        let vars = user_vars("/дом/петя");
         assert_eq!(expand("%USERPROFILE%/.local/bin/claude.exe", &vars).as_deref(), Some("/дом/петя/.local/bin/claude.exe"));
         // Регистр в каталоге написан по-человечески, в реестре — как попало.
         assert_eq!(expand("%userprofile%/x", &vars).as_deref(), Some("/дом/петя/x"));
@@ -395,7 +398,7 @@ mod tests {
 
         let apps = [Known { name: "Инструмент".into(), paths: vec!["pg-tool.exe".into()] }];
         assert!(discover_from(&apps, &[]).is_empty(), "в PATH службы такого нет");
-        let found = discover_from(&apps, &vars(None, Some(&dir.to_string_lossy())));
+        let found = discover_from(&apps, &[("PATH", dir.to_string_lossy().into_owned())]);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].path.ends_with("pg-tool.exe"));
     }
@@ -411,7 +414,7 @@ mod tests {
 
         let apps = [Known { name: "Claude Code".into(), paths: vec!["%USERPROFILE%/.local/bin/claude.exe".into()] }];
         assert!(discover_from(&apps, &[]).is_empty(), "окружение службы этот exe не видит");
-        let found = discover_from(&apps, &vars(Some(&profile.to_string_lossy()), None));
+        let found = discover_from(&apps, &user_vars(&profile.to_string_lossy()));
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].path.ends_with("claude.exe"));
     }
@@ -470,7 +473,7 @@ mod tests {
     /// Дедуп по пути: каталог и реестр находят одно и то же, в списке это одна строка.
     #[test]
     fn discover_deduplicates_by_path() {
-        let found = discover(std::env::var("HOME").ok().as_deref(), std::env::var("PATH").ok().as_deref());
+        let found = discover(&core_ipc_env());
         let mut paths: Vec<String> = found.iter().map(|f| f.path.to_lowercase()).collect();
         paths.sort();
         let before = paths.len();
