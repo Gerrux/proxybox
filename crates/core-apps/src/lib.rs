@@ -130,7 +130,7 @@ fn user_profiles() -> Vec<String> {
             let raw: String = entry.get_value("ProfileImagePath").ok()?;
             // Внутри бывает %SystemDrive% — это переменная службы, не человека,
             // так что раскрывается своим же окружением.
-            let path = expand(raw.trim(), &[])?;
+            let path = expand(raw.trim(), &[]).map(native)?;
             // Профиль удалённого пользователя остаётся в реестре ещё долго.
             Path::new(&path).is_dir().then_some(path)
         })
@@ -169,6 +169,22 @@ pub fn expand(template: &str, vars: &[(&str, String)]) -> Option<String> {
     Some(out)
 }
 
+/// Разделитель приводится к родному. Реестр не обязан писать путь через `\`:
+/// кроссплатформенные установщики кладут туда `C:/Program Files/...`, и это
+/// такой же валидный путь для самой Windows. Но правило sing-box сравнивает
+/// `process_path` строкой, а реальный процесс всегда приходит с `\` — правило
+/// с чужим разделителем не совпало бы молча, и выбранное приложение ушло бы
+/// мимо туннеля. Нормализуем на выходе из реестра, ближе к правилу поздно.
+#[cfg(windows)]
+fn native(path: String) -> String {
+    path.replace('/', "\\")
+}
+
+#[cfg(not(windows))]
+fn native(path: String) -> String {
+    path
+}
+
 /// Имена переменных в Windows регистронезависимы, и в каталоге они написаны
 /// так, как принято у людей (`%ProgramFiles(x86)%`), а не как в реестре.
 fn var(name: &str, vars: &[(&str, String)]) -> Option<String> {
@@ -204,7 +220,7 @@ fn exe_from_icon_resource(raw: &str) -> Option<String> {
             _ => raw,
         },
     };
-    let path = expand(path.trim(), &[])?;
+    let path = expand(path.trim(), &[]).map(native)?;
     is_exe(&path).then_some(path)
 }
 
@@ -257,7 +273,7 @@ fn from_registry() -> Vec<Found> {
         for key in root.enum_keys().flatten() {
             let Ok(entry) = root.open_subkey_with_flags(&key, KEY_READ) else { continue };
             let Ok(raw) = entry.get_value::<String, _>("") else { continue };
-            let Some(path) = expand(raw.trim().trim_matches('"'), &[]) else { continue };
+            let Some(path) = expand(raw.trim().trim_matches('"'), &[]).map(native) else { continue };
             if is_exe(&path) {
                 // Имени тут нет, есть только `chrome.exe` — сойдёт как запасное:
                 // записи с человеческим именем пришли раньше и выиграют дедуп.
