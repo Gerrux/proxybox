@@ -116,7 +116,7 @@ export function Apps({ status, act, className }: { status: Status | null; act: (
           <Scope all={all} lang={status?.lang} onPick={(enabled) => act({ cmd: "set-all-traffic", arg: { enabled } })} />
           {/* Искать приложения, когда их всё равно не отбирают, незачем. */}
           {!all && (
-            <Button variant="quiet" onClick={() => act({ cmd: "discover" })}>
+            <Button variant="quiet" onClick={() => act({ cmd: "discover", arg: { env: {} } })}>
               {s.discover}
             </Button>
           )}

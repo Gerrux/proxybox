@@ -15,11 +15,14 @@
 //! `%USERPROFILE%` — это профиль SYSTEM внутри System32, `%APPDATA%` и
 //! `%LOCALAPPDATA%` — его же. Раскрывать пользовательские переменные из своего
 //! окружения ей бесполезно: Telegram, Spotify, Claude Code и всё прочее, что
-//! ставится в домашний каталог, лежит не там. Поэтому настоящие профили служба
-//! берёт из `ProfileList` и проходит каталог по каждому — своё окружение
-//! отвечает только за общесистемное (`%ProgramFiles%`, `%SystemRoot%`, PATH).
+//! ставится в домашний каталог, лежит не там. Окружение человека приходит от
+//! клиента — он-то и работает от его имени; своё окружение службы отвечает
+//! только за общесистемное (`%ProgramFiles%`, `%SystemRoot%`). Клиент ничего не
+//! передал — остаётся старый ответ: пройти все профили из `ProfileList`, считая
+//! их подкаталоги стандартными, потому что спросить больше не у кого.
 
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 const CATALOG: &str = include_str!("../../../resources/apps/catalog.v1.json");
@@ -51,17 +54,19 @@ pub fn catalog() -> Vec<Known> {
 /// Каталог первым: имена там человеческие и выверенные, а реестр только
 /// дополняет. Один и тот же exe из двух источников — одна запись.
 ///
-/// ponytail: профили перебираются все, какие есть на машине, — спросить «а кто,
-/// собственно, спрашивает» службе не у кого, да и правила брандмауэра она
-/// ставит по пути, то есть тоже на всю машину. Потолок: на общем компьютере в
-/// списке окажутся и чужие приложения. Апгрейд — клиент (он и работает от имени
-/// пользователя) передаёт свой `%USERPROFILE%` в `Discover`: поле в core-ipc,
-/// правка обоих клиентов и типов во фронтенде.
-pub fn discover() -> Vec<Found> {
+/// `env` — окружение спрашивающего (см. `Request::Discover`). Без него в списке
+/// на общей машине оказывались бы и чужие приложения: правила брандмауэра всё
+/// равно ставятся по пути, то есть на всю машину, но предлагать человеку чужой
+/// Telegram — не то же самое, что найти его собственный.
+pub fn discover(env: &BTreeMap<String, String>) -> Vec<Found> {
     let catalog = catalog();
-    // Окружение самой службы отвечает за общесистемное: %ProgramFiles%, PATH.
-    let mut found = discover_from(&catalog, &[]);
-    for profile in user_profiles() {
+    // Чего в присланном окружении нет, то возьмётся из окружения службы:
+    // %ProgramFiles% и прочее общесистемное у них и так одно на двоих.
+    let client: Vec<(&str, String)> = env.iter().map(|(name, value)| (name.as_str(), value.clone())).collect();
+    let mut found = discover_from(&catalog, &client);
+    // Клиент представился — чужие профили не наше дело.
+    let profiles = if env.contains_key("USERPROFILE") { Vec::new() } else { user_profiles() };
+    for profile in profiles {
         found.extend(discover_from(&catalog, &user_vars(&profile)));
     }
     found.extend(from_registry());
@@ -73,13 +78,13 @@ pub fn discover() -> Vec<Found> {
 /// `vars` подменяет переменные окружения на время прохода: так один и тот же
 /// каталог раскрывается в профиль каждого пользователя по очереди.
 pub fn discover_from(apps: &[Known], vars: &[(&str, String)]) -> Vec<Found> {
-    apps.iter()
+        apps.iter()
         .filter_map(|app| {
             let path = app.paths.iter().find_map(|template| {
                 if template.contains(['\\', '/']) {
                     expand(template, vars).filter(|p| Path::new(p).is_file())
                 } else {
-                    in_path(template)
+                    in_path(template, vars)
                 }
             })?;
             Some(Found { name: app.name.clone(), path })
@@ -87,9 +92,10 @@ pub fn discover_from(apps: &[Known], vars: &[(&str, String)]) -> Vec<Found> {
         .collect()
 }
 
-/// Пользовательские переменные каталога, раскрытые в конкретный профиль.
-/// Подкаталоги AppData внутри профиля Windows не переименовывает; перенос
-/// папок политикой домена мы не разбираем — там уже не про поиск exe.
+/// Переменные каталога, собранные из одного лишь пути к профилю, — это ответ
+/// для случая, когда клиент не представился. Подкаталоги AppData считаются
+/// стандартными: куда их перенесла групповая политика, знает только сам
+/// пользователь, и приходит это в `Discover` его окружением.
 fn user_vars(profile: &str) -> Vec<(&'static str, String)> {
     vec![
         ("USERPROFILE", profile.to_string()),
@@ -136,6 +142,22 @@ fn user_profiles() -> Vec<String> {
         })
         .collect()
 }
+
+/// Первый найденный браузер на Chromium — для кнопки «открыть через профиль».
+/// Порядок предпочтения свой, а не каталожный. Firefox и Tor сюда не годятся:
+/// `--proxy-server` понимают только Chromium-браузеры, у остальных прокси живёт
+/// в настройках профиля.
+///
+/// Ищем в окружении того, кто спрашивает: вызывает это оболочка окна, а она и
+/// работает от имени человека.
+pub fn browser() -> Option<Found> {
+    let found = discover_from(&catalog(), &[]);
+    CHROMIUM.iter().find_map(|name| found.iter().find(|f| f.name == *name).cloned())
+}
+
+/// Имена из каталога, а не пути: пути там уже описаны, и дублировать их значило
+/// бы разъехаться с ними на первом же обновлении каталога.
+const CHROMIUM: [&str; 4] = ["Google Chrome", "Microsoft Edge", "Brave", "Яндекс.Браузер"];
 
 /// Иконка приложения как PNG в data-URL — окно показывает её прямо в `<img>`.
 /// Не Windows, не exe, нет ресурса — `None`, и список обходится без картинки.
@@ -194,8 +216,13 @@ fn var(name: &str, vars: &[(&str, String)]) -> Option<String> {
         .or_else(|| std::env::var(name).ok())
 }
 
-fn in_path(name: &str) -> Option<String> {
-    std::env::split_paths(&std::env::var_os("PATH")?)
+fn in_path(name: &str, vars: &[(&str, String)]) -> Option<String> {
+    // PATH из vars — пользовательский, из окружения — свой, службы.
+    let path = match vars.iter().find(|(key, _)| *key == "PATH") {
+        Some((_, path)) => std::ffi::OsString::from(path),
+        None => std::env::var_os("PATH")?,
+    };
+    std::env::split_paths(&path)
         .map(|dir| dir.join(name))
         .find(|p| p.is_file())
         .map(|p| p.to_string_lossy().into_owned())
@@ -311,6 +338,16 @@ mod tests {
         assert_eq!(expand("%незакрытая/x", &[]), None);
     }
 
+    /// Окружение клиента, каким его шлёт `core_ipc::whoami()`. Свой крейт ради
+    /// одного теста не подключаем — собираем те же переменные руками.
+    fn core_ipc_env() -> BTreeMap<String, String> {
+        ["USERPROFILE", "HOME", "PATH"]
+            .iter()
+            .filter_map(|name| Some((name.to_string(), std::env::var(name).ok()?)))
+            .map(|(name, value)| (if name == "HOME" { "USERPROFILE".to_string() } else { name }, value))
+            .collect()
+    }
+
     /// Ради этого всё и затевалось: у службы под LocalSystem свой `%USERPROFILE%`,
     /// и он не должен побеждать профиль человека.
     #[test]
@@ -339,6 +376,31 @@ mod tests {
         assert!(!is_user_sid("S-1-5-19"), "LOCAL SERVICE");
         assert!(!is_user_sid("S-1-5-20"), "NETWORK SERVICE");
         assert!(!is_user_sid(".DEFAULT"));
+    }
+
+    /// Имена браузеров — единственная связь кода с каталогом по имени: их
+    /// переименование в каталоге кнопку «открыть через профиль» молча сломает.
+    #[test]
+    fn chromium_names_match_the_catalog() {
+        let catalog = catalog();
+        for name in CHROMIUM {
+            assert!(catalog.iter().any(|app| app.name == name), "в каталоге нет «{name}»");
+        }
+    }
+
+    /// Инструмент, прописанный только в пользовательском `PATH` (`HKCU\\Environment`):
+    /// окружение службы его не видит, присланное клиентом — видит.
+    #[test]
+    fn user_path_finds_what_the_service_path_cannot() {
+        let dir = std::env::temp_dir().join("pg-user-path-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pg-tool.exe"), b"").unwrap();
+
+        let apps = [Known { name: "Инструмент".into(), paths: vec!["pg-tool.exe".into()] }];
+        assert!(discover_from(&apps, &[]).is_empty(), "в PATH службы такого нет");
+        let found = discover_from(&apps, &[("PATH", dir.to_string_lossy().into_owned())]);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].path.ends_with("pg-tool.exe"));
     }
 
     /// Приложение из домашнего каталога находится, только если каталог прошли
@@ -411,7 +473,7 @@ mod tests {
     /// Дедуп по пути: каталог и реестр находят одно и то же, в списке это одна строка.
     #[test]
     fn discover_deduplicates_by_path() {
-        let found = discover();
+        let found = discover(&core_ipc_env());
         let mut paths: Vec<String> = found.iter().map(|f| f.path.to_lowercase()).collect();
         paths.sort();
         let before = paths.len();

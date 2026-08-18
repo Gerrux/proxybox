@@ -12,6 +12,7 @@
 mod windows_pipe;
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::net::{TcpListener, TcpStream};
@@ -69,6 +70,28 @@ pub fn t(ru: &str, en: &str) -> String {
     .to_string()
 }
 
+/// Окружение пользователя, от имени которого работает клиент, — для `Discover`.
+/// Живёт в контракте, потому что нужно обоим клиентам и означает ровно то, что
+/// написано у команды.
+///
+/// Переменные перечислены поимённо, а не отдаются целиком: службе нужны ровно
+/// эти четыре, а всё остальное окружение клиента — не её дело. `HOME` — для
+/// разработки не на Windows.
+pub fn whoami() -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    for name in ["USERPROFILE", "LOCALAPPDATA", "APPDATA", "PATH"] {
+        if let Some(value) = std::env::var(name).ok().filter(|v| !v.is_empty()) {
+            env.insert(name.to_string(), value);
+        }
+    }
+    if !env.contains_key("USERPROFILE") {
+        if let Ok(home) = std::env::var("HOME") {
+            env.insert("USERPROFILE".into(), home);
+        }
+    }
+    env
+}
+
 /// Язык из окружения — для клиентов, которым не у кого спросить (usage, doctor).
 pub fn lang_from_env() -> Lang {
     let vars = ["PG_LANG", "LC_ALL", "LC_MESSAGES", "LANG"];
@@ -91,7 +114,17 @@ pub enum Request {
     ListApps,
     /// Найти установленные приложения по стандартным путям и добавить в список
     /// выключенными: перехватывать что-то без ведома пользователя мы не будем.
-    Discover,
+    ///
+    /// `env` — окружение того, кто спрашивает (`whoami()`). Служба работает под
+    /// LocalSystem: её собственный `%USERPROFILE%` лежит внутри System32, её
+    /// `%APPDATA%` — там же, а пользовательская ветка `PATH` (`HKCU\Environment`)
+    /// в её окружение не попадает вовсе. Спросить «кто там на том конце» службе
+    /// нечем — зато клиент работает от имени человека и знает это про себя, в
+    /// том числе куда перенесли его AppData групповой политикой.
+    ///
+    /// Пустая карта — старый ответ: перебрать все профили из `ProfileList`,
+    /// считая подкаталоги профиля стандартными, и искать по своему `PATH`.
+    Discover { env: BTreeMap<String, String> },
     AddApp { path: String },
     /// Иконка приложения отдельным запросом, а не полем в `App`: картинки
     /// весят килобайты, а статус окно опрашивает каждые две секунды.
@@ -115,6 +148,12 @@ pub enum Request {
     /// пробуется. Живой туннель при этом не трогается — прогон ничего не
     /// переключает, только меряет.
     TestProfiles,
+    /// Поднять под профиль отдельный локальный прокси и вернуть его порт
+    /// (`Response::Proxy`). Нужен окну браузера: одна вкладка ходит в выбранный
+    /// туннель мимо общего режима. Живой туннель не трогается — у инстанса свои
+    /// порты, свой каталог и нет TUN. Запускает браузер клиент: служба работает
+    /// в сессии 0, её окна человек не увидит.
+    Browse { profile: String },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,6 +229,8 @@ pub enum Response {
     /// PNG в data-URL; `None` — иконки нет, окно нарисует заглушку.
     Icon(Option<String>),
     Done,
+    /// Локальный порт mixed-прокси, поднятого под профиль (`Browse`).
+    Proxy { port: u16 },
     Error { message: String },
 }
 
@@ -319,7 +360,8 @@ mod tests {
             Request::AddApp { path: r"C:\app.exe".into() },
             Request::SetApp { path: r"C:\app.exe".into(), enabled: false },
             Request::RemoveApp { path: r"C:\app.exe".into() },
-            Request::Discover,
+            Request::Discover { env: BTreeMap::from([("USERPROFILE".into(), r"C:\Users\ilya".into())]) },
+            Request::Discover { env: BTreeMap::new() },
             Request::Icon { path: r"C:\app.exe".into() },
             Request::AddProfile { link: "vless://u@a.com:443".into() },
             Request::RemoveProfile { name: "myvpn".into() },
@@ -327,6 +369,7 @@ mod tests {
             Request::SetAllTraffic { enabled: true },
             Request::SetLang { lang: Lang::En },
             Request::TestProfiles,
+            Request::Browse { profile: "myvpn".into() },
         ];
         for r in reqs {
             let s = serde_json::to_string(&r).unwrap();

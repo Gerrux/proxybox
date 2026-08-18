@@ -27,11 +27,14 @@ function Verdict({ probe, failed }: { probe: Probe | undefined; failed: string }
 export function Profiles({
   status,
   act,
+  browse,
   busy,
   className,
 }: {
   status: Status | null;
   act: (req: Request) => void;
+  /** Вкладка через отдельный туннель этого профиля — мимо общего режима. */
+  browse: (profile: string) => void;
   busy?: boolean;
   className?: string;
 }) {
@@ -161,6 +164,11 @@ export function Profiles({
                       {s.turnOn}
                     </Button>
                   )}
+                  {/* Окно браузера через этот профиль: общий режим не трогается,
+                      трафик вкладки идёт своим sing-box без TUN. */}
+                  <Button variant="quiet" aria-label={s.browseProfile(name)} onClick={() => browse(name)}>
+                    ⧉
+                  </Button>
                   <Button
                     variant="danger"
                     aria-label={s.removeProfile(name)}
