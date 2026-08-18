@@ -49,5 +49,7 @@ function serviceBridge(): Plugin {
 
 export default defineConfig({
   plugins: [react(), tailwindcss(), serviceBridge()],
-  server: { port: 5173, strictPort: true },
+  // Именно 127.0.0.1, а не localhost: на Windows localhost резолвится сначала
+  // в ::1, и Tauri стучится не туда, где слушает vite.
+  server: { host: "127.0.0.1", port: 5173, strictPort: true },
 });

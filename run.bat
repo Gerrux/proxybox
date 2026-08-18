@@ -67,7 +67,7 @@ echo.
 echo [3/3] Что запустить?
 echo ==========================================================
 echo     [1] Служба + окно приложения ^(Tauri dev^)
-echo     [2] Служба + интерфейс в браузере ^(http://localhost:5173^)
+echo     [2] Служба + интерфейс в браузере ^(http://127.0.0.1:5173^)
 echo     [3] Собрать установщик ^(NSIS^)
 echo     [4] Тесты ядра ^(cargo test^)
 echo     [5] Проверка окружения ^(privacy-gateway doctor^)
@@ -110,7 +110,7 @@ goto :end
 call :service
 if errorlevel 1 goto :end
 echo.
-echo Откройте http://localhost:5173/  - дев-сервер сам ходит в службу.
+echo Откройте http://127.0.0.1:5173/  - дев-сервер сам ходит в службу.
 echo Ctrl+C - выход.
 echo.
 call pnpm --filter app-shell dev

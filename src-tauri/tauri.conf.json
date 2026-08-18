@@ -5,7 +5,7 @@
   "identifier": "ru.privacygateway.desktop",
   "build": {
     "frontendDist": "../ui/app-shell/dist",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://127.0.0.1:5173",
     "beforeDevCommand": "pnpm --filter app-shell dev",
     "beforeBuildCommand": "pnpm --filter app-shell build"
   },
@@ -18,7 +18,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'"
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self'",
+      "devCsp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:5173 http://127.0.0.1:5173"
     }
   },
   "bundle": {
