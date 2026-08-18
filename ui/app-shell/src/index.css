@@ -39,3 +39,54 @@ body {
 .selectable {
   user-select: text;
 }
+
+/* Движение. Служба отвечает не мгновенно — перезапуск sing-box держит её мьютекс
+   секундами, — и без анимации любая такая пауза читается как зависшее окно.
+   Всё здесь чистый CSS: анимация не должна ждать ответа службы, иначе она
+   замирает ровно тогда, когда нужна. При prefers-reduced-motion смена состояния
+   снова мгновенная — там движение мешает, а не помогает. */
+@media (prefers-reduced-motion: no-preference) {
+  /* Цвет состояния меняется переходом, а не скачком. */
+  .smooth {
+    transition:
+      background-color 0.35s ease,
+      border-color 0.35s ease,
+      color 0.35s ease;
+  }
+
+  /* Появление узла: и строка списка, и сменившаяся по key надпись состояния.
+     Именно анимация, а не переход, — переход конфликтовал бы со .smooth за
+     свойство transition, а так классы складываются. */
+  .enter,
+  .swap {
+    animation: swap 0.28s ease;
+  }
+
+  @keyframes swap {
+    from {
+      opacity: 0;
+      translate: 0 6px;
+    }
+  }
+
+  /* Бегунок «идёт работа». Прогресса у нас нет и быть не может: служба не
+     рассказывает, сколько ей осталось. Честно показываем только сам факт ожидания. */
+  .bar::after {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    inline-size: 35%;
+    border-radius: inherit;
+    background: currentColor;
+    animation: creep 1.2s ease-in-out infinite;
+  }
+
+  @keyframes creep {
+    from {
+      inset-inline-start: -35%;
+    }
+    to {
+      inset-inline-start: 100%;
+    }
+  }
+}

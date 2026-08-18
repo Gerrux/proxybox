@@ -13,7 +13,10 @@ export function Journal({ lines, lang, className }: { lines: string[]; lang?: La
       ) : (
         <ol className="flex flex-col gap-1 text-[12.5px] text-muted">
           {lines.map((line, i) => (
-            <li key={`${i}-${line}`} className="selectable">
+            // Ключи в журнале сдвигаются при каждой новой строке, поэтому
+            // React пересоздаёт весь список; вплывает только верхняя — она и
+            // есть новость, остальные просто переехали.
+            <li key={`${i}-${line}`} className={i === 0 ? "enter selectable" : "selectable"}>
               {line}
             </li>
           ))}

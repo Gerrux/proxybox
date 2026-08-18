@@ -58,7 +58,10 @@ export function Apps({ status, act, className }: { status: Status | null; act: (
         ) : (
           <ul className="flex flex-col">
             {ordered(apps).map((app) => (
-              <li key={app.path} className="flex items-center gap-3 rounded-lg px-2.5 py-1.5 hover:bg-surface-2">
+              <li
+                key={app.path}
+                className="enter smooth flex items-center gap-3 rounded-lg px-2.5 py-1.5 hover:bg-surface-2"
+              >
                 <input
                   id={app.path}
                   type="checkbox"

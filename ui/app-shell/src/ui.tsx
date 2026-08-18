@@ -16,7 +16,9 @@ export function Panel({
   children: ReactNode;
 }) {
   return (
-    <section className={`flex min-h-0 flex-col overflow-hidden rounded-xl border border-edge bg-surface ${className}`}>
+    <section
+      className={`smooth flex min-h-0 flex-col overflow-hidden rounded-xl border border-edge bg-surface ${className}`}
+    >
       <header className="flex items-center justify-between gap-3 border-b border-edge px-4 py-2.5">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">
           {title}
@@ -41,11 +43,13 @@ export function Button({
   className = "",
   ...props
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: keyof typeof VARIANTS }) {
+  // active:scale-95 — команда уходит в службу и может там задержаться на
+  // секунды, но само нажатие обязано подтвердиться в тот же кадр.
   return (
     <button
       type="button"
       {...props}
-      className={`inline-flex h-8 shrink-0 items-center justify-center whitespace-nowrap rounded-lg border px-3 text-[13px] font-medium transition-colors disabled:opacity-40 ${VARIANTS[variant]} ${className}`}
+      className={`inline-flex h-8 shrink-0 items-center justify-center whitespace-nowrap rounded-lg border px-3 text-[13px] font-medium transition duration-200 active:scale-95 disabled:opacity-40 ${VARIANTS[variant]} ${className}`}
     />
   );
 }
@@ -77,7 +81,7 @@ export function AddField({
         onChange={(e) => setValue(e.target.value)}
         placeholder={placeholder}
         spellCheck={false}
-        className="selectable h-8 min-w-0 flex-1 rounded-lg border border-edge bg-surface-2 px-3 text-[13px] outline-none placeholder:text-muted focus:border-accent"
+        className="selectable h-8 min-w-0 flex-1 rounded-lg border border-edge bg-surface-2 px-3 text-[13px] outline-none transition-colors placeholder:text-muted focus:border-accent"
       />
       <Button type="submit" variant="primary" disabled={!value.trim()}>
         {label}
