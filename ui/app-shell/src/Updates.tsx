@@ -64,15 +64,20 @@ export function Updates({ lang }: { lang?: Lang }) {
   const fresh = latest != null && latest.tag_name.replace(/^v/, "") !== VERSION;
 
   return (
-    <section className="enter shrink-0 rounded-xl border border-edge bg-surface px-4 py-2.5 text-[13px]">
+    <section className="enter shrink-0 rounded-lg border border-edge bg-surface px-4 py-2.5 text-[13px]">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <span className="text-muted">
-          {s.version} <span className="font-medium text-ink">{VERSION}</span>
+        {/* Версия — такое же показание прибора, как задержка и байты: подпись
+            гравированная, число моноширинное. */}
+        <span className="flex items-baseline gap-2">
+          <span className="engraved text-muted">{s.version}</span>
+          <span className="font-mono text-[12px] tabular-nums text-ink">{VERSION}</span>
         </span>
 
         {fresh && <span className="swap font-medium text-accent">{s.updateAvailable(latest.tag_name)}</span>}
         {releases != null && !fresh && <span className="swap text-muted">{s.upToDate}</span>}
-        {error != null && <span className="selectable text-closed">{error}</span>}
+        {/* Не дозвонились до GitHub — это поломка, а не запертый канал:
+            янтарь тут значил бы сработавшую защиту, которой здесь нет. */}
+        {error != null && <span className="selectable text-fault">{error}</span>}
 
         <span className="flex-1" />
 
@@ -95,10 +100,12 @@ export function Updates({ lang }: { lang?: Lang }) {
         <ul className="enter mt-2.5 max-h-40 overflow-y-auto border-t border-edge pt-2">
           {releases.map((r) => (
             <li key={r.tag_name} className="flex items-center gap-3 py-1">
-              <span className={`font-medium ${r.tag_name.replace(/^v/, "") === VERSION ? "text-accent" : ""}`}>
+              <span
+                className={`font-mono text-[12px] tabular-nums ${r.tag_name.replace(/^v/, "") === VERSION ? "text-accent" : ""}`}
+              >
                 {r.tag_name}
               </span>
-              <span className="text-muted">
+              <span className="font-mono text-[11px] text-muted">
                 {r.published_at ? new Date(r.published_at).toLocaleDateString(lang ?? "ru") : ""}
               </span>
               <span className="flex-1" />
