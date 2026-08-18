@@ -132,6 +132,14 @@ goto :end
 
 rem ---------------------------------------------------------------------------
 :tauri_precheck
+rem Tauri проверяет наличие sidecar-бинарников и на dev, не только на сборке.
+powershell -NoProfile -ExecutionPolicy Bypass -File "installer\sidecars.ps1" -Config debug
+if errorlevel 1 (
+  echo.
+  echo  Не удалось подготовить sidecar-бинарники ^(src-tauri\binaries^).
+  echo.
+  exit /b 1
+)
 cargo tauri --version >nul 2>nul
 if errorlevel 1 (
   echo.
