@@ -6,6 +6,7 @@
 //! пока негде, а значит и хранить их в двух видах незачем.
 
 use base64::Engine;
+use core_ipc::t;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use url::Url;
@@ -35,15 +36,15 @@ pub fn parse(link: &str) -> Result<Profile, String> {
         "ss" => shadowsocks(link),
         "hy2" | "hysteria2" => hysteria2(link),
         "wg" | "wireguard" => wireguard(link),
-        "" => Err("не ссылка: нет схемы".into()),
-        s => Err(format!("протокол не поддерживается: {s}")),
+        "" => Err(t("не ссылка: нет схемы", "not a link: no scheme")),
+        s => Err(t(&format!("протокол не поддерживается: {s}"), &format!("unsupported protocol: {s}"))),
     }
 }
 
 /// Конфиг sing-box: либо целиком (берём первый рабочий outbound), либо один
 /// узел объектом. Служебные outbound'ы (direct/block/dns и группы) — не узлы.
 fn from_json(text: &str) -> Result<Profile, String> {
-    let value: Value = serde_json::from_str(text).map_err(|e| format!("не разбирается как JSON: {e}"))?;
+    let value: Value = serde_json::from_str(text).map_err(|e| t(&format!("не разбирается как JSON: {e}"), &format!("not valid JSON: {e}")))?;
     const SERVICE: [&str; 6] = ["direct", "block", "dns", "selector", "urltest", "socks"];
 
     let node = match value.get("outbounds").and_then(Value::as_array) {
@@ -51,12 +52,12 @@ fn from_json(text: &str) -> Result<Profile, String> {
             .iter()
             .find(|o| o["type"].as_str().is_some_and(|t| !SERVICE.contains(&t)))
             .cloned()
-            .ok_or("в конфиге нет ни одного узла — только служебные outbound")?,
+            .ok_or_else(|| t("в конфиге нет ни одного узла — только служебные outbound", "the config has no node, only service outbounds"))?,
         None => value.clone(),
     };
-    let kind = node["type"].as_str().ok_or("в узле нет поля type")?.to_string();
+    let kind = node["type"].as_str().ok_or_else(|| t("в узле нет поля type", "the node has no type field"))?.to_string();
     if node["server"].as_str().is_none() && node["peers"][0]["address"].as_str().is_none() {
-        return Err(format!("в узле {kind} не указан сервер"));
+        return Err(t(&format!("в узле {kind} не указан сервер"), &format!("the {kind} node has no server")));
     }
     let name = match node["tag"].as_str() {
         Some(tag) if !tag.is_empty() && tag != "proxy" => tag.to_string(),
@@ -74,13 +75,13 @@ struct Link {
 
 impl Link {
     fn new(link: &str) -> Result<Self, String> {
-        let url = Url::parse(link).map_err(|e| format!("ссылка не разбирается: {e}"))?;
+        let url = Url::parse(link).map_err(|e| t(&format!("ссылка не разбирается: {e}"), &format!("cannot parse link: {e}")))?;
         let query = url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect();
         Ok(Self { url, query })
     }
 
     fn host(&self) -> Result<String, String> {
-        self.url.host_str().filter(|h| !h.is_empty()).map(str::to_owned).ok_or_else(|| "нет адреса сервера".into())
+        self.url.host_str().filter(|h| !h.is_empty()).map(str::to_owned).ok_or_else(|| t("нет адреса сервера", "no server address"))
     }
 
     fn port(&self, default: u16) -> u16 {
@@ -237,7 +238,7 @@ fn vless(link: &str) -> Result<Profile, String> {
     let l = Link::new(link)?;
     let uuid = l.user();
     if uuid.is_empty() {
-        return Err("нет UUID в ссылке vless".into());
+        return Err(t("нет UUID в ссылке vless", "no UUID in the vless link"));
     }
     let mut node = json!({
         "type": "vless",
@@ -261,7 +262,7 @@ fn trojan(link: &str) -> Result<Profile, String> {
     let l = Link::new(link)?;
     let password = l.user();
     if password.is_empty() {
-        return Err("нет пароля в ссылке trojan".into());
+        return Err(t("нет пароля в ссылке trojan", "no password in the trojan link"));
     }
     let mut node = json!({
         "type": "trojan",
@@ -288,7 +289,7 @@ fn vmess(link: &str) -> Result<Profile, String> {
     };
     let server = str_of("add");
     if server.is_empty() || str_of("id").is_empty() {
-        return Err("в vmess-конфиге нет add или id".into());
+        return Err(t("в vmess-конфиге нет add или id", "the vmess config has no add or id"));
     }
     let mut node = json!({
         "type": "vmess",
@@ -324,7 +325,7 @@ fn vmess_url(link: &str) -> Result<Profile, String> {
     let l = Link::new(link)?;
     let uuid = l.user();
     if uuid.is_empty() {
-        return Err("нет UUID в ссылке vmess".into());
+        return Err(t("нет UUID в ссылке vmess", "no UUID in the vmess link"));
     }
     let mut node = json!({
         "type": "vmess",
@@ -347,20 +348,20 @@ fn shadowsocks(link: &str) -> Result<Profile, String> {
         link.to_string()
     } else {
         let (blob, frag) = body.split_once('#').unwrap_or((body, ""));
-        let decoded = b64_str(blob).ok_or("ссылка ss не разбирается")?;
+        let decoded = b64_str(blob).ok_or_else(|| t("ссылка ss не разбирается", "cannot parse the ss link"))?;
         format!("ss://{decoded}{}{frag}", if frag.is_empty() { "" } else { "#" })
     };
     let l = Link::new(&link)?;
     let (method, password) = match l.url.password() {
         Some(p) => (l.user(), decode(p)),
         None => {
-            let mp = b64_str(l.url.username()).ok_or("в ссылке ss нет method:password")?;
-            let (m, p) = mp.split_once(':').ok_or("в ссылке ss нет method:password")?;
+            let mp = b64_str(l.url.username()).ok_or_else(|| t("в ссылке ss нет method:password", "the ss link has no method:password"))?;
+            let (m, p) = mp.split_once(':').ok_or_else(|| t("в ссылке ss нет method:password", "the ss link has no method:password"))?;
             (m.to_string(), p.to_string())
         }
     };
     if method.is_empty() || password.is_empty() {
-        return Err("в ссылке ss нет method:password".into());
+        return Err(t("в ссылке ss нет method:password", "the ss link has no method:password"));
     }
     let mut node = json!({
         "type": "shadowsocks",
@@ -385,7 +386,7 @@ fn hysteria2(link: &str) -> Result<Profile, String> {
         None => l.user(),
     };
     if password.is_empty() {
-        return Err("нет пароля в ссылке hysteria2".into());
+        return Err(t("нет пароля в ссылке hysteria2", "no password in the hysteria2 link"));
     }
     let mut tls = json!({ "enabled": true, "alpn": ["h3"] });
     if let Some(sni) = l.q("sni") {
@@ -415,7 +416,10 @@ fn wireguard(link: &str) -> Result<Profile, String> {
     let private_key = l.user();
     let peer_key = l.q("publickey").or_else(|| l.q("pbk")).or_else(|| l.q("peer"));
     let (Some(peer_key), false) = (peer_key, private_key.is_empty()) else {
-        return Err("ссылка wg: нужны приватный ключ в userinfo и publickey в запросе".into());
+        return Err(t(
+            "ссылка wg: нужны приватный ключ в userinfo и publickey в запросе",
+            "wg link: needs a private key in userinfo and publickey in the query",
+        ));
     };
     let addresses: Vec<&str> = l.q("address").or_else(|| l.q("ip")).unwrap_or("10.0.0.2/32").split(',').collect();
     let mut peer = json!({

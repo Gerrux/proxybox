@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { call, type App, type Request, type Status } from "./platform";
+import { strings } from "./i18n";
 import { AddField, Button, Empty, Panel } from "./ui";
 
 /** Включённые сверху, дальше по алфавиту: список после автообнаружения длинный,
  *  и важно видеть в первую очередь то, что реально под управлением. */
 function ordered(apps: App[]): App[] {
-  return [...apps].sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.name.localeCompare(b.name, "ru"));
+  return [...apps].sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.name.localeCompare(b.name));
 }
 
 /** Иконки спрашиваются по одной и только раз за путь: в статусе их нет, потому
@@ -30,6 +31,7 @@ function useIcons(apps: App[]): Record<string, string> {
 }
 
 export function Apps({ status, act, className }: { status: Status | null; act: (req: Request) => void; className?: string }) {
+  const s = strings(status?.lang);
   const apps = status?.apps ?? [];
   const on = apps.filter((a) => a.enabled).length;
   const icons = useIcons(apps);
@@ -37,22 +39,22 @@ export function Apps({ status, act, className }: { status: Status | null; act: (
   return (
     <Panel
       className={className}
-      title="Приложения"
-      note={apps.length > 0 && <span className="text-muted">{on} из {apps.length} в туннеле</span>}
+      title={s.apps}
+      note={apps.length > 0 && <span className="text-muted">{s.appsCount(on, apps.length)}</span>}
       action={
         <Button variant="quiet" onClick={() => act({ cmd: "discover" })}>
-          Найти установленные
+          {s.discover}
         </Button>
       }
     >
       <div className="flex flex-col gap-3">
         <AddField
-          placeholder="C:\Program Files\…\app.exe"
-          label="Добавить"
+          placeholder={s.appPlaceholder}
+          label={s.addApp}
           onSubmit={(path) => act({ cmd: "add-app", arg: { path } })}
         />
         {apps.length === 0 ? (
-          <Empty>Список пуст — трафик никого не перехватывается.</Empty>
+          <Empty>{s.noApps}</Empty>
         ) : (
           <ul className="flex flex-col">
             {ordered(apps).map((app) => (
@@ -79,7 +81,7 @@ export function Apps({ status, act, className }: { status: Status | null; act: (
                 </label>
                 <Button
                   variant="danger"
-                  aria-label={`Убрать ${app.name}`}
+                  aria-label={s.removeApp(app.name)}
                   onClick={() => act({ cmd: "remove-app", arg: { path: app.path } })}
                 >
                   ✕

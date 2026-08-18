@@ -45,8 +45,17 @@ sc query PrivacyGateway
 
 ## Подпись
 
-Установщик и бинарники не подписаны — SmartScreen будет ругаться. Для выпуска
-нужен сертификат Authenticode: подписать `pg-service.exe`,
-`privacy-gateway.exe`, `Privacy Gateway.exe` перед сборкой бандла и сам
-установщик после. `sing-box.exe` подписан уже (или пересобирается и
-подписывается вами — это GPL-бинарник, менять его вы вправе).
+```powershell
+# отпечаток сертификата в хранилище машины
+Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert | Select-Object Thumbprint, Subject
+pwsh installer\build.ps1 -Thumbprint 0123456789ABCDEF0123456789ABCDEF01234567
+```
+
+Отпечаток передаётся параметром, а не лежит в `tauri.conf.json`: сертификат —
+свойство машины сборки, а не репозитория. `sidecars.ps1` подписывает службу и
+CLI до упаковки, Tauri — окно и сам установщик. Нужен `signtool` из Windows SDK
+в `PATH`.
+
+Без `-Thumbprint` сборка проходит, но SmartScreen предупредит при установке —
+скрипт об этом скажет. `sing-box.exe` подписан своим издателем; пересобирать и
+подписывать его самим вы вправе, это GPL-бинарник.

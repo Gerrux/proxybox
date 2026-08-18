@@ -3,8 +3,10 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import net from "node:net";
 
-/** Порт службы (core_ipc::ADDR). Дублируется здесь только ради разработки. */
+/** Куда стучаться в службу (core_ipc::ADDR и core_ipc::PIPE). Дублируется
+ *  здесь только ради разработки. */
 const SERVICE_PORT = 48291;
+const SERVICE_PIPE = "\\\\.\\pipe\\privacy-gateway";
 
 /**
  * Мост «браузер → служба» для разработки. Служба говорит построчным JSON по
@@ -25,8 +27,10 @@ function serviceBridge(): Plugin {
         };
         let body = "";
         req.on("data", (chunk) => (body += chunk));
-        req.on("end", () => {
-          const socket = net.connect(SERVICE_PORT, "127.0.0.1");
+        // На Windows служба слушает именованный канал; сокет остаётся запасным
+        // вариантом — тем же, на который откатывается сама служба.
+        const ask = (viaPipe: boolean) => {
+          const socket = viaPipe ? net.connect({ path: SERVICE_PIPE }) : net.connect(SERVICE_PORT, "127.0.0.1");
           socket.setTimeout(5000);
           let reply = "";
           socket.on("connect", () => socket.write(`${body.trim()}\n`));
@@ -40,8 +44,9 @@ function serviceBridge(): Plugin {
             }
           });
           socket.on("timeout", () => { socket.destroy(); fail("служба не ответила за 5 с"); });
-          socket.on("error", (e) => fail(`служба недоступна: ${e.message}`));
-        });
+          socket.on("error", (e) => (viaPipe ? ask(false) : fail(`служба недоступна: ${e.message}`)));
+        };
+        req.on("end", () => ask(process.platform === "win32"));
       });
     },
   };

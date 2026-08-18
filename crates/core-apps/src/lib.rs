@@ -107,6 +107,9 @@ fn in_path(name: &str) -> Option<String> {
 /// `C:\p\app.exe,0`, иногда просто `.ico` из кэша установщика. Нас интересует
 /// только тот случай, когда за иконкой стоит настоящий exe: маршрутизация
 /// sing-box работает по `process_path`, у `.ico` перехватывать нечего.
+// Разбор реестровых значений вызывается только на Windows, но тестами покрыт
+// везде — иначе на Linux он числился бы мёртвым кодом.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn exe_from_icon_resource(raw: &str) -> Option<String> {
     let raw = raw.trim();
     let path = match raw.strip_prefix('"') {
@@ -123,6 +126,7 @@ fn exe_from_icon_resource(raw: &str) -> Option<String> {
     is_exe(&path).then_some(path)
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn is_exe(path: &str) -> bool {
     path.len() > 4 && path[path.len() - 4..].eq_ignore_ascii_case(".exe") && Path::new(path).is_file()
 }

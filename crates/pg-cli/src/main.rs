@@ -5,9 +5,9 @@
 #[cfg_attr(not(windows), allow(dead_code))]
 mod doctor;
 
-use core_ipc::{call, Request, Response};
+use core_ipc::{call, t, Request, Response};
 
-const USAGE: &str = "privacy-gateway <команда>
+const USAGE_RU: &str = "privacy-gateway <команда>
 
   status                 состояние туннеля и список приложений
   doctor                 проверка окружения: почему может не работать
@@ -20,7 +20,28 @@ const USAGE: &str = "privacy-gateway <команда>
   disable --path <exe>   убрать приложение из-под управления
   add-profile --link <l> импортировать share-link (vless/vmess/trojan/ss/hy2/wg)
                          или JSON-конфиг sing-box
-  profiles               список профилей";
+  profiles               список профилей
+  lang ru|en             язык сообщений службы и окна";
+
+const USAGE_EN: &str = "privacy-gateway <command>
+
+  status                 tunnel state and app list
+  doctor                 environment check: why it may not work
+  on --profile <name>    turn private mode on
+  off                    turn private mode off
+  list-apps              apps under control
+  discover               find installed apps and add them disabled
+  add-app --path <exe>   add an app by path to its .exe
+  enable --path <exe>    let the app into the tunnel
+  disable --path <exe>   take the app out of control
+  add-profile --link <l> import a share-link (vless/vmess/trojan/ss/hy2/wg)
+                         or a sing-box JSON config
+  profiles               list profiles
+  lang ru|en             language of service and window messages";
+
+fn usage() -> String {
+    t(USAGE_RU, USAGE_EN)
+}
 
 fn flag(args: &[String], name: &str) -> Option<String> {
     let i = args.iter().position(|a| a == name)?;
@@ -35,18 +56,23 @@ fn parse(args: &[String]) -> Result<Request, String> {
         Some("discover") => Ok(Request::Discover),
         Some("on") => flag(args, "--profile")
             .map(|profile| Request::On { profile })
-            .ok_or_else(|| "нужен --profile <имя>".into()),
+            .ok_or_else(|| t("нужен --profile <имя>", "needs --profile <name>")),
         Some("add-app") => flag(args, "--path")
             .map(|path| Request::AddApp { path })
-            .ok_or_else(|| "нужен --path <путь к .exe>".into()),
+            .ok_or_else(|| t("нужен --path <путь к .exe>", "needs --path <path to .exe>")),
         Some(cmd @ ("enable" | "disable")) => flag(args, "--path")
             .map(|path| Request::SetApp { path, enabled: cmd == "enable" })
-            .ok_or_else(|| "нужен --path <путь к .exe>".into()),
+            .ok_or_else(|| t("нужен --path <путь к .exe>", "needs --path <path to .exe>")),
         Some("add-profile") => flag(args, "--link")
             .map(|link| Request::AddProfile { link })
-            .ok_or_else(|| "нужен --link <share-link>".into()),
+            .ok_or_else(|| t("нужен --link <share-link>", "needs --link <share-link>")),
         Some("profiles") => Ok(Request::Status),
-        _ => Err(USAGE.into()),
+        Some("lang") => match args.get(1).map(String::as_str) {
+            Some("ru") => Ok(Request::SetLang { lang: core_ipc::Lang::Ru }),
+            Some("en") => Ok(Request::SetLang { lang: core_ipc::Lang::En }),
+            _ => Err(t("нужен язык: ru или en", "pick a language: ru or en")),
+        },
+        _ => Err(usage()),
     }
 }
 
@@ -64,8 +90,18 @@ fn utf8_console() {
 #[cfg(not(windows))]
 fn utf8_console() {}
 
+/// Язык службы — источник истины для всего, что она прислала. Явный PG_LANG
+/// сильнее: его выставил пользователь именно для этого запуска.
+fn adopt(lang: core_ipc::Lang) {
+    if std::env::var_os("PG_LANG").is_none() {
+        core_ipc::set_lang(lang);
+    }
+}
+
 fn main() -> std::process::ExitCode {
     utf8_console();
+    // Язык клиента: сначала из окружения — статус придёт позже и уточнит его.
+    core_ipc::set_lang(core_ipc::lang_from_env());
     let args: Vec<String> = std::env::args().skip(1).collect();
     // Единственная команда мимо службы: она нужна как раз когда служба молчит.
     if args.first().is_some_and(|a| a == "doctor") {
@@ -83,7 +119,7 @@ fn main() -> std::process::ExitCode {
     };
     match call(&req) {
         Err(e) => {
-            eprintln!("служба недоступна ({e}): запустите pg-service");
+            eprintln!("{}", t(&format!("служба недоступна ({e}): запустите pg-service"), &format!("service unavailable ({e}): start pg-service")));
             std::process::ExitCode::FAILURE
         }
         Ok(Response::Error { message }) => {
@@ -99,24 +135,38 @@ fn main() -> std::process::ExitCode {
             std::process::ExitCode::SUCCESS
         }
         Ok(Response::Status(s)) if args[0] == "profiles" => {
+            adopt(s.lang);
             for p in &s.profiles {
                 println!("{}{p}", if s.profile.as_deref() == Some(p) { "* " } else { "  " });
             }
             std::process::ExitCode::SUCCESS
         }
         Ok(Response::Status(s)) => {
-            println!("туннель:    {}", match s.tunnel {
-                core_ipc::Tunnel::Off => "выключен".to_string(),
-                core_ipc::Tunnel::Connecting => "подключение".to_string(),
-                core_ipc::Tunnel::Up => format!("поднят, {} мс", s.latency_ms.unwrap_or(0)),
-                core_ipc::Tunnel::Down => "недоступен — выбранные приложения без сети".to_string(),
-            });
-            println!("профиль:    {}", s.profile.unwrap_or_else(|| "—".into()));
-            println!("страна:     {}", s.country.unwrap_or_else(|| "—".into()));
-            println!("трафик:     ↓{} ↑{} байт", s.rx, s.tx);
-            println!("приложения: {} (в туннеле {})", s.apps.len(), s.apps.iter().filter(|a| a.enabled).count());
+            adopt(s.lang);
+            let latency = s.latency_ms.unwrap_or(0);
+            let state = match s.tunnel {
+                core_ipc::Tunnel::Off => t("выключен", "off"),
+                core_ipc::Tunnel::Connecting => t("подключение", "connecting"),
+                core_ipc::Tunnel::Up => t(&format!("поднят, {latency} мс"), &format!("up, {latency} ms")),
+                core_ipc::Tunnel::Down => t(
+                    "недоступен — выбранные приложения без сети",
+                    "unavailable — selected apps have no network",
+                ),
+            };
+            let on = s.apps.iter().filter(|a| a.enabled).count();
+            println!("{:<11} {state}", t("туннель:", "tunnel:"));
+            println!("{:<11} {}", t("профиль:", "profile:"), s.profile.unwrap_or_else(|| "—".into()));
+            println!("{:<11} {}", t("страна:", "exit:"), s.country.unwrap_or_else(|| "—".into()));
+            println!("{:<11} ↓{} ↑{} {}", t("трафик:", "traffic:"), s.rx, s.tx, t("байт", "bytes"));
+            println!(
+                "{:<11} {} ({} {})",
+                t("приложения:", "apps:"),
+                s.apps.len(),
+                t("в туннеле", "in tunnel"),
+                on
+            );
             if let Some(last) = s.log.first() {
-                println!("последнее:  {last}");
+                println!("{:<11} {last}", t("последнее:", "last:"));
             }
             std::process::ExitCode::SUCCESS
         }

@@ -8,13 +8,12 @@
 #[cfg(windows)]
 mod service;
 
-use core_ipc::{App, Request, Response, Status, Tunnel as TunnelState, ADDR};
+use core_ipc::{t, App, Endpoint, Listener, Request, Response, Status, Stream, Tunnel as TunnelState, ADDR};
 use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -48,6 +47,8 @@ struct Saved {
     apps: Vec<App>,
     profiles: BTreeMap<String, Value>,
     profile: Option<String>,
+    #[serde(default)]
+    lang: core_ipc::Lang,
     /// Был ли включён приватный режим. Переживает перезапуск намеренно: иначе
     /// после перезагрузки машины выбранные приложения молча оказались бы в
     /// сети напрямую — ровно то, чего продукт обещает не допускать.
@@ -74,8 +75,12 @@ impl Service {
     fn load() -> Self {
         let raw = std::fs::read_to_string(dir().join("state.json")).unwrap_or_default();
         let saved: Saved = serde_json::from_str(&raw).unwrap_or_default();
+        // Язык поднимается до первой строки журнала — иначе стартовые сообщения
+        // выходили бы не на том языке, который выбрал пользователь.
+        core_ipc::set_lang(saved.lang);
         Self {
             status: Status {
+                lang: saved.lang,
                 profile: saved.profile,
                 apps: saved.apps,
                 profiles: saved.profiles.keys().cloned().collect(),
@@ -97,6 +102,7 @@ impl Service {
             apps: self.status.apps.clone(),
             profiles: self.profiles.clone(),
             profile: self.status.profile.clone(),
+            lang: self.status.lang,
             private: self.private,
         };
         let _ = std::fs::create_dir_all(dir());
@@ -131,13 +137,13 @@ impl Service {
             Err(e) => {
                 // Неудачу не запоминаем: на следующей смене состояния попробуем снова.
                 self.applied = None;
-                self.log(format!("правила брандмауэра не поставлены — {e}"));
+                self.log(t(&format!("правила брандмауэра не поставлены — {e}"), &format!("firewall rules not applied — {e}")));
             }
         }
     }
 
     fn start(&mut self, profile: &str) -> Result<(), String> {
-        let node = self.profiles.get(profile).cloned().ok_or_else(|| format!("нет профиля «{profile}»"))?;
+        let node = self.profiles.get(profile).cloned().ok_or_else(|| t(&format!("нет профиля «{profile}»"), &format!("no profile \"{profile}\"")))?;
         self.tunnel = None; // старый процесс убивается Drop'ом до запуска нового
         self.private = true;
         self.status.profile = Some(profile.to_string());
@@ -150,12 +156,16 @@ impl Service {
         let config = build_config(&node, &opts);
         self.probe_target = probe_target(&node);
         match Process::start(&config, &dir()) {
-            Ok(t) => {
-                self.tunnel = Some(t);
+            Ok(process) => {
+                self.tunnel = Some(process);
                 self.status.tunnel = TunnelState::Connecting;
                 self.retry_at = None;
                 self.retry_delay = RETRY_BASE;
-                self.log(format!("профиль «{profile}»: sing-box запущен, приложений в туннеле: {}", opts.apps.len()));
+                let count = opts.apps.len();
+                self.log(t(
+                    &format!("профиль «{profile}»: sing-box запущен, приложений в туннеле: {count}"),
+                    &format!("profile \"{profile}\": sing-box started, apps in the tunnel: {count}"),
+                ));
                 Ok(())
             }
             Err(e) => {
@@ -164,7 +174,10 @@ impl Service {
                 let wait = self.retry_delay.as_secs();
                 self.retry_delay = (self.retry_delay * 2).min(RETRY_MAX);
                 let reason = explain(&e.to_string());
-                self.log(format!("sing-box не запустился: {reason}; следующая попытка через {wait} с"));
+                self.log(t(
+                    &format!("sing-box не запустился: {reason}; следующая попытка через {wait} с"),
+                    &format!("sing-box failed to start: {reason}; retrying in {wait} s"),
+                ));
                 Err(reason)
             }
         }
@@ -179,7 +192,7 @@ impl Service {
         self.status.latency_ms = None;
         (self.status.rx, self.status.tx) = (0, 0);
         self.guard(false);
-        self.log("приватный режим выключен: правила сняты");
+        self.log(t("приватный режим выключен: правила сняты", "private mode off: rules removed"));
     }
 
     /// Перезапуск с новым списком приложений — иначе только что добавленное
@@ -258,8 +271,8 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 .map(|f| App { path: f.path, name: f.name, enabled: false })
                 .collect();
             s.log(match added.len() {
-                0 => "автообнаружение: ничего нового не найдено".to_string(),
-                n => format!("автообнаружение: добавлено приложений — {n}"),
+                0 => t("автообнаружение: ничего нового не найдено", "discovery: nothing new found"),
+                n => t(&format!("автообнаружение: добавлено приложений — {n}"), &format!("discovery: {n} apps added")),
             });
             s.status.apps.extend(added);
             s.save();
@@ -288,7 +301,9 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 s.reapply();
                 Response::Done
             }
-            None => Response::Error { message: format!("приложение не в списке: {path}") },
+            None => Response::Error {
+                message: t(&format!("приложение не в списке: {path}"), &format!("app is not in the list: {path}")),
+            },
         },
         Request::RemoveApp { path } => {
             s.status.apps.retain(|a| a.path != path);
@@ -301,12 +316,20 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
         Request::AddProfile { link } => match core_config::parse(&link) {
             Ok(p) => {
                 s.profiles.insert(p.name.clone(), p.node);
-                s.log(format!("профиль «{}» импортирован", p.name));
+                s.log(t(&format!("профиль «{}» импортирован", p.name), &format!("profile \"{}\" imported", p.name)));
                 s.save();
                 Response::Done
             }
             Err(e) => Response::Error { message: e },
         },
+        Request::SetLang { lang } => {
+            // Язык переключает и журнал службы: сообщения пишет она, а читает
+            // их пользователь в окне.
+            s.status.lang = lang;
+            core_ipc::set_lang(lang);
+            s.save();
+            Response::Done
+        }
         Request::RemoveProfile { name } => {
             s.profiles.remove(&name);
             if s.status.profile.as_deref() == Some(name.as_str()) {
@@ -358,7 +381,10 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             if s.retry_at.is_some_and(|at| Instant::now() < at) {
                 continue; // ждём паузы: отказ повторяется, а не проходит сам
             }
-            s.log("sing-box не работает: выбранные приложения без сети, перезапуск");
+            s.log(t(
+                "sing-box не работает: выбранные приложения без сети, перезапуск",
+                "sing-box is down: selected apps have no network, restarting",
+            ));
             if let Some(profile) = s.status.profile.clone() {
                 let _ = s.start(&profile);
             }
@@ -376,12 +402,15 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
         match result {
             Ok(latency) => {
                 if s.status.tunnel != TunnelState::Up {
-                    s.log(format!("туннель поднят, задержка {latency} мс"));
+                    s.log(t(&format!("туннель поднят, задержка {latency} мс"), &format!("tunnel is up, latency {latency} ms")));
                     // Проверяем именно здесь: чужой туннель не мешает нам
                     // подняться, но может забрать маршруты — и тогда «Защищено»
                     // окажется правдой только про нас, а не про приложения.
                     for name in core_filter::foreign_tunnels() {
-                        s.log(format!("рядом поднят чужой туннель «{name}» — выберите один: маршруты уйдут к тому, кто выиграет"));
+                        s.log(t(
+                            &format!("рядом поднят чужой туннель «{name}» — выберите один: маршруты уйдут к тому, кто выиграет"),
+                            &format!("another tunnel \"{name}\" is up — keep one: routes go to whichever wins"),
+                        ));
                     }
                     s.guard(false); // дальше маршрутизацией занимается сам sing-box
                     just_up = true;
@@ -391,7 +420,10 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             }
             Err(e) => {
                 if s.status.tunnel != TunnelState::Down {
-                    s.log(format!("туннель недоступен ({e}): выбранные приложения без сети"));
+                    s.log(t(
+                        &format!("туннель недоступен ({e}): выбранные приложения без сети"),
+                        &format!("tunnel unavailable ({e}): selected apps have no network"),
+                    ));
                     s.guard(true);
                 }
                 s.status.tunnel = TunnelState::Down;
@@ -413,13 +445,13 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             let mut s = svc.lock().unwrap();
             match found {
                 Ok(country) => {
-                    s.log(format!("точка выхода: {country}"));
+                    s.log(t(&format!("точка выхода: {country}"), &format!("exit point: {country}")));
                     s.status.country = Some(country);
                 }
                 // Страна — украшение статуса; не узнали, значит не показываем.
                 // На fail-closed это не влияет никак.
                 Err(e) => {
-                    s.log(format!("страну выхода узнать не удалось ({e})"));
+                    s.log(t(&format!("страну выхода узнать не удалось ({e})"), &format!("could not determine the exit country ({e})")));
                     s.status.country = None;
                 }
             }
@@ -481,15 +513,17 @@ mod tests {
     }
 }
 
-fn serve(svc: &Mutex<Service>, conn: TcpStream) {
+fn serve(svc: &Mutex<Service>, mut conn: Stream) {
     let Ok(clone) = conn.try_clone() else { return };
     for line in BufReader::new(clone).lines().map_while(Result::ok) {
         let resp = match serde_json::from_str(&line) {
             Ok(req) => handle(svc, req),
-            Err(e) => Response::Error { message: format!("неразбираемый запрос: {e}") },
+            Err(e) => Response::Error {
+                message: t(&format!("неразбираемый запрос: {e}"), &format!("unparsable request: {e}")),
+            },
         };
         let out = serde_json::to_string(&resp).unwrap();
-        if writeln!(&conn, "{out}").is_err() {
+        if writeln!(conn, "{out}").is_err() || conn.flush().is_err() {
             return;
         }
     }
@@ -499,20 +533,41 @@ fn serve(svc: &Mutex<Service>, conn: TcpStream) {
 /// функция не возвращается — работу заканчивает Ctrl+C.
 fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
     let svc = Arc::new(Mutex::new(Service::load()));
-    let listener = TcpListener::bind(ADDR)?;
+    let (listener, endpoint) = Listener::bind()?;
     {
         let mut s = svc.lock().unwrap();
         let (apps, profiles) = (s.status.apps.len(), s.profiles.len());
-        s.log(format!("служба слушает {ADDR}; приложений: {apps}, профилей: {profiles}"));
+        let where_ = match endpoint {
+            Endpoint::Pipe => format!("канал {}", core_ipc::PIPE),
+            Endpoint::Tcp => format!("сокет {ADDR}"),
+        };
+        s.log(t(
+            &format!("служба слушает {where_}; приложений: {apps}, профилей: {profiles}"),
+            &format!("service listening on {where_}; apps: {apps}, profiles: {profiles}"),
+        ));
+        if cfg!(windows) && endpoint == Endpoint::Tcp {
+            // Канал ограничен списком доступа, сокет — нет: управлять службой
+            // сможет любой процесс на машине. Молчать об этом нельзя.
+            s.log(t(
+                "ВНИМАНИЕ: именованный канал не создался, работаем через локальный сокет — доступ к службе не ограничен",
+                "WARNING: the named pipe was not created, falling back to a local socket — access to the service is unrestricted",
+            ));
+        }
         if !elevated() {
-            s.log("ВНИМАНИЕ: служба запущена без прав администратора — TUN и правила брандмауэра работать не будут");
+            s.log(t(
+                "ВНИМАНИЕ: служба запущена без прав администратора — TUN и правила брандмауэра работать не будут",
+                "WARNING: the service is running without administrator rights — TUN and firewall rules will not work",
+            ));
         }
         match (s.private, s.status.profile.clone()) {
             // Приватный режим пережил перезапуск — восстанавливаем его сами.
             // start() сначала блокирует, потом поднимает туннель, поэтому окна
             // прямого доступа между загрузкой системы и туннелем не возникает.
             (true, Some(profile)) => {
-                s.log(format!("приватный режим был включён — восстанавливаю профиль «{profile}»"));
+                s.log(t(
+                    &format!("приватный режим был включён — восстанавливаю профиль «{profile}»"),
+                    &format!("private mode was on — restoring profile \"{profile}\""),
+                ));
                 let _ = s.start(&profile);
             }
             // Служба, убитая прошлый раз, могла оставить блокирующие правила: без
@@ -525,10 +580,14 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
     std::thread::spawn(move || supervise(&watched));
 
     let accepting = Arc::clone(&svc);
-    std::thread::spawn(move || {
-        for conn in listener.incoming().flatten() {
-            let svc = Arc::clone(&accepting);
-            std::thread::spawn(move || serve(&svc, conn));
+    std::thread::spawn(move || loop {
+        match listener.accept() {
+            Ok(conn) => {
+                let svc = Arc::clone(&accepting);
+                std::thread::spawn(move || serve(&svc, conn));
+            }
+            // Отвалившееся соединение не должно останавливать приём следующих.
+            Err(_) => std::thread::sleep(Duration::from_millis(200)),
         }
     });
 

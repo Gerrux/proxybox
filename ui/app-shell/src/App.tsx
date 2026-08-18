@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { call, type Request, type Status } from "./platform";
+import { call, type Lang, type Request, type Status } from "./platform";
+import { strings } from "./i18n";
 import { Apps } from "./Apps";
 import { Journal } from "./Journal";
 import { Profiles } from "./Profiles";
@@ -50,12 +51,12 @@ export function App() {
 
   return (
     <div className="mx-auto flex h-full max-w-5xl flex-col gap-4 overflow-hidden p-5">
-      <StatusBar status={status} onToggle={toggle} />
+      <StatusBar status={status} onToggle={toggle} onLang={(lang: Lang) => act({ cmd: "set-lang", arg: { lang } })} />
 
       {error && (
         <div className="flex shrink-0 items-start gap-3 rounded-xl border border-edge bg-closed-soft px-4 py-3 text-[13px] text-closed">
           <p className="selectable min-w-0 flex-1">{error}</p>
-          <Button variant="quiet" aria-label="Скрыть сообщение" onClick={() => setError(null)}>
+          <Button variant="quiet" aria-label={strings(status?.lang).hideMessage} onClick={() => setError(null)}>
             ✕
           </Button>
         </div>
@@ -67,7 +68,7 @@ export function App() {
       <div className="grid min-h-0 flex-1 gap-4 md:grid-cols-[minmax(240px,0.8fr)_1.2fr]">
         <div className="flex min-h-0 flex-col gap-4">
           <Profiles status={status} act={act} className="min-h-0 flex-1" />
-          <Journal lines={status?.log ?? []} className="h-[38%] shrink-0" />
+          <Journal lines={status?.log ?? []} lang={status?.lang} className="h-[38%] shrink-0" />
         </div>
         <Apps status={status} act={act} className="min-h-0" />
       </div>

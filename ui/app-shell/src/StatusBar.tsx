@@ -1,4 +1,5 @@
-import type { Status } from "./platform";
+import type { Lang, Status } from "./platform";
+import { strings } from "./i18n";
 import { Button } from "./ui";
 
 type Tone = { text: string; soft: string; dot: string };
@@ -11,7 +12,7 @@ const TONES: Record<"open" | "closed" | "wait" | "idle", Tone> = {
 };
 
 function bytes(n: number): string {
-  const units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+  const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   while (n >= 1024 && i < units.length - 1) {
     n /= 1024;
@@ -21,39 +22,25 @@ function bytes(n: number): string {
 }
 
 /** Состояние — главное, что показывает окно, поэтому оно и занимает верх. */
-export function StatusBar({ status, onToggle }: { status: Status | null; onToggle: () => void }) {
+export function StatusBar({
+  status,
+  onToggle,
+  onLang,
+}: {
+  status: Status | null;
+  onToggle: () => void;
+  onLang: (lang: Lang) => void;
+}) {
+  const s = strings(status?.lang);
   const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
 
   const view = !status
-    ? {
-        tone: TONES.closed,
-        title: "Служба не отвечает",
-        hint: "Запустите PrivacyGateway от имени администратора — без службы ничего не работает",
-      }
+    ? { tone: TONES.closed, title: s.serviceDown, hint: s.serviceDownHint }
     : {
-        off: {
-          tone: TONES.idle,
-          title: "Приватный режим выключен",
-          hint: "Выбранные приложения ходят в сеть напрямую",
-        },
-        connecting: {
-          tone: TONES.wait,
-          title: "Подключение…",
-          hint: "Пока туннель не подтверждён, выбранные приложения остаются без сети",
-        },
-        up: {
-          tone: TONES.open,
-          title: "Защищено",
-          hint:
-            inTunnel > 0
-              ? `${inTunnel} прил. идут только через туннель, остальной трафик не тронут`
-              : "Туннель поднят, но ни одно приложение не выбрано",
-        },
-        down: {
-          tone: TONES.closed,
-          title: "Туннеля нет — доступ закрыт",
-          hint: "Так и задумано: без туннеля выбранные приложения остаются без сети",
-        },
+        off: { tone: TONES.idle, title: s.off, hint: s.offHint },
+        connecting: { tone: TONES.wait, title: s.connecting, hint: s.connectingHint },
+        up: { tone: TONES.open, title: s.up, hint: inTunnel > 0 ? s.upHint(inTunnel) : s.upNoApps },
+        down: { tone: TONES.closed, title: s.down, hint: s.downHint },
       }[status.tunnel];
 
   const on = status != null && status.tunnel !== "off";
@@ -68,22 +55,38 @@ export function StatusBar({ status, onToggle }: { status: Status | null; onToggl
           </div>
           <p className="mt-1.5 text-[13px] text-muted">{view.hint}</p>
         </div>
-        <Button
-          variant={on ? "ghost" : "primary"}
-          disabled={!status || (!on && !status.profile && status.profiles.length === 0)}
-          onClick={onToggle}
-          className="h-9 px-5"
-        >
-          {on ? "Выключить" : "Включить"}
-        </Button>
+        <div className="flex shrink-0 items-center gap-3">
+          <div className="flex gap-1 text-xs">
+            {(["ru", "en"] as const).map((code) => (
+              <button
+                key={code}
+                type="button"
+                onClick={() => onLang(code)}
+                className={`rounded px-1.5 py-0.5 uppercase ${
+                  (status?.lang ?? "ru") === code ? "text-ink" : "text-muted hover:text-ink"
+                }`}
+              >
+                {code}
+              </button>
+            ))}
+          </div>
+          <Button
+            variant={on ? "ghost" : "primary"}
+            disabled={!status || (!on && !status.profile && status.profiles.length === 0)}
+            onClick={onToggle}
+            className="h-9 px-5"
+          >
+            {on ? s.turnOff : s.turnOn}
+          </Button>
+        </div>
       </div>
 
       <dl className="mt-4 flex flex-wrap gap-x-8 gap-y-2 border-t border-edge pt-3 text-[13px]">
-        <Metric name="Профиль" value={status?.profile ?? "не выбран"} />
-        <Metric name="Страна" value={status?.country ?? "—"} />
-        <Metric name="Задержка" value={status?.latency_ms != null ? `${status.latency_ms} мс` : "—"} />
-        <Metric name="Принято" value={status ? bytes(status.rx) : "—"} />
-        <Metric name="Отправлено" value={status ? bytes(status.tx) : "—"} />
+        <Metric name={s.profile} value={status?.profile ?? s.noProfile} />
+        <Metric name={s.exit} value={status?.country ?? "—"} />
+        <Metric name={s.latency} value={status?.latency_ms != null ? `${status.latency_ms} ms` : "—"} />
+        <Metric name={s.received} value={status ? bytes(status.rx) : "—"} />
+        <Metric name={s.sent} value={status ? bytes(status.tx) : "—"} />
       </dl>
     </header>
   );

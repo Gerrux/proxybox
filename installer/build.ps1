@@ -5,19 +5,34 @@
 # На выходе — один .exe в src-tauri\target\release\bundle\nsis\.
 param(
   [string]$Triple = "x86_64-pc-windows-msvc",
-  [string]$SingBox = ""
+  [string]$SingBox = "",
+  # Отпечаток сертификата Authenticode (sha1). Без него сборка выходит
+  # неподписанной, и SmartScreen будет ругаться на установщик.
+  [string]$Thumbprint = ""
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 
 Write-Host "== sidecars (release)"
-& (Join-Path $PSScriptRoot "sidecars.ps1") -Config release -Triple $Triple -SingBox $SingBox
+& (Join-Path $PSScriptRoot "sidecars.ps1") -Config release -Triple $Triple -SingBox $SingBox -Thumbprint $Thumbprint
 
 Write-Host "== сборка окна и установщика"
 Push-Location $root
 try {
   & pnpm install
-  & cargo tauri build
+  if ($Thumbprint) {
+    # Отпечаток передаём поверх конфига, а не в tauri.conf.json: сертификат —
+    # свойство машины сборки, а не репозитория.
+    $signing = @{ bundle = @{ windows = @{
+      certificateThumbprint = $Thumbprint
+      digestAlgorithm = "sha256"
+      timestampUrl = "http://timestamp.digicert.com"
+    } } } | ConvertTo-Json -Depth 6 -Compress
+    & cargo tauri build --config $signing
+  } else {
+    Write-Warning "Сборка без подписи: SmartScreen будет предупреждать при установке (см. -Thumbprint)"
+    & cargo tauri build
+  }
   if ($LASTEXITCODE -ne 0) { throw "cargo tauri build упал" }
 } finally { Pop-Location }
 

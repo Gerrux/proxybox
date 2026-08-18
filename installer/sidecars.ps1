@@ -5,7 +5,10 @@
 param(
   [ValidateSet("debug", "release")] [string]$Config = "debug",
   [string]$Triple = "",
-  [string]$SingBox = ""
+  [string]$SingBox = "",
+  # Отпечаток сертификата Authenticode: подписываются наши бинарники до того,
+  # как Tauri положит их в установщик. Пустой — не подписываем.
+  [string]$Thumbprint = ""
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -40,6 +43,11 @@ if ($Config -eq "release") { $flags += "--release" }
 if ($LASTEXITCODE -ne 0) { throw "cargo build упал" }
 
 foreach ($name in @("pg-service", "privacy-gateway")) {
-  Copy-Item (Join-Path $root "target\$Config\$name$exe") (Join-Path $bin "$name-$Triple$exe") -Force
+  $target = Join-Path $bin "$name-$Triple$exe"
+  Copy-Item (Join-Path $root "target\$Config\$name$exe") $target -Force
+  if ($Thumbprint) {
+    & signtool sign /sha1 $Thumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $target
+    if ($LASTEXITCODE -ne 0) { throw "signtool не подписал $target" }
+  }
 }
 Write-Host "sidecars готовы ($Config, $Triple): $bin"

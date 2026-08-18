@@ -5,6 +5,8 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type Tunnel = "off" | "connecting" | "up" | "down";
 
+export type Lang = "ru" | "en";
+
 export type App = { path: string; name: string; enabled: boolean };
 
 export type Status = {
@@ -16,6 +18,7 @@ export type Status = {
   tx: number;
   apps: App[];
   profiles: string[];
+  lang: Lang;
   log: string[];
 };
 
@@ -29,6 +32,7 @@ export type Request =
   | { cmd: "icon"; arg: { path: string } }
   | { cmd: "set-app"; arg: { path: string; enabled: boolean } }
   | { cmd: "remove-app"; arg: { path: string } }
+  | { cmd: "set-lang"; arg: { lang: Lang } }
   | { cmd: "add-profile"; arg: { link: string } }
   | { cmd: "remove-profile"; arg: { name: string } };
 

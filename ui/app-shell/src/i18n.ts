@@ -1,0 +1,88 @@
+/** Строки интерфейса. Два полных словаря вместо ключей с подстановкой: EN
+ *  типизирован как RU, поэтому забытый перевод — ошибка сборки, а не пропажа
+ *  надписи в окне. */
+import type { Lang } from "./platform";
+
+const RU = {
+  serviceDown: "Служба не отвечает",
+  serviceDownHint: "Запустите PrivacyGateway от имени администратора — без службы ничего не работает",
+  off: "Приватный режим выключен",
+  offHint: "Выбранные приложения ходят в сеть напрямую",
+  connecting: "Подключение…",
+  connectingHint: "Пока туннель не подтверждён, выбранные приложения остаются без сети",
+  up: "Защищено",
+  upHint: (n: number) => `${n} прил. идут только через туннель, остальной трафик не тронут`,
+  upNoApps: "Туннель поднят, но ни одно приложение не выбрано",
+  down: "Туннеля нет — доступ закрыт",
+  downHint: "Так и задумано: без туннеля выбранные приложения остаются без сети",
+  turnOn: "Включить",
+  turnOff: "Выключить",
+  profile: "Профиль",
+  noProfile: "не выбран",
+  latency: "Задержка",
+  exit: "Точка выхода",
+  received: "Принято",
+  sent: "Отправлено",
+  profiles: "Профили",
+  importLink: "Импорт",
+  linkPlaceholder: "Вставьте share-link или JSON узла",
+  noProfiles: "Профилей нет. Вставьте share-link или JSON-конфиг — разберётся сам.",
+  active: "активен",
+  remove: "Удалить",
+  apps: "Приложения",
+  appsCount: (on: number, all: number) => `${on} из ${all} в туннеле`,
+  discover: "Найти установленные",
+  addApp: "Добавить",
+  appPlaceholder: "C:\\Program Files\\…\\app.exe",
+  noApps: "Список пуст — трафик никого не перехватывается.",
+  journal: "Журнал",
+  emptyJournal: "Пока ничего не происходило.",
+  hideMessage: "Скрыть сообщение",
+  removeProfile: (name: string) => `Удалить профиль ${name}`,
+  removeApp: (name: string) => `Убрать ${name}`,
+};
+
+const EN: typeof RU = {
+  serviceDown: "Service is not responding",
+  serviceDownHint: "Start PrivacyGateway as administrator — nothing works without the service",
+  off: "Private mode is off",
+  offHint: "Selected apps reach the network directly",
+  connecting: "Connecting…",
+  connectingHint: "Until the tunnel is confirmed, selected apps stay without network",
+  up: "Protected",
+  upHint: (n: number) => `${n} app(s) go only through the tunnel, other traffic is untouched`,
+  upNoApps: "The tunnel is up, but no app is selected",
+  down: "No tunnel — access is closed",
+  downHint: "This is by design: without a tunnel the selected apps stay offline",
+  turnOn: "Turn on",
+  turnOff: "Turn off",
+  profile: "Profile",
+  noProfile: "not selected",
+  latency: "Latency",
+  exit: "Exit point",
+  received: "Received",
+  sent: "Sent",
+  profiles: "Profiles",
+  importLink: "Import",
+  linkPlaceholder: "Paste a share-link or node JSON",
+  noProfiles: "No profiles yet. Paste a share-link or a JSON config — it parses itself.",
+  active: "active",
+  remove: "Remove",
+  apps: "Apps",
+  appsCount: (on: number, all: number) => `${on} of ${all} in the tunnel`,
+  discover: "Find installed",
+  addApp: "Add",
+  appPlaceholder: "C:\\Program Files\\…\\app.exe",
+  noApps: "The list is empty — nobody's traffic is intercepted.",
+  journal: "Journal",
+  emptyJournal: "Nothing has happened yet.",
+  hideMessage: "Hide message",
+  removeProfile: (name: string) => `Remove profile ${name}`,
+  removeApp: (name: string) => `Remove ${name}`,
+};
+
+export type Strings = typeof RU;
+
+export function strings(lang: Lang | undefined): Strings {
+  return lang === "en" ? EN : RU;
+}

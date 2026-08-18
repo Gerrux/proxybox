@@ -7,6 +7,7 @@
 //! выбранные — только в `proxy`, без запасного маршрута. Это и есть fail-closed:
 //! упал сервер — соединения выбранных приложений просто не устанавливаются.
 
+use core_ipc::t;
 use serde_json::{json, Value};
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
@@ -134,13 +135,13 @@ impl Tunnel {
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log))
             .spawn()
-            .map_err(|e| io::Error::new(e.kind(), format!("не запускается sing-box ({}): {e}", binary().display())))?;
+            .map_err(|e| io::Error::new(e.kind(), t(&format!("не запускается sing-box ({}): {e}", binary().display()), &format!("cannot start sing-box ({}): {e}", binary().display()))))?;
 
         // Занятый порт, битый конфиг, нет прав на TUN — всё это видно сразу.
         // Без этой паузы служба бесконечно докладывала бы «подключение».
         std::thread::sleep(STARTUP_GRACE);
         if !matches!(child.try_wait(), Ok(None)) {
-            return Err(io::Error::other(format!("sing-box завершился сразу: {}", last_line(&log_path))));
+            return Err(io::Error::other(t(&format!("sing-box завершился сразу: {}", last_line(&log_path)), &format!("sing-box exited immediately: {}", last_line(&log_path)))));
         }
         let _ = std::fs::write(dir.join("singbox.pid"), child.id().to_string());
         Ok(Self { child, socks_port, api_port })
@@ -165,7 +166,7 @@ fn last_line(path: &Path) -> String {
         .rev()
         .find(|l| !l.trim().is_empty())
         .map(strip_ansi)
-        .unwrap_or_else(|| "причина не записана".into())
+        .unwrap_or_else(|| t("причина не записана", "no reason recorded"))
 }
 
 /// Логгер sing-box красит уровень даже в файл — в журнале службы это мусор.
@@ -265,17 +266,17 @@ fn parse_country(raw: &str) -> io::Result<String> {
     // невычитанный хвост SOCKS, и молча резать по первому \r\n\r\n нельзя:
     // тело разберётся как ни в чём не бывало, а ошибка уедет в тихую.
     if !raw.starts_with("HTTP/") {
-        return Err(io::Error::other(format!("{GEO_HOST}: ответ не похож на HTTP")));
+        return Err(io::Error::other(t(&format!("{GEO_HOST}: ответ не похож на HTTP"), &format!("{GEO_HOST}: the reply is not HTTP"))));
     }
     let body = raw.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or_default();
     let v: Value = serde_json::from_str(body.trim()).map_err(io::Error::other)?;
     if v["status"] != "success" {
-        let why = v["message"].as_str().unwrap_or("причина не названа");
+        let why = v["message"].as_str().unwrap_or("—");
         return Err(io::Error::other(format!("{GEO_HOST}: {why}")));
     }
     let country = v["country"].as_str().unwrap_or_default();
     if country.is_empty() {
-        return Err(io::Error::other(format!("{GEO_HOST}: в ответе нет страны")));
+        return Err(io::Error::other(t(&format!("{GEO_HOST}: в ответе нет страны"), &format!("{GEO_HOST}: no country in the reply"))));
     }
     Ok(match v["city"].as_str().unwrap_or_default() {
         "" => country.to_string(),
@@ -308,7 +309,7 @@ fn socks5_connect(port: u16, (host, target_port): (&str, u16)) -> io::Result<Tcp
     let mut hello = [0u8; 2];
     s.read_exact(&mut hello)?;
     if hello != [0x05, 0x00] {
-        return Err(io::Error::other(format!("SOCKS5: неожиданный ответ {hello:?}")));
+        return Err(io::Error::other(t(&format!("SOCKS5: неожиданный ответ {hello:?}"), &format!("SOCKS5: unexpected reply {hello:?}"))));
     }
 
     let host = host.as_bytes();
@@ -320,7 +321,7 @@ fn socks5_connect(port: u16, (host, target_port): (&str, u16)) -> io::Result<Tcp
     let mut head = [0u8; 4];
     s.read_exact(&mut head)?;
     if head[1] != 0x00 {
-        return Err(io::Error::other(format!("туннель не пропустил соединение (код {})", head[1])));
+        return Err(io::Error::other(t(&format!("туннель не пропустил соединение (код {})", head[1]), &format!("the tunnel refused the connection (code {})", head[1]))));
     }
     // Хвост ответа (BND.ADDR + BND.PORT) обязателен к вычитыванию: иначе он
     // останется в потоке и слипнется с телом следующего чтения.
@@ -332,7 +333,7 @@ fn socks5_connect(port: u16, (host, target_port): (&str, u16)) -> io::Result<Tcp
             s.read_exact(&mut len)?;
             len[0] as usize
         }
-        atyp => return Err(io::Error::other(format!("SOCKS5: неизвестный тип адреса {atyp}"))),
+        atyp => return Err(io::Error::other(t(&format!("SOCKS5: неизвестный тип адреса {atyp}"), &format!("SOCKS5: unknown address type {atyp}")))),
     };
     s.read_exact(&mut vec![0u8; bnd + 2])?;
     Ok(s)
