@@ -75,8 +75,11 @@ export function App() {
       <TitleBar title="Privacy Gateway" lang={status?.lang} />
       {/* Содержимое не растягивается на всю ширину монитора: строки метрик и
           списков читаются глазом, а не рулеткой. Но и 1024 px на 27" — окно в
-          окне, поэтому широкому экрану даётся третья колонка. */}
-      <div className="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col gap-4 p-5 xl:max-w-[1600px]">
+          окне, поэтому широкому экрану даётся третья колонка.
+
+          Если окно сузили руками, панели не сплющиваются в полоски: прокрутка
+          возвращается всей странице. */}
+      <div className="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col gap-4 overflow-y-auto p-5 md:overflow-hidden xl:max-w-[1600px]">
         <StatusBar
           status={status}
           busy={busy > 0}
@@ -85,7 +88,9 @@ export function App() {
         />
 
         {error && (
-          <div className="enter flex shrink-0 items-start gap-3 rounded-xl border border-edge bg-closed-soft px-4 py-3 text-[13px] text-closed">
+          // Ошибка команды — это поломка, а не запертый канал: цвет тот же, что
+          // у «служба не отвечает», и другой, чем у сработавшей защиты.
+          <div className="enter flex shrink-0 items-start gap-3 rounded-lg border border-edge bg-fault-soft px-4 py-3 text-[13px] text-fault">
             <p className="selectable min-w-0 flex-1">{error}</p>
             <Button variant="quiet" aria-label={strings(status?.lang).hideMessage} onClick={() => setError(null)}>
               ✕
@@ -97,18 +102,24 @@ export function App() {
             прокручивается сама, страница — никогда. Список приложений после
             автообнаружения самый длинный, ему и отдана широкая колонка целиком.
 
-            С 1280 px журнал уезжает в свою колонку: до этого он забирал у профилей
-            больше трети высоты, а профилей с парой подписок бывает под сотню. */}
+            Высоту в узкой колонке забирают профили, а не журнал: с парой
+            подписок их бывает под сотню, а журнал читают, когда что-то уже
+            пошло не так. С 1280 px журнал уезжает в свою колонку и высоту не
+            делит вовсе. */}
         <div
-          className="grid min-h-0 flex-1 gap-4 md:grid-cols-[minmax(260px,0.9fr)_1.2fr] md:grid-rows-[1.6fr_1fr]
+          className="grid gap-4 md:min-h-0 md:flex-1 md:grid-cols-[minmax(260px,0.9fr)_1.2fr] md:grid-rows-[1.6fr_1fr]
                      xl:grid-cols-[minmax(320px,1fr)_1.4fr_minmax(280px,0.9fr)] xl:grid-rows-1"
         >
-          <Profiles status={status} act={act} busy={busy > 0} className="min-h-0" />
-          <Apps status={status} act={act} className="min-h-0 md:col-start-2 md:row-start-1 md:row-span-2 xl:row-span-1" />
+          <Profiles status={status} act={act} busy={busy > 0} className="md:min-h-0" />
+          <Apps
+            status={status}
+            act={act}
+            className="md:col-start-2 md:row-start-1 md:row-span-2 md:min-h-0 xl:row-span-1"
+          />
           <Journal
             lines={status?.log ?? []}
             lang={status?.lang}
-            className="min-h-0 md:col-start-1 md:row-start-2 xl:col-start-3 xl:row-start-1"
+            className="min-h-[9rem] md:col-start-1 md:row-start-2 md:min-h-0 xl:col-start-3 xl:row-start-1"
           />
         </div>
 

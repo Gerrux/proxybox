@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { call, type App, type Request, type Status } from "./platform";
+import { call, type App, type Request, type Status, type Tunnel } from "./platform";
 import { strings } from "./i18n";
 import { AddField, Button, Empty, Panel, SearchField } from "./ui";
 
@@ -22,6 +22,23 @@ function matching(apps: App[], query: string): App[] {
     const haystack = `${app.name} ${app.path}`.toLowerCase();
     return words.every((word) => haystack.includes(word));
   });
+}
+
+/** Цвет рельса строки — та же развилка, что и `core_filter::policy()`: приватный
+ *  режим выключен — приложение идёт напрямую, туннель поднят — в туннель, всё
+ *  остальное — без сети. Это единственное место в окне, где видна судьба
+ *  конкретного приложения, и разойтись со службой ему нельзя. */
+function railTone(tunnel: Tunnel | undefined): string {
+  switch (tunnel) {
+    case "up":
+      return "bg-open";
+    case "connecting":
+    case "down":
+      return "bg-closed";
+    // Выключено или службы нет: приложение ходит само, и хвастаться нечем.
+    default:
+      return "bg-muted";
+  }
 }
 
 /** Иконки спрашиваются по одной и только раз за путь: в статусе их нет, потому
@@ -90,22 +107,33 @@ export function Apps({ status, act, className }: { status: Status | null; act: (
             {shown.map((app) => (
               <li
                 key={app.path}
-                className="enter smooth flex items-center gap-3 rounded-lg px-2.5 py-1.5 hover:bg-surface-2"
+                className="enter smooth relative flex items-center gap-3 rounded-md py-1.5 pl-3 pr-1 hover:bg-surface-2"
               >
-
+                {/* Рельс слева: что происходит с приложением прямо сейчас,
+                    видно по строке целиком, а не по состоянию мелкой галочки. */}
+                <span
+                  className={`smooth absolute inset-y-1 left-0 w-[3px] rounded-full ${
+                    app.enabled ? railTone(status?.tunnel) : "bg-transparent"
+                  }`}
+                />
                 <input
                   id={app.path}
                   type="checkbox"
                   checked={app.enabled}
                   onChange={(e) => act({ cmd: "set-app", arg: { path: app.path, enabled: e.target.checked } })}
-                  className="size-4 shrink-0 accent-[var(--pg-open)]"
+                  // Галочка — действие оператора, а не состояние канала:
+                  // цвета состояний ей не положены, иначе зелёная галочка
+                  // спорила бы с янтарным рельсом той же строки.
+                  className="size-4 shrink-0 accent-[var(--pg-accent)]"
                 />
+                {/* Место под иконку держится всегда: без него строки без иконки
+                    съезжали бы влево, а пустой квадрат — это шум. */}
                 {icons[app.path] ? (
-                  <img src={icons[app.path]} alt="" className="size-6 shrink-0" />
+                  <img src={icons[app.path]} alt="" className="size-5 shrink-0" />
                 ) : (
-                  <span className="size-6 shrink-0 rounded bg-surface-2" />
+                  <span className="size-5 shrink-0" />
                 )}
-                <label htmlFor={app.path} className="min-w-0 flex-1 cursor-pointer">
+                <label htmlFor={app.path} className="min-w-0 flex-1 cursor-pointer leading-tight">
                   <span className={`block truncate text-[13px] ${app.enabled ? "font-medium" : "text-muted"}`}>
                     {app.name}
                   </span>

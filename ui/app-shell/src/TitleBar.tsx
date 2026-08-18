@@ -24,6 +24,8 @@ import { strings } from "./i18n";
  *
  * Значки — свои `<svg>`, а не глифы шрифта: `Segoe MDL2 Assets` есть не на
  * всякой системе, а отсутствующий глиф — это пустой квадрат вместо «закрыть».
+ * «Закрыть» красится в `fault`, а не в `closed`: янтарь запертого канала —
+ * штатное состояние продукта, а не разрушительное действие.
  *
  * В браузере (разработка без Tauri) полосы нет вовсе — там рамку рисует сам
  * браузер.
@@ -67,7 +69,7 @@ export function TitleBar({ title, lang }: { title: string; lang: Lang | undefine
       data-tauri-drag-region
       className="flex h-8 shrink-0 items-center border-b border-edge bg-surface pl-3"
     >
-      <span data-tauri-drag-region className="min-w-0 flex-1 truncate text-xs text-muted">
+      <span data-tauri-drag-region className="engraved min-w-0 flex-1 truncate text-muted">
         {title}
       </span>
       <WindowButton label={s.minimizeWindow} onClick={() => run("minimize")}>
@@ -108,7 +110,7 @@ function WindowButton({
       title={label}
       onClick={onClick}
       className={`grid h-8 w-11 place-items-center text-muted transition-colors ${
-        danger ? "hover:bg-closed hover:text-bg" : "hover:bg-surface-2 hover:text-ink"
+        danger ? "hover:bg-fault hover:text-bg" : "hover:bg-surface-2 hover:text-ink"
       }`}
     >
       <svg
