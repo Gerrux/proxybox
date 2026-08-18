@@ -1,24 +1,54 @@
-import type { Request, Status } from "./platform";
+import type { Probe, Request, Status } from "./platform";
 import { strings } from "./i18n";
 import { AddField, Button, Empty, Panel } from "./ui";
+
+/** Итог прогона рядом с именем: задержка либо причина отказа. Отказ приезжает
+ *  строкой от службы, поэтому он уже на нужном языке — и виден целиком по
+ *  наведению, а не только в обрезке. */
+function Verdict({ probe, failed }: { probe: Probe | undefined; failed: string }) {
+  if (!probe) return null;
+  if (probe.latency_ms != null) return <span className="text-xs tabular-nums text-muted">{probe.latency_ms} ms</span>;
+  return (
+    <span className="max-w-[10rem] truncate text-xs text-closed" title={probe.error ?? failed}>
+      {failed}
+    </span>
+  );
+}
 
 export function Profiles({
   status,
   act,
+  busy,
   className,
 }: {
   status: Status | null;
   act: (req: Request) => void;
+  busy?: boolean;
   className?: string;
 }) {
   const s = strings(status?.lang);
   const profiles = status?.profiles ?? [];
   const subscriptions = status?.subscriptions ?? [];
+  const probes = status?.probes ?? [];
   return (
     <Panel
       className={className}
       title={s.profiles}
       note={profiles.length > 0 && <span className="text-muted">{profiles.length}</span>}
+      action={
+        profiles.length > 0 && (
+          // Пока прогон идёт, кнопка заперта: второй прогон добил бы sing-box
+          // первого — они делят каталог проверки.
+          <Button
+            variant="quiet"
+            disabled={busy}
+            title={s.testProfilesHint}
+            onClick={() => act({ cmd: "test-profiles" })}
+          >
+            {s.testProfiles}
+          </Button>
+        )
+      }
     >
       <div className="flex flex-col gap-3">
         <AddField
@@ -70,6 +100,7 @@ export function Profiles({
                   <span className={`min-w-0 flex-1 truncate text-[13px] ${active ? "font-medium" : "text-muted"}`}>
                     {name}
                   </span>
+                  <Verdict probe={probes.find((p) => p.name === name)} failed={s.probeFailed} />
                   {active && status?.tunnel !== "off" ? (
                     <span className="text-xs text-muted">{s.active}</span>
                   ) : (
