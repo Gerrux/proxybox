@@ -1,9 +1,15 @@
-//! Автообнаружение установленных приложений по стандартным путям.
+//! Автообнаружение установленных приложений и их иконки.
 //!
-//! Каталог вшит в бинарник (`include_str!`): без сети, без установки, без
-//! отдельного файла рядом с exe. Каталогов приложений мы не обходим — путь из
-//! каталога раскрывается и проверяется одним `is_file()`. Обход `Program Files`
-//! стоил бы секунды и всё равно не отличил бы главный exe от служебного.
+//! Два источника, и оба отвечают сразу путём — каталогов мы не обходим. Обход
+//! `Program Files` стоил бы секунды и всё равно не отличил бы главный exe от
+//! служебного.
+//!
+//! 1. Вшитый каталог (`include_str!`) — консольные инструменты и программы,
+//!    которые не регистрируются в реестре: без сети, без файла рядом с exe.
+//! 2. Реестр Windows — то, что система и так знает об установленном:
+//!    `Uninstall` (имя + `DisplayIcon`, почти всегда главный exe) и `App Paths`
+//!    (имя exe → полный путь). Каталог покрывал три десятка программ, реестр —
+//!    всё, что человек ставил сам.
 
 use serde::Deserialize;
 use std::path::Path;
@@ -34,8 +40,14 @@ pub fn catalog() -> Vec<Known> {
     serde_json::from_str::<Catalog>(CATALOG).expect("каталог приложений разбирается").apps
 }
 
+/// Каталог первым: имена там человеческие и выверенные, а реестр только
+/// дополняет. Один и тот же exe из двух источников — одна запись.
 pub fn discover() -> Vec<Found> {
-    discover_from(&catalog())
+    let mut found = discover_from(&catalog());
+    found.extend(from_registry());
+    let mut seen = std::collections::HashSet::new();
+    found.retain(|f| seen.insert(f.path.to_lowercase()));
+    found
 }
 
 pub fn discover_from(apps: &[Known]) -> Vec<Found> {
@@ -51,6 +63,21 @@ pub fn discover_from(apps: &[Known]) -> Vec<Found> {
             Some(Found { name: app.name.clone(), path })
         })
         .collect()
+}
+
+/// Иконка приложения как PNG в data-URL — окно показывает её прямо в `<img>`.
+/// Не Windows, не exe, нет ресурса — `None`, и список обходится без картинки.
+pub fn icon(path: &str) -> Option<String> {
+    #[cfg(windows)]
+    {
+        let base64 = windows_icons::get_icon_base64_by_path(path).ok()?;
+        Some(format!("data:image/png;base64,{base64}"))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        None
+    }
 }
 
 /// Раскрывает `%VAR%` из окружения. Нет переменной — нет и пути: значит эта
@@ -74,6 +101,85 @@ fn in_path(name: &str) -> Option<String> {
         .map(|dir| dir.join(name))
         .find(|p| p.is_file())
         .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// `DisplayIcon` — это ресурс иконки, а не путь: `"C:\p\app.exe",0`,
+/// `C:\p\app.exe,0`, иногда просто `.ico` из кэша установщика. Нас интересует
+/// только тот случай, когда за иконкой стоит настоящий exe: маршрутизация
+/// sing-box работает по `process_path`, у `.ico` перехватывать нечего.
+fn exe_from_icon_resource(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let path = match raw.strip_prefix('"') {
+        // В кавычках путь целиком, индекс иконки — уже за закрывающей.
+        Some(rest) => rest.split('"').next()?,
+        None => match raw.rsplit_once(',') {
+            // Запятая отрезается, только если за ней действительно индекс:
+            // в самом пути запятая тоже встречается.
+            Some((head, index)) if index.trim().parse::<i32>().is_ok() => head,
+            _ => raw,
+        },
+    };
+    let path = expand(path.trim())?;
+    is_exe(&path).then_some(path)
+}
+
+fn is_exe(path: &str) -> bool {
+    path.len() > 4 && path[path.len() - 4..].eq_ignore_ascii_case(".exe") && Path::new(path).is_file()
+}
+
+#[cfg(not(windows))]
+fn from_registry() -> Vec<Found> {
+    Vec::new()
+}
+
+#[cfg(windows)]
+fn from_registry() -> Vec<Found> {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ};
+    use winreg::RegKey;
+
+    const UNINSTALL: [(winreg::HKEY, &str); 3] = [
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        // 32-битные программы на 64-битной системе живут в своей ветке.
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ];
+    const APP_PATHS: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths";
+
+    let mut out = Vec::new();
+    for (hive, branch) in UNINSTALL {
+        let Ok(root) = RegKey::predef(hive).open_subkey_with_flags(branch, KEY_READ) else { continue };
+        for key in root.enum_keys().flatten() {
+            let Ok(entry) = root.open_subkey_with_flags(&key, KEY_READ) else { continue };
+            // Обновления и системные компоненты — не программы пользователя.
+            if entry.get_value::<u32, _>("SystemComponent").unwrap_or(0) == 1 {
+                continue;
+            }
+            let (Ok(name), Ok(resource)) =
+                (entry.get_value::<String, _>("DisplayName"), entry.get_value::<String, _>("DisplayIcon"))
+            else {
+                continue;
+            };
+            if let Some(path) = exe_from_icon_resource(&resource) {
+                out.push(Found { name: name.trim().to_string(), path });
+            }
+        }
+    }
+    // `App Paths` — канонический ответ Windows на вопрос «где лежит этот exe».
+    // Подбирает то, у чего в `Uninstall` иконкой стоит `.ico`.
+    for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
+        let Ok(root) = RegKey::predef(hive).open_subkey_with_flags(APP_PATHS, KEY_READ) else { continue };
+        for key in root.enum_keys().flatten() {
+            let Ok(entry) = root.open_subkey_with_flags(&key, KEY_READ) else { continue };
+            let Ok(raw) = entry.get_value::<String, _>("") else { continue };
+            let Some(path) = expand(raw.trim().trim_matches('"')) else { continue };
+            if is_exe(&path) {
+                // Имени тут нет, есть только `chrome.exe` — сойдёт как запасное:
+                // записи с человеческим именем пришли раньше и выиграют дедуп.
+                out.push(Found { name: key.trim_end_matches(".exe").to_string(), path });
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -126,5 +232,42 @@ mod tests {
         let sh = if cfg!(windows) { "cmd.exe" } else { "sh" };
         let found = discover_from(&[Known { name: "Оболочка".into(), paths: vec![sh.into()] }]);
         assert_eq!(found.len(), 1, "{sh} должен находиться в PATH: {found:?}");
+    }
+
+    /// Форматы `DisplayIcon` из реестра — то, обо что спотыкается наивный разбор.
+    #[test]
+    fn parses_display_icon() {
+        let dir = std::env::temp_dir().join("pg-icon-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("app.exe");
+        std::fs::write(&exe, b"").unwrap();
+        std::fs::write(dir.join("app.ico"), b"").unwrap();
+        std::env::set_var("PG_TEST_ICON_DIR", &dir);
+        let exe = exe.to_string_lossy().into_owned();
+        let dir = dir.display().to_string();
+
+        assert_eq!(exe_from_icon_resource(&exe).as_ref(), Some(&exe), "голый путь");
+        assert_eq!(exe_from_icon_resource(&format!("{exe},0")).as_ref(), Some(&exe), "индекс отрезается");
+        assert_eq!(exe_from_icon_resource(&format!("\"{exe}\",0")).as_ref(), Some(&exe), "кавычки и индекс");
+        assert_eq!(exe_from_icon_resource(&format!("  \"{exe}\"  ")).as_ref(), Some(&exe), "пробелы по краям");
+        assert_eq!(
+            exe_from_icon_resource("%PG_TEST_ICON_DIR%/app.exe,0").as_ref(),
+            Some(&exe),
+            "переменная окружения раскрывается"
+        );
+        assert_eq!(exe_from_icon_resource(&format!("{dir}/app.ico")), None, "у иконки перехватывать нечего");
+        assert_eq!(exe_from_icon_resource(&format!("{dir}/нет.exe")), None, "несуществующий exe");
+        assert_eq!(exe_from_icon_resource(&format!("{exe},x")), None, "«,x» — часть имени, такого файла нет");
+    }
+
+    /// Дедуп по пути: каталог и реестр находят одно и то же, в списке это одна строка.
+    #[test]
+    fn discover_deduplicates_by_path() {
+        let found = discover();
+        let mut paths: Vec<String> = found.iter().map(|f| f.path.to_lowercase()).collect();
+        paths.sort();
+        let before = paths.len();
+        paths.dedup();
+        assert_eq!(before, paths.len(), "один и тот же exe попал в список дважды");
     }
 }

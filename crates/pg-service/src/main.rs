@@ -265,6 +265,8 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             s.save();
             Response::Apps(s.status.apps.clone())
         }
+        // Иконку не храним: она есть у системы, и спрашивают её один раз за окно.
+        Request::Icon { path } => Response::Icon(core_apps::icon(&path)),
         Request::AddApp { path } => {
             if !s.status.apps.iter().any(|a| a.path == path) {
                 let name = path

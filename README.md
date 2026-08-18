@@ -45,7 +45,7 @@ NekoBox. Мы разбираем share-link, собираем ему конфи�
 ```
 crates/
   core-ipc/          контракт службы ↔ клиенты + клиентский вызов call()
-  core-apps/         автообнаружение приложений по каталогу стандартных путей
+  core-apps/         автообнаружение приложений (реестр + каталог) и их иконки
   core-config/       share-link (vless/vmess/trojan/ss/hy2/wg) → узел sing-box
   core-tunnel/       генерация конфига sing-box, запуск и присмотр, проба, трафик
   core-filter/       политика fail-closed + правила брандмауэра на выбранные .exe
@@ -55,7 +55,8 @@ crates/
 src-tauri/           Tauri 2.x оболочка (отдельный Cargo-проект, сборка только
                      на Windows); пробрасывает запросы фронтенда в core-ipc
 ui/app-shell/        Vite+React+TS+Tailwind: статус, профили, приложения, журнал
-resources/apps/      каталог известных приложений (catalog.v1.json, вшит в core-apps)
+resources/apps/      каталог-дополнение к реестру: консольные инструменты и то,
+                     что не регистрируется (catalog.v1.json, вшит в core-apps)
 installer/           hooks.nsh (регистрация службы) и build.ps1 (сборка установщика)
 scripts/e2e.sh       сквозная проверка на своём же sing-box-сервере
 scripts/bench-cores.sh  сравнение ядер (sing-box / mihomo / Xray) на одном стенде

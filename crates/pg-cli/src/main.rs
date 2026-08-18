@@ -90,7 +90,8 @@ fn main() -> std::process::ExitCode {
             eprintln!("{message}");
             std::process::ExitCode::FAILURE
         }
-        Ok(Response::Done) => std::process::ExitCode::SUCCESS,
+        // Иконок CLI не спрашивает — печатать в терминал нечего.
+        Ok(Response::Done | Response::Icon(_)) => std::process::ExitCode::SUCCESS,
         Ok(Response::Apps(apps)) => {
             for a in apps {
                 println!("[{}] {} — {}", if a.enabled { "x" } else { " " }, a.name, a.path);
