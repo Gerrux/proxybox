@@ -40,7 +40,12 @@ if (-not (Test-Path $sbTarget) -or (Get-Item $sbTarget).Length -ne (Get-Item $sb
 $flags = @("build", "-p", "pg-service", "-p", "pg-cli")
 if ($Config -eq "release") { $flags += "--release" }
 & cargo @flags
-if ($LASTEXITCODE -ne 0) { throw "cargo build упал" }
+if ($LASTEXITCODE -ne 0) {
+  # «Отказано в доступе» к pg-service.exe — это не код, а живая служба: она
+  # держит собственный бинарник. Гасить её отсюда нельзя: снимется надзор, а
+  # правила брандмауэра останутся, и приложения будут без сети.
+  throw "cargo build упал (если отказано в доступе к pg-service.exe — сначала privacy-gateway off, затем остановите службу)"
+}
 
 foreach ($name in @("pg-service", "privacy-gateway")) {
   $target = Join-Path $bin "$name-$Triple$exe"
