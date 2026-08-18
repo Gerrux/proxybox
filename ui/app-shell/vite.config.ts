@@ -2,6 +2,13 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import net from "node:net";
+import { readFileSync } from "node:fs";
+
+/** Версия окна — та же, что у приложения: сравнивать себя с релизами GitHub
+ *  надо по ней, а не по версии из package.json, которую никто не двигает. */
+const VERSION = JSON.parse(
+  readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
+).version;
 
 /** Куда стучаться в службу (core_ipc::ADDR и core_ipc::PIPE). Дублируется
  *  здесь только ради разработки. */
@@ -54,6 +61,7 @@ function serviceBridge(): Plugin {
 
 export default defineConfig({
   plugins: [react(), tailwindcss(), serviceBridge()],
+  define: { __APP_VERSION__: JSON.stringify(VERSION) },
   // Именно 127.0.0.1, а не localhost: на Windows localhost резолвится сначала
   // в ::1, и Tauri стучится не туда, где слушает vite.
   server: { host: "127.0.0.1", port: 5173, strictPort: true },

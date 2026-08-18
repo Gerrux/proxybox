@@ -48,7 +48,22 @@ export type Response =
   | { reply: "done" }
   | { reply: "error"; data: { message: string } };
 
+/** Подставляется сборкой из src-tauri/tauri.conf.json (см. vite.config.ts). */
+declare const __APP_VERSION__: string;
+export const VERSION = __APP_VERSION__;
+
 export const isTauri = () => "__TAURI_INTERNALS__" in window;
+
+/** Ссылка открывается в браузере пользователя, а не в окне приложения: окно
+ *  умеет показывать только свой фронтенд, а уводить его на github.com значило
+ *  бы потерять интерфейс. */
+export async function openUrl(url: string): Promise<void> {
+  if (isTauri()) {
+    await invoke("open_url", { url });
+    return;
+  }
+  window.open(url, "_blank", "noopener");
+}
 
 export async function call(req: Request): Promise<Response> {
   if (isTauri()) {

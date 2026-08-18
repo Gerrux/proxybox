@@ -5,6 +5,7 @@ import { Apps } from "./Apps";
 import { Journal } from "./Journal";
 import { Profiles } from "./Profiles";
 import { StatusBar } from "./StatusBar";
+import { Updates } from "./Updates";
 import { Button } from "./ui";
 
 /** Опрос статуса. Служба тикает раз в 3 с, чаще спрашивать нечего. */
@@ -96,6 +97,10 @@ export function App() {
         </div>
         <Apps status={status} act={act} className="min-h-0" />
       </div>
+
+      {/* Версия и обновления — подвал: смотрят туда раз в месяц, а состояние
+          туннеля видно всё время. */}
+      <Updates lang={status?.lang} />
     </div>
   );
 }
