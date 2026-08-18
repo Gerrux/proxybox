@@ -305,15 +305,31 @@ fn probe_target(node: &Value) -> (String, u16) {
     (server.to_string(), u16::try_from(port).unwrap_or(443))
 }
 
-/// Скачивание подписки. Напрямую, а не через туннель: первую подписку
-/// импортируют ровно тогда, когда туннеля ещё нет.
-/// ponytail: если панель заблокирована провайдером, это не поможет — тогда
-/// нужен вариант «качать через уже поднятый туннель» на mixed-порт 48292.
-fn fetch(url: &str) -> Result<String, String> {
+/// Скачивание подписки. Живой туннель используем, если он есть: панель,
+/// закрытую провайдером, напрямую не достать, да и её адрес незачем показывать
+/// провайдеру — это тот же трафик пользователя, что и остальной. Первую
+/// подписку импортируют ровно тогда, когда туннеля ещё нет, поэтому без него
+/// идём напрямую; а не вышло через туннель — пробуем напрямую, потому что отказ
+/// сервера от блокировки здесь ничем не отличается.
+fn fetch(url: &str, via_tunnel: bool) -> Result<String, String> {
+    let direct = || get(url, None);
+    if !via_tunnel {
+        return direct();
+    }
+    // mixed-инбаунд отвечает и на HTTP CONNECT, поэтому socks-фича ureq не нужна.
+    get(url, Some(&format!("http://127.0.0.1:{}", Options::default().socks_port))).or_else(|_| direct())
+}
+
+fn get(url: &str, proxy: Option<&str>) -> Result<String, String> {
     let fail = |e: &dyn std::fmt::Display| {
         t(&format!("подписка не скачалась: {e}"), &format!("subscription download failed: {e}"))
     };
+    let proxy = match proxy.map(ureq::Proxy::new).transpose() {
+        Ok(proxy) => proxy,
+        Err(e) => return Err(fail(&e)),
+    };
     let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(proxy)
         // TLS берём у системы (на Windows это SChannel): корни те же, что у
         // остальных программ на машине, и сборка не тянет за собой C-компилятор
         // ради rustls-ring — с ним `cargo check --target …-msvc` не проходит.
@@ -323,8 +339,9 @@ fn fetch(url: &str) -> Result<String, String> {
         // Глобальный тайм-аут, а не только на соединение: молчащий сервер не
         // должен держать импорт бесконечно.
         .timeout_global(Some(Duration::from_secs(20)))
-        // Панели отдают формат по User-Agent. Своё имя — значит список ссылок,
-        // а не clash-конфиг, которого мы не понимаем.
+        // Панели отдают формат по User-Agent, и на незнакомое имя почти все
+        // выдают список ссылок. Clash-YAML разбирается тоже, так что промах
+        // с форматом здесь больше не отказ импорта.
         .user_agent(concat!("privacy-gateway/", env!("CARGO_PKG_VERSION")))
         .build()
         .into();
@@ -346,7 +363,10 @@ fn free_name(taken: &BTreeMap<String, Value>, want: &str) -> String {
 fn subscribe(svc: &Mutex<Service>, url: &str) -> Response {
     // Сеть — до захвата замка. Иначе окно на все двадцать секунд перестало бы
     // получать статус, а служба — выглядеть живой.
-    let body = match fetch(url) {
+    // Замок берём на одно поле и сразу отпускаем: знать, жив ли туннель, надо
+    // до сети, а держать состояние на все двадцать секунд запроса — нельзя.
+    let via_tunnel = lock(svc).status.tunnel == TunnelState::Up;
+    let body = match fetch(url, via_tunnel) {
         Ok(body) => body,
         Err(message) => return Response::Error { message },
     };

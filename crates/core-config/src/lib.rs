@@ -50,14 +50,21 @@ pub fn parse_many(body: &str) -> Vec<Profile> {
     // на `://` отсекает случай, когда открытый текст сам похож на base64.
     let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
     let decoded = b64_str(&compact).filter(|text| text.contains("://"));
-    decoded
+    let found: Vec<Profile> = decoded
         .as_deref()
         .unwrap_or(body)
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .filter_map(|line| parse(line).ok())
-        .collect()
+        .collect();
+    // Ни одной ссылки — либо адрес неверный, либо панель отдала Clash-YAML.
+    // Разбор YAML стоит одного прохода по телу и отвечает пустым списком на
+    // что угодно другое, так что различать эти случаи заранее не за чем.
+    if found.is_empty() {
+        return clash(body);
+    }
+    found
 }
 
 /// Конфиг sing-box: либо целиком (берём первый рабочий outbound), либо один
@@ -351,7 +358,9 @@ fn vmess_url(link: &str) -> Result<Profile, String> {
         "server": l.host()?,
         "server_port": l.port(443),
         "uuid": uuid,
-        "alter_id": 0,
+        // Ссылка-форма alterId не несёт, но из Clash-YAML он приходит, и узел
+        // со старым alterId молча не соединился бы.
+        "alter_id": l.q("alterId").and_then(|a| a.parse::<u32>().ok()).unwrap_or(0),
         "security": l.q("encryption").unwrap_or("auto"),
         "packet_encoding": "xudp",
     });
@@ -466,6 +475,308 @@ fn wireguard(link: &str) -> Result<Profile, String> {
         node["mtu"] = json!(mtu);
     }
     Ok(Profile { name: l.name(&format!("wg-{}", l.host()?)), node })
+}
+
+// --- Clash-YAML -----------------------------------------------------------
+
+/// Панели отдают конфиг Clash тем, чей User-Agent им знаком, а некоторые — и
+/// только его. Своей модели протоколов у нас нет (см. шапку модуля), поэтому
+/// узел из YAML не собирается в sing-box напрямую, а превращается обратно в
+/// share-link — дальше его разбирает ровно тот же код, что и обычную подписку.
+///
+/// ponytail: из YAML понимается подмножество, которым и написан `proxies:` —
+/// вложенные отображения блоком и в фигурных скобках, списки в квадратных,
+/// кавычки. Якоря, ссылки на них, многострочные скаляры и списки блоком за
+/// границей: узел, записанный так, потеряет поле или пропадёт целиком. Потолок
+/// виден по числу узлов в подписке, апгрейд — взять saphyr.
+fn clash(body: &str) -> Vec<Profile> {
+    proxies(body).iter().filter_map(|node| parse(&link_of(node)?).ok()).collect()
+}
+
+/// Секция `proxies:` → по плоской карте на узел. Вложенность склеивается точкой
+/// (`ws-opts.headers.host`), ключи приводятся к нижнему регистру: имена
+/// заголовков и `alterId` панели пишут кто как.
+fn proxies(body: &str) -> Vec<HashMap<String, String>> {
+    let mut items: Vec<Vec<String>> = Vec::new();
+    let mut inside = false;
+    for line in body.lines() {
+        let text = line.trim_end();
+        let bare = text.trim_start();
+        if bare.is_empty() || bare.starts_with('#') {
+            continue;
+        }
+        let indent = text.len() - bare.len();
+        if !inside {
+            inside = indent == 0 && bare.starts_with("proxies:");
+            continue;
+        }
+        if indent == 0 {
+            break; // начался следующий раздел конфига
+        }
+        match bare.strip_prefix("- ") {
+            // Дефис заменяем пробелами: тогда ключи первой строки узла стоят в
+            // том же столбце, что и остальные, и вложенность считается отступом.
+            Some(rest) => items.push(vec![format!("{}  {rest}", " ".repeat(indent))]),
+            None => {
+                if let Some(item) = items.last_mut() {
+                    item.push(text.to_string());
+                }
+            }
+        }
+    }
+    items
+        .iter()
+        .map(|lines| {
+            let mut node = HashMap::new();
+            let joined = lines.join("\n");
+            if joined.trim_start().starts_with('{') {
+                flow(joined.trim(), "", &mut node);
+            } else {
+                let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+                block(&refs, "", &mut node);
+            }
+            node
+        })
+        .collect()
+}
+
+fn indent(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+fn block(lines: &[&str], prefix: &str, out: &mut HashMap<String, String>) {
+    let base = lines.first().map(|l| indent(l)).unwrap_or(0);
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        i += 1;
+        if indent(line) != base {
+            continue; // строку глубже уже забрал вложенный разбор
+        }
+        let Some((key, value)) = line.trim().split_once(':') else { continue };
+        let key = format!("{prefix}{}", unquote(key).to_lowercase());
+        let value = value.trim();
+        if value.is_empty() {
+            // Вложенный блок — всё, что ниже и с бо́льшим отступом.
+            let start = i;
+            while i < lines.len() && indent(lines[i]) > base {
+                i += 1;
+            }
+            block(&lines[start..i], &format!("{key}."), out);
+        } else if value.starts_with('{') {
+            flow(value, &format!("{key}."), out);
+        } else {
+            out.insert(key, scalar(value));
+        }
+    }
+}
+
+fn flow(text: &str, prefix: &str, out: &mut HashMap<String, String>) {
+    let inner = text.trim().trim_start_matches('{').trim_end_matches('}');
+    for part in split_top(inner) {
+        let Some((key, value)) = part.split_once(':') else { continue };
+        let key = format!("{prefix}{}", unquote(key).to_lowercase());
+        let value = value.trim();
+        if value.starts_with('{') {
+            flow(value, &format!("{key}."), out);
+        } else {
+            out.insert(key, scalar(value));
+        }
+    }
+}
+
+/// Разрез по запятым верхнего уровня: внутри скобок и кавычек запятая — часть
+/// значения, а не разделитель (пароли, alpn, reserved).
+fn split_top(text: &str) -> Vec<&str> {
+    let (mut parts, mut depth, mut quote, mut start) = (Vec::new(), 0i32, None, 0);
+    for (i, c) in text.char_indices() {
+        match c {
+            '"' | '\'' if quote == Some(c) => quote = None,
+            '"' | '\'' if quote.is_none() => quote = Some(c),
+            '{' | '[' if quote.is_none() => depth += 1,
+            '}' | ']' if quote.is_none() => depth -= 1,
+            ',' if quote.is_none() && depth == 0 => {
+                parts.push(&text[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&text[start..]);
+    parts
+}
+
+/// Значение узла. Список в квадратных скобках сводится к строке через запятую:
+/// alpn и reserved именно так и разбираются дальше.
+fn scalar(value: &str) -> String {
+    let value = value.trim();
+    match value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+        Some(list) => split_top(list).iter().map(|v| unquote(v)).collect::<Vec<_>>().join(","),
+        None => unquote(value),
+    }
+}
+
+fn unquote(value: &str) -> String {
+    let value = value.trim();
+    for quote in ['"', '\''] {
+        if value.len() >= 2 && value.starts_with(quote) && value.ends_with(quote) {
+            return value[1..value.len() - 1].replace(&format!("\\{quote}"), &quote.to_string());
+        }
+    }
+    value.to_string()
+}
+
+/// Незарезервированные символы RFC 3986 — всё остальное кодируем: в пароле и в
+/// пути законны и `&`, и `#`, и `?`, а собираем мы именно ссылку.
+const KEEP: &percent_encoding::AsciiSet =
+    &percent_encoding::NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.').remove(b'~');
+
+fn enc(value: &str) -> String {
+    percent_encoding::utf8_percent_encode(value, KEEP).to_string()
+}
+
+fn add(q: &mut Vec<String>, key: &str, value: &str) {
+    if !value.is_empty() {
+        q.push(format!("{key}={}", enc(value)));
+    }
+}
+
+/// Узел Clash → share-link. Узел, который так не переложить (ssr, tuic, snell,
+/// socks5 или наш же протокол без обязательного поля), пропускается: неполная
+/// ссылка дала бы профиль, который молча не соединяется.
+fn link_of(node: &HashMap<String, String>) -> Option<String> {
+    let get = |key: &str| node.get(key).map(String::as_str).unwrap_or_default();
+    let server = match get("server") {
+        // IPv6 в Clash без скобок, а в ссылке без них не отделить адрес от порта.
+        s if s.contains(':') && !s.starts_with('[') => format!("[{s}]"),
+        s => s.to_string(),
+    };
+    // У hysteria2 бывает вообще без `port` — только диапазон `ports`.
+    let port = match get("port") {
+        "" => get("ports").split(['-', ',']).next().unwrap_or_default(),
+        port => port,
+    };
+    if server.is_empty() || port.is_empty() {
+        return None;
+    }
+    let kind = get("type");
+    let mut q: Vec<String> = Vec::new();
+    let link = match kind {
+        "vless" | "vmess" | "trojan" => {
+            let user = if kind == "trojan" { get("password") } else { get("uuid") };
+            if user.is_empty() {
+                return None;
+            }
+            stream(node, &mut q, kind == "trojan");
+            add(&mut q, "flow", get("flow"));
+            if kind == "vmess" {
+                add(&mut q, "encryption", get("cipher"));
+                add(&mut q, "alterId", get("alterid"));
+            }
+            format!("{kind}://{}@{server}:{port}", enc(user))
+        }
+        "ss" => {
+            let (method, password) = (get("cipher"), get("password"));
+            if method.is_empty() || password.is_empty() {
+                return None;
+            }
+            // Плагин, который не переложить, — это не «узел без плагина», а
+            // другой узел: такому место в пропущенных.
+            match get("plugin") {
+                "" => {}
+                "obfs" | "simple-obfs" => add(
+                    &mut q,
+                    "plugin",
+                    &format!("obfs-local;obfs={};obfs-host={}", get("plugin-opts.mode"), get("plugin-opts.host")),
+                ),
+                _ => return None,
+            }
+            format!("ss://{}:{}@{server}:{port}", enc(method), enc(password))
+        }
+        "hysteria2" => {
+            let password = get("password");
+            if password.is_empty() {
+                return None;
+            }
+            add(&mut q, "sni", get("sni"));
+            // Обфускация в sing-box одна — salamander, и она же единственная,
+            // которую несёт ссылка.
+            if get("obfs") == "salamander" {
+                add(&mut q, "obfs-password", get("obfs-password"));
+            }
+            if get("skip-cert-verify") == "true" {
+                add(&mut q, "insecure", "1");
+            }
+            add(&mut q, "mport", get("ports"));
+            format!("hy2://{}@{server}:{port}", enc(password))
+        }
+        "wireguard" => {
+            let private = get("private-key");
+            if private.is_empty() || get("public-key").is_empty() {
+                return None;
+            }
+            add(&mut q, "publickey", get("public-key"));
+            add(&mut q, "psk", get("pre-shared-key"));
+            add(&mut q, "reserved", get("reserved"));
+            add(&mut q, "mtu", get("mtu"));
+            // Адрес в Clash пишут без маски, а sing-box ждёт префикс.
+            let address: Vec<String> = [("ip", "32"), ("ipv6", "128")]
+                .into_iter()
+                .map(|(key, bits)| (get(key), bits))
+                .filter(|(value, _)| !value.is_empty())
+                .map(|(value, bits)| if value.contains('/') { value.to_string() } else { format!("{value}/{bits}") })
+                .collect();
+            add(&mut q, "address", &address.join(","));
+            format!("wg://{}@{server}:{port}", enc(private))
+        }
+        _ => return None,
+    };
+    let query = if q.is_empty() { String::new() } else { format!("?{}", q.join("&")) };
+    Some(format!("{link}{query}#{}", enc(get("name"))))
+}
+
+/// Транспорт и TLS у vless/vmess/trojan описаны одинаково, а в ссылке это те же
+/// ключи, что и у панелей: обратно их читают `transport()` и `tls()`.
+fn stream(node: &HashMap<String, String>, q: &mut Vec<String>, tls_by_default: bool) {
+    let get = |key: &str| node.get(key).map(String::as_str).unwrap_or_default();
+    let net = get("network");
+    match net {
+        "ws" => {
+            let mut path = get("ws-opts.path").to_string();
+            // Ранние данные едут в пути: отдельного ключа для них в ссылке нет.
+            if !get("ws-opts.max-early-data").is_empty() {
+                path += &format!("?ed={}", get("ws-opts.max-early-data"));
+            }
+            add(q, "path", &path);
+            add(q, "host", get("ws-opts.headers.host"));
+        }
+        "grpc" => add(q, "serviceName", get("grpc-opts.grpc-service-name")),
+        "h2" | "http" => {
+            add(q, "path", get(&format!("{net}-opts.path")));
+            add(q, "host", get(&format!("{net}-opts.host")));
+        }
+        _ => {}
+    }
+    add(q, "type", net);
+
+    let reality = get("reality-opts.public-key");
+    if !(get("tls") == "true" || tls_by_default || !reality.is_empty()) {
+        return;
+    }
+    if reality.is_empty() {
+        add(q, "security", "tls");
+    } else {
+        add(q, "security", "reality");
+        add(q, "pbk", reality);
+        add(q, "sid", get("reality-opts.short-id"));
+    }
+    let sni = ["servername", "sni", "peer"].into_iter().map(get).find(|v| !v.is_empty()).unwrap_or_default();
+    add(q, "sni", sni);
+    add(q, "alpn", get("alpn"));
+    add(q, "fp", get("client-fingerprint"));
+    if get("skip-cert-verify") == "true" {
+        add(q, "allowInsecure", "1");
+    }
 }
 
 #[cfg(test)]
@@ -612,6 +923,118 @@ mod tests {
         assert_eq!(found.len(), 1, "мусор пропускается, а не роняет подписку: {found:?}");
         assert_eq!(found[0].name, "Живой");
         assert!(parse_many("").is_empty(), "пустое тело — пустой список");
+    }
+
+    /// Clash-YAML: панель отдаёт его вместо списка ссылок, и подписка обязана
+    /// пережить это так же, как base64.
+    #[test]
+    fn subscription_clash_yaml() {
+        let body = "\
+port: 7890
+mode: rule
+proxies:
+  - name: \"Узел ①\"
+    type: vless
+    server: nl.example.com
+    port: 443
+    uuid: b831381d-6324-4d53-ad4f-8cda48b30811
+    flow: xtls-rprx-vision
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: PUBKEY
+      short-id: ab12
+    network: ws
+    ws-opts:
+      path: /ray
+      max-early-data: 2048
+      headers:
+        Host: cdn.example.com
+  - {name: SS, type: ss, server: ss.example.com, port: 8388, cipher: aes-256-gcm, password: \"p@ss,word\"}
+  - name: VM
+    type: vmess
+    server: vm.example.com
+    port: 443
+    uuid: b831381d-6324-4d53-ad4f-8cda48b30811
+    alterId: 4
+    cipher: auto
+    tls: true
+    skip-cert-verify: true
+    network: grpc
+    grpc-opts:
+      grpc-service-name: svc
+  - name: HY
+    type: hysteria2
+    server: hy.example.com
+    ports: \"443-8443\"
+    password: pass
+    obfs: salamander
+    obfs-password: obfspass
+    sni: hy.example.com
+  - name: WG
+    type: wireguard
+    server: wg.example.com
+    port: 51820
+    private-key: cHJpdmF0ZQ
+    public-key: cHVibGlj
+    ip: 10.0.0.2
+    mtu: 1408
+    reserved: [1, 2, 3]
+  - name: SSR
+    type: ssr
+    server: x.example.com
+    port: 1234
+proxy-groups:
+  - name: PROXY
+    type: select
+";
+        let found = parse_many(body);
+        let names: Vec<&str> = found.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Узел ①", "SS", "VM", "HY", "WG"], "ssr не наш протокол — узел пропускается");
+
+        let vless = &found[0].node;
+        assert_eq!(vless["type"], "vless");
+        assert_eq!(vless["server_port"], 443);
+        assert_eq!(vless["flow"], "xtls-rprx-vision");
+        assert_eq!(vless["tls"]["reality"]["public_key"], "PUBKEY", "reality-opts включает и сам TLS");
+        assert_eq!(vless["tls"]["reality"]["short_id"], "ab12");
+        assert_eq!(vless["tls"]["utls"]["fingerprint"], "chrome");
+        assert_eq!(vless["transport"]["type"], "ws");
+        assert_eq!(vless["transport"]["path"], "/ray");
+        assert_eq!(vless["transport"]["max_early_data"], 2048);
+        assert_eq!(vless["transport"]["headers"]["Host"], "cdn.example.com", "вложенность в три уровня");
+
+        let ss = &found[1].node;
+        assert_eq!(ss["method"], "aes-256-gcm");
+        assert_eq!(ss["password"], "p@ss,word", "запятая внутри кавычек — часть пароля");
+        assert_eq!(ss["server_port"], 8388);
+
+        let vmess = &found[2].node;
+        assert_eq!(vmess["alter_id"], 4, "alterId из Clash не теряется");
+        assert_eq!(vmess["transport"]["service_name"], "svc");
+        assert_eq!(vmess["tls"]["insecure"], true, "skip-cert-verify");
+
+        let hy = &found[3].node;
+        assert_eq!(hy["server_port"], 443, "порта нет — берём начало диапазона ports");
+        assert_eq!(hy["hop_ports"], "443-8443");
+        assert_eq!(hy["obfs"]["password"], "obfspass");
+
+        let wg = &found[4].node;
+        assert_eq!(wg["address"][0], "10.0.0.2/32", "маску Clash не пишет, а sing-box ждёт");
+        assert_eq!(wg["peers"][0]["reserved"], serde_json::json!([1, 2, 3]));
+        assert_eq!(wg["mtu"], 1408);
+    }
+
+    /// Разбор YAML — запасной путь, и включаться он должен только вместо ссылок.
+    #[test]
+    fn clash_yaml_is_a_fallback() {
+        assert!(parse_many("proxies:\n").is_empty(), "пустая секция — пустой список");
+        assert!(parse_many("не yaml и не ссылки").is_empty());
+        // Узел без обязательного поля — пропуск, а не профиль, который молча не соединится.
+        assert!(parse_many("proxies:\n  - {name: X, type: vless, server: a.com, port: 443}").is_empty(), "vless без uuid");
+        assert!(
+            parse_many("proxies:\n  - {name: X, type: ss, server: a.com, port: 8388, cipher: aes-256-gcm, password: p, plugin: shadow-tls}").is_empty(),
+            "плагин, который не переложить в ссылку"
+        );
     }
 
     #[test]
