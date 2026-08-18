@@ -49,6 +49,13 @@ const RU = {
   hideMessage: "Скрыть сообщение",
   removeProfile: (name: string) => `Удалить профиль ${name}`,
   removeApp: (name: string) => `Убрать ${name}`,
+  version: "Версия",
+  checkUpdates: "Проверить обновления",
+  checking: "Спрашиваю GitHub…",
+  upToDate: "Это последняя версия",
+  updateAvailable: (tag: string) => `Вышла ${tag}`,
+  download: "Скачать",
+  allReleases: (n: number) => `Все релизы (${n})`,
 };
 
 const EN: typeof RU = {
@@ -97,6 +104,13 @@ const EN: typeof RU = {
   hideMessage: "Hide message",
   removeProfile: (name: string) => `Remove profile ${name}`,
   removeApp: (name: string) => `Remove ${name}`,
+  version: "Version",
+  checkUpdates: "Check for updates",
+  checking: "Asking GitHub…",
+  upToDate: "This is the latest version",
+  updateAvailable: (tag: string) => `${tag} is out`,
+  download: "Download",
+  allReleases: (n: number) => `All releases (${n})`,
 };
 
 export type Strings = typeof RU;

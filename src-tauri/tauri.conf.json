@@ -18,8 +18,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self'",
-      "devCsp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:5173 http://127.0.0.1:5173"
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self'; connect-src 'self' https://api.github.com",
+      "devCsp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:5173 http://127.0.0.1:5173 https://api.github.com"
     }
   },
   "bundle": {
