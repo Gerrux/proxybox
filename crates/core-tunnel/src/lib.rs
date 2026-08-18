@@ -10,7 +10,7 @@
 use core_ipc::t;
 use serde_json::{json, Value};
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -227,6 +227,43 @@ pub fn probe(socks_port: u16, target: (&str, u16)) -> io::Result<u32> {
     let s = socks5_connect(socks_port, target)?;
     let _ = s.shutdown(Shutdown::Both);
     Ok(started.elapsed().as_millis() as u32)
+}
+
+/// Свободный порт у ядра. 48292/48293 занимает живой туннель, а проверочному
+/// инстансу нужны свои.
+///
+/// ponytail: между тем, как порт освобождён здесь, и тем, как его займёт
+/// sing-box, есть щель — влезший туда чужой процесс сорвёт запуск, и прогон
+/// покажет это ошибкой профиля. По-настоящему зарезервировать порт нечем:
+/// биндит его не наш процесс. Потолок — редкая ложная ошибка в прогоне;
+/// апгрейд — передавать sing-box уже открытый сокет, чего он не умеет.
+fn free_port() -> io::Result<u16> {
+    Ok(TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port())
+}
+
+/// Проверка профиля, не трогая живой туннель: отдельный sing-box без TUN, без
+/// правил по `process_path`, на своих портах и в своём каталоге. Ни маршрутов
+/// системы, ни брандмауэра он не касается — что бы в прогоне ни сломалось,
+/// пользователь не останется без сети, а fail-closed основного туннеля не
+/// сдвинется ни на такт.
+///
+/// Отдельный каталог обязателен: `Tunnel::start` добивает процесс из
+/// `singbox.pid`, и общий каталог с основным туннелем означал бы, что прогон
+/// убивает как раз тот туннель, который проверяет.
+///
+/// Трафик этого инстанса при поднятом основном туннеле уходит через TUN и
+/// попадает под `final: direct` — цепочки из двух туннелей не выходит, и
+/// задержка меряется настоящая.
+pub fn measure(node: &Value, dir: &Path, target: (&str, u16)) -> io::Result<u32> {
+    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, apps: Vec::new() };
+    let mut proc = Tunnel::start(&build_config(node, &opts), dir)?;
+    let result = probe(opts.socks_port, target);
+    proc.stop();
+    // Оставленный PID — это шанс, что следующий прогон добьёт по
+    // переиспользованному номеру чужой процесс, а по имени sing-box проверочного
+    // от sing-box живого туннеля не отличить.
+    let _ = std::fs::remove_file(dir.join("singbox.pid"));
+    result
 }
 
 /// Хост, у которого спрашиваем точку выхода. Единственный внешний адрес,
@@ -497,6 +534,16 @@ mod tests {
         });
         let err = socks5_connect(port, ("a.com", 443)).unwrap_err().to_string();
         assert!(err.contains("не пропустил"), "{err}");
+    }
+
+    /// Прогон профиля не должен ни поднимать TUN, ни отдавать успех, когда
+    /// узел недоступен. Работает и без sing-box: тогда падает запуск, а не проба.
+    #[test]
+    fn measure_fails_on_a_dead_node() {
+        let dir = std::env::temp_dir().join("pg-measure-test");
+        let dead = json!({ "type": "trojan", "server": "127.0.0.1", "server_port": 1, "password": "p" });
+        assert!(measure(&dead, &dir, ("127.0.0.1", 1)).is_err(), "мёртвый узел обязан стать ошибкой");
+        assert_ne!(free_port().unwrap(), 0, "порт должен быть настоящим");
     }
 
     #[test]

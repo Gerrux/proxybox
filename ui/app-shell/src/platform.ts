@@ -9,6 +9,9 @@ export type Lang = "ru" | "en";
 
 export type App = { path: string; name: string; enabled: boolean };
 
+/** Итог прогона одного профиля: либо задержка, либо причина отказа. */
+export type Probe = { name: string; latency_ms: number | null; error: string | null };
+
 export type Status = {
   tunnel: Tunnel;
   profile: string | null;
@@ -21,6 +24,7 @@ export type Status = {
   subscriptions: string[];
   lang: Lang;
   log: string[];
+  probes: Probe[];
 };
 
 export type Request =
@@ -38,7 +42,10 @@ export type Request =
   | { cmd: "remove-profile"; arg: { name: string } }
   /** Подписки заводятся через add-profile с http(s)-адресом; повторный импорт
    *  того же адреса её обновляет. Отдельная команда нужна только на «отписаться». */
-  | { cmd: "remove-subscription"; arg: { url: string } };
+  | { cmd: "remove-subscription"; arg: { url: string } }
+  /** Прогон всех профилей: каждый проверяется отдельным подключением, живой
+   *  туннель при этом не трогается. */
+  | { cmd: "test-profiles" };
 
 export type Response =
   | { reply: "status"; data: Status }

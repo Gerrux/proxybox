@@ -22,6 +22,7 @@ const USAGE_RU: &str = "privacy-gateway <команда>
                          JSON-конфиг sing-box или подписку по http(s)-адресу;
                          тот же адрес повторно — обновить подписку
   profiles               список профилей
+  test                   прогнать все профили: кто отвечает и за сколько
   lang ru|en             язык сообщений службы и окна";
 
 const USAGE_EN: &str = "privacy-gateway <command>
@@ -39,6 +40,7 @@ const USAGE_EN: &str = "privacy-gateway <command>
                          a sing-box JSON config or a subscription http(s) URL;
                          the same URL again refreshes the subscription
   profiles               list profiles
+  test                   run every profile: who answers and how fast
   lang ru|en             language of service and window messages";
 
 fn usage() -> String {
@@ -69,6 +71,7 @@ fn parse(args: &[String]) -> Result<Request, String> {
             .map(|link| Request::AddProfile { link })
             .ok_or_else(|| t("нужен --link <share-link>", "needs --link <share-link>")),
         Some("profiles") => Ok(Request::Status),
+        Some("test") => Ok(Request::TestProfiles),
         Some("lang") => match args.get(1).map(String::as_str) {
             Some("ru") => Ok(Request::SetLang { lang: core_ipc::Lang::Ru }),
             Some("en") => Ok(Request::SetLang { lang: core_ipc::Lang::En }),
@@ -135,6 +138,22 @@ fn main() -> std::process::ExitCode {
                 println!("[{}] {} — {}", if a.enabled { "x" } else { " " }, a.name, a.path);
             }
             std::process::ExitCode::SUCCESS
+        }
+        Ok(Response::Status(s)) if args[0] == "test" => {
+            adopt(s.lang);
+            for p in &s.probes {
+                let verdict = match (p.latency_ms, &p.error) {
+                    (Some(ms), _) => t(&format!("{ms} мс"), &format!("{ms} ms")),
+                    (None, Some(e)) => e.clone(),
+                    (None, None) => t("не проверен", "not checked"),
+                };
+                println!("{:<20} {verdict}", p.name);
+            }
+            // Все профили мёртвые — это отказ, а не «успешно ничего не нашли».
+            match s.probes.iter().any(|p| p.latency_ms.is_some()) {
+                true => std::process::ExitCode::SUCCESS,
+                false => std::process::ExitCode::FAILURE,
+            }
         }
         Ok(Response::Status(s)) if args[0] == "profiles" => {
             adopt(s.lang);

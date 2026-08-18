@@ -95,6 +95,10 @@ pub enum Request {
     /// Отписаться: уходит и адрес, и все профили, которые с него пришли.
     RemoveSubscription { url: String },
     SetLang { lang: Lang },
+    /// Прогнать все профили: каждый поднимается отдельным sing-box без TUN и
+    /// пробуется. Живой туннель при этом не трогается — прогон ничего не
+    /// переключает, только меряет.
+    TestProfiles,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +112,15 @@ pub enum Tunnel {
     /// Приватный режим включён, туннеля нет → выбранные приложения в DROP.
     /// Прямого доступа в этом состоянии не бывает: это и есть fail-closed.
     Down,
+}
+
+/// Итог прогона одного профиля. Ошибка строкой, а не `Result`: контракт едет
+/// в JSON и читается ещё и фронтендом.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Probe {
+    pub name: String,
+    pub latency_ms: Option<u32>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,6 +152,10 @@ pub struct Status {
     /// Последние события службы, новое сверху. Не переживает перезапуск.
     #[serde(default)]
     pub log: Vec<String>,
+    /// Итог последнего прогона профилей. Держится до следующего прогона и не
+    /// сохраняется на диск: это измерение, а не состояние.
+    #[serde(default)]
+    pub probes: Vec<Probe>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -279,6 +296,7 @@ mod tests {
             Request::RemoveProfile { name: "myvpn".into() },
             Request::RemoveSubscription { url: "https://panel.example/sub?token=1".into() },
             Request::SetLang { lang: Lang::En },
+            Request::TestProfiles,
         ];
         for r in reqs {
             let s = serde_json::to_string(&r).unwrap();
@@ -292,6 +310,7 @@ mod tests {
                 country: Some("Нидерланды, Амстердам".into()),
                 apps: vec![App { path: r"C:\app.exe".into(), name: "app".into(), enabled: true }],
                 profiles: vec!["myvpn".into()],
+                probes: vec![Probe { name: "myvpn".into(), latency_ms: Some(42), error: None }],
                 ..Default::default()
             }),
             Response::Apps(vec![]),

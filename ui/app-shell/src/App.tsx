@@ -92,7 +92,7 @@ export function App() {
           отдана широкая колонка целиком. */}
       <div className="grid min-h-0 flex-1 gap-4 md:grid-cols-[minmax(240px,0.8fr)_1.2fr]">
         <div className="flex min-h-0 flex-col gap-4">
-          <Profiles status={status} act={act} className="min-h-0 flex-1" />
+          <Profiles status={status} act={act} busy={busy > 0} className="min-h-0 flex-1" />
           <Journal lines={status?.log ?? []} lang={status?.lang} className="h-[38%] shrink-0" />
         </div>
         <Apps status={status} act={act} className="min-h-0" />
