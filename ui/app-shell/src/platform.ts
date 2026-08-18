@@ -88,8 +88,11 @@ export async function browse(profile: string): Promise<void> {
   if (r.reply !== "proxy") {
     throw new Error(r.reply === "error" ? r.data.message : "служба не вернула порт");
   }
+  // В браузере при разработке запускать нечем — показываем адрес как есть, он
+  // и есть всё, что нужно: подставить в --proxy-server руками. Текст без слов
+  // намеренно, строки живут в i18n, а тот импортирует типы отсюда.
   if (!isTauri()) {
-    throw new Error(`прокси профиля: socks5://127.0.0.1:${r.data.port} — браузер запускает окно приложения`);
+    throw new Error(`socks5://127.0.0.1:${r.data.port}`);
   }
   await invoke("open_browser", { port: r.data.port, profile });
 }
