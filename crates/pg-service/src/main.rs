@@ -457,6 +457,11 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Response {
         &format!("subscription updated, nodes — {}", names.len()),
     ));
     s.subscriptions.insert(url.to_string(), names);
+    // Окно браузера могло висеть на узле, которого в подписке больше нет:
+    // держать его живым не за что, ровно как и активный профиль.
+    if s.browser.as_ref().is_some_and(|(name, _)| !s.profiles.contains_key(name)) {
+        s.browser = None;
+    }
     s.save();
     if let Some(name) = active {
         let after = s.profiles.get(&name).cloned();
