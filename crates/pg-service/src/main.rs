@@ -13,7 +13,7 @@ use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -26,6 +26,21 @@ const PROBE_EVERY: Duration = Duration::from_secs(3);
 /// в бесконечный поток одинаковых ошибок в журнале.
 const RETRY_BASE: Duration = Duration::from_secs(3);
 const RETRY_MAX: Duration = Duration::from_secs(60);
+
+/// Замок службы, переживающий панику в чужом потоке. Поток обслуживания клиента
+/// вправе упасть — вместе со своим соединением; надзор упасть не вправе. С
+/// обычным `unwrap()` первая же паника под замком отравляла бы его, надзор умер
+/// бы на следующем же цикле, и ставить правила брандмауэра после смерти sing-box
+/// стало бы некому: паника в разборе чужого запроса превратилась бы в утечку
+/// трафика. Состояние в худшем случае применено наполовину, и это чинит
+/// следующий цикл надзора.
+fn lock(svc: &Mutex<Service>) -> std::sync::MutexGuard<'_, Service> {
+    svc.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Прогон профилей идёт вне замка службы, но сам с собой не пересекается:
+/// см. `Request::TestProfiles`.
+static PROBE_LOCK: Mutex<()> = Mutex::new(());
 
 fn dir() -> PathBuf {
     // Служба работает под LocalSystem, и её %APPDATA% — это системный профиль
@@ -74,6 +89,11 @@ struct Service {
     /// Что уже применено к брандмауэру. Без этой памяти надзор дёргал бы netsh
     /// каждые три секунды и засыпал журнал одинаковыми отказами.
     applied: Option<(bool, Vec<String>)>,
+    /// Номер поколения туннеля: растёт на каждом запуске и на каждом гашении.
+    /// Проба идёт без замка и занимает секунды — за это время туннель успевают
+    /// перезапустить, а порты у нас постоянные. Номер отличает ответ про
+    /// нынешний процесс от ответа про прошлый.
+    generation: u64,
 }
 
 impl Service {
@@ -100,6 +120,7 @@ impl Service {
             retry_at: None,
             retry_delay: RETRY_BASE,
             applied: None,
+            generation: 0,
         }
     }
 
@@ -164,13 +185,17 @@ impl Service {
 
     fn start(&mut self, profile: &str) -> Result<(), String> {
         let node = self.profiles.get(profile).cloned().ok_or_else(|| t(&format!("нет профиля «{profile}»"), &format!("no profile \"{profile}\"")))?;
-        self.tunnel = None; // старый процесс убивается Drop'ом до запуска нового
         self.private = true;
         self.status.profile = Some(profile.to_string());
         self.save();
         // Сначала блокируем, потом поднимаем: между командой и живым туннелем
         // выбранные приложения должны быть без сети, а не в обход него.
+        // Блокировка идёт и впереди убийства старого процесса: при перезапуске
+        // из-за смены списка добавленное приложение в правилах ещё не значится,
+        // а TUN уже исчез бы — ровно в эту щель оно и ушло бы напрямую.
         self.guard(true);
+        self.tunnel = None; // старый процесс убивается Drop'ом до запуска нового
+        self.generation += 1; // всё, что проба знала о прошлом процессе, устарело
 
         let opts = Options { tun: tun_enabled(), apps: self.selected(), ..Default::default() };
         let config = build_config(&node, &opts);
@@ -207,6 +232,7 @@ impl Service {
         self.private = false;
         self.save();
         self.tunnel = None;
+        self.generation += 1; // проба, которая сейчас в полёте, — уже про прошлое
         self.status.tunnel = TunnelState::Off;
         self.status.country = None;
         self.status.latency_ms = None;
@@ -274,7 +300,9 @@ fn probe_target(node: &Value) -> (String, u16) {
     // По умолчанию пробуем сам сервер пользователя: сторонних адресов не трогаем.
     let server = node["server"].as_str().or_else(|| node["peers"][0]["address"].as_str()).unwrap_or("127.0.0.1");
     let port = node["server_port"].as_u64().or_else(|| node["peers"][0]["port"].as_u64()).unwrap_or(443);
-    (server.to_string(), port as u16)
+    // Порт приходит из чужого конфига и может быть любым числом; `as u16`
+    // превратил бы 70000 в 4464, и проба молча пошла бы не туда.
+    (server.to_string(), u16::try_from(port).unwrap_or(443))
 }
 
 /// Скачивание подписки. Напрямую, а не через туннель: первую подписку
@@ -323,7 +351,7 @@ fn subscribe(svc: &Mutex<Service>, url: &str) -> Response {
         Err(message) => return Response::Error { message },
     };
     let found = core_config::parse_many(&body);
-    let mut s = svc.lock().unwrap();
+    let mut s = lock(svc);
     if found.is_empty() {
         // Пустой ответ — это чаще всего не пустая подписка, а неверный адрес
         // или чужой формат. Старые профили в таком случае не трогаем.
@@ -335,6 +363,12 @@ fn subscribe(svc: &Mutex<Service>, url: &str) -> Response {
         return Response::Error { message };
     }
 
+    // Обновление подписки заменяет набор целиком, в том числе тот узел, через
+    // который прямо сейчас идёт трафик: forget_profile гасит его и выключает
+    // приватный режим. Для удаления руками это осознанное решение пользователя,
+    // а для плановой сверки списка — нет: узел почти всегда возвращается тем же
+    // именем, и режим обязан вернуться вместе с ним.
+    let was_active = s.status.profile.clone().filter(|_| s.private);
     for name in s.subscriptions.remove(url).unwrap_or_default() {
         s.forget_profile(&name);
     }
@@ -352,6 +386,9 @@ fn subscribe(svc: &Mutex<Service>, url: &str) -> Response {
     ));
     s.subscriptions.insert(url.to_string(), names);
     s.save();
+    if let Some(name) = was_active.filter(|n| !s.private && s.profiles.contains_key(n)) {
+        let _ = s.start(&name); // start сам вернёт private и поднимет туннель
+    }
     Response::Done
 }
 
@@ -364,7 +401,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             return subscribe(svc, link);
         }
     }
-    let mut s = svc.lock().unwrap();
+    let mut s = lock(svc);
     match req {
         Request::Status => Response::Status(s.status.clone()),
         Request::ListApps => Response::Apps(s.status.apps.clone()),
@@ -477,7 +514,12 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 s.profiles.iter().map(|(name, node)| (name.clone(), node.clone())).collect();
             drop(s);
             // Свой каталог: в общем с туннелем прогон добил бы по singbox.pid
-            // ровно тот процесс, который проверяет.
+            // ровно тот процесс, который проверяет. По той же причине прогон
+            // должен быть один: каталог probe/ у них общий, и два параллельных
+            // прогона добивают друг друга — рабочие профили выглядели бы
+            // сломанными. Второй ждёт, а не получает отказ: он всё равно шёл за
+            // свежими числами и дождётся именно их.
+            let _one_at_a_time = PROBE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             let probe_dir = dir().join("probe");
             let probes: Vec<Probe> = profiles
                 .iter()
@@ -490,7 +532,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                     Probe { name: name.clone(), latency_ms, error }
                 })
                 .collect();
-            let mut s = svc.lock().unwrap();
+            let mut s = lock(svc);
             let live = probes.iter().filter(|p| p.latency_ms.is_some()).count();
             let all = probes.len();
             s.log(t(
@@ -509,19 +551,23 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
     loop {
         std::thread::sleep(PROBE_EVERY);
         let probe = {
-            let mut s = svc.lock().unwrap();
+            let mut s = lock(svc);
             if !s.private {
+                // guard идемпотентен и молчит, когда всё уже снято. Но если при
+                // выключении netsh отказал, повторить попытку больше негде:
+                // без неё выбранные приложения остались бы без сети навсегда.
+                s.guard(false);
                 continue;
             }
             let alive = s.tunnel.as_mut().map(Process::alive).unwrap_or(false);
             match (alive, s.tunnel.as_ref()) {
-                (true, Some(t)) => Some((t.socks_port, t.api_port, s.probe_target.clone())),
+                (true, Some(t)) => Some((s.generation, t.socks_port, t.api_port, s.probe_target.clone())),
                 _ => None,
             }
         };
-        let Some((socks_port, api_port, (host, port))) = probe else {
+        let Some((generation, socks_port, api_port, (host, port))) = probe else {
             // Процесса нет — значит DROP, и только потом попытка поднять заново.
-            let mut s = svc.lock().unwrap();
+            let mut s = lock(svc);
             s.status.tunnel = TunnelState::Down;
             s.status.latency_ms = None;
             s.status.country = None;
@@ -529,21 +575,30 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             if s.retry_at.is_some_and(|at| Instant::now() < at) {
                 continue; // ждём паузы: отказ повторяется, а не проходит сам
             }
+            // Профиля нет (удалили активный) — поднимать нечего. Приложения при
+            // этом остаются заблокированными, и это не сбой, а ожидаемое
+            // состояние: обещать в журнале перезапуск было бы неправдой.
+            let Some(profile) = s.status.profile.clone() else { continue };
             s.log(t(
                 "sing-box не работает: выбранные приложения без сети, перезапуск",
                 "sing-box is down: selected apps have no network, restarting",
             ));
-            if let Some(profile) = s.status.profile.clone() {
-                let _ = s.start(&profile);
-            }
+            let _ = s.start(&profile);
             continue;
         };
 
         let result = core_tunnel::probe(socks_port, (&host, port));
         let traffic = core_tunnel::traffic(api_port).ok();
 
-        let mut s = svc.lock().unwrap();
+        let mut s = lock(svc);
         if !s.private {
+            continue;
+        }
+        if s.generation != generation {
+            // Пока шла проба, туннель успели перезапустить: сменили профиль или
+            // список приложений. Ответ относится к прошлому процессу и прошлому
+            // серверу — подтверждать им новый туннель нельзя, иначе guard(false)
+            // снимет правила с того, что ещё не поднялось.
             continue;
         }
         let mut just_up = false;
@@ -590,7 +645,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
         // ним стоит весь GUI.
         if just_up && geo_enabled() {
             let found = core_tunnel::exit_country(socks_port);
-            let mut s = svc.lock().unwrap();
+            let mut s = lock(svc);
             match found {
                 Ok(country) => {
                     s.log(t(&format!("точка выхода: {country}"), &format!("exit point: {country}")));
@@ -663,15 +718,35 @@ mod tests {
 
 fn serve(svc: &Mutex<Service>, mut conn: Stream) {
     let Ok(clone) = conn.try_clone() else { return };
-    for line in BufReader::new(clone).lines().map_while(Result::ok) {
-        let resp = match serde_json::from_str(&line) {
-            Ok(req) => handle(svc, req),
-            Err(e) => Response::Error {
-                message: t(&format!("неразбираемый запрос: {e}"), &format!("unparsable request: {e}")),
-            },
+    let mut reader = BufReader::new(clone);
+    loop {
+        // Потолок ставится на каждую строку заново, а не на соединение целиком:
+        // строк по одному соединению может прийти сколько угодно, а вот строка
+        // без перевода строки без потолка съедает всю память службы — и это
+        // умеет любой локальный процесс, если канал откатился на сокет.
+        let mut line = String::new();
+        match reader.by_ref().take(core_ipc::MAX_LINE).read_line(&mut line) {
+            Ok(0) | Err(_) => return, // клиент ушёл или прислал не UTF-8
+            Ok(_) => {}
+        }
+        // Строка без перевода строки — это либо упёршийся в потолок запрос,
+        // либо оборванный на середине. В обоих случаях отвечаем и уходим:
+        // остаток по этому соединению — хвост той же строки, а не следующий
+        // запрос, и разбирать его значит отвечать мусором на мусор.
+        let overflow = !line.ends_with('\n');
+        let resp = if overflow {
+            Response::Error { message: t("запрос слишком длинный", "the request is too long") }
+        } else {
+            match serde_json::from_str(&line) {
+                Ok(req) => handle(svc, req),
+                Err(e) => Response::Error {
+                    message: t(&format!("неразбираемый запрос: {e}"), &format!("unparsable request: {e}")),
+                },
+            }
         };
         let out = serde_json::to_string(&resp).unwrap();
-        if writeln!(conn, "{out}").is_err() || conn.flush().is_err() {
+        let sent = writeln!(conn, "{out}").is_ok() && conn.flush().is_ok();
+        if overflow || !sent {
             return;
         }
     }
@@ -683,7 +758,7 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
     let svc = Arc::new(Mutex::new(Service::load()));
     let (listener, endpoint) = Listener::bind()?;
     {
-        let mut s = svc.lock().unwrap();
+        let mut s = lock(&svc);
         let (apps, profiles) = (s.status.apps.len(), s.profiles.len());
         let where_ = match endpoint {
             Endpoint::Pipe => format!("канал {}", core_ipc::PIPE),
@@ -719,8 +794,14 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
                 let _ = s.start(&profile);
             }
             // Служба, убитая прошлый раз, могла оставить блокирующие правила: без
-            // этого выбранные приложения остались бы без сети и снять их было бы нечем.
-            _ => s.guard(false),
+            // этого выбранные приложения остались бы без сети и снять их было бы
+            // нечем. Снимаем ровно по приватному режиму, а не безусловно: он мог
+            // пережить перезапуск без профиля (профиль удалили), и тогда правила
+            // обязаны остаться.
+            _ => {
+                let private = s.private;
+                s.guard(private);
+            }
         }
     }
 
@@ -743,7 +824,7 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
         Some(rx) => {
             let _ = rx.recv();
             // Остановка по команде — гасим туннель и снимаем правила.
-            svc.lock().unwrap().stop();
+            lock(&svc).stop();
         }
         None => loop {
             std::thread::park();
