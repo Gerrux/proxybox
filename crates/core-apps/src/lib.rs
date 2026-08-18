@@ -15,9 +15,11 @@
 //! `%USERPROFILE%` — это профиль SYSTEM внутри System32, `%APPDATA%` и
 //! `%LOCALAPPDATA%` — его же. Раскрывать пользовательские переменные из своего
 //! окружения ей бесполезно: Telegram, Spotify, Claude Code и всё прочее, что
-//! ставится в домашний каталог, лежит не там. Поэтому настоящие профили служба
-//! берёт из `ProfileList` и проходит каталог по каждому — своё окружение
-//! отвечает только за общесистемное (`%ProgramFiles%`, `%SystemRoot%`, PATH).
+//! ставится в домашний каталог, лежит не там. Профиль человека приходит от
+//! клиента — он-то и работает от его имени; своё окружение службы отвечает
+//! только за общесистемное (`%ProgramFiles%`, `%SystemRoot%`, PATH). Клиент
+//! профиль не передал — остаётся старый ответ: пройти все профили из
+//! `ProfileList`, потому что спросить больше не у кого.
 
 use serde::Deserialize;
 use std::path::Path;
@@ -51,17 +53,19 @@ pub fn catalog() -> Vec<Known> {
 /// Каталог первым: имена там человеческие и выверенные, а реестр только
 /// дополняет. Один и тот же exe из двух источников — одна запись.
 ///
-/// ponytail: профили перебираются все, какие есть на машине, — спросить «а кто,
-/// собственно, спрашивает» службе не у кого, да и правила брандмауэра она
-/// ставит по пути, то есть тоже на всю машину. Потолок: на общем компьютере в
-/// списке окажутся и чужие приложения. Апгрейд — клиент (он и работает от имени
-/// пользователя) передаёт свой `%USERPROFILE%` в `Discover`: поле в core-ipc,
-/// правка обоих клиентов и типов во фронтенде.
-pub fn discover() -> Vec<Found> {
+/// `home` — профиль спрашивающего (см. `Request::Discover`). Без него в списке
+/// на общей машине оказывались бы и чужие приложения: правила брандмауэра всё
+/// равно ставятся по пути, то есть на всю машину, но предлагать человеку чужой
+/// Telegram — не то же самое, что найти его собственный.
+pub fn discover(home: Option<&str>) -> Vec<Found> {
     let catalog = catalog();
     // Окружение самой службы отвечает за общесистемное: %ProgramFiles%, PATH.
     let mut found = discover_from(&catalog, &[]);
-    for profile in user_profiles() {
+    let profiles = match home {
+        Some(home) => vec![home.to_string()],
+        None => user_profiles(),
+    };
+    for profile in profiles {
         found.extend(discover_from(&catalog, &user_vars(&profile)));
     }
     found.extend(from_registry());
@@ -411,7 +415,7 @@ mod tests {
     /// Дедуп по пути: каталог и реестр находят одно и то же, в списке это одна строка.
     #[test]
     fn discover_deduplicates_by_path() {
-        let found = discover();
+        let found = discover(std::env::var("HOME").ok().as_deref());
         let mut paths: Vec<String> = found.iter().map(|f| f.path.to_lowercase()).collect();
         paths.sort();
         let before = paths.len();

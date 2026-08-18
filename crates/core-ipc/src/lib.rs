@@ -69,6 +69,13 @@ pub fn t(ru: &str, en: &str) -> String {
     .to_string()
 }
 
+/// Профиль пользователя, от имени которого работает клиент, — для `Discover`.
+/// Живёт в контракте, потому что нужен обоим клиентам и означает ровно то, что
+/// написано у команды. `HOME` — для разработки не на Windows.
+pub fn home() -> Option<String> {
+    std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok()
+}
+
 /// Язык из окружения — для клиентов, которым не у кого спросить (usage, doctor).
 pub fn lang_from_env() -> Lang {
     let vars = ["PG_LANG", "LC_ALL", "LC_MESSAGES", "LANG"];
@@ -91,7 +98,13 @@ pub enum Request {
     ListApps,
     /// Найти установленные приложения по стандартным путям и добавить в список
     /// выключенными: перехватывать что-то без ведома пользователя мы не будем.
-    Discover,
+    ///
+    /// `home` — профиль того, кто спрашивает (`%USERPROFILE%`). Служба работает
+    /// под LocalSystem, её собственный профиль лежит внутри System32, а спросить
+    /// «кто там на том конце» ей нечем — зато клиент работает от имени человека
+    /// и знает это про себя. Не передали — служба перебирает все профили машины,
+    /// как делала раньше, и в список попадут чужие приложения.
+    Discover { home: Option<String> },
     AddApp { path: String },
     /// Иконка приложения отдельным запросом, а не полем в `App`: картинки
     /// весят килобайты, а статус окно опрашивает каждые две секунды.
@@ -311,7 +324,8 @@ mod tests {
             Request::AddApp { path: r"C:\app.exe".into() },
             Request::SetApp { path: r"C:\app.exe".into(), enabled: false },
             Request::RemoveApp { path: r"C:\app.exe".into() },
-            Request::Discover,
+            Request::Discover { home: Some(r"C:\Users\ilya".into()) },
+            Request::Discover { home: None },
             Request::Icon { path: r"C:\app.exe".into() },
             Request::AddProfile { link: "vless://u@a.com:443".into() },
             Request::RemoveProfile { name: "myvpn".into() },

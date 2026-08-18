@@ -57,7 +57,8 @@ fn parse(args: &[String]) -> Result<Request, String> {
         Some("status") => Ok(Request::Status),
         Some("off") => Ok(Request::Off),
         Some("list-apps") => Ok(Request::ListApps),
-        Some("discover") => Ok(Request::Discover),
+        // Свой профиль CLI знает про себя сам: он работает от имени человека.
+        Some("discover") => Ok(Request::Discover { home: core_ipc::home() }),
         Some("on") => flag(args, "--profile")
             .map(|profile| Request::On { profile })
             .ok_or_else(|| t("нужен --profile <имя>", "needs --profile <name>")),

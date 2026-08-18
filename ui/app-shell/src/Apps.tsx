@@ -86,7 +86,7 @@ export function Apps({ status, act, className }: { status: Status | null; act: (
         )
       }
       action={
-        <Button variant="quiet" onClick={() => act({ cmd: "discover" })}>
+        <Button variant="quiet" onClick={() => act({ cmd: "discover", arg: { home: null } })}>
           {s.discover}
         </Button>
       }
