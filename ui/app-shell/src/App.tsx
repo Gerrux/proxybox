@@ -9,10 +9,17 @@ import { Button } from "./ui";
 
 /** Опрос статуса. Служба тикает раз в 3 с, чаще спрашивать нечего. */
 const POLL_MS = 2000;
+/** Пока туннель поднимается, две секунды до обновления — целая вечность на
+ *  глаз. Подключение длится секунды, а не часы, лишний трафик по петле дешёвый. */
+const POLL_BUSY_MS = 600;
 
 export function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Сколько команд в полёте. Служба отвечает на команду только закончив работу
+  // (reapply перезапускает sing-box, не отпуская мьютекс), поэтому «ждём» —
+  // единственное, что окно может честно показать всё это время.
+  const [busy, setBusy] = useState(0);
 
   const send = useCallback(async (req: Request) => {
     try {
@@ -27,34 +34,51 @@ export function App() {
 
   const refresh = useCallback(() => send({ cmd: "status" }), [send]);
 
+  const connecting = status?.tunnel === "connecting";
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, POLL_MS);
+    const id = setInterval(refresh, connecting ? POLL_BUSY_MS : POLL_MS);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, connecting]);
 
   // Команда и сразу перечитанный статус: окно не гадает, что получилось, —
   // единственный источник истины остаётся у службы.
   const act = useCallback(
     (req: Request) => {
-      void send(req).then(refresh);
+      setBusy((n) => n + 1);
+      void send(req)
+        .then(refresh)
+        .finally(() => setBusy((n) => n - 1));
     },
     [send, refresh],
   );
 
+  // Решение принято в момент нажатия, а служба ответит через секунды. Показываем
+  // намерение сразу — ближайший статус всё равно перепишет его правдой, и врать
+  // это не даёт: «подключение» и так означает «сети у выбранных приложений нет».
   const toggle = () => {
     if (!status) return;
-    if (status.tunnel !== "off") return act({ cmd: "off" });
+    if (status.tunnel !== "off") {
+      setStatus({ ...status, tunnel: "off" });
+      return act({ cmd: "off" });
+    }
     const profile = status.profile ?? status.profiles[0];
-    if (profile) act({ cmd: "on", arg: { profile } });
+    if (!profile) return;
+    setStatus({ ...status, tunnel: "connecting", profile });
+    act({ cmd: "on", arg: { profile } });
   };
 
   return (
     <div className="mx-auto flex h-full max-w-5xl flex-col gap-4 overflow-hidden p-5">
-      <StatusBar status={status} onToggle={toggle} onLang={(lang: Lang) => act({ cmd: "set-lang", arg: { lang } })} />
+      <StatusBar
+        status={status}
+        busy={busy > 0}
+        onToggle={toggle}
+        onLang={(lang: Lang) => act({ cmd: "set-lang", arg: { lang } })}
+      />
 
       {error && (
-        <div className="flex shrink-0 items-start gap-3 rounded-xl border border-edge bg-closed-soft px-4 py-3 text-[13px] text-closed">
+        <div className="enter flex shrink-0 items-start gap-3 rounded-xl border border-edge bg-closed-soft px-4 py-3 text-[13px] text-closed">
           <p className="selectable min-w-0 flex-1">{error}</p>
           <Button variant="quiet" aria-label={strings(status?.lang).hideMessage} onClick={() => setError(null)}>
             ✕

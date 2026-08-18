@@ -34,7 +34,7 @@ export function Profiles({
               return (
                 <li
                   key={name}
-                  className={`flex items-center gap-2 rounded-lg px-2.5 py-2 ${active ? "bg-surface-2" : ""}`}
+                  className={`enter smooth flex items-center gap-2 rounded-lg px-2.5 py-2 ${active ? "bg-surface-2" : ""}`}
                 >
                   <span className={`min-w-0 flex-1 truncate text-[13px] ${active ? "font-medium" : "text-muted"}`}>
                     {name}
