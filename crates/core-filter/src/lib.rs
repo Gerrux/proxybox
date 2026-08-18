@@ -31,8 +31,18 @@ pub fn policy(private_mode: bool, tunnel_up: bool) -> Policy {
     }
 }
 
+/// Общее начало имени у всех наших правил: по нему и только по нему они
+/// снимаются. Путь входит в имя, чтобы правило было опознаваемо в брандмауэре
+/// глазами, но искать по нему нельзя — см. `sweep`.
+const RULE_PREFIX: &str = "Privacy Gateway: ";
+
 fn rule_name(path: &str) -> String {
-    format!("Privacy Gateway: {path}")
+    format!("{RULE_PREFIX}{path}")
+}
+
+/// Маска, которой снимаются все наши правила разом.
+fn sweep_mask() -> String {
+    format!("{RULE_PREFIX}*")
 }
 
 fn add_args(path: &str) -> Vec<String> {
@@ -49,18 +59,8 @@ fn add_args(path: &str) -> Vec<String> {
     ]
 }
 
-fn delete_args(path: &str) -> Vec<String> {
-    vec![
-        "advfirewall".into(),
-        "firewall".into(),
-        "delete".into(),
-        "rule".into(),
-        format!("name={}", rule_name(path)),
-    ]
-}
-
-/// Поставить/снять блокировку для списка приложений. Идемпотентна: перед
-/// добавлением правило удаляется, чтобы не плодить дубликаты при рестартах.
+/// Поставить/снять блокировку для списка приложений. Идемпотентна: сначала
+/// снимаются все наши правила, потом ставятся заново по текущему списку.
 ///
 /// Список проходится целиком, даже если на каком-то приложении netsh отказал:
 /// выход по первой ошибке оставил бы весь хвост списка без правил — то есть в
@@ -68,17 +68,15 @@ fn delete_args(path: &str) -> Vec<String> {
 /// и его достаточно: вызывающий всё равно не запоминает частичный успех и
 /// повторит всю операцию.
 pub fn set_blocked(paths: &[String], blocked: bool) -> io::Result<()> {
+    sweep();
+    if !blocked {
+        return Ok(());
+    }
     let mut failure = None;
     for path in paths {
-        let outcome = run(&delete_args(path)).and_then(|()| {
-            if !blocked {
-                return Ok(());
-            }
-            // В сообщение идёт приложение и причина, а не вся строка netsh:
-            // читать её в журнале невозможно, а полезного в ней — хвост.
-            run(&add_args(path)).map_err(|e| io::Error::other(format!("{path}: {e}")))
-        });
-        if let Err(e) = outcome {
+        // В сообщение идёт приложение и причина, а не вся строка netsh: читать
+        // её в журнале невозможно, а полезного в ней — хвост.
+        if let Err(e) = run(&add_args(path)).map_err(|e| io::Error::other(format!("{path}: {e}"))) {
             failure.get_or_insert(e);
         }
     }
@@ -88,11 +86,33 @@ pub fn set_blocked(paths: &[String], blocked: bool) -> io::Result<()> {
     }
 }
 
+/// Снять все наши правила — по маске имени, а не по списку путей.
+///
+/// По списку и было: правило удалялось тем же именем, каким ставилось. Но путь
+/// между постановкой и снятием успевает и уйти из списка (сняли галочку,
+/// удалили приложение), и сменить написание — разделитель из реестра приводится
+/// к родному уже после того, как правило поставлено. Имя не совпадало, netsh
+/// молча отвечал «ни одно правило не соответствует», и правило оставалось в
+/// брандмауэре навсегда: приложение теряло сеть без причины, а WFP разбирал
+/// лишний фильтр на каждом исходящем соединении в системе — своём и чужом.
+/// Правила брандмауэра переживают и перезапуск службы, и перезагрузку, так что
+/// сироты только копились.
+///
+/// Отказ метлы не возвращается наружу намеренно. Она зовётся и из ветки
+/// «приватный режим выключен», а та проходит раз в PROBE_EVERY: сообщи мы об
+/// отказе — вызывающий забыл бы применённое и звал бы метлу каждые три секунды.
+/// Нет прав ставить правила — об этом скажет первый же `add`.
+fn sweep() {
+    powershell(&format!(
+        "Remove-NetFirewallRule -DisplayName '{}' -ErrorAction SilentlyContinue",
+        sweep_mask()
+    ));
+}
+
 #[cfg(windows)]
 fn run(args: &[String]) -> io::Result<()> {
     let out = std::process::Command::new("netsh").args(args).output()?;
-    // «Ни одно правило не соответствует» при удалении — не ошибка.
-    if !out.status.success() && args.contains(&"add".to_string()) {
+    if !out.status.success() {
         return Err(io::Error::other(String::from_utf8_lossy(&out.stdout).trim().to_string()));
     }
     Ok(())
@@ -129,19 +149,29 @@ fn detect(adapters: &str) -> Vec<String> {
 
 #[cfg(windows)]
 fn adapters() -> String {
+    powershell("Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | ForEach-Object {$_.InterfaceDescription}")
+}
+
+#[cfg(not(windows))]
+fn adapters() -> String {
+    String::new()
+}
+
+/// Обе задачи, для которых netsh не годится, решает PowerShell: маска имени при
+/// снятии правил и список адаптеров. Отказ — пустой вывод: и метле, и разбору
+/// адаптеров нечего с ним делать, кроме как считать, что ничего не нашлось.
+#[cfg(windows)]
+fn powershell(command: &str) -> String {
     std::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | ForEach-Object {$_.InterfaceDescription}",
-        ])
+        .args(["-NoProfile", "-Command", command])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default()
 }
 
 #[cfg(not(windows))]
-fn adapters() -> String {
+fn powershell(_command: &str) -> String {
+    // Брандмауэр и адаптеры есть только на целевой платформе.
     String::new()
 }
 
@@ -171,8 +201,20 @@ mod tests {
         assert!(add.contains(&"action=block".to_string()));
         assert!(add.contains(&"dir=out".to_string()));
         assert!(add.contains(&r"program=C:\Program Files\app.exe".to_string()));
-        // Имя правила совпадает у add и delete — иначе снять его нечем.
-        let name = |v: &Vec<String>| v.iter().find(|a| a.starts_with("name=")).unwrap().clone();
-        assert_eq!(name(&add), name(&delete_args(r"C:\Program Files\app.exe")));
+    }
+
+    /// Весь инвариант снятия: метла обязана покрывать имя, которым правило
+    /// поставлено, — при любом написании пути. Разъедутся — правило останется в
+    /// брандмауэре навсегда, а это и приложение без сети, и лишний фильтр WFP
+    /// на каждом исходящем соединении в системе.
+    #[test]
+    fn sweep_covers_every_rule_it_puts_up() {
+        let prefix = sweep_mask();
+        let prefix = prefix.strip_suffix('*').unwrap();
+        for path in [r"C:\Program Files\app.exe", "C:/Program Files/app.exe", "app.exe", ""] {
+            let name = add_args(path).into_iter().find(|a| a.starts_with("name=")).unwrap();
+            let name = name.strip_prefix("name=").unwrap();
+            assert!(name.starts_with(prefix), "правило «{name}» не попадает под маску «{prefix}*»");
+        }
     }
 }
