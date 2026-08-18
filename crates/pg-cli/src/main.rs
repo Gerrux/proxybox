@@ -23,6 +23,8 @@ const USAGE_RU: &str = "privacy-gateway <команда>
                          тот же адрес повторно — обновить подписку
   profiles               список профилей
   test                   прогнать все профили: кто отвечает и за сколько
+  browse --profile <имя> поднять отдельный прокси под этот профиль и напечатать
+                         его адрес: браузер с --proxy-server пойдёт в него
   lang ru|en             язык сообщений службы и окна";
 
 const USAGE_EN: &str = "privacy-gateway <command>
@@ -41,6 +43,8 @@ const USAGE_EN: &str = "privacy-gateway <command>
                          the same URL again refreshes the subscription
   profiles               list profiles
   test                   run every profile: who answers and how fast
+  browse --profile <name> bring up a separate proxy for that profile and print
+                         its address: a browser with --proxy-server goes there
   lang ru|en             language of service and window messages";
 
 fn usage() -> String {
@@ -76,6 +80,9 @@ fn parse(args: &[String]) -> Result<Request, String> {
             .ok_or_else(|| t("нужен --link <share-link>", "needs --link <share-link>")),
         Some("profiles") => Ok(Request::Status),
         Some("test") => Ok(Request::TestProfiles),
+        Some("browse") => flag(args, "--profile")
+            .map(|profile| Request::Browse { profile })
+            .ok_or_else(|| t("нужен --profile <имя>", "needs --profile <name>")),
         Some("lang") => match args.get(1).map(String::as_str) {
             Some("ru") => Ok(Request::SetLang { lang: core_ipc::Lang::Ru }),
             Some("en") => Ok(Request::SetLang { lang: core_ipc::Lang::En }),
@@ -137,6 +144,11 @@ fn main() -> std::process::ExitCode {
         }
         // Иконок CLI не спрашивает — печатать в терминал нечего.
         Ok(Response::Done | Response::Icon(_)) => std::process::ExitCode::SUCCESS,
+        // Адрес целиком: его вставляют в --proxy-server как есть.
+        Ok(Response::Proxy { port }) => {
+            println!("socks5://127.0.0.1:{port}");
+            std::process::ExitCode::SUCCESS
+        }
         Ok(Response::Apps(apps)) => {
             for a in apps {
                 println!("[{}] {} — {}", if a.enabled { "x" } else { " " }, a.name, a.path);

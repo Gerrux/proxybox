@@ -128,6 +128,12 @@ pub enum Request {
     /// пробуется. Живой туннель при этом не трогается — прогон ничего не
     /// переключает, только меряет.
     TestProfiles,
+    /// Поднять под профиль отдельный локальный прокси и вернуть его порт
+    /// (`Response::Proxy`). Нужен окну браузера: одна вкладка ходит в выбранный
+    /// туннель мимо общего режима. Живой туннель не трогается — у инстанса свои
+    /// порты, свой каталог и нет TUN. Запускает браузер клиент: служба работает
+    /// в сессии 0, её окна человек не увидит.
+    Browse { profile: String },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,6 +205,8 @@ pub enum Response {
     /// PNG в data-URL; `None` — иконки нет, окно нарисует заглушку.
     Icon(Option<String>),
     Done,
+    /// Локальный порт mixed-прокси, поднятого под профиль (`Browse`).
+    Proxy { port: u16 },
     Error { message: String },
 }
 
@@ -336,6 +344,7 @@ mod tests {
             Request::RemoveSubscription { url: "https://panel.example/sub?token=1".into() },
             Request::SetLang { lang: Lang::En },
             Request::TestProfiles,
+            Request::Browse { profile: "myvpn".into() },
         ];
         for r in reqs {
             let s = serde_json::to_string(&r).unwrap();

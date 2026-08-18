@@ -40,9 +40,39 @@ fn open_url(url: String) -> Result<(), String> {
         .map_err(|e| format!("не удалось открыть браузер: {e}"))
 }
 
+/// Окно браузера через отдельный туннель профиля. Порт поднимает служба
+/// (`Request::Browse`), а браузер запускает оболочка: служба работает в сессии
+/// 0, и её окна человек бы не увидел.
+///
+/// Свой `--user-data-dir` обязателен: без него Chromium передаёт аргументы уже
+/// запущенному экземпляру и открывает обычную вкладку мимо прокси.
+#[tauri::command]
+fn open_browser(port: u16, profile: String) -> Result<(), String> {
+    let browser = core_apps::browser().ok_or_else(|| {
+        core_ipc::t(
+            "браузер на Chromium не найден: нужен Chrome, Edge, Brave или Яндекс",
+            "no Chromium browser found: install Chrome, Edge, Brave or Yandex",
+        )
+    })?;
+    // Имя профиля пишет человек, а каталог из него делаем мы: в имени законны и
+    // слэш, и двоеточие.
+    let safe: String = profile.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+    let data = std::path::PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_default())
+        .join("privacy-gateway")
+        .join("browser")
+        .join(&safe);
+    std::process::Command::new(&browser.path)
+        .arg(format!("--proxy-server=socks5://127.0.0.1:{port}"))
+        .arg(format!("--user-data-dir={}", data.display()))
+        .arg("--no-first-run")
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("{}: {e}", browser.path))
+}
+
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![ipc, open_url])
+        .invoke_handler(tauri::generate_handler![ipc, open_url, open_browser])
         .run(tauri::generate_context!())
         .expect("не удалось запустить окно");
 }

@@ -95,6 +95,13 @@ struct Service {
     /// Что уже применено к брандмауэру. Без этой памяти надзор дёргал бы netsh
     /// каждые три секунды и засыпал журнал одинаковыми отказами.
     applied: Option<(bool, Vec<String>)>,
+    /// Инстанс под окно браузера: профиль и его процесс. Один на службу —
+    /// ponytail: запуск другого профиля заменяет прошлый, и открытое окно
+    /// остаётся с портом, который больше никто не слушает (браузер покажет
+    /// отказ прокси, наружу не уйдёт ничего). Потолок — одно окно за раз;
+    /// апгрейд — держать карту профиль → процесс и гасить по закрытию браузера,
+    /// а закрытие ещё надо как-то заметить.
+    browser: Option<(String, Process)>,
     /// Номер поколения туннеля: растёт на каждом запуске и на каждом гашении.
     /// Проба идёт без замка и занимает секунды — за это время туннель успевают
     /// перезапустить, а порты у нас постоянные. Номер отличает ответ про
@@ -126,6 +133,7 @@ impl Service {
             retry_at: None,
             retry_delay: RETRY_BASE,
             applied: None,
+            browser: None,
             generation: 0,
         }
     }
@@ -163,6 +171,10 @@ impl Service {
     /// выключить приватный режим руками, и приложения остаются защищёнными.
     fn forget_profile(&mut self, name: &str) {
         self.profiles.remove(name);
+        // Инстанс под браузер держал бы удалённый узел живым — а его больше нет.
+        if self.browser.as_ref().is_some_and(|(profile, _)| profile == name) {
+            self.browser = None;
+        }
         if self.status.profile.as_deref() == Some(name) {
             self.stop();
             self.status.profile = None;
@@ -245,6 +257,32 @@ impl Service {
         (self.status.rx, self.status.tx) = (0, 0);
         self.guard(false);
         self.log(t("приватный режим выключен: правила сняты", "private mode off: rules removed"));
+    }
+
+    /// Отдельный прокси под окно браузера. Тот же профиль второй раз — тот же
+    /// порт: окно уже открыто, поднимать ему второй sing-box незачем.
+    fn browse(&mut self, profile: &str) -> Result<u16, String> {
+        let node = self
+            .profiles
+            .get(profile)
+            .cloned()
+            .ok_or_else(|| t(&format!("нет профиля «{profile}»"), &format!("no profile \"{profile}\"")))?;
+        if let Some((name, proc)) = &mut self.browser {
+            if name == profile && proc.alive() {
+                return Ok(proc.socks_port);
+            }
+        }
+        // Старый инстанс гасится Drop'ом до запуска нового: каталог и pid у них
+        // общие, и живой предшественник был бы добит уже изнутри Tunnel::start.
+        self.browser = None;
+        let proc = core_tunnel::sidecar(&node, &dir().join("browser")).map_err(|e| e.to_string())?;
+        let port = proc.socks_port;
+        self.log(t(
+            &format!("профиль «{profile}» поднят под браузер: 127.0.0.1:{port}"),
+            &format!("profile \"{profile}\" is up for the browser: 127.0.0.1:{port}"),
+        ));
+        self.browser = Some((profile.to_string(), proc));
+        Ok(port)
     }
 
     /// Перезапуск с новым списком приложений — иначе только что добавленное
@@ -607,6 +645,12 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             s.stop();
             Response::Done
         }
+        // Инстанс под браузер живёт отдельно от приватного режима: он ничего не
+        // маршрутизирует сам и не трогает ни правил, ни TUN.
+        Request::Browse { profile } => match s.browse(&profile) {
+            Ok(port) => Response::Proxy { port },
+            Err(message) => Response::Error { message },
+        },
         Request::TestProfiles => {
             // Список снимается под замком, а меряется без него: профиль тратит
             // до нескольких секунд, а под этим замком стоит весь GUI.
@@ -948,8 +992,11 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
     match stop {
         Some(rx) => {
             let _ = rx.recv();
-            // Остановка по команде — гасим туннель и снимаем правила.
-            lock(&svc).stop();
+            // Остановка по команде — гасим туннель и снимаем правила. Инстанс
+            // под браузер тоже наш процесс: сиротой он бы остался жить.
+            let mut s = lock(&svc);
+            s.browser = None;
+            s.stop();
         }
         None => loop {
             std::thread::park();

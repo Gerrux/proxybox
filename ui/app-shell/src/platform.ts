@@ -49,7 +49,9 @@ export type Request =
   | { cmd: "remove-subscription"; arg: { url: string } }
   /** Прогон всех профилей: каждый проверяется отдельным подключением, живой
    *  туннель при этом не трогается. */
-  | { cmd: "test-profiles" };
+  | { cmd: "test-profiles" }
+  /** Отдельный прокси под профиль — для окна браузера. Ответ: порт. */
+  | { cmd: "browse"; arg: { profile: string } };
 
 export type Response =
   | { reply: "status"; data: Status }
@@ -57,6 +59,8 @@ export type Response =
   /** PNG в data-URL; null — иконки у файла нет. */
   | { reply: "icon"; data: string | null }
   | { reply: "done" }
+  /** Порт локального прокси, поднятого под профиль. */
+  | { reply: "proxy"; data: { port: number } }
   | { reply: "error"; data: { message: string } };
 
 /** Подставляется сборкой из src-tauri/tauri.conf.json (см. vite.config.ts). */
@@ -74,6 +78,20 @@ export async function openUrl(url: string): Promise<void> {
     return;
   }
   window.open(url, "_blank", "noopener");
+}
+
+/** Вкладка браузера через отдельный туннель профиля: служба поднимает прокси и
+ *  отдаёт порт, браузер запускает оболочка — фронтенд живёт в вебвью, процессов
+ *  ему не завести. */
+export async function browse(profile: string): Promise<void> {
+  const r = await call({ cmd: "browse", arg: { profile } });
+  if (r.reply !== "proxy") {
+    throw new Error(r.reply === "error" ? r.data.message : "служба не вернула порт");
+  }
+  if (!isTauri()) {
+    throw new Error(`прокси профиля: socks5://127.0.0.1:${r.data.port} — браузер запускает окно приложения`);
+  }
+  await invoke("open_browser", { port: r.data.port, profile });
 }
 
 export async function call(req: Request): Promise<Response> {

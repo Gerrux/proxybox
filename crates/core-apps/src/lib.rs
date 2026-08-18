@@ -150,6 +150,22 @@ fn user_profiles() -> Vec<String> {
         .collect()
 }
 
+/// Первый найденный браузер на Chromium — для кнопки «открыть через профиль».
+/// Порядок предпочтения свой, а не каталожный. Firefox и Tor сюда не годятся:
+/// `--proxy-server` понимают только Chromium-браузеры, у остальных прокси живёт
+/// в настройках профиля.
+///
+/// Ищем в окружении того, кто спрашивает: вызывает это оболочка окна, а она и
+/// работает от имени человека.
+pub fn browser() -> Option<Found> {
+    let found = discover_from(&catalog(), &[]);
+    CHROMIUM.iter().find_map(|name| found.iter().find(|f| f.name == *name).cloned())
+}
+
+/// Имена из каталога, а не пути: пути там уже описаны, и дублировать их значило
+/// бы разъехаться с ними на первом же обновлении каталога.
+const CHROMIUM: [&str; 4] = ["Google Chrome", "Microsoft Edge", "Brave", "Яндекс.Браузер"];
+
 /// Иконка приложения как PNG в data-URL — окно показывает её прямо в `<img>`.
 /// Не Windows, не exe, нет ресурса — `None`, и список обходится без картинки.
 pub fn icon(path: &str) -> Option<String> {
@@ -357,6 +373,16 @@ mod tests {
         assert!(!is_user_sid("S-1-5-19"), "LOCAL SERVICE");
         assert!(!is_user_sid("S-1-5-20"), "NETWORK SERVICE");
         assert!(!is_user_sid(".DEFAULT"));
+    }
+
+    /// Имена браузеров — единственная связь кода с каталогом по имени: их
+    /// переименование в каталоге кнопку «открыть через профиль» молча сломает.
+    #[test]
+    fn chromium_names_match_the_catalog() {
+        let catalog = catalog();
+        for name in CHROMIUM {
+            assert!(catalog.iter().any(|app| app.name == name), "в каталоге нет «{name}»");
+        }
     }
 
     /// Инструмент, прописанный только в пользовательском `PATH` (`HKCU\\Environment`):
