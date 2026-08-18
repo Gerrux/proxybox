@@ -6,7 +6,17 @@
     <title>Privacy Gateway</title>
   </head>
   <body>
-    <div id="root"></div>
+    <!-- Пока грузится бандл, окно белое, а это первое, что видит человек.
+         Показываем то же, что оно покажет через миг, — канал в ожидании;
+         React стирает эту разметку первым же рендером. Ни строк, ни скрипта:
+         текст пришлось бы переводить, а стили доезжают отдельным файлом. -->
+    <div id="root">
+      <div class="boot" data-state="connecting">
+        <span class="conduit-lamp"></span>
+        <span class="conduit-line"></span>
+        <span class="conduit-end"></span>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
