@@ -21,6 +21,8 @@
     { "name": "Steam", "paths": ["%ProgramFiles(x86)%\\Steam\\steam.exe"] },
     { "name": "Spotify", "paths": ["%APPDATA%\\Spotify\\Spotify.exe"] },
     { "name": "Visual Studio Code", "paths": ["%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\Code.exe", "%ProgramFiles%\\Microsoft VS Code\\Code.exe"] },
+    { "name": "Claude Code", "paths": ["%USERPROFILE%\\.local\\bin\\claude.exe", "claude.exe"] },
+    { "name": "Codex", "paths": ["%USERPROFILE%\\.codex\\bin\\codex.exe", "codex.exe"] },
     { "name": "Git", "paths": ["git.exe", "git"] },
     { "name": "curl", "paths": ["curl.exe", "curl"] },
     { "name": "wget", "paths": ["wget.exe", "wget"] },
