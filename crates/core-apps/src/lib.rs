@@ -10,6 +10,14 @@
 //!    `Uninstall` (имя + `DisplayIcon`, почти всегда главный exe) и `App Paths`
 //!    (имя exe → полный путь). Каталог покрывал три десятка программ, реестр —
 //!    всё, что человек ставил сам.
+//!
+//! Обнаружение выполняется в службе, а служба работает под LocalSystem: её
+//! `%USERPROFILE%` — это профиль SYSTEM внутри System32, `%APPDATA%` и
+//! `%LOCALAPPDATA%` — его же. Раскрывать пользовательские переменные из своего
+//! окружения ей бесполезно: Telegram, Spotify, Claude Code и всё прочее, что
+//! ставится в домашний каталог, лежит не там. Поэтому настоящие профили служба
+//! берёт из `ProfileList` и проходит каталог по каждому — своё окружение
+//! отвечает только за общесистемное (`%ProgramFiles%`, `%SystemRoot%`, PATH).
 
 use serde::Deserialize;
 use std::path::Path;
@@ -42,25 +50,89 @@ pub fn catalog() -> Vec<Known> {
 
 /// Каталог первым: имена там человеческие и выверенные, а реестр только
 /// дополняет. Один и тот же exe из двух источников — одна запись.
+///
+/// ponytail: профили перебираются все, какие есть на машине, — спросить «а кто,
+/// собственно, спрашивает» службе не у кого, да и правила брандмауэра она
+/// ставит по пути, то есть тоже на всю машину. Потолок: на общем компьютере в
+/// списке окажутся и чужие приложения. Апгрейд — клиент (он и работает от имени
+/// пользователя) передаёт свой `%USERPROFILE%` в `Discover`: поле в core-ipc,
+/// правка обоих клиентов и типов во фронтенде.
 pub fn discover() -> Vec<Found> {
-    let mut found = discover_from(&catalog());
+    let catalog = catalog();
+    // Окружение самой службы отвечает за общесистемное: %ProgramFiles%, PATH.
+    let mut found = discover_from(&catalog, &[]);
+    for profile in user_profiles() {
+        found.extend(discover_from(&catalog, &user_vars(&profile)));
+    }
     found.extend(from_registry());
     let mut seen = std::collections::HashSet::new();
     found.retain(|f| seen.insert(f.path.to_lowercase()));
     found
 }
 
-pub fn discover_from(apps: &[Known]) -> Vec<Found> {
+/// `vars` подменяет переменные окружения на время прохода: так один и тот же
+/// каталог раскрывается в профиль каждого пользователя по очереди.
+pub fn discover_from(apps: &[Known], vars: &[(&str, String)]) -> Vec<Found> {
     apps.iter()
         .filter_map(|app| {
             let path = app.paths.iter().find_map(|template| {
                 if template.contains(['\\', '/']) {
-                    expand(template).filter(|p| Path::new(p).is_file())
+                    expand(template, vars).filter(|p| Path::new(p).is_file())
                 } else {
                     in_path(template)
                 }
             })?;
             Some(Found { name: app.name.clone(), path })
+        })
+        .collect()
+}
+
+/// Пользовательские переменные каталога, раскрытые в конкретный профиль.
+/// Подкаталоги AppData внутри профиля Windows не переименовывает; перенос
+/// папок политикой домена мы не разбираем — там уже не про поиск exe.
+fn user_vars(profile: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("USERPROFILE", profile.to_string()),
+        ("LOCALAPPDATA", format!(r"{profile}\AppData\Local")),
+        ("APPDATA", format!(r"{profile}\AppData\Roaming")),
+    ]
+}
+
+/// Профиль живого человека — это SID машины или домена (`S-1-5-21-…`). В
+/// `ProfileList` рядом лежат SYSTEM (`S-1-5-18`), LOCAL SERVICE и NETWORK
+/// SERVICE: именно их окружение служба и так видит, и именно оно бесполезно.
+// Список профилей читается только на Windows, но фильтр SID проверяется везде —
+// иначе на Linux он числился бы мёртвым кодом.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_user_sid(sid: &str) -> bool {
+    sid.starts_with("S-1-5-21-")
+}
+
+#[cfg(not(windows))]
+fn user_profiles() -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(windows)]
+fn user_profiles() -> Vec<String> {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
+    use winreg::RegKey;
+    const PROFILE_LIST: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList";
+
+    let Ok(root) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(PROFILE_LIST, KEY_READ) else {
+        return Vec::new();
+    };
+    root.enum_keys()
+        .flatten()
+        .filter(|sid| is_user_sid(sid))
+        .filter_map(|sid| {
+            let entry = root.open_subkey_with_flags(&sid, KEY_READ).ok()?;
+            let raw: String = entry.get_value("ProfileImagePath").ok()?;
+            // Внутри бывает %SystemDrive% — это переменная службы, не человека,
+            // так что раскрывается своим же окружением.
+            let path = expand(raw.trim(), &[])?;
+            // Профиль удалённого пользователя остаётся в реестре ещё долго.
+            Path::new(&path).is_dir().then_some(path)
         })
         .collect()
 }
@@ -80,20 +152,30 @@ pub fn icon(path: &str) -> Option<String> {
     }
 }
 
-/// Раскрывает `%VAR%` из окружения. Нет переменной — нет и пути: значит эта
-/// ветка каталога к текущей системе не относится.
-pub fn expand(template: &str) -> Option<String> {
+/// Раскрывает `%VAR%`: сначала из `vars`, потом из окружения процесса. Нет
+/// переменной — нет и пути: значит эта ветка каталога к текущей системе не
+/// относится.
+pub fn expand(template: &str, vars: &[(&str, String)]) -> Option<String> {
     let mut out = String::new();
     let mut rest = template;
     while let Some(start) = rest.find('%') {
         let after = &rest[start + 1..];
         let end = after.find('%')?;
         out.push_str(&rest[..start]);
-        out.push_str(&std::env::var(&after[..end]).ok()?);
+        out.push_str(&var(&after[..end], vars)?);
         rest = &after[end + 1..];
     }
     out.push_str(rest);
     Some(out)
+}
+
+/// Имена переменных в Windows регистронезависимы, и в каталоге они написаны
+/// так, как принято у людей (`%ProgramFiles(x86)%`), а не как в реестре.
+fn var(name: &str, vars: &[(&str, String)]) -> Option<String> {
+    vars.iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.clone())
+        .or_else(|| std::env::var(name).ok())
 }
 
 fn in_path(name: &str) -> Option<String> {
@@ -122,7 +204,7 @@ fn exe_from_icon_resource(raw: &str) -> Option<String> {
             _ => raw,
         },
     };
-    let path = expand(path.trim())?;
+    let path = expand(path.trim(), &[])?;
     is_exe(&path).then_some(path)
 }
 
@@ -175,7 +257,7 @@ fn from_registry() -> Vec<Found> {
         for key in root.enum_keys().flatten() {
             let Ok(entry) = root.open_subkey_with_flags(&key, KEY_READ) else { continue };
             let Ok(raw) = entry.get_value::<String, _>("") else { continue };
-            let Some(path) = expand(raw.trim().trim_matches('"')) else { continue };
+            let Some(path) = expand(raw.trim().trim_matches('"'), &[]) else { continue };
             if is_exe(&path) {
                 // Имени тут нет, есть только `chrome.exe` — сойдёт как запасное:
                 // записи с человеческим именем пришли раньше и выиграют дедуп.
@@ -207,10 +289,56 @@ mod tests {
     #[test]
     fn expand_uses_environment() {
         std::env::set_var("PG_TEST_ROOT", "/root");
-        assert_eq!(expand("%PG_TEST_ROOT%/a/b.exe").as_deref(), Some("/root/a/b.exe"));
-        assert_eq!(expand("без переменных").as_deref(), Some("без переменных"));
-        assert_eq!(expand("%PG_TEST_MISSING%/x"), None, "нет переменной — нет пути");
-        assert_eq!(expand("%незакрытая/x"), None);
+        assert_eq!(expand("%PG_TEST_ROOT%/a/b.exe", &[]).as_deref(), Some("/root/a/b.exe"));
+        assert_eq!(expand("без переменных", &[]).as_deref(), Some("без переменных"));
+        assert_eq!(expand("%PG_TEST_MISSING%/x", &[]), None, "нет переменной — нет пути");
+        assert_eq!(expand("%незакрытая/x", &[]), None);
+    }
+
+    /// Ради этого всё и затевалось: у службы под LocalSystem свой `%USERPROFILE%`,
+    /// и он не должен побеждать профиль человека.
+    #[test]
+    fn profile_vars_win_over_service_environment() {
+        std::env::set_var("USERPROFILE", "/системный/профиль");
+        std::env::set_var("PG_TEST_ROOT", "/root");
+        let vars = user_vars("/дом/петя");
+        assert_eq!(expand("%USERPROFILE%/.local/bin/claude.exe", &vars).as_deref(), Some("/дом/петя/.local/bin/claude.exe"));
+        // Регистр в каталоге написан по-человечески, в реестре — как попало.
+        assert_eq!(expand("%userprofile%/x", &vars).as_deref(), Some("/дом/петя/x"));
+        // Чего в профиле нет, то берётся из окружения службы как раньше.
+        assert_eq!(expand("%PG_TEST_ROOT%/x", &vars).as_deref(), Some("/root/x"));
+        assert_eq!(
+            expand("%LOCALAPPDATA%|%APPDATA%", &vars).as_deref(),
+            Some(r"/дом/петя\AppData\Local|/дом/петя\AppData\Roaming"),
+            "AppData выводится из профиля, а не из окружения"
+        );
+    }
+
+    /// В `ProfileList` вперемешку и люди, и служебные учётки — а окружение
+    /// служебных и есть то бесполезное, от которого мы уходим.
+    #[test]
+    fn only_real_users_are_profiles() {
+        assert!(is_user_sid("S-1-5-21-3623811015-3361044348-30300820-1013"));
+        assert!(!is_user_sid("S-1-5-18"), "SYSTEM");
+        assert!(!is_user_sid("S-1-5-19"), "LOCAL SERVICE");
+        assert!(!is_user_sid("S-1-5-20"), "NETWORK SERVICE");
+        assert!(!is_user_sid(".DEFAULT"));
+    }
+
+    /// Приложение из домашнего каталога находится, только если каталог прошли
+    /// с переменными этого профиля.
+    #[test]
+    fn finds_app_inside_user_profile() {
+        let profile = std::env::temp_dir().join("pg-profile-test");
+        std::fs::create_dir_all(profile.join(".local/bin")).unwrap();
+        std::fs::write(profile.join(".local/bin/claude.exe"), b"").unwrap();
+        std::env::set_var("USERPROFILE", "/нет/такого/профиля");
+
+        let apps = [Known { name: "Claude Code".into(), paths: vec!["%USERPROFILE%/.local/bin/claude.exe".into()] }];
+        assert!(discover_from(&apps, &[]).is_empty(), "окружение службы этот exe не видит");
+        let found = discover_from(&apps, &user_vars(&profile.to_string_lossy()));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].path.ends_with("claude.exe"));
     }
 
     #[test]
@@ -225,7 +353,7 @@ mod tests {
             Known { name: "Нет".into(), paths: vec!["%PG_TEST_DIR%/нет.exe".into()] },
             Known { name: "Без переменной".into(), paths: vec!["%PG_TEST_UNSET%/real.exe".into()] },
         ];
-        let found = discover_from(&apps);
+        let found = discover_from(&apps, &[]);
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].name, "Есть");
         assert!(found[0].path.ends_with("real.exe"), "берётся первый существующий путь");
@@ -234,7 +362,7 @@ mod tests {
     #[test]
     fn finds_tools_in_path() {
         let sh = if cfg!(windows) { "cmd.exe" } else { "sh" };
-        let found = discover_from(&[Known { name: "Оболочка".into(), paths: vec![sh.into()] }]);
+        let found = discover_from(&[Known { name: "Оболочка".into(), paths: vec![sh.into()] }], &[]);
         assert_eq!(found.len(), 1, "{sh} должен находиться в PATH: {found:?}");
     }
 
