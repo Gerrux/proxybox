@@ -87,9 +87,13 @@ pub enum Request {
     SetApp { path: String, enabled: bool },
     RemoveApp { path: String },
     /// Импорт профиля из share-link (vless://, vmess://, trojan://, ss://, hy2://,
-    /// wg://) либо из JSON-конфига sing-box.
+    /// wg://) либо из JSON-конфига sing-box. `http(s)://` — это подписка: служба
+    /// скачает её и заведёт профиль на каждый узел. Повторный импорт того же
+    /// адреса обновляет подписку, отдельной команды на это нет.
     AddProfile { link: String },
     RemoveProfile { name: String },
+    /// Отписаться: уходит и адрес, и все профили, которые с него пришли.
+    RemoveSubscription { url: String },
     SetLang { lang: Lang },
 }
 
@@ -126,6 +130,10 @@ pub struct Status {
     pub tx: u64,
     pub apps: Vec<App>,
     pub profiles: Vec<String>,
+    /// Адреса подписок. Какие профили с какой пришли, знает только служба —
+    /// окну хватает списка, чтобы дать обновить и отписаться.
+    #[serde(default)]
+    pub subscriptions: Vec<String>,
     #[serde(default)]
     pub lang: Lang,
     /// Последние события службы, новое сверху. Не переживает перезапуск.
@@ -269,6 +277,7 @@ mod tests {
             Request::Icon { path: r"C:\app.exe".into() },
             Request::AddProfile { link: "vless://u@a.com:443".into() },
             Request::RemoveProfile { name: "myvpn".into() },
+            Request::RemoveSubscription { url: "https://panel.example/sub?token=1".into() },
             Request::SetLang { lang: Lang::En },
         ];
         for r in reqs {

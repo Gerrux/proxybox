@@ -41,6 +41,25 @@ pub fn parse(link: &str) -> Result<Profile, String> {
     }
 }
 
+/// Тело подписки → профили. Панель отдаёт список ссылок либо открытым текстом,
+/// либо целиком в base64 — второе встречается чаще. Строку, которую разобрать не
+/// вышло, пропускаем: терять всю подписку из-за одного незнакомого протокола не
+/// за что, а сколько узлов дошло, видно по длине ответа.
+pub fn parse_many(body: &str) -> Vec<Profile> {
+    // Переносы внутри base64 — норма для подписок, `b64` их не ждёт. Проверка
+    // на `://` отсекает случай, когда открытый текст сам похож на base64.
+    let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+    let decoded = b64_str(&compact).filter(|text| text.contains("://"));
+    decoded
+        .as_deref()
+        .unwrap_or(body)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| parse(line).ok())
+        .collect()
+}
+
 /// Конфиг sing-box: либо целиком (берём первый рабочий outbound), либо один
 /// узел объектом. Служебные outbound'ы (direct/block/dns и группы) — не узлы.
 fn from_json(text: &str) -> Result<Profile, String> {
@@ -564,6 +583,35 @@ mod tests {
         .unwrap();
         assert_eq!(full.node["type"], "trojan", "служебные outbound пропускаются");
         assert_eq!(full.name, "trojan-b.com", "имени нет — собираем из типа и сервера");
+    }
+
+    /// Подписка приходит в двух видах, и оба должны дать один и тот же список.
+    #[test]
+    fn subscription_plain_and_base64() {
+        let list = "vless://u@a.com:443?security=none#Первый\n\
+                    trojan://p@b.com:443#Второй\n";
+        let plain = parse_many(list);
+        assert_eq!(plain.len(), 2, "{plain:?}");
+        assert_eq!(plain[0].name, "Первый");
+        assert_eq!(plain[1].name, "Второй");
+
+        // Панели переносят base64 по строкам — это не должно ничего ломать.
+        let encoded = base64::engine::general_purpose::STANDARD.encode(list);
+        let wrapped = format!("{}\n{}", &encoded[..20], &encoded[20..]);
+        assert_eq!(parse_many(&wrapped), plain, "base64 разбирается так же, как текст");
+    }
+
+    #[test]
+    fn subscription_survives_junk() {
+        let body = "# комментарий\n\
+                    \n\
+                    magnet://не-протокол\n\
+                    vless://u@a.com:443?security=none#Живой\n\
+                    не ссылка вовсе\n";
+        let found = parse_many(body);
+        assert_eq!(found.len(), 1, "мусор пропускается, а не роняет подписку: {found:?}");
+        assert_eq!(found[0].name, "Живой");
+        assert!(parse_many("").is_empty(), "пустое тело — пустой список");
     }
 
     #[test]

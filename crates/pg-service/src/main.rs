@@ -46,6 +46,10 @@ fn tun_enabled() -> bool {
 struct Saved {
     apps: Vec<App>,
     profiles: BTreeMap<String, Value>,
+    /// Адрес подписки → имена профилей, которые с неё пришли. Без этой памяти
+    /// обновление подписки не смогло бы убрать узлы, которых в ней больше нет.
+    #[serde(default)]
+    subscriptions: BTreeMap<String, Vec<String>>,
     profile: Option<String>,
     #[serde(default)]
     lang: core_ipc::Lang,
@@ -59,6 +63,7 @@ struct Saved {
 struct Service {
     status: Status,
     profiles: BTreeMap<String, Value>,
+    subscriptions: BTreeMap<String, Vec<String>>,
     /// Приватный режим включён пользователем. Не то же самое, что «туннель жив»:
     /// именно расхождение этих двух флагов и означает DROP.
     private: bool,
@@ -84,9 +89,11 @@ impl Service {
                 profile: saved.profile,
                 apps: saved.apps,
                 profiles: saved.profiles.keys().cloned().collect(),
+                subscriptions: saved.subscriptions.keys().cloned().collect(),
                 ..Default::default()
             },
             profiles: saved.profiles,
+            subscriptions: saved.subscriptions,
             private: saved.private,
             tunnel: None,
             probe_target: (String::new(), 0),
@@ -98,9 +105,11 @@ impl Service {
 
     fn save(&mut self) {
         self.status.profiles = self.profiles.keys().cloned().collect();
+        self.status.subscriptions = self.subscriptions.keys().cloned().collect();
         let saved = Saved {
             apps: self.status.apps.clone(),
             profiles: self.profiles.clone(),
+            subscriptions: self.subscriptions.clone(),
             profile: self.status.profile.clone(),
             lang: self.status.lang,
             private: self.private,
@@ -120,6 +129,17 @@ impl Service {
         eprintln!("{line}");
         self.status.log.insert(0, line);
         self.status.log.truncate(30);
+    }
+
+    /// Профиль уходит из списка — и из туннеля, если был активен. Держать
+    /// поднятым узел, которого больше нет, не за что: это то же самое, что
+    /// выключить приватный режим руками, и приложения остаются защищёнными.
+    fn forget_profile(&mut self, name: &str) {
+        self.profiles.remove(name);
+        if self.status.profile.as_deref() == Some(name) {
+            self.stop();
+            self.status.profile = None;
+        }
     }
 
     fn selected(&self) -> Vec<String> {
@@ -257,7 +277,93 @@ fn probe_target(node: &Value) -> (String, u16) {
     (server.to_string(), port as u16)
 }
 
+/// Скачивание подписки. Напрямую, а не через туннель: первую подписку
+/// импортируют ровно тогда, когда туннеля ещё нет.
+/// ponytail: если панель заблокирована провайдером, это не поможет — тогда
+/// нужен вариант «качать через уже поднятый туннель» на mixed-порт 48292.
+fn fetch(url: &str) -> Result<String, String> {
+    let fail = |e: &dyn std::fmt::Display| {
+        t(&format!("подписка не скачалась: {e}"), &format!("subscription download failed: {e}"))
+    };
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        // TLS берём у системы (на Windows это SChannel): корни те же, что у
+        // остальных программ на машине, и сборка не тянет за собой C-компилятор
+        // ради rustls-ring — с ним `cargo check --target …-msvc` не проходит.
+        .tls_config(
+            ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::NativeTls).build(),
+        )
+        // Глобальный тайм-аут, а не только на соединение: молчащий сервер не
+        // должен держать импорт бесконечно.
+        .timeout_global(Some(Duration::from_secs(20)))
+        // Панели отдают формат по User-Agent. Своё имя — значит список ссылок,
+        // а не clash-конфиг, которого мы не понимаем.
+        .user_agent(concat!("privacy-gateway/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into();
+    agent.get(url).call().map_err(|e| fail(&e))?.body_mut().read_to_string().map_err(|e| fail(&e))
+}
+
+/// Занятое имя получает номер: в подписках узлы сплошь и рядом называются
+/// одинаково, а профиль в списке — это ключ.
+fn free_name(taken: &BTreeMap<String, Value>, want: &str) -> String {
+    if !taken.contains_key(want) {
+        return want.to_string();
+    }
+    (2..).map(|n| format!("{want} ({n})")).find(|name| !taken.contains_key(name)).expect("номер найдётся")
+}
+
+/// Импорт и обновление подписки — одно и то же действие: скачать и заменить
+/// набор профилей целиком. Узла, которого в подписке больше нет, не должно
+/// остаться и в списке.
+fn subscribe(svc: &Mutex<Service>, url: &str) -> Response {
+    // Сеть — до захвата замка. Иначе окно на все двадцать секунд перестало бы
+    // получать статус, а служба — выглядеть живой.
+    let body = match fetch(url) {
+        Ok(body) => body,
+        Err(message) => return Response::Error { message },
+    };
+    let found = core_config::parse_many(&body);
+    let mut s = svc.lock().unwrap();
+    if found.is_empty() {
+        // Пустой ответ — это чаще всего не пустая подписка, а неверный адрес
+        // или чужой формат. Старые профили в таком случае не трогаем.
+        let message = t(
+            "в ответе подписки нет ни одного узла — проверьте адрес",
+            "the subscription returned no nodes — check the address",
+        );
+        s.log(message.clone());
+        return Response::Error { message };
+    }
+
+    for name in s.subscriptions.remove(url).unwrap_or_default() {
+        s.forget_profile(&name);
+    }
+    let names: Vec<String> = found
+        .into_iter()
+        .map(|p| {
+            let name = free_name(&s.profiles, &p.name);
+            s.profiles.insert(name.clone(), p.node);
+            name
+        })
+        .collect();
+    s.log(t(
+        &format!("подписка обновлена, узлов — {}", names.len()),
+        &format!("subscription updated, nodes — {}", names.len()),
+    ));
+    s.subscriptions.insert(url.to_string(), names);
+    s.save();
+    Response::Done
+}
+
 fn handle(svc: &Mutex<Service>, req: Request) -> Response {
+    // Подписка ходит в сеть, поэтому разбирается до замка — остальные команды
+    // работают с состоянием и берут его сразу.
+    if let Request::AddProfile { link } = &req {
+        let link = link.trim();
+        if link.starts_with("http://") || link.starts_with("https://") {
+            return subscribe(svc, link);
+        }
+    }
     let mut s = svc.lock().unwrap();
     match req {
         Request::Status => Response::Status(s.status.clone()),
@@ -331,14 +437,26 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             Response::Done
         }
         Request::RemoveProfile { name } => {
-            s.profiles.remove(&name);
-            if s.status.profile.as_deref() == Some(name.as_str()) {
-                s.stop();
-                s.status.profile = None;
-            }
+            s.forget_profile(&name);
             s.save();
             Response::Done
         }
+        Request::RemoveSubscription { url } => match s.subscriptions.remove(&url) {
+            Some(names) => {
+                for name in &names {
+                    s.forget_profile(name);
+                }
+                s.log(t(
+                    &format!("подписка отключена, профилей убрано — {}", names.len()),
+                    &format!("subscription removed, profiles dropped — {}", names.len()),
+                ));
+                s.save();
+                Response::Done
+            }
+            None => Response::Error {
+                message: t(&format!("нет подписки {url}"), &format!("no subscription {url}")),
+            },
+        },
         Request::On { profile } => {
             // Команда пользователя — пробуем сразу, накопленная пауза не в счёт.
             s.retry_at = None;

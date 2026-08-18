@@ -18,8 +18,9 @@ const USAGE_RU: &str = "privacy-gateway <команда>
   add-app --path <exe>   добавить приложение по пути к .exe
   enable --path <exe>    пустить приложение в туннель
   disable --path <exe>   убрать приложение из-под управления
-  add-profile --link <l> импортировать share-link (vless/vmess/trojan/ss/hy2/wg)
-                         или JSON-конфиг sing-box
+  add-profile --link <l> импортировать share-link (vless/vmess/trojan/ss/hy2/wg),
+                         JSON-конфиг sing-box или подписку по http(s)-адресу;
+                         тот же адрес повторно — обновить подписку
   profiles               список профилей
   lang ru|en             язык сообщений службы и окна";
 
@@ -34,8 +35,9 @@ const USAGE_EN: &str = "privacy-gateway <command>
   add-app --path <exe>   add an app by path to its .exe
   enable --path <exe>    let the app into the tunnel
   disable --path <exe>   take the app out of control
-  add-profile --link <l> import a share-link (vless/vmess/trojan/ss/hy2/wg)
-                         or a sing-box JSON config
+  add-profile --link <l> import a share-link (vless/vmess/trojan/ss/hy2/wg),
+                         a sing-box JSON config or a subscription http(s) URL;
+                         the same URL again refreshes the subscription
   profiles               list profiles
   lang ru|en             language of service and window messages";
 
