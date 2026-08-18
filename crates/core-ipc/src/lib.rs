@@ -28,6 +28,7 @@ pub enum Request {
     Discover,
     AddApp { path: String },
     SetApp { path: String, enabled: bool },
+    RemoveApp { path: String },
     /// Импорт профиля из share-link (vless://, vmess://, trojan://, ss://, hy2://, wg://).
     AddProfile { link: String },
     RemoveProfile { name: String },
@@ -99,6 +100,7 @@ mod tests {
             Request::ListApps,
             Request::AddApp { path: r"C:\app.exe".into() },
             Request::SetApp { path: r"C:\app.exe".into(), enabled: false },
+            Request::RemoveApp { path: r"C:\app.exe".into() },
             Request::Discover,
             Request::AddProfile { link: "vless://u@a.com:443".into() },
             Request::RemoveProfile { name: "myvpn".into() },

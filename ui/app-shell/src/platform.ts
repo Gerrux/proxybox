@@ -26,6 +26,7 @@ export type Request =
   | { cmd: "discover" }
   | { cmd: "add-app"; arg: { path: string } }
   | { cmd: "set-app"; arg: { path: string; enabled: boolean } }
+  | { cmd: "remove-app"; arg: { path: string } }
   | { cmd: "add-profile"; arg: { link: string } }
   | { cmd: "remove-profile"; arg: { name: string } };
 
@@ -38,8 +39,11 @@ export type Response =
 export const isTauri = () => "__TAURI_INTERNALS__" in window;
 
 export async function call(req: Request): Promise<Response> {
-  if (!isTauri()) {
-    throw new Error("нет связи со службой: откройте десктоп-приложение");
+  if (isTauri()) {
+    return invoke<Response>("ipc", { req });
   }
-  return invoke<Response>("ipc", { req });
+  // Разработка в браузере: мост дев-сервера (vite.config.ts). В собранном
+  // приложении сюда не попадаем — там всегда Tauri.
+  const response = await fetch("/ipc", { method: "POST", body: JSON.stringify(req) });
+  return response.json() as Promise<Response>;
 }

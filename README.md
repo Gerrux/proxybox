@@ -9,6 +9,13 @@ Windows 10/11. Rust-ядро в воркспейс-крейтах, служба 
 
 Техзадание — [privacy-gateway-prompt.md](privacy-gateway-prompt.md).
 
+![Интерфейс Privacy Gateway](docs/interface.png)
+
+Состояние — главное, что показывает окно, поэтому оно и занимает верх. Когда
+туннель отваливается, это не ошибка приложения, а сработавшая защита:
+
+![Туннеля нет — доступ закрыт](docs/interface-failclosed.png)
+
 ## Как это работает
 
 Своей реализации протоколов у нас нет: туннель держит **sing-box**, как в
@@ -54,6 +61,16 @@ scripts/e2e.sh       сквозная проверка на своём же sing
 scripts/bench-cores.sh  сравнение ядер (sing-box / mihomo / Xray) на одном стенде
 ```
 
+## Быстрый старт на Windows
+
+Двойной клик по `run.bat` — он проверит окружение, при необходимости скачает
+sing-box, поставит зависимости и предложит: запустить службу с окном приложения,
+запустить службу с интерфейсом в браузере, собрать установщик, прогнать тесты
+или проверить окружение (`doctor`).
+
+Службе нужны права администратора — TUN и правила брандмауэра иначе не поднять;
+`run.bat` об этом предупредит, если запущен без них.
+
 ## Требования
 
 - Rust toolchain; Node + [pnpm](https://pnpm.io) 9+
@@ -75,7 +92,9 @@ cargo run -p pg-cli -- on --profile myvpn
 cargo run -p pg-cli -- status
 cargo run -p pg-cli -- doctor                  # почему не работает: окружение
 
-pnpm --filter app-shell dev                   # фронтенд на :5173
+pnpm --filter app-shell dev                   # фронтенд на :5173; дев-сервер
+                                              # сам ходит в службу (см. vite.config.ts),
+                                              # так интерфейс живой и без Tauri
 cargo tauri dev                               # окно с фронтендом (Windows)
 
 pnpm validate                                 # lint + build + cargo test

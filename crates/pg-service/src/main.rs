@@ -214,6 +214,14 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             }
             None => Response::Error { message: format!("приложение не в списке: {path}") },
         },
+        Request::RemoveApp { path } => {
+            s.status.apps.retain(|a| a.path != path);
+            s.save();
+            // Приложение выпало из списка — конфиг туннеля больше не должен его
+            // упоминать, иначе оно останется в туннеле до перезапуска.
+            s.reapply();
+            Response::Done
+        }
         Request::AddProfile { link } => match core_config::parse(&link) {
             Ok(p) => {
                 s.profiles.insert(p.name.clone(), p.node);

@@ -1,0 +1,46 @@
+/**
+ * Токены Privacy Gateway. Светлая тема по умолчанию, тёмная — по системной
+ * настройке: приложение живёт в трее рядом с системным UI и должно совпадать
+ * с ним, а не спорить. Имена семантические (surface/text/border/state), как в
+ * Арбогео, — цвета в разметке не называются напрямую.
+ *
+ * Три состояния продукта имеют собственные цвета и это не украшение: состояние
+ * — и есть главная информация в окне.
+ */
+:root {
+  --pg-bg: oklch(96.5% 0.004 250);
+  --pg-surface: oklch(100% 0 0);
+  --pg-surface-2: oklch(97.5% 0.004 250);
+  --pg-border: oklch(89% 0.006 250);
+  --pg-text: oklch(24% 0.014 260);
+  --pg-muted: oklch(52% 0.012 260);
+
+  --pg-open: oklch(52% 0.14 150); /* туннель поднят */
+  --pg-closed: oklch(55% 0.19 25); /* доступа нет — так и задумано */
+  --pg-wait: oklch(60% 0.13 75); /* подключение */
+  --pg-accent: oklch(50% 0.14 255);
+
+  --pg-open-soft: oklch(95% 0.05 150);
+  --pg-closed-soft: oklch(95% 0.04 25);
+  --pg-wait-soft: oklch(96% 0.05 75);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --pg-bg: oklch(17% 0.012 262);
+    --pg-surface: oklch(21% 0.014 262);
+    --pg-surface-2: oklch(25% 0.014 262);
+    --pg-border: oklch(30% 0.016 262);
+    --pg-text: oklch(95% 0.005 260);
+    --pg-muted: oklch(68% 0.012 260);
+
+    --pg-open: oklch(78% 0.15 150);
+    --pg-closed: oklch(70% 0.17 25);
+    --pg-wait: oklch(83% 0.13 85);
+    --pg-accent: oklch(72% 0.12 255);
+
+    --pg-open-soft: oklch(28% 0.06 150);
+    --pg-closed-soft: oklch(28% 0.07 25);
+    --pg-wait-soft: oklch(29% 0.06 85);
+  }
+}

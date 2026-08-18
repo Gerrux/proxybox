@@ -13,16 +13,17 @@ $bin  = Join-Path $root "src-tauri\binaries"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 
 # sing-box в комплекте обязателен: без него приватный режим не включается.
-$target = Join-Path $bin "sing-box-$Triple.exe"
-if ($SingBox) { Copy-Item $SingBox $target -Force }
-if (-not (Test-Path $target)) {
-  throw "Нет $target. Скачайте sing-box для Windows (https://github.com/SagerNet/sing-box/releases) и укажите -SingBox путь\к\sing-box.exe"
-}
-# GPL-3.0: текст лицензии обязан ехать вместе с бинарником.
+# GPL-3.0: текст лицензии обязан ехать вместе с бинарником, его тоже проверяем.
 $license = Join-Path $bin "LICENSE-sing-box.txt"
-if (-not (Test-Path $license)) {
-  throw "Нет $license — положите рядом LICENSE из архива sing-box (условие GPL-3.0)"
+if ($SingBox) { Copy-Item $SingBox (Join-Path $bin "sing-box.exe") -Force }
+if (-not (Test-Path (Join-Path $bin "sing-box.exe")) -or -not (Test-Path $license)) {
+  Write-Host "== sing-box не найден, качаю"
+  $arch = if ($Triple -like "aarch64*") { "arm64" } else { "amd64" }
+  & (Join-Path $PSScriptRoot "get-singbox.ps1") -Arch $arch
 }
+# Tauri ждёт sidecar-бинарники с суффиксом целевой платформы.
+$target = Join-Path $bin "sing-box-$Triple.exe"
+Copy-Item (Join-Path $bin "sing-box.exe") $target -Force
 
 Write-Host "== сборка службы и CLI"
 & cargo build --release -p pg-service -p pg-cli

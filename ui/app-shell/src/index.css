@@ -1,15 +1,41 @@
 @import "tailwindcss";
+@import "./tokens.css";
 
-@theme {
-  --color-bg: oklch(0.18 0.01 260);
-  --color-panel: oklch(0.24 0.015 260);
-  --color-ink: oklch(0.95 0.005 260);
-  --color-muted: oklch(0.7 0.01 260);
-  --color-open: oklch(0.72 0.16 145);
-  --color-closed: oklch(0.65 0.19 25);
+/* inline — утилиты ссылаются на переменные, а не копируют значения: иначе
+   смена темы по prefers-color-scheme до классов не доходит. */
+@theme inline {
+  --color-bg: var(--pg-bg);
+  --color-surface: var(--pg-surface);
+  --color-surface-2: var(--pg-surface-2);
+  --color-edge: var(--pg-border);
+  --color-ink: var(--pg-text);
+  --color-muted: var(--pg-muted);
+  --color-open: var(--pg-open);
+  --color-closed: var(--pg-closed);
+  --color-wait: var(--pg-wait);
+  --color-accent: var(--pg-accent);
+  --color-open-soft: var(--pg-open-soft);
+  --color-closed-soft: var(--pg-closed-soft);
+  --color-wait-soft: var(--pg-wait-soft);
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
 }
 
 body {
-  background: var(--color-bg);
-  color: var(--color-ink);
+  background: var(--pg-bg);
+  color: var(--pg-text);
+  font-family: var(--font-sans);
+  /* Окно приложения, а не веб-страница: выделять интерфейс мышью незачем. */
+  user-select: none;
+}
+
+/* Пути и ссылки — единственное, что осмысленно выделять и копировать. */
+.selectable {
+  user-select: text;
 }
