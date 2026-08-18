@@ -7,3 +7,8 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+
+# Windows сама знает, что установлено и как оно выглядит: реестр и оболочка.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+windows-icons = "0.4"

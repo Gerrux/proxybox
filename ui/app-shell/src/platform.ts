@@ -25,6 +25,7 @@ export type Request =
   | { cmd: "list-apps" }
   | { cmd: "discover" }
   | { cmd: "add-app"; arg: { path: string } }
+  | { cmd: "icon"; arg: { path: string } }
   | { cmd: "set-app"; arg: { path: string; enabled: boolean } }
   | { cmd: "remove-app"; arg: { path: string } }
   | { cmd: "add-profile"; arg: { link: string } }
@@ -33,6 +34,8 @@ export type Request =
 export type Response =
   | { reply: "status"; data: Status }
   | { reply: "apps"; data: App[] }
+  /** PNG в data-URL; null — иконки у файла нет. */
+  | { reply: "icon"; data: string | null }
   | { reply: "done" }
   | { reply: "error"; data: { message: string } };
 

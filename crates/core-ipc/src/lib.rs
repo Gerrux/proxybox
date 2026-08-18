@@ -27,6 +27,9 @@ pub enum Request {
     /// выключенными: перехватывать что-то без ведома пользователя мы не будем.
     Discover,
     AddApp { path: String },
+    /// Иконка приложения отдельным запросом, а не полем в `App`: картинки
+    /// весят килобайты, а статус окно опрашивает каждые две секунды.
+    Icon { path: String },
     SetApp { path: String, enabled: bool },
     RemoveApp { path: String },
     /// Импорт профиля из share-link (vless://, vmess://, trojan://, ss://, hy2://, wg://).
@@ -73,6 +76,8 @@ pub struct Status {
 pub enum Response {
     Status(Status),
     Apps(Vec<App>),
+    /// PNG в data-URL; `None` — иконки нет, окно нарисует заглушку.
+    Icon(Option<String>),
     Done,
     Error { message: String },
 }
@@ -102,6 +107,7 @@ mod tests {
             Request::SetApp { path: r"C:\app.exe".into(), enabled: false },
             Request::RemoveApp { path: r"C:\app.exe".into() },
             Request::Discover,
+            Request::Icon { path: r"C:\app.exe".into() },
             Request::AddProfile { link: "vless://u@a.com:443".into() },
             Request::RemoveProfile { name: "myvpn".into() },
         ];
@@ -119,6 +125,8 @@ mod tests {
                 ..Default::default()
             }),
             Response::Apps(vec![]),
+            Response::Icon(Some("data:image/png;base64,iVBOR".into())),
+            Response::Icon(None),
             Response::Done,
             Response::Error { message: "нет".into() },
         ];

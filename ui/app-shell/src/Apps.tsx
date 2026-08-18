@@ -1,4 +1,5 @@
-import type { App, Request, Status } from "./platform";
+import { useEffect, useRef, useState } from "react";
+import { call, type App, type Request, type Status } from "./platform";
 import { AddField, Button, Empty, Panel } from "./ui";
 
 /** Включённые сверху, дальше по алфавиту: список после автообнаружения длинный,
@@ -7,9 +8,31 @@ function ordered(apps: App[]): App[] {
   return [...apps].sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.name.localeCompare(b.name, "ru"));
 }
 
+/** Иконки спрашиваются по одной и только раз за путь: в статусе их нет, потому
+ *  что он ходит по кругу каждые две секунды, а картинка весит килобайты.
+ *  Файл не меняется под нами — перечитывать нечего. */
+function useIcons(apps: App[]): Record<string, string> {
+  const [icons, setIcons] = useState<Record<string, string>>({});
+  const asked = useRef(new Set<string>());
+
+  useEffect(() => {
+    for (const { path } of apps) {
+      if (asked.current.has(path)) continue;
+      asked.current.add(path);
+      call({ cmd: "icon", arg: { path } })
+        // Нет иконки — не ошибка: строка просто остаётся с заглушкой.
+        .then((r) => r.reply === "icon" && r.data && setIcons((prev) => ({ ...prev, [path]: r.data as string })))
+        .catch(() => {});
+    }
+  }, [apps]);
+
+  return icons;
+}
+
 export function Apps({ status, act, className }: { status: Status | null; act: (req: Request) => void; className?: string }) {
   const apps = status?.apps ?? [];
   const on = apps.filter((a) => a.enabled).length;
+  const icons = useIcons(apps);
 
   return (
     <Panel
@@ -41,6 +64,11 @@ export function Apps({ status, act, className }: { status: Status | null; act: (
                   onChange={(e) => act({ cmd: "set-app", arg: { path: app.path, enabled: e.target.checked } })}
                   className="size-4 shrink-0 accent-[var(--pg-open)]"
                 />
+                {icons[app.path] ? (
+                  <img src={icons[app.path]} alt="" className="size-6 shrink-0" />
+                ) : (
+                  <span className="size-6 shrink-0 rounded bg-surface-2" />
+                )}
                 <label htmlFor={app.path} className="min-w-0 flex-1 cursor-pointer">
                   <span className={`block truncate text-[13px] ${app.enabled ? "font-medium" : "text-muted"}`}>
                     {app.name}
