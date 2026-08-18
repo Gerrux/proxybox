@@ -132,6 +132,10 @@ pub enum Tunnel {
 pub struct Probe {
     pub name: String,
     pub latency_ms: Option<u32>,
+    /// Точка выхода этого профиля, как её видит внешний сервис. None — профиль
+    /// не ответил, спросить не вышло или точку выхода не спрашивают (`PG_GEO=0`).
+    #[serde(default)]
+    pub country: Option<String>,
     pub error: Option<String>,
 }
 
@@ -327,7 +331,12 @@ mod tests {
                 country: Some("Нидерланды, Амстердам".into()),
                 apps: vec![App { path: r"C:\app.exe".into(), name: "app".into(), enabled: true }],
                 profiles: vec!["myvpn".into()],
-                probes: vec![Probe { name: "myvpn".into(), latency_ms: Some(42), error: None }],
+                probes: vec![Probe {
+                    name: "myvpn".into(),
+                    latency_ms: Some(42),
+                    country: Some("Нидерланды, Амстердам".into()),
+                    error: None,
+                }],
                 ..Default::default()
             }),
             Response::Apps(vec![]),

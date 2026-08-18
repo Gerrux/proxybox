@@ -1,6 +1,12 @@
+import { useState } from "react";
 import type { Probe, Request, Status } from "./platform";
 import { strings } from "./i18n";
-import { AddField, Button, Empty, Panel } from "./ui";
+import { AddField, Button, Empty, Panel, SearchField } from "./ui";
+
+/** Со скольких профилей список перестаёт читаться глазом. Порог тот же, что у
+ *  приложений: одна подписка приносит десятки узлов, а подписок бывает
+ *  несколько. */
+const SEARCH_FROM = 8;
 
 /** Итог прогона рядом с именем: задержка либо причина отказа. Отказ приезжает
  *  строкой от службы, поэтому он уже на нужном языке — и виден целиком по
@@ -33,11 +39,24 @@ export function Profiles({
   const profiles = status?.profiles ?? [];
   const subscriptions = status?.subscriptions ?? [];
   const probes = status?.probes ?? [];
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const shown = needle ? profiles.filter((name) => name.toLowerCase().includes(needle)) : profiles;
+  // Поле не прячем, пока в нём что-то есть: иначе фильтр остался бы включённым
+  // и невидимым, а строки просто пропали бы.
+  const searchable = profiles.length > SEARCH_FROM || query !== "";
   return (
     <Panel
       className={className}
       title={s.profiles}
-      note={profiles.length > 0 && <span className="text-muted">{profiles.length}</span>}
+      note={
+        profiles.length > 0 && (
+          <span className="text-muted">
+            {profiles.length}
+            {query !== "" && ` · ${s.appsShown(shown.length)}`}
+          </span>
+        )
+      }
       action={
         profiles.length > 0 && (
           // Пока прогон идёт, кнопка заперта: второй прогон добил бы sing-box
@@ -61,12 +80,20 @@ export function Profiles({
         />
         {subscriptions.length > 0 && (
           <div className="flex flex-col gap-1">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">{s.subscriptions}</h3>
+            <h3 className="engraved flex items-baseline gap-2 text-muted">
+              {s.subscriptions}
+              <span className="font-sans text-[11px] font-normal normal-case tracking-normal">
+                {subscriptions.length}
+              </span>
+            </h3>
             <ul className="flex flex-col">
               {subscriptions.map((url) => (
-                <li key={url} className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 hover:bg-surface-2">
+                <li key={url} className="flex items-center gap-2 rounded-md px-2.5 py-1.5 hover:bg-surface-2">
+                  {/* Схема одинакова у всех подписок и съедает начало строки,
+                      а обрезается как раз хвост — то единственное, чем адреса и
+                      различаются. Полный адрес остаётся по наведению. */}
                   <span className="selectable min-w-0 flex-1 truncate font-mono text-[11px] text-muted" title={url}>
-                    {url}
+                    {url.replace(/^https?:\/\//, "")}
                   </span>
                   {/* Обновление — тот же импорт: служба сама узнаёт адрес и
                       заменяет пришедшие с него профили. */}
@@ -89,12 +116,19 @@ export function Profiles({
             </ul>
           </div>
         )}
+        {searchable && <SearchField value={query} onChange={setQuery} placeholder={s.searchProfiles} />}
         {profiles.length === 0 ? (
           <Empty>{s.noProfiles}</Empty>
+        ) : shown.length === 0 ? (
+          <Empty>{s.noMatches}</Empty>
         ) : (
           <ul className="flex flex-col gap-1">
-            {profiles.map((name) => {
+            {shown.map((name) => {
               const active = status?.profile === name;
+              const probe = probes.find((p) => p.name === name);
+              // У активного профиля точка выхода известна и без прогона —
+              // её спросил сам туннель.
+              const country = probe?.country ?? (active && status?.tunnel === "up" ? status.country : null);
               const live = active && status != null && status.tunnel !== "off";
               // Рельс профиля повторяет то, что показывает верх окна: выбран —
               // ещё не значит «несёт трафик», и путать это нельзя.
@@ -114,7 +148,12 @@ export function Profiles({
                   <span className={`min-w-0 flex-1 truncate text-[13px] ${active ? "font-medium" : "text-muted"}`}>
                     {name}
                   </span>
-                  <Verdict probe={probes.find((p) => p.name === name)} failed={s.probeFailed} />
+                  {country && (
+                    <span className="max-w-[10rem] shrink-0 truncate text-[11px] text-muted" title={country}>
+                      {country}
+                    </span>
+                  )}
+                  <Verdict probe={probe} failed={s.probeFailed} />
                   {active && status?.tunnel !== "off" ? (
                     <span className="text-xs text-muted">{s.active}</span>
                   ) : (
