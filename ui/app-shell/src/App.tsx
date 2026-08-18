@@ -70,7 +70,10 @@ export function App() {
   };
 
   return (
-    <div className="mx-auto flex h-full max-w-5xl flex-col gap-4 overflow-hidden p-5">
+    // Окно приложения — 1000×700, и там страница не прокручивается никогда.
+    // Если его сузили руками, панели не сплющиваются в полоски: прокрутка
+    // возвращается всей странице.
+    <div className="mx-auto flex h-full max-w-5xl flex-col gap-4 overflow-y-auto p-5 md:overflow-hidden">
       <StatusBar
         status={status}
         busy={busy > 0}
@@ -79,7 +82,9 @@ export function App() {
       />
 
       {error && (
-        <div className="enter flex shrink-0 items-start gap-3 rounded-xl border border-edge bg-closed-soft px-4 py-3 text-[13px] text-closed">
+        // Ошибка команды — это поломка, а не запертый канал: цвет тот же, что
+        // у «служба не отвечает», и другой, чем у сработавшей защиты.
+        <div className="enter flex shrink-0 items-start gap-3 rounded-lg border border-edge bg-fault-soft px-4 py-3 text-[13px] text-fault">
           <p className="selectable min-w-0 flex-1">{error}</p>
           <Button variant="quiet" aria-label={strings(status?.lang).hideMessage} onClick={() => setError(null)}>
             ✕
@@ -90,12 +95,14 @@ export function App() {
       {/* Окно 1000×700: две колонки, каждая панель прокручивается сама, страница —
           никогда. Список приложений после автообнаружения самый длинный, ему и
           отдана широкая колонка целиком. */}
-      <div className="grid min-h-0 flex-1 gap-4 md:grid-cols-[minmax(240px,0.8fr)_1.2fr]">
-        <div className="flex min-h-0 flex-col gap-4">
-          <Profiles status={status} act={act} busy={busy > 0} className="min-h-0 flex-1" />
-          <Journal lines={status?.log ?? []} lang={status?.lang} className="h-[38%] shrink-0" />
+      <div className="grid gap-4 md:min-h-0 md:flex-1 md:grid-cols-[minmax(240px,0.8fr)_1.2fr]">
+        {/* Профилей обычно два-три, а журнал идёт всегда: высоту отдаём ему,
+            список профилей занимает столько, сколько занимает. */}
+        <div className="flex flex-col gap-4 md:min-h-0">
+          <Profiles status={status} act={act} busy={busy > 0} className="md:max-h-[55%] md:shrink-0" />
+          <Journal lines={status?.log ?? []} lang={status?.lang} className="min-h-[9rem] md:flex-1" />
         </div>
-        <Apps status={status} act={act} className="min-h-0" />
+        <Apps status={status} act={act} className="md:min-h-0" />
       </div>
 
       {/* Версия и обновления — подвал: смотрят туда раз в месяц, а состояние

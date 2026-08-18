@@ -7,9 +7,12 @@ import { AddField, Button, Empty, Panel } from "./ui";
  *  наведению, а не только в обрезке. */
 function Verdict({ probe, failed }: { probe: Probe | undefined; failed: string }) {
   if (!probe) return null;
-  if (probe.latency_ms != null) return <span className="text-xs tabular-nums text-muted">{probe.latency_ms} ms</span>;
+  if (probe.latency_ms != null)
+    return <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted">{probe.latency_ms} ms</span>;
   return (
-    <span className="max-w-[10rem] truncate text-xs text-closed" title={probe.error ?? failed}>
+    // Мёртвый профиль — поломка, которую чинит человек, а не запертый канал:
+    // цвет тот же, что у «служба не отвечает».
+    <span className="max-w-[9rem] shrink-0 truncate font-mono text-[11px] text-fault" title={probe.error ?? failed}>
       {failed}
     </span>
   );
@@ -92,11 +95,22 @@ export function Profiles({
           <ul className="flex flex-col gap-1">
             {profiles.map((name) => {
               const active = status?.profile === name;
+              const live = active && status != null && status.tunnel !== "off";
+              // Рельс профиля повторяет то, что показывает верх окна: выбран —
+              // ещё не значит «несёт трафик», и путать это нельзя.
+              const rail = !live
+                ? "bg-transparent"
+                : status.tunnel === "up"
+                  ? "bg-open"
+                  : status.tunnel === "connecting"
+                    ? "bg-wait"
+                    : "bg-closed";
               return (
                 <li
                   key={name}
-                  className={`enter smooth flex items-center gap-2 rounded-lg px-2.5 py-2 ${active ? "bg-surface-2" : ""}`}
+                  className={`enter smooth relative flex items-center gap-2 rounded-md py-2 pl-3 pr-1 hover:bg-surface-2 ${active ? "bg-surface-2" : ""}`}
                 >
+                  <span className={`smooth absolute inset-y-1 left-0 w-[3px] rounded-full ${rail}`} />
                   <span className={`min-w-0 flex-1 truncate text-[13px] ${active ? "font-medium" : "text-muted"}`}>
                     {name}
                   </span>

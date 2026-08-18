@@ -13,10 +13,18 @@
   --color-open: var(--pg-open);
   --color-closed: var(--pg-closed);
   --color-wait: var(--pg-wait);
+  --color-fault: var(--pg-fault);
   --color-accent: var(--pg-accent);
   --color-open-soft: var(--pg-open-soft);
   --color-closed-soft: var(--pg-closed-soft);
   --color-wait-soft: var(--pg-wait-soft);
+  --color-fault-soft: var(--pg-fault-soft);
+  /* Шрифты только те, что уже стоят в системе: наружу окно не ходит ни за чем,
+     включая гарнитуры. Bahnschrift — виндовый DIN, шрифт приборных и дорожных
+     надписей; им подписаны состояния и панели, и он же отличает это окно от
+     любого другого на Segoe UI. Где его нет (разработка не на Windows) —
+     подхватывается Segoe UI, макет считался по нему, он шире. */
+  --font-display: "Bahnschrift", "Segoe UI Variable Display", "Segoe UI Semibold", "Segoe UI", system-ui, sans-serif;
   --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --font-mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
 }
@@ -25,6 +33,14 @@ html,
 body,
 #root {
   height: 100%;
+}
+
+/* Системные элементы — галочки, полосы прокрутки, крестик в поле поиска —
+   рисует WebView2, и без этой строки он рисует их светлыми поверх тёмной
+   панели. Своих галочек взамен не пишем: системная и доступнее, и уже умеет
+   всё, что нужно. */
+:root {
+  color-scheme: light dark;
 }
 
 body {
@@ -38,6 +54,144 @@ body {
 /* Пути и ссылки — единственное, что осмысленно выделять и копировать. */
 .selectable {
   user-select: text;
+}
+
+/* Клавиатура — полноправный способ управления окном, и видно её должно быть
+   всегда. Мышь рамку не показывает: :focus-visible включается только там,
+   где браузер считает подсказку уместной. */
+:focus-visible {
+  outline: 2px solid var(--pg-accent);
+  outline-offset: 2px;
+}
+
+/* Гравировка: подписи панелей и приборные метки. Разрядка и верхний регистр —
+   от надписей на самом приборе, а не от типографики веб-страниц. */
+.engraved {
+  font-family: var(--font-display);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* Цвет состояния — один на всю панель: заголовок, канал и бегунок берут его
+   отсюда. Состояний ровно столько, сколько строк ниже, и добавить шестое молча
+   не выйдет — оно останется без цвета. */
+[data-state="up"] {
+  --tone: var(--pg-open);
+  --tone-soft: var(--pg-open-soft);
+}
+[data-state="connecting"] {
+  --tone: var(--pg-wait);
+  --tone-soft: var(--pg-wait-soft);
+}
+[data-state="down"] {
+  --tone: var(--pg-closed);
+  --tone-soft: var(--pg-closed-soft);
+}
+[data-state="fault"] {
+  --tone: var(--pg-fault);
+  --tone-soft: var(--pg-fault-soft);
+}
+/* Выключено — состояние продукта, а не сигнал: цвета у него нет. */
+[data-state="off"] {
+  --tone: var(--pg-muted);
+  --tone-soft: var(--pg-surface);
+}
+
+/* Канал: путь от выбранных приложений к сети. Единственная картинка в окне и
+   единственное место, где продукт показан целиком: канал либо несёт трафик,
+   либо перерублен. Промежуточного вида у него нет, потому что промежуточного
+   состояния нет и в службе. */
+.conduit-line {
+  position: relative;
+  height: 10px;
+  flex: 1;
+  min-width: 2rem;
+  color: var(--tone);
+}
+
+/* Рельс — сам канал. Целый почти всегда; разрыв рисуется отдельно. */
+.conduit-line::before {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  top: 50%;
+  height: 2px;
+  translate: 0 -50%;
+  background: currentColor;
+  opacity: 0.3;
+}
+
+/* Поток: штрихи, уходящие вправо. Края растворяются, чтобы движение не
+   упиралось в лампу и в терминал. */
+[data-state="up"] .conduit-line::after,
+[data-state="connecting"] .conduit-line::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  top: 50%;
+  height: 2px;
+  translate: 0 -50%;
+  background: repeating-linear-gradient(90deg, currentColor 0 10px, transparent 10px 26px);
+  mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
+}
+
+/* Подключение — то же движение, но тише: путь ещё не подтверждён. */
+[data-state="connecting"] .conduit-line::after {
+  opacity: 0.55;
+}
+
+/* Разрыв. Рельс упирается в пустоту с двух сторон, и ничто её не пересекает:
+   это и есть fail-closed, нарисованный как он есть. */
+[data-state="down"] .conduit-line::before,
+[data-state="fault"] .conduit-line::before {
+  opacity: 1;
+  background: linear-gradient(
+    90deg,
+    currentColor calc(50% - 11px),
+    transparent calc(50% - 11px) calc(50% + 11px),
+    currentColor calc(50% + 11px)
+  );
+}
+
+/* Тупые упоры по краям разрыва — обрубленный конец виден, а не просто пропуск. */
+[data-state="down"] .conduit-line::after,
+[data-state="fault"] .conduit-line::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  translate: -50% -50%;
+  width: 25px;
+  height: 9px;
+  background:
+    linear-gradient(currentColor, currentColor) left / 3px 100% no-repeat,
+    linear-gradient(currentColor, currentColor) right / 3px 100% no-repeat;
+}
+
+/* Выключено — приложения ходят сами, и канал не наш: ровная нить без движения. */
+[data-state="off"] .conduit-line::before {
+  opacity: 0.45;
+}
+
+/* Лампа слева — источник, полый терминал справа — сеть, которая нам не
+   принадлежит. */
+.conduit-lamp,
+.conduit-end {
+  inline-size: 9px;
+  block-size: 9px;
+  flex: none;
+  color: var(--tone);
+}
+
+.conduit-lamp {
+  background: currentColor;
+}
+
+.conduit-end {
+  border: 2px solid currentColor;
+  opacity: 0.55;
 }
 
 /* Движение. Служба отвечает не мгновенно — перезапуск sing-box держит её мьютекс
@@ -66,6 +220,22 @@ body {
     from {
       opacity: 0;
       translate: 0 6px;
+    }
+  }
+
+  /* Штрихи идут вправо — от приложений к сети. Медленно: это не индикатор
+     загрузки, а признак того, что канал жив. */
+  [data-state="up"] .conduit-line::after {
+    animation: conduit 1.8s linear infinite;
+  }
+
+  [data-state="connecting"] .conduit-line::after {
+    animation: conduit 3s linear infinite;
+  }
+
+  @keyframes conduit {
+    to {
+      background-position-x: 26px;
     }
   }
 
