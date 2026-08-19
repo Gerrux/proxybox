@@ -20,7 +20,7 @@ const USAGE_RU: &str = "privacy-gateway <команда>
   disable --path <exe>   убрать приложение из-под управления
   scope apps|all         охват: только выбранные приложения либо весь трафик
   add-profile --link <l> импортировать share-link (vless/vmess/trojan/ss/hy2/wg),
-                         JSON-конфиг sing-box или подписку по http(s)-адресу;
+                         JSON-конфиг sing-box или подписку по https-адресу;
                          тот же адрес повторно — обновить подписку
   profiles               список профилей
   test                   прогнать все профили: кто отвечает и за сколько
@@ -41,7 +41,7 @@ const USAGE_EN: &str = "privacy-gateway <command>
   disable --path <exe>   take the app out of control
   scope apps|all         scope: selected apps only or all machine traffic
   add-profile --link <l> import a share-link (vless/vmess/trojan/ss/hy2/wg),
-                         a sing-box JSON config or a subscription http(s) URL;
+                         a sing-box JSON config or a subscription https URL;
                          the same URL again refreshes the subscription
   profiles               list profiles
   test                   run every profile: who answers and how fast
