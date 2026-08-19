@@ -8,7 +8,10 @@
 #[cfg(windows)]
 mod service;
 
-use core_ipc::{t, App, Endpoint, Listener, LogLine, Probe, Request, Response, Status, Stream, Tunnel as TunnelState, ADDR};
+use core_ipc::{
+    dir_name, t, App, Endpoint, Listener, LogLine, Probe, Request, Response, Status, Stream, Tunnel as TunnelState,
+    ADDR,
+};
 use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -134,13 +137,15 @@ struct Service {
     /// список приложений). Без этой памяти надзор дёргал бы netsh каждые три
     /// секунды и засыпал журнал одинаковыми отказами.
     applied: Option<(bool, bool, Vec<String>)>,
-    /// Инстанс под окно браузера: профиль и его процесс. Один на службу —
-    /// ponytail: запуск другого профиля заменяет прошлый, и открытое окно
-    /// остаётся с портом, который больше никто не слушает (браузер покажет
-    /// отказ прокси, наружу не уйдёт ничего). Потолок — одно окно за раз;
-    /// апгрейд — держать карту профиль → процесс и гасить по закрытию браузера,
-    /// а закрытие ещё надо как-то заметить.
-    browser: Option<(String, Process)>,
+    /// Инстансы под окна браузера: профиль → его процесс, по одному на профиль.
+    /// Сеансы независимы — портов у каждого свои (`free_port`), каталог свой
+    /// (`browser/<dir_name>`), и общий режим не трогает ни один.
+    ///
+    /// ponytail: числа сеансов никто не ограничивает, а каждый — это отдельный
+    /// sing-box со своей памятью. Потолок — сколько процессов вытерпит машина;
+    /// апгрейд — предел с отказом в `browse()`, когда найдётся, из чего его
+    /// выбирать.
+    browsers: BTreeMap<String, Process>,
     /// Номер поколения туннеля: растёт на каждом запуске и на каждом гашении.
     /// Проба идёт без замка и занимает секунды — за это время туннель успевают
     /// перезапустить, а порты у нас постоянные. Номер отличает ответ про
@@ -174,7 +179,7 @@ impl Service {
             retry_at: None,
             retry_delay: RETRY_BASE,
             applied: None,
-            browser: None,
+            browsers: BTreeMap::new(),
             generation: 0,
         }
     }
@@ -221,9 +226,7 @@ impl Service {
     fn forget_profile(&mut self, name: &str) {
         self.profiles.remove(name);
         // Инстанс под браузер держал бы удалённый узел живым — а его больше нет.
-        if self.browser.as_ref().is_some_and(|(profile, _)| profile == name) {
-            self.browser = None;
-        }
+        self.browsers.remove(name);
         if self.status.profile.as_deref() == Some(name) {
             self.stop();
             self.status.profile = None;
@@ -350,28 +353,46 @@ impl Service {
 
     /// Отдельный прокси под окно браузера. Тот же профиль второй раз — тот же
     /// порт: окно уже открыто, поднимать ему второй sing-box незачем.
+    ///
+    /// Каталог у сеанса свой, по имени профиля: `Tunnel::start` добивает
+    /// процесс из `singbox.pid`, и общий каталог означал бы, что каждый новый
+    /// сеанс гасит предыдущий — ровно так и было, пока сеанс был один.
     fn browse(&mut self, profile: &str) -> Result<u16, String> {
         let node = self
             .profiles
             .get(profile)
             .cloned()
             .ok_or_else(|| t(&format!("нет профиля «{profile}»"), &format!("no profile \"{profile}\"")))?;
-        if let Some((name, proc)) = &mut self.browser {
-            if name == profile && proc.alive() {
+        if let Some(proc) = self.browsers.get_mut(profile) {
+            if proc.alive() {
                 return Ok(proc.socks_port);
             }
         }
-        // Старый инстанс гасится Drop'ом до запуска нового: каталог и pid у них
-        // общие, и живой предшественник был бы добит уже изнутри Tunnel::start.
-        self.browser = None;
-        let proc = core_tunnel::sidecar(&node, &dir().join("browser")).map_err(|e| e.to_string())?;
+        // Мёртвый предшественник уходит Drop'ом до запуска нового: каталог и pid
+        // у сеанса те же, и его добили бы уже изнутри Tunnel::start.
+        self.browsers.remove(profile);
+        let dir = dir().join("browser").join(dir_name(profile));
+        let proc = core_tunnel::sidecar(&node, &dir).map_err(|e| e.to_string())?;
         let port = proc.socks_port;
         self.log(t(
             &format!("профиль «{profile}» поднят под браузер: 127.0.0.1:{port}"),
             &format!("profile \"{profile}\" is up for the browser: 127.0.0.1:{port}"),
         ));
-        self.browser = Some((profile.to_string(), proc));
+        self.browsers.insert(profile.to_string(), proc);
         Ok(port)
+    }
+
+    /// Сеанс браузера погашен. Процесс уходит Drop'ом, порт закрывается — и
+    /// незакрытая вкладка остаётся без сети: прямого доступа тут не появляется
+    /// ни на такт, ровно как и при падении самого sing-box.
+    fn browse_stop(&mut self, profile: &str) {
+        if self.browsers.remove(profile).is_none() {
+            return;
+        }
+        self.log(t(
+            &format!("сеанс браузера «{profile}» закрыт"),
+            &format!("browser session \"{profile}\" closed"),
+        ));
     }
 
     /// Список приложений переезжает вслед за обновившимися пакетами MSIX.
@@ -579,10 +600,12 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Response {
         &format!("subscription updated, nodes — {}", names.len()),
     ));
     s.subscriptions.insert(url.to_string(), names);
-    // Окно браузера могло висеть на узле, которого в подписке больше нет:
-    // держать его живым не за что, ровно как и активный профиль.
-    if s.browser.as_ref().is_some_and(|(name, _)| !s.profiles.contains_key(name)) {
-        s.browser = None;
+    // Окна браузера могли висеть на узлах, которых в подписке больше нет:
+    // держать их живыми не за что, ровно как и активный профиль.
+    let gone: Vec<String> =
+        s.browsers.keys().filter(|name| !s.profiles.contains_key(*name)).cloned().collect();
+    for name in gone {
+        s.browsers.remove(&name);
     }
     s.save();
     if let Some(name) = active {
@@ -669,14 +692,11 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
     let mut s = lock(svc);
     match req {
         Request::Status => {
-            // Прокси под окно браузера не помнится в статусе, а спрашивается
+            // Прокси под окна браузера не помнятся в статусе, а спрашиваются
             // здесь: процесс мог умереть сам, и запомненное «открыто» пережило
             // бы его — ровно та же ложь, что и «туннель поднят» после падения.
-            let open = match &mut s.browser {
-                Some((profile, proc)) => proc.alive().then(|| profile.clone()),
-                None => None,
-            };
-            s.status.browser = open;
+            s.browsers.retain(|_, proc| proc.alive());
+            s.status.browsers = s.browsers.keys().cloned().collect();
             Response::Status(s.status.clone())
         }
         Request::ListApps => Response::Apps(s.status.apps.clone()),
@@ -804,6 +824,12 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             Ok(port) => Response::Proxy { port },
             Err(message) => Response::Error { message },
         },
+        // Закрытие окна замечает тот, кто его и открыл: служба видит только
+        // живой процесс sing-box, а он переживает окно браузера легко.
+        Request::BrowseStop { profile } => {
+            s.browse_stop(&profile);
+            Response::Done
+        }
         Request::TestProfiles => {
             // Список снимается под замком, а меряется без него: профиль тратит
             // до нескольких секунд, а под этим замком стоит весь GUI.
@@ -1194,10 +1220,10 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
     match stop {
         Some(rx) => {
             let _ = rx.recv();
-            // Остановка по команде — гасим туннель и снимаем правила. Инстанс
-            // под браузер тоже наш процесс: сиротой он бы остался жить.
+            // Остановка по команде — гасим туннель и снимаем правила. Инстансы
+            // под окна браузера тоже наши процессы: сиротами они бы остались жить.
             let mut s = lock(&svc);
-            s.browser = None;
+            s.browsers.clear();
             s.stop();
         }
         None => loop {

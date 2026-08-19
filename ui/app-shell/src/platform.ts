@@ -43,9 +43,10 @@ export type Status = {
   lang: Lang;
   log: LogLine[];
   probes: Probe[];
-  /** Профиль, под которым сейчас поднят прокси окна браузера; null — окна нет.
-   *  С `tunnel` не связан: браузер ходит своим sing-box мимо общего режима. */
-  browser: string | null;
+  /** Профили, под которыми сейчас подняты прокси окон браузера. С `tunnel` не
+   *  связаны: браузер ходит своим sing-box мимо общего режима, а сеансов бывает
+   *  несколько разом — по одному на профиль. */
+  browsers: string[];
 };
 
 /** Отправить команду службе. Возвращает «приняли ли»: единственный, кому это
@@ -77,7 +78,9 @@ export type Request =
    *  туннель при этом не трогается. */
   | { cmd: "test-profiles" }
   /** Отдельный прокси под профиль — для окна браузера. Ответ: порт. */
-  | { cmd: "browse"; arg: { profile: string } };
+  | { cmd: "browse"; arg: { profile: string } }
+  /** Погасить сеанс браузера. Шлёт оболочка, дождавшись закрытия окна. */
+  | { cmd: "browse-stop"; arg: { profile: string } };
 
 export type Response =
   | { reply: "status"; data: Status }
@@ -106,9 +109,10 @@ export async function openUrl(url: string): Promise<void> {
   window.open(url, "_blank", "noopener");
 }
 
-/** Вкладка браузера через отдельный туннель профиля: служба поднимает прокси и
+/** Окно браузера через отдельный туннель профиля: служба поднимает прокси и
  *  отдаёт порт, браузер запускает оболочка — фронтенд живёт в вебвью, процессов
- *  ему не завести. */
+ *  ему не завести. Она же дожидается закрытия окна и гасит сеанс, поэтому
+ *  «закрыть» отсюда не вызывается вовсе. */
 export async function browse(profile: string): Promise<void> {
   const r = await call({ cmd: "browse", arg: { profile } });
   if (r.reply !== "proxy") {
@@ -121,6 +125,16 @@ export async function browse(profile: string): Promise<void> {
     throw new Error(`socks5://127.0.0.1:${r.data.port}`);
   }
   await invoke("open_browser", { port: r.data.port, profile });
+}
+
+/** Стереть сохранённый сеанс браузера (входы, куки, закладки этого профиля).
+ *  Каталог лежит в `%LOCALAPPDATA%` человека, поэтому это дело оболочки, а не
+ *  службы: у той LocalSystem и чужой профиль. В разработке в браузере стирать
+ *  нечего — и незачем. */
+export async function forgetBrowser(profile: string): Promise<void> {
+  if (isTauri()) {
+    await invoke("forget_browser", { profile });
+  }
 }
 
 export async function call(req: Request): Promise<Response> {

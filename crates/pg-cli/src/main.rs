@@ -25,7 +25,9 @@ const USAGE_RU: &str = "privacy-gateway <команда>
   profiles               список профилей
   test                   прогнать все профили: кто отвечает и за сколько
   browse --profile <имя> поднять отдельный прокси под этот профиль и напечатать
-                         его адрес: браузер с --proxy-server пойдёт в него
+                         его адрес: браузер с --proxy-server пойдёт в него;
+                         сеансов бывает несколько, по одному на профиль
+  browse --stop --profile <имя>  погасить этот сеанс браузера
   lang ru|en             язык сообщений службы и окна";
 
 const USAGE_EN: &str = "privacy-gateway <command>
@@ -46,7 +48,9 @@ const USAGE_EN: &str = "privacy-gateway <command>
   profiles               list profiles
   test                   run every profile: who answers and how fast
   browse --profile <name> bring up a separate proxy for that profile and print
-                         its address: a browser with --proxy-server goes there
+                         its address: a browser with --proxy-server goes there;
+                         sessions are per profile, several may run at once
+  browse --stop --profile <name>  close that browser session
   lang ru|en             language of service and window messages";
 
 fn usage() -> String {
@@ -103,7 +107,10 @@ fn parse(args: &[String]) -> Result<Request, String> {
         Some("profiles") => Ok(Request::Status),
         Some("test") => Ok(Request::TestProfiles),
         Some("browse") => flag(args, "--profile")
-            .map(|profile| Request::Browse { profile })
+            .map(|profile| match args.iter().any(|a| a == "--stop") {
+                true => Request::BrowseStop { profile },
+                false => Request::Browse { profile },
+            })
             .ok_or_else(|| t("нужен --profile <имя>", "needs --profile <name>")),
         Some("lang") => match args.get(1).map(String::as_str) {
             Some("ru") => Ok(Request::SetLang { lang: core_ipc::Lang::Ru }),
@@ -242,8 +249,8 @@ fn main() -> std::process::ExitCode {
                 t("в туннеле", "in tunnel"),
                 on
             );
-            if let Some(profile) = &s.browser {
-                println!("{:<11} {profile}", t("браузер:", "browser:"));
+            if !s.browsers.is_empty() {
+                println!("{:<11} {}", t("браузер:", "browser:"), s.browsers.join(", "));
             }
             if let Some(last) = s.log.first() {
                 println!("{:<11} {}", t("последнее:", "last:"), last.text);
