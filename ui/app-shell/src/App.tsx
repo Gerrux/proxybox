@@ -2,8 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import {
   browse as openBrowser,
   call,
+  hideWindow,
+  isFlyout,
+  onShell,
+  quitApp,
   type Act,
   type BrowserProfile,
+  type Lang,
   type Request,
   type Response,
   type Status,
@@ -17,6 +22,11 @@ import { Settings, useReleases } from "./Settings";
 import { StatusBar } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
 import { Button } from "./ui";
+
+/** Что делать с крестиком, если человек попросил больше не спрашивать. Живёт в
+ *  localStorage окна, а не в настройках службы: это привычка к окну, а не
+ *  свойство туннеля, и делить её с CLI не с кем. */
+const CLOSE_CHOICE = "pg.close";
 
 /** Опрос статуса. Служба тикает раз в 3 с, чаще спрашивать нечего. */
 const POLL_MS = 2000;
@@ -52,6 +62,12 @@ export function App() {
   // Про вышедшую версию говорит кнопка в титульной полосе, и знать о ней надо
   // с закрытыми настройками тоже — значит, состояние проверки живёт здесь.
   const rel = useReleases();
+  // Крестик спрашивает, а не решает: свернуть в трей или закрыть совсем — это
+  // выбор человека, и один раз сделанный он запоминается.
+  const [closing, setClosing] = useState(false);
+  // Плашка из трея — то же приложение во втором окне: раскладка у неё уже
+  // сжата шириной, а вот титульная полоса и вопрос при закрытии ей ни к чему.
+  const flyout = isFlyout();
 
   const send = useCallback(async (req: Request): Promise<Response | null> => {
     try {
@@ -81,10 +97,48 @@ export function App() {
     // некому: подпись значка обновляет оболочка сама. Показали обратно —
     // ближайший тик и вернёт свежий статус.
     const id = setInterval(() => {
-      if (!document.hidden) void refresh();
+      // Спрятанная плашка живёт в вебвью и дальше, а `document.hidden` про
+      // спрятанное окно молчит: спрашиваем только пока она в руках.
+      if (!document.hidden && (!flyout || document.hasFocus())) void refresh();
     }, connecting ? POLL_BUSY_MS : POLL_MS);
     return () => clearInterval(id);
-  }, [refresh, connecting]);
+  }, [refresh, connecting, flyout]);
+
+  // Показали плашку — статус нужен сразу, а не через две секунды: её открывают
+  // именно затем, чтобы посмотреть, что сейчас.
+  useEffect(() => {
+    if (!flyout) return;
+    const wake = () => void refresh();
+    // Esc — привычный способ закрыть выпадающую панель, и другого у плашки нет:
+    // крестик в полосе делает то же самое.
+    const key = (e: KeyboardEvent) => e.key === "Escape" && void hideWindow();
+    window.addEventListener("focus", wake);
+    window.addEventListener("keydown", key);
+    return () => {
+      window.removeEventListener("focus", wake);
+      window.removeEventListener("keydown", key);
+    };
+  }, [flyout, refresh]);
+
+  // Настройки из меню значка: оболочка поднимает окно и говорит, что показать.
+  useEffect(() => onShell("open-settings", () => setSettings(true)), []);
+
+  // Крестик главного окна. Оболочка закрытие остановила и спросила нас —
+  // отвечаем либо запомненным выбором, либо вопросом.
+  useEffect(
+    () =>
+      // У плашки своего крестика нет, и чужой ей не адресован: закрытие она
+      // отрабатывает в оболочке — просто прячется.
+      flyout
+        ? () => {}
+        : onShell("close-requested", () => {
+            const remembered = localStorage.getItem(CLOSE_CHOICE);
+            if (remembered === "quit") return void quitApp();
+            if (remembered === "hide") return void hideWindow();
+            setClosing(true);
+          }),
+    [flyout],
+  );
 
   // Команда и сразу перечитанный статус: окно не гадает, что получилось, —
   // единственный источник истины остаётся у службы.
@@ -129,7 +183,7 @@ export function App() {
   const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className="relative flex h-full flex-col overflow-hidden">
       <TitleBar
         title="Privacy Gateway"
         lang={status?.lang}
@@ -199,6 +253,81 @@ export function App() {
             )}
           </>
         )}
+      </div>
+
+      {closing && (
+        <CloseDialog
+          lang={status?.lang}
+          onPick={(choice, remember) => {
+            if (remember) localStorage.setItem(CLOSE_CHOICE, choice);
+            setClosing(false);
+            void (choice === "quit" ? quitApp() : hideWindow());
+          }}
+          onCancel={() => setClosing(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Вопрос по крестику: свернуть или закрыть совсем.
+ *
+ *  Своим окном, а не системным диалогом: окно безрамочное, и родная рамка
+ *  посреди него выглядела бы чужой — но главное, сказать надо больше, чем
+ *  помещается в кнопки. Продукт держит туннель и правила без окна, и «закрыть»
+ *  здесь значит «остаться без единственного места, где это видно».
+ *
+ *  Отмена (Esc и клик мимо) — это «передумал закрывать», а не «сверни»:
+ *  молчаливое действие по невнятному жесту тут дороже лишнего клика. */
+function CloseDialog({
+  lang,
+  onPick,
+  onCancel,
+}: {
+  lang: Lang | undefined;
+  onPick: (choice: "hide" | "quit", remember: boolean) => void;
+  onCancel: () => void;
+}) {
+  const s = strings(lang);
+  const [remember, setRemember] = useState(false);
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => e.key === "Escape" && onCancel();
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [onCancel]);
+  return (
+    <div
+      className="absolute inset-0 z-10 grid place-items-center bg-bg/70 p-6"
+      onClick={onCancel}
+      role="presentation"
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={s.closeTitle}
+        onClick={(e) => e.stopPropagation()}
+        className="enter flex w-full max-w-md flex-col gap-3 rounded-lg border border-edge bg-surface p-5 shadow-lg"
+      >
+        <h2 className="font-display text-[17px] font-semibold">{s.closeTitle}</h2>
+        <p className="text-[13px] text-muted">{s.closeHint}</p>
+        <p className="text-[12.5px] text-muted">{s.closeWarn}</p>
+        <label className="flex items-center gap-2 text-[12.5px] text-muted">
+          <input
+            type="checkbox"
+            checked={remember}
+            onChange={(e) => setRemember(e.target.checked)}
+            className="size-4 accent-[var(--pg-accent)]"
+          />
+          {s.closeRemember}
+        </label>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="quiet" onClick={() => onPick("quit", remember)}>
+            {s.closeQuit}
+          </Button>
+          <Button variant="primary" autoFocus onClick={() => onPick("hide", remember)}>
+            {s.closeToTray}
+          </Button>
+        </div>
       </div>
     </div>
   );

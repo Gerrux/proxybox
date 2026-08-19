@@ -5,15 +5,24 @@
 //! ответ службы. Решает она сама ровно одно — судьбу окна: закрытое окно
 //! прячется в трей, потому что служба держит туннель и правила и без окна, а
 //! значок в трее — единственное, что об этом говорит.
+//!
+//! Окон два. `main` — обычное, со списками и настройками. `tray` — плашка,
+//! которую открывает левый клик по значку: тот же фронтенд в 380 px, где
+//! раскладка и так сжимается в одну колонку (`index.css`), без рамки, поверх
+//! всех и гаснущая при потере фокуса. Второе окно, а не переезд первого:
+//! таскать окно человека к трею и обратно, меняя ему размер и положение, —
+//! значит потерять и то и другое.
 
-use core_ipc::{call, Request, Response};
+use core_ipc::{call, Request, Response, Status};
 use std::collections::HashSet;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use tauri::menu::{Menu, MenuItem};
+use std::time::{Duration, Instant};
+use tauri::image::Image;
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::Manager;
+use tauri::{Emitter, Manager, Rect, WebviewUrl, WebviewWindowBuilder};
 
 /// `async` здесь не про параллелизм, а про то, чтобы окно оставалось живым:
 /// синхронную команду Tauri выполняет прямо в цикле событий главного потока, а
@@ -286,23 +295,303 @@ fn raise(app: &tauri::AppHandle) {
     }
 }
 
-/// Подпись значка: то же состояние, что и в шапке окна, теми же словами.
-/// Оболочка не заводит своего состояния — она спрашивает службу и показывает
-/// ответ, ровно как это делает окно; решает по-прежнему одна служба.
-fn tooltip() -> String {
-    let Ok(Response::Status(s)) = call(&Request::Status) else {
-        return format!("Privacy Gateway — {}", core_ipc::t("служба не отвечает", "service is not responding"));
+/// Выйти из окна совсем. Плагина процесса ради одной кнопки не берём, а сам
+/// `app.exit` из вебвью не вызвать.
+///
+/// Именно из окна: служба остаётся работать, туннель — поднятым, правила — на
+/// месте. Обещать здесь «выход» целиком было бы неправдой, и диалог закрытия
+/// говорит об этом теми же словами.
+#[tauri::command(async)]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+/// Открыть главное окно из плашки. Поднять чужое окно фронтенду нечем, а
+/// свёрнутое надо ещё и развернуть — это работа оболочки.
+///
+/// Плашка при этом гаснет: две одинаковые панели разом — это два места, где
+/// показано одно и то же, и непонятно, какое из них главное.
+#[tauri::command(async)]
+fn open_main(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("tray") {
+        let _ = w.hide();
+    }
+    raise(&app);
+}
+
+/// Как выглядит состояние — в значке, в подписи и в меню. Пять положений, те
+/// же, что у шапки окна; «служба не отвечает» отдельным не заводим — снаружи
+/// это такая же поломка, как и всё, что требует человека.
+#[derive(Clone, Copy, PartialEq)]
+enum Look {
+    Up,
+    Wait,
+    Closed,
+    Off,
+    Fault,
+}
+
+fn look(status: Option<&Status>) -> Look {
+    match status.map(|s| s.tunnel) {
+        None => Look::Fault,
+        Some(core_ipc::Tunnel::Up) => Look::Up,
+        Some(core_ipc::Tunnel::Connecting) => Look::Wait,
+        Some(core_ipc::Tunnel::Down) => Look::Closed,
+        Some(core_ipc::Tunnel::Off) => Look::Off,
+    }
+}
+
+/// Сторона значка. 32 px хватает: Windows масштабирует сама, а рисунок здесь —
+/// круг, ему детализация ни к чему.
+const ICON: u32 = 32;
+
+/// Значок трея под состояние. Рисуется в коде, а не лежит пятью .ico рядом:
+/// картинка — круг в цвете состояния, и держать под неё файлы, которых не видно
+/// в дифе и которые невозможно поправить текстом, дороже двадцати строк
+/// арифметики.
+///
+/// Цвета — те же токены, что и в окне (`ui/app-shell/src/tokens.css`), взятые в
+/// тёмном варианте: панель задач чаще тёмная, и светлые значения на ней тонут.
+/// Пересчитаны из oklch в sRGB один раз; поменяется токен — пересчитать и здесь,
+/// сам он сюда не приедет.
+///
+/// Форма, а не только цвет, и форма ровно про инвариант: круг цел — трафик
+/// идёт; круг перерублен поперёк (как канал в шапке окна) — у выбранных
+/// приложений сети нет; кольцо — продукт не участвует. Одним цветом обходиться
+/// нельзя: значок видят и в 16 px, и не все различают цвета.
+fn tray_icon(look: Look) -> Image<'static> {
+    let (r, g, b) = match look {
+        Look::Up => (80, 210, 167),     // oklch(78% .13 168)  — канал несёт трафик
+        Look::Wait => (197, 167, 103),  // oklch(74% .09 85)   — переходное
+        Look::Closed => (235, 189, 87), // oklch(82% .13 85)   — заперто намеренно
+        Look::Fault => (242, 106, 100), // oklch(69% .17 25)   — сломано
+        Look::Off => (135, 145, 147),   // oklch(65% .012 205) — выключено
     };
-    // Язык выбирают в окне, и хранит его служба: подпись значка обязана
-    // говорить на нём же. Заодно на него переходят и сообщения оболочки.
-    core_ipc::set_lang(s.lang);
-    let state = match s.tunnel {
-        core_ipc::Tunnel::Off => core_ipc::t("приватный режим выключен", "private mode is off"),
-        core_ipc::Tunnel::Connecting => core_ipc::t("подключение…", "connecting…"),
-        core_ipc::Tunnel::Up => core_ipc::t("защищено", "protected"),
-        core_ipc::Tunnel::Down => core_ipc::t("туннеля нет — доступ закрыт", "no tunnel — access is closed"),
+    let mut rgba = vec![0u8; (ICON * ICON * 4) as usize];
+    let centre = (ICON as f32 - 1.0) / 2.0;
+    let outer = ICON as f32 / 2.0 - 1.5;
+    // Выключено — кольцо: заливки у состояния, которое ничего не держит, быть
+    // не должно.
+    let inner = if look == Look::Off { outer - 5.0 } else { 0.0 };
+    // Перерублен круг у всех троих, а не только у «заперто»: пока туннель не
+    // подтверждён, сети у выбранных приложений нет — подключение здесь ничем не
+    // отличается от закрытого доступа, и рисовать его целым значило бы соврать.
+    // Цвет и подпись говорят, что это переходное; форма говорит про инвариант.
+    let cut = matches!(look, Look::Closed | Look::Fault | Look::Wait);
+    for y in 0..ICON {
+        for x in 0..ICON {
+            // Четыре пробы на пиксель вместо сглаживания: круг в 32 px без него
+            // выходит зубчатым, а полноценный растеризатор сюда тащить незачем.
+            let mut hits = 0u32;
+            for sy in 0..2 {
+                for sx in 0..2 {
+                    let px = x as f32 + 0.25 + sx as f32 * 0.5 - centre;
+                    let py = y as f32 + 0.25 + sy as f32 * 0.5 - centre;
+                    let d = (px * px + py * py).sqrt();
+                    if d <= outer && d >= inner && !(cut && py.abs() <= 2.5) {
+                        hits += 1;
+                    }
+                }
+            }
+            let i = ((y * ICON + x) * 4) as usize;
+            rgba[i] = r;
+            rgba[i + 1] = g;
+            rgba[i + 2] = b;
+            rgba[i + 3] = (hits * 255 / 4) as u8;
+        }
+    }
+    Image::new_owned(rgba, ICON, ICON)
+}
+
+/// Состояние словами: заголовок и строка под ним. Те же слова, что и в шапке
+/// окна, — оболочка не выдумывает своих, она показывает ответ службы.
+fn words(status: Option<&Status>) -> (String, String) {
+    let Some(s) = status else {
+        return (
+            core_ipc::t("Служба не отвечает", "Service is not responding"),
+            core_ipc::t("запустите Privacy Gateway", "start Privacy Gateway"),
+        );
     };
-    format!("Privacy Gateway — {state}")
+    let title = match s.tunnel {
+        core_ipc::Tunnel::Off => core_ipc::t("Приватный режим выключен", "Private mode is off"),
+        core_ipc::Tunnel::Connecting => core_ipc::t("Подключение…", "Connecting…"),
+        core_ipc::Tunnel::Up => core_ipc::t("Защищено", "Protected"),
+        core_ipc::Tunnel::Down => {
+            core_ipc::t("Туннеля нет — доступ закрыт", "No tunnel — access is closed")
+        }
+    };
+    // Профиль, страна и задержка — то, ради чего в меню и заглядывают: «через
+    // что я сейчас хожу и не тормозит ли». Их же показывает шапка окна.
+    let mut detail: Vec<String> = Vec::new();
+    if let Some(p) = &s.profile {
+        detail.push(p.clone());
+    }
+    if let (core_ipc::Tunnel::Up, Some(c)) = (s.tunnel, &s.country) {
+        detail.push(c.clone());
+    }
+    if let (core_ipc::Tunnel::Up, Some(ms)) = (s.tunnel, s.latency_ms) {
+        detail.push(format!("{ms} ms"));
+    }
+    if detail.is_empty() {
+        detail.push(core_ipc::t("узел не выбран", "no node selected"));
+    }
+    // Охват называем всегда: «весь компьютер» меняет не состояние, а того, о
+    // ком оно, и молчать об этом в трее нельзя — окна может не быть вовсе.
+    if s.all_traffic {
+        detail.push(core_ipc::t("весь компьютер", "the whole computer"));
+    }
+    (title, detail.join(" · "))
+}
+
+/// Меню значка. Собирается заново, только когда изменилось то, что в нём
+/// написано: перестроенное под открытой рукой меню закрывается само.
+///
+/// Выключение приватного режима здесь есть, и это осознанно: это самое частое
+/// действие продукта, а прятать его в окно, которое ещё надо открыть, значит
+/// сделать трей витриной. Цена — один клик до открытой сети, поэтому цену и
+/// написали прямо в пункте: он говорит, что случится, а не «выключить».
+fn build_menu(app: &tauri::AppHandle, status: Option<&Status>) -> tauri::Result<Menu<tauri::Wry>> {
+    let (title, detail) = words(status);
+    let menu = Menu::new(app)?;
+    menu.append(&MenuItem::with_id(app, "state", title, false, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "detail", detail, false, None::<&str>)?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+
+    if let Some(s) = status {
+        if !s.profiles.is_empty() {
+            let items: Vec<CheckMenuItem<tauri::Wry>> = s
+                .profiles
+                .iter()
+                .map(|name| {
+                    CheckMenuItem::with_id(
+                        app,
+                        format!("profile:{name}"),
+                        name,
+                        true,
+                        Some(name) == s.profile.as_ref(),
+                        None::<&str>,
+                    )
+                })
+                .collect::<tauri::Result<_>>()?;
+            let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
+                items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
+            menu.append(&Submenu::with_items(app, core_ipc::t("Профиль", "Profile"), true, &refs)?)?;
+        }
+        let on = s.tunnel != core_ipc::Tunnel::Off;
+        let label = match (on, s.all_traffic) {
+            (true, true) => core_ipc::t(
+                "Выключить — компьютер пойдёт в сеть напрямую",
+                "Turn off — the computer goes online directly",
+            ),
+            (true, false) => core_ipc::t(
+                "Выключить — выбранные приложения пойдут напрямую",
+                "Turn off — selected apps go online directly",
+            ),
+            (false, _) => core_ipc::t("Включить приватный режим", "Turn private mode on"),
+        };
+        // Без профилей включать нечего, и гаснущий пункт говорит об этом лучше,
+        // чем отказ после нажатия.
+        menu.append(&MenuItem::with_id(
+            app,
+            "toggle",
+            label,
+            on || !s.profiles.is_empty(),
+            None::<&str>,
+        )?)?;
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
+    }
+
+    menu.append(&MenuItem::with_id(app, "open", core_ipc::t("Открыть окно", "Open window"), true, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "settings", core_ipc::t("Настройки", "Settings"), true, None::<&str>)?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&MenuItem::with_id(
+        app,
+        "quit",
+        core_ipc::t("Выйти из окна", "Quit the window"),
+        true,
+        None::<&str>,
+    )?)?;
+    Ok(menu)
+}
+
+/// Отпечаток того, что видно снаружи. Значок и меню трогаем, только когда он
+/// изменился: перестроенное меню закрывается под рукой, а `set_icon` каждые три
+/// секунды — это мигание в панели задач на ровном месте.
+fn signature(status: Option<&Status>) -> String {
+    match status {
+        None => "down".into(),
+        Some(s) => format!(
+            "{:?}|{}|{}|{}|{:?}|{}|{}",
+            s.tunnel,
+            s.profile.clone().unwrap_or_default(),
+            s.country.clone().unwrap_or_default(),
+            s.latency_ms.unwrap_or(0),
+            s.lang,
+            s.all_traffic,
+            s.profiles.join(",")
+        ),
+    }
+}
+
+/// Команда службе из меню — всегда своим потоком. `call` блокирующий, а
+/// обработчик меню крутится в цикле событий: секунда на ответ службы (а `on`
+/// перезапускает sing-box) — это секунда, когда окно не разбирает очередь
+/// сообщений и Windows рисует «не отвечает».
+fn detached(req: Request) {
+    std::thread::spawn(move || {
+        let _ = call(&req);
+    });
+}
+
+/// Плашка гаснет при потере фокуса — а клик по значку фокус и уводит. Без этой
+/// отметки тот же клик, которым её закрывают, тут же открывал бы её заново.
+static HIDDEN_AT: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Показать плашку у значка. Положение считаем от самого значка, а не от
+/// курсора: значок стоит на месте, курсор — где попало, и плашка не должна
+/// прыгать по пикселю мыши.
+fn show_flyout(app: &tauri::AppHandle, icon: Rect) {
+    let Some(w) = app.get_webview_window("tray") else { return };
+    if w.is_visible().unwrap_or(false) {
+        let _ = w.hide();
+        return;
+    }
+    if HIDDEN_AT
+        .lock()
+        .ok()
+        .and_then(|t| *t)
+        .is_some_and(|t| t.elapsed() < Duration::from_millis(300))
+    {
+        return;
+    }
+    let Ok(size) = w.outer_size() else { return };
+    let (ix, iy) = match icon.position {
+        tauri::Position::Physical(p) => (p.x as f64, p.y as f64),
+        tauri::Position::Logical(p) => (p.x, p.y),
+    };
+    let (iw, ih) = match icon.size {
+        tauri::Size::Physical(s) => (s.width as f64, s.height as f64),
+        tauri::Size::Logical(s) => (s.width, s.height),
+    };
+    let gap = 8.0;
+    let mut x = ix + iw / 2.0 - size.width as f64 / 2.0;
+    // Панель задач бывает и сверху: если значок стоит у верхней кромки, плашке
+    // место под ним, а не за краем экрана.
+    let mut y = iy - size.height as f64 - gap;
+    if let Ok(Some(m)) = app.monitor_from_point(ix, iy) {
+        let area = m.size();
+        let origin = m.position();
+        let (left, top) = (origin.x as f64, origin.y as f64);
+        let (right, bottom) = (left + area.width as f64, top + area.height as f64);
+        if y < top {
+            y = iy + ih + gap;
+        }
+        x = x.clamp(left + gap, (right - size.width as f64 - gap).max(left + gap));
+        y = y.clamp(top + gap, (bottom - size.height as f64 - gap).max(top + gap));
+    }
+    let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+    let _ = w.show();
+    let _ = w.set_focus();
 }
 
 /// Значок в трее и его меню.
@@ -312,48 +601,117 @@ fn tooltip() -> String {
 /// оставляло машину запертой вообще без единого следа в интерфейсе. Значок —
 /// и есть этот след, поэтому закрытие окна его прячет, а не гасит продукт.
 ///
-/// Выключения приватного режима в меню нет намеренно: это ровно то действие,
-/// после которого выбранные приложения уходят в открытую сеть, и делать его
-/// одним кликом из меню, не показав, что вообще происходит, нельзя.
-///
-/// ponytail: значок один на все состояния, состояние живёт только в подписке.
-/// Потолок — цвет канала не виден, пока не наведёшь мышь; апгрейд — три .ico
-/// (открыт/заперт/поломка) и `set_icon` в том же потоке, что и подпись.
+/// Левый клик открывает плашку, правый — меню: показывать меню на оба значило
+/// бы отобрать самый частый жест.
 fn tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let open = MenuItem::with_id(app, "open", core_ipc::t("Открыть окно", "Open window"), true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", core_ipc::t("Выйти из окна", "Quit the window"), true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let handle = app.handle().clone();
     TrayIconBuilder::with_id("pg")
-        .icon(app.default_window_icon().cloned().ok_or("у окна нет иконки, брать значку нечего")?)
+        .icon(tray_icon(Look::Fault))
         .tooltip("Privacy Gateway")
-        .menu(&menu)
-        // Левый клик открывает окно, а меню остаётся на правом: показывать меню
-        // на оба — значит отобрать самый частый жест.
+        .menu(&build_menu(&handle, None)?)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, e| match e.id.as_ref() {
             "open" => raise(app),
-            // Именно из окна: служба остаётся работать, туннель — поднятым.
-            // Обещать здесь «выход» целиком было бы неправдой.
-            "quit" => app.exit(0),
-            _ => {}
+            "settings" => {
+                raise(app);
+                // Какую панель показать, решает фронтенд: своего состояния у
+                // оболочки нет и заводить его ради одного пункта меню незачем.
+                let _ = app.emit_to("main", "open-settings", ());
+            }
+            "toggle" => {
+                let app = app.clone();
+                // Со статусом сверяемся тоже не здесь: это ещё один поход в
+                // службу, а мы в цикле событий.
+                std::thread::spawn(move || {
+                    let Ok(Response::Status(s)) = call(&Request::Status) else { return };
+                    match s.tunnel {
+                        core_ipc::Tunnel::Off => {
+                            match s.profile.or_else(|| s.profiles.first().cloned()) {
+                                Some(profile) => {
+                                    let _ = call(&Request::On { profile });
+                                }
+                                // Включать нечем — это разговор про профили, и
+                                // он не в меню из пяти строк.
+                                None => raise(&app),
+                            }
+                        }
+                        _ => {
+                            let _ = call(&Request::Off);
+                        }
+                    }
+                });
+            }
+            // Имя профиля приходит из подписки и содержит что угодно, включая
+            // двоеточие, — поэтому режем по первому, а не по последнему.
+            id => {
+                if let Some(profile) = id.strip_prefix("profile:") {
+                    detached(Request::On { profile: profile.to_string() });
+                }
+            }
         })
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                raise(tray.app_handle());
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                rect,
+                ..
+            } = event
+            {
+                show_flyout(tray.app_handle(), rect);
             }
         })
         .build(app)?;
 
-    // Подпись обновляется своим потоком: чаще службы всё равно не узнать, а
-    // окно к этому времени может быть спрятано — спрашивать за него некому.
+    // Значок, подпись и меню обновляются своим потоком: чаще службы всё равно не
+    // узнать, а окно к этому времени может быть спрятано — спрашивать за него
+    // некому.
     let handle = app.handle().clone();
-    std::thread::spawn(move || loop {
-        let text = tooltip();
-        if let Some(tray) = handle.tray_by_id("pg") {
-            let _ = tray.set_tooltip(Some(text));
+    std::thread::spawn(move || {
+        let mut shown = String::new();
+        loop {
+            let status = match call(&Request::Status) {
+                Ok(Response::Status(s)) => Some(s),
+                _ => None,
+            };
+            // Язык выбирают в окне, и хранит его служба: значок обязан говорить
+            // на нём же. Заодно на него переходят и сообщения оболочки.
+            if let Some(s) = &status {
+                core_ipc::set_lang(s.lang);
+            }
+            let now = signature(status.as_ref());
+            if now != shown {
+                shown = now;
+                if let Some(tray) = handle.tray_by_id("pg") {
+                    let (title, detail) = words(status.as_ref());
+                    let _ = tray.set_icon(Some(tray_icon(look(status.as_ref()))));
+                    let _ = tray.set_tooltip(Some(format!("Privacy Gateway — {title}\n{detail}")));
+                    if let Ok(menu) = build_menu(&handle, status.as_ref()) {
+                        let _ = tray.set_menu(Some(menu));
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_secs(3));
         }
-        std::thread::sleep(std::time::Duration::from_secs(3));
     });
+    Ok(())
+}
+
+/// Плашка заводится сразу, но спрятанной: строить окно в момент клика — это
+/// пустой прямоугольник на полсекунды, пока поднимается вебвью.
+///
+/// Размер — тот самый третий из макета: 380 px, где раскладка окна и так
+/// сжимается в одну колонку. Без рамки, поверх всех и мимо панели задач: у
+/// плашки из трея своей кнопки на панели быть не должно.
+fn flyout(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    WebviewWindowBuilder::new(app, "tray", WebviewUrl::App("index.html".into()))
+        .title("Privacy Gateway")
+        .inner_size(380.0, 520.0)
+        .resizable(false)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .visible(false)
+        .build()?;
     Ok(())
 }
 
@@ -371,6 +729,17 @@ fn main() {
             match tray(app) {
                 Ok(()) => {
                     TRAY.store(true, Ordering::Relaxed);
+                    // Плашка нужна только со значком: открывать её больше
+                    // нечем, а спрятанное окно без входа — это потерянное окно.
+                    if let Err(e) = flyout(app) {
+                        eprintln!(
+                            "{}",
+                            core_ipc::t(
+                                &format!("плашка из трея не создана: {e}"),
+                                &format!("the tray panel was not created: {e}")
+                            )
+                        );
+                    }
                     // Запуск из автозапуска: окна не показываем, продукт живёт
                     // значком. Прятать можно только со значком — без него
                     // приложение стало бы невидимым и незакрываемым, ровно как
@@ -387,17 +756,48 @@ fn main() {
             }
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if TRAY.load(Ordering::Relaxed) {
-                    // Закрывают окно, а не продукт: служба продолжает держать
-                    // туннель и правила, и значок в трее об этом говорит.
-                    api.prevent_close();
-                    let _ = window.hide();
+        .on_window_event(|window, event| match event {
+            // Плашка гаснет, стоит уйти фокусу: это выпадающая панель у значка,
+            // а не окно, и оставаться поверх всего ей незачем. Момент гашения
+            // помним — клик по значку уводит фокус, и без отметки тот же клик
+            // открывал бы её заново (см. `show_flyout`).
+            tauri::WindowEvent::Focused(false) if window.label() == "tray" => {
+                let _ = window.hide();
+                if let Ok(mut t) = HIDDEN_AT.lock() {
+                    *t = Some(Instant::now());
                 }
             }
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                if window.label() == "tray" {
+                    // У плашки нет своей кнопки закрытия, но Esc и Alt+F4 есть:
+                    // закрыть её насовсем значило бы остаться без левого клика.
+                    api.prevent_close();
+                    let _ = window.hide();
+                } else if TRAY.load(Ordering::Relaxed) {
+                    // Спрашивает фронтенд, а не оболочка: свернуть в трей или
+                    // закрыть совсем — это разговор с человеком, и вести его
+                    // системным диалогом посреди безрамочного окна нельзя. Он же
+                    // помнит ответ, если попросили не спрашивать больше.
+                    api.prevent_close();
+                    // Именно `emit_to`: `emit` рассылает событие всем окнам, и
+                    // плашка получила бы чужой крестик — а она на него отвечает
+                    // тем же вопросом про закрытие продукта.
+                    let _ = window.emit_to("main", "close-requested", ());
+                }
+                // Значка нет — прятать некуда: окно закрывается как обычное.
+            }
+            _ => {}
         })
-        .invoke_handler(tauri::generate_handler![ipc, open_url, open_browser, forget_browser, autostart, set_autostart])
+        .invoke_handler(tauri::generate_handler![
+            ipc,
+            open_url,
+            open_browser,
+            forget_browser,
+            autostart,
+            set_autostart,
+            quit_app,
+            open_main
+        ])
         .run(tauri::generate_context!())
         .expect("не удалось запустить окно");
 }
