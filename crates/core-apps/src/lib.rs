@@ -1,21 +1,27 @@
 //! Автообнаружение установленных приложений и их иконки.
 //!
-//! Три источника, и первые два отвечают сразу путём: обход `Program Files`
-//! стоил бы секунды и всё равно не отличил бы главный exe от служебного.
-//! Третий каталог всё-таки читает — но ровно один, на один уровень, и другого
-//! способа там нет (см. ниже).
+//! Пять источников, и порядок между ними — это порядок дедупа: один и тот же
+//! exe остаётся в списке один раз, с именем того источника, что назвал его
+//! первым. Поэтому сначала идут те, у кого имена человеческие.
 //!
 //! 1. Вшитый каталог (`include_str!`) — консольные инструменты и программы,
 //!    которые не регистрируются в реестре: без сети, без файла рядом с exe.
-//! 2. Реестр Windows — то, что система и так знает об установленном:
+//! 2. Ярлыки меню «Пуск» — то, что человек сам считает своими программами, и
+//!    имя у ярлыка тоже человеческое («Telegram Desktop», а не `Telegram.exe`).
+//! 3. Реестр Windows — то, что система и так знает об установленном:
 //!    `Uninstall` (имя + `DisplayIcon`, почти всегда главный exe) и `App Paths`
 //!    (имя exe → полный путь), у машины и у каждого пользователя в `HKEY_USERS`.
-//!    Каталог покрывал три десятка программ, реестр — всё, что человек ставил сам.
-//! 3. Пакеты MSIX (Store, winget) — их нет ни в `Uninstall`, ни в `App Paths`,
+//! 4. Пакеты MSIX (Store, winget) — их нет ни в `Uninstall`, ни в `App Paths`,
 //!    а путь вида `…\WindowsApps\Claude_1.6608.0.0_x64__pzs8sxrjxfjjc\app` несёт
 //!    в себе версию и меняется при каждом обновлении, так что шаблоном каталога
-//!    его тоже не поймать. Список пакетов знает AppModel-репозиторий, а какой
-//!    exe в пакете главный — только манифест внутри самого пакета.
+//!    его тоже не поймать. Какой exe в пакете главный — знает его манифест.
+//! 5. Запущенные процессы — единственный источник про машину, а не про
+//!    установленное: portable-программа, распакованный архив, игра из чужой
+//!    библиотеки в реестре не значатся и значиться не будут.
+//!
+//! Каталогов при этом обходится ровно два — меню «Пуск» и `WindowsApps`, — и
+//! оба потому, что другого способа там нет. Обход `Program Files` не помог бы
+//! всё равно: он не отличает главный exe от служебного.
 //!
 //! Обнаружение выполняется в службе, а служба работает под LocalSystem: её
 //! `%USERPROFILE%` — это профиль SYSTEM внутри System32, `%APPDATA%` и
@@ -70,10 +76,13 @@ pub fn discover(env: &BTreeMap<String, String>) -> Vec<Found> {
     // %ProgramFiles% и прочее общесистемное у них и так одно на двоих.
     let client: Vec<(&str, String)> = env.iter().map(|(name, value)| (name.as_str(), value.clone())).collect();
     let mut found = discover_from(&catalog, &client);
+    found.extend(from_shortcuts(&client));
     // Клиент представился — чужие профили не наше дело.
     let profiles = if env.contains_key("USERPROFILE") { Vec::new() } else { user_profiles() };
     for profile in profiles {
-        found.extend(discover_from(&catalog, &user_vars(&profile)));
+        let vars = user_vars(&profile);
+        found.extend(discover_from(&catalog, &vars));
+        found.extend(from_shortcuts(&vars));
     }
     found.extend(from_registry());
     found.extend(from_packages());
@@ -115,10 +124,10 @@ fn user_vars(profile: &str) -> Vec<(&'static str, String)> {
 /// Профиль живого человека — это SID машины или домена (`S-1-5-21-…`). В
 /// `ProfileList` рядом лежат SYSTEM (`S-1-5-18`), LOCAL SERVICE и NETWORK
 /// SERVICE: именно их окружение служба и так видит, и именно оно бесполезно.
+/// В `HKEY_USERS` рядом с профилем лежит ещё и его ветка классов
+/// (`S-1-5-21-…_Classes`) — то же самое, только про ассоциации файлов.
 // Список профилей читается только на Windows, но фильтр SID проверяется везде —
 // иначе на Linux он числился бы мёртвым кодом.
-/// В `HKEY_USERS` рядом с профилем лежит его же ветка классов
-/// (`S-1-5-21-…_Classes`) — то же самое, только про ассоциации файлов.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn is_user_sid(sid: &str) -> bool {
     sid.starts_with("S-1-5-21-") && !sid.ends_with("_Classes")
@@ -168,6 +177,113 @@ pub fn browser() -> Option<Found> {
 /// Имена из каталога, а не пути: пути там уже описаны, и дублировать их значило
 /// бы разъехаться с ними на первом же обновлении каталога.
 const CHROMIUM: [&str; 4] = ["Google Chrome", "Microsoft Edge", "Brave", "Яндекс.Браузер"];
+
+/// Ярлыки меню «Пуск» — список того, что человек сам считает своими
+/// программами: туда попадает и то, что не регистрируется в `Uninstall`, и
+/// распакованное руками, если для него делали ярлык. Имя ярлыка вдобавок
+/// человеческое («Telegram Desktop»), а не имя файла.
+///
+/// Каталогов два: общий и пользовательский, и второй раскрывается окружением
+/// спрашивающего — так же, как и всё остальное пользовательское.
+fn from_shortcuts(vars: &[(&str, String)]) -> Vec<Found> {
+    const MENUS: [&str; 2] = [
+        r"%ProgramData%\Microsoft\Windows\Start Menu\Programs",
+        r"%APPDATA%\Microsoft\Windows\Start Menu\Programs",
+    ];
+    let system = expand("%SystemRoot%", &[]).unwrap_or_default();
+    MENUS
+        .iter()
+        .filter_map(|menu| expand(menu, vars))
+        .flat_map(|menu| shortcuts_in(Path::new(&menu), 0))
+        .filter(|found| is_own_process(&found.path, &system))
+        .collect()
+}
+
+/// Меню разложено по подпапкам вендоров, поэтому обход рекурсивный. Предел
+/// глубины — против junction, которым Windows умеет закольцевать дерево.
+fn shortcuts_in(dir: &Path, depth: usize) -> Vec<Found> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if depth < 6 {
+                out.extend(shortcuts_in(&path, depth + 1));
+            }
+            continue;
+        }
+        let Some(file) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
+        if !file.to_lowercase().ends_with(".lnk") {
+            continue;
+        }
+        let name = file[..file.len() - ".lnk".len()].to_string();
+        // Ярлык на справку или на сайт вендора цели-exe не имеет и отсеется сам,
+        // а вот «Удалить...» рядом с программой лежит почти всегда.
+        if let Some(target) = std::fs::read(&path).ok().as_deref().and_then(shortcut_target) {
+            // Имя файла отделяем сами: в цели ярлыка разделитель всегда
+            // windows-овский, чей бы Path нас ни разбирал.
+            let file = target.rsplit(['\\', '/']).next().unwrap_or_default().to_lowercase();
+            if !file.starts_with("unins") {
+                out.push(Found { name, path: target });
+            }
+        }
+    }
+    out
+}
+
+/// Разбор `.lnk` (MS-SHLLINK): заголовок фиксированной длины, за ним по флагам
+/// идут списки, а нужный нам путь лежит в блоке `LinkInfo`. Ярлыки на
+/// приложения Store сюда не попадут — у них вместо пути идентификатор пакета,
+/// но пакеты мы и так перечисляем отдельно.
+///
+/// ponytail: читается только `LocalBasePath` в юникоде и его ASCII-вариант,
+/// сетевые цели (`CommonNetworkRelativeLink`) пропускаются. Потолок — ярлык на
+/// программу с сетевого диска не найдётся; апгрейд — дочитать вторую половину
+/// структуры, когда такой случай появится.
+fn shortcut_target(lnk: &[u8]) -> Option<String> {
+    const HEADER: usize = 0x4C;
+    const HAS_TARGET_LIST: u32 = 1;
+    const HAS_LINK_INFO: u32 = 1 << 1;
+    const HAS_LOCAL_PATH: u32 = 1;
+
+    let u32_at = |at: usize| -> Option<u32> { Some(u32::from_le_bytes(lnk.get(at..at + 4)?.try_into().ok()?)) };
+    if u32_at(0)? as usize != HEADER {
+        return None;
+    }
+    let flags = u32_at(20)?;
+    let mut at = HEADER;
+    if flags & HAS_TARGET_LIST != 0 {
+        at += 2 + u16::from_le_bytes(lnk.get(at..at + 2)?.try_into().ok()?) as usize;
+    }
+    if flags & HAS_LINK_INFO == 0 || u32_at(at + 8)? & HAS_LOCAL_PATH == 0 {
+        return None;
+    }
+    // Юникодная половина структуры появилась позже и есть не у всех ярлыков:
+    // видно это по длине заголовка блока, и от неё же зависит, где лежат строки.
+    let unicode = u32_at(at + 4)? >= 0x24;
+    let string_at = |offset_field: usize| -> Option<String> {
+        let start = at + u32_at(offset_field)? as usize;
+        let raw = lnk.get(start..)?;
+        match unicode {
+            true => {
+                let chars: Vec<u16> =
+                    raw.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).take_while(|c| *c != 0).collect();
+                String::from_utf16(&chars).ok()
+            }
+            // Однобайтовая половина — в кодовой странице системы, и угадывать её
+            // мы не станем: не ASCII — пусть находится другим источником.
+            false => {
+                let bytes: Vec<u8> = raw.iter().copied().take_while(|b| *b != 0).collect();
+                bytes.is_ascii().then(|| String::from_utf8_lossy(&bytes).into_owned())
+            }
+        }
+    };
+    let path = string_at(at + if unicode { 28 } else { 16 })?;
+    // Суффикс общего пути дописывается редко — обычно путь уже целый, — но
+    // когда он есть, без него вместо файла получится каталог.
+    let suffix = string_at(at + if unicode { 32 } else { 24 }).unwrap_or_default();
+    Some(path + &suffix)
+}
 
 /// Что работает прямо сейчас. Единственный источник, отвечающий про машину, а
 /// не про установленное: распакованный архив, программа из «Загрузок», игра из
@@ -834,6 +950,59 @@ mod tests {
         assert!(!is_own_process(&exe, &dir.to_string_lossy().to_uppercase()), "регистр каталога не важен");
         assert!(!is_own_process(&dir.join("нет.exe").to_string_lossy(), ""), "процесс есть, файла нет");
         assert!(!is_own_process(&dir.join("game.dll").to_string_lossy(), ""), "не exe");
+    }
+
+    /// Ярлык — бинарная структура, и путь в ней лежит по смещению, которого в
+    /// заголовке нет: разобрать вслепую нельзя, а промахнуться легко.
+    fn lnk(target: &str, unicode: bool) -> Vec<u8> {
+        let mut out = vec![0u8; 0x4C];
+        out[..4].copy_from_slice(&0x4Cu32.to_le_bytes());
+        out[20..24].copy_from_slice(&2u32.to_le_bytes()); // только LinkInfo, без списка целей
+        let header: u32 = if unicode { 0x24 } else { 0x1C };
+        let path: Vec<u8> = match unicode {
+            true => target.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect(),
+            false => target.bytes().chain([0]).collect(),
+        };
+        let mut info = vec![0u8; header as usize];
+        info[4..8].copy_from_slice(&header.to_le_bytes());
+        info[8..12].copy_from_slice(&1u32.to_le_bytes()); // VolumeIDAndLocalBasePath
+        let path_at = if unicode { 28 } else { 16 };
+        info[path_at..path_at + 4].copy_from_slice(&header.to_le_bytes());
+        let suffix_at = if unicode { 32 } else { 24 };
+        info[suffix_at..suffix_at + 4].copy_from_slice(&(header + path.len() as u32).to_le_bytes());
+        info.extend(path);
+        info.extend(if unicode { vec![0, 0] } else { vec![0] });
+        let size = info.len() as u32;
+        info[..4].copy_from_slice(&size.to_le_bytes());
+        out.extend(info);
+        out
+    }
+
+    #[test]
+    fn reads_shortcut_target() {
+        let target = r"C:\Программы\Telegram.exe";
+        assert_eq!(shortcut_target(&lnk(target, true)).as_deref(), Some(target), "юникодная половина");
+        assert_eq!(shortcut_target(&lnk(r"C:\App\app.exe", false)).as_deref(), Some(r"C:\App\app.exe"), "старый ярлык");
+        assert_eq!(shortcut_target(&lnk(target, false)), None, "кодовую страницу не угадываем");
+        assert_eq!(shortcut_target("не ярлык вовсе".as_bytes()), None, "заголовок не тот");
+        assert_eq!(shortcut_target(&[]), None, "пустой файл");
+    }
+
+    /// Меню «Пуск» — то, что человек сам считает своими программами, и имена
+    /// там человеческие. Деинсталляторы лежат рядом с ними и в список не идут.
+    #[test]
+    fn walks_start_menu() {
+        let menu = std::env::temp_dir().join("pg-menu-test");
+        let _ = std::fs::remove_dir_all(&menu);
+        std::fs::create_dir_all(menu.join("Telegram Desktop")).unwrap();
+        std::fs::write(menu.join("Telegram Desktop/Telegram Desktop.lnk"), lnk(r"C:\tg\Telegram.exe", true)).unwrap();
+        std::fs::write(menu.join("Telegram Desktop/Удалить Telegram.LNK"), lnk(r"C:\tg\unins000.exe", true)).unwrap();
+        std::fs::write(menu.join("Readme.txt"), "не ярлык").unwrap();
+
+        let found = shortcuts_in(&menu, 0);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].name, "Telegram Desktop", "имя берётся у ярлыка, а не у файла");
+        assert_eq!(found[0].path, r"C:\tg\Telegram.exe");
     }
 
     /// Дедуп по пути: каталог и реестр находят одно и то же, в списке это одна строка.
