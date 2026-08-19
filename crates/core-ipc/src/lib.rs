@@ -2,11 +2,16 @@
 //!
 //! Обмен — построчный JSON: одна строка запроса, одна строка ответа.
 //!
-//! Транспорт на Windows — именованный канал с ACL: службой управляет кто угодно
-//! на машине, если её порт открыт всем, а TCP-сокет ограничить некому. Канал же
-//! пускает SYSTEM, администраторов и интерактивных пользователей и отсекает
-//! процессы низкой целостности (песочницы браузеров). На остальных системах —
-//! по-прежнему TCP на loopback: там служба не работает, там разработка.
+//! Транспорт на Windows — именованный канал с ACL, и только он: сокет на
+//! loopback ограничить некому, и службой через него управлял бы любой процесс
+//! машины. Канал пускает SYSTEM, администраторов и интерактивных пользователей
+//! и отсекает процессы низкой целостности (песочницы браузеров). На остальных
+//! системах — TCP на loopback: там служба не работает, там разработка.
+//!
+//! Открывает канал клиент анонимно (`SECURITY_ANONYMOUS`). Имя канала свободно
+//! ровно до старта службы, и занять его может кто угодно; подставной сервер без
+//! этого флага вызвал бы `ImpersonateNamedPipeClient` и получил бы токен
+//! клиента — а клиентом бывает `pg-cli` от администратора.
 
 #[cfg(windows)]
 mod windows_pipe;
@@ -15,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::sync::atomic::{AtomicU8, Ordering};
+#[cfg(not(windows))]
 use std::net::{TcpListener, TcpStream};
 
 pub const ADDR: &str = "127.0.0.1:48291";
@@ -24,8 +30,8 @@ pub const ADDR: &str = "127.0.0.1:48291";
 /// заведомо больше самого толстого ответа (статус с иконкой), но конечны.
 pub const MAX_LINE: u64 = 8 << 20;
 /// Служба создаёт экземпляры канала по одному, и между отданным клиенту
-/// экземпляром и следующим канала нет вовсе. Уйти в этот момент на TCP —
-/// соврать «служба не запущена», поэтому клиент пробует ещё несколько раз.
+/// экземпляром и следующим канала нет вовсе. Сдаться в этот момент — соврать
+/// «служба не запущена», поэтому клиент пробует ещё несколько раз.
 #[cfg(windows)]
 const PIPE_TRIES: u32 = 5;
 #[cfg(windows)]
@@ -136,7 +142,7 @@ pub enum Request {
     /// просто не участвует, пока охват «весь трафик».
     SetAllTraffic { enabled: bool },
     /// Импорт профиля из share-link (vless://, vmess://, trojan://, ss://, hy2://,
-    /// wg://) либо из JSON-конфига sing-box. `http(s)://` — это подписка: служба
+    /// wg://) либо из JSON-конфига sing-box. `https://` — это подписка: служба
     /// скачает её и заведёт профиль на каждый узел. Повторный импорт того же
     /// адреса обновляет подписку, отдельной команды на это нет.
     AddProfile { link: String },
@@ -258,6 +264,7 @@ pub enum Response {
 pub struct Stream(Inner);
 
 enum Inner {
+    #[cfg(not(windows))]
     Tcp(TcpStream),
     #[cfg(windows)]
     Pipe(std::fs::File),
@@ -266,6 +273,7 @@ enum Inner {
 impl Stream {
     pub fn try_clone(&self) -> io::Result<Stream> {
         Ok(Stream(match &self.0 {
+            #[cfg(not(windows))]
             Inner::Tcp(s) => Inner::Tcp(s.try_clone()?),
             #[cfg(windows)]
             Inner::Pipe(f) => Inner::Pipe(f.try_clone()?),
@@ -276,6 +284,7 @@ impl Stream {
 impl Read for Stream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match &mut self.0 {
+            #[cfg(not(windows))]
             Inner::Tcp(s) => s.read(buf),
             #[cfg(windows)]
             Inner::Pipe(f) => f.read(buf),
@@ -286,6 +295,7 @@ impl Read for Stream {
 impl Write for Stream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match &mut self.0 {
+            #[cfg(not(windows))]
             Inner::Tcp(s) => s.write(buf),
             #[cfg(windows)]
             Inner::Pipe(f) => f.write(buf),
@@ -293,6 +303,7 @@ impl Write for Stream {
     }
     fn flush(&mut self) -> io::Result<()> {
         match &mut self.0 {
+            #[cfg(not(windows))]
             Inner::Tcp(s) => s.flush(),
             #[cfg(windows)]
             Inner::Pipe(f) => f.flush(),
@@ -300,8 +311,8 @@ impl Write for Stream {
     }
 }
 
-/// Куда встала служба. Показывается в журнале: подмена канала на сокет — это
-/// понижение защиты, и молчать о нём нельзя.
+/// Куда встала служба. Показывается в журнале: на Windows это всегда канал,
+/// сокет остаётся только там, где службы и нет, — в разработке.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Endpoint {
     Pipe,
@@ -311,23 +322,29 @@ pub enum Endpoint {
 pub struct Listener(ListenerInner);
 
 enum ListenerInner {
+    #[cfg(not(windows))]
     Tcp(TcpListener),
     #[cfg(windows)]
     Pipe,
 }
 
 impl Listener {
-    /// На Windows сначала канал; если он не создаётся — сокет, но с криком.
+    /// На Windows — только канал. Отката на сокет нет намеренно: сокет открыт
+    /// любому процессу машины, а служба под LocalSystem умеет выключать
+    /// приватный режим. Не создался канал — служба не поднимается совсем.
     pub fn bind() -> io::Result<(Listener, Endpoint)> {
         #[cfg(windows)]
-        if windows_pipe::probe().is_ok() {
-            return Ok((Listener(ListenerInner::Pipe), Endpoint::Pipe));
+        {
+            windows_pipe::probe()?;
+            Ok((Listener(ListenerInner::Pipe), Endpoint::Pipe))
         }
+        #[cfg(not(windows))]
         Ok((Listener(ListenerInner::Tcp(TcpListener::bind(ADDR)?)), Endpoint::Tcp))
     }
 
     pub fn accept(&self) -> io::Result<Stream> {
         match &self.0 {
+            #[cfg(not(windows))]
             ListenerInner::Tcp(l) => Ok(Stream(Inner::Tcp(l.accept()?.0))),
             #[cfg(windows)]
             ListenerInner::Pipe => Ok(Stream(Inner::Pipe(windows_pipe::accept()?))),
@@ -338,19 +355,37 @@ impl Listener {
 fn connect() -> io::Result<Stream> {
     #[cfg(windows)]
     {
+        use std::os::windows::fs::OpenOptionsExt;
+        // SECURITY_SQOS_PRESENT | SECURITY_ANONYMOUS: серверу канала достаётся
+        // токен, которым нельзя ни представиться нами, ни узнать, кто мы. Имя
+        // канала свободно до старта службы, и подставной сервер без этого флага
+        // получил бы права того, кто к нему подключился.
+        const SECURITY_ANONYMOUS: u32 = 0x0010_0000;
         // Канал открывается обычным File: серверная сторона — единственное
         // место, где нужен WinAPI.
+        let mut last = io::Error::other("канал не открылся");
         for attempt in 0..PIPE_TRIES {
-            match std::fs::OpenOptions::new().read(true).write(true).open(PIPE) {
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(SECURITY_ANONYMOUS)
+                .open(PIPE)
+            {
                 Ok(f) => return Ok(Stream(Inner::Pipe(f))),
                 // Не последняя попытка: скорее всего это щель между экземплярами
                 // канала, а не отсутствие службы.
-                Err(_) if attempt + 1 < PIPE_TRIES => std::thread::sleep(PIPE_PAUSE),
-                // Канала нет совсем — возможно, служба откатилась на сокет.
-                Err(_) => {}
+                Err(e) if attempt + 1 < PIPE_TRIES => {
+                    last = e;
+                    std::thread::sleep(PIPE_PAUSE);
+                }
+                // Канала нет совсем. На сокет не уходим: слушать его на Windows
+                // некому, а если кто-то слушает — это не служба.
+                Err(e) => last = e,
             }
         }
+        Err(last)
     }
+    #[cfg(not(windows))]
     Ok(Stream(Inner::Tcp(TcpStream::connect(ADDR)?)))
 }
 

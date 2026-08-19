@@ -67,21 +67,42 @@ pub fn parse_many(body: &str) -> Vec<Profile> {
     found
 }
 
-/// Конфиг sing-box: либо целиком (берём первый рабочий outbound), либо один
-/// узел объектом. Служебные outbound'ы (direct/block/dns и группы) — не узлы.
+/// Типы узлов, которые мы согласны поднимать. Именно белый список, а не
+/// «всё, кроме служебного»: узел едет в outbounds sing-box как есть, и профиль
+/// `{"type":"direct"}` — из подписки или из вставленного JSON — стартовал бы
+/// нормально, проба через локальный вход проходила бы, служба сняла бы
+/// блокировку, а трафик выбранных приложений шёл бы в открытую сеть под
+/// надписью «Защищено». Чёрный список этого не ловит: он и не мог, он про
+/// служебные outbound'ы, да и работал только для конфига целиком — голый
+/// объект проходил мимо него.
+const NODES: [&str; 10] = [
+    "vless", "vmess", "trojan", "shadowsocks", "hysteria", "hysteria2", "tuic", "anytls", "wireguard", "ssh",
+];
+
+fn is_node(value: &Value) -> bool {
+    value["type"].as_str().is_some_and(|kind| NODES.contains(&kind))
+}
+
+/// Конфиг sing-box: либо целиком (берём первый узел), либо один узел объектом.
+/// Служебные outbound'ы (direct/block/dns и группы) узлами не считаются.
 fn from_json(text: &str) -> Result<Profile, String> {
     let value: Value = serde_json::from_str(text).map_err(|e| t(&format!("не разбирается как JSON: {e}"), &format!("not valid JSON: {e}")))?;
-    const SERVICE: [&str; 6] = ["direct", "block", "dns", "selector", "urltest", "socks"];
 
     let node = match value.get("outbounds").and_then(Value::as_array) {
         Some(outbounds) => outbounds
             .iter()
-            .find(|o| o["type"].as_str().is_some_and(|t| !SERVICE.contains(&t)))
+            .find(|o| is_node(o))
             .cloned()
             .ok_or_else(|| t("в конфиге нет ни одного узла — только служебные outbound", "the config has no node, only service outbounds"))?,
         None => value.clone(),
     };
     let kind = node["type"].as_str().ok_or_else(|| t("в узле нет поля type", "the node has no type field"))?.to_string();
+    if !is_node(&node) {
+        return Err(t(
+            &format!("тип узла не поддерживается: {kind}"),
+            &format!("unsupported node type: {kind}"),
+        ));
+    }
     if node["server"].as_str().is_none() && node["peers"][0]["address"].as_str().is_none() {
         return Err(t(&format!("в узле {kind} не указан сервер"), &format!("the {kind} node has no server")));
     }
@@ -896,6 +917,23 @@ mod tests {
         assert_eq!(full.name, "trojan-b.com", "имени нет — собираем из типа и сервера");
     }
 
+    /// Узел `direct` — это не туннель, а прямой выход: он поднимается, проба
+    /// через него проходит, служба снимает блокировку, и трафик выбранных
+    /// приложений идёт в открытую сеть под надписью «Защищено». Пройти он не
+    /// должен ни объектом, ни строкой подписки, ни внутри конфига целиком.
+    #[test]
+    fn direct_is_not_a_node() {
+        let err = parse(r#"{"type":"direct","server":"a.com"}"#).unwrap_err();
+        assert!(err.contains("не поддерживается"), "{err}");
+        let err = parse(r#"{"outbounds":[{"type":"direct","server":"a.com"}]}"#).unwrap_err();
+        assert!(err.contains("нет ни одного узла"), "{err}");
+
+        let list = "vless://u@a.com:443#Живой\n{\"type\":\"direct\",\"server\":\"b.com\"}\n";
+        let got = parse_many(list);
+        assert_eq!(got.len(), 1, "битый узел выбрасывается, живой остаётся: {got:?}");
+        assert_eq!(got[0].name, "Живой");
+    }
+
     /// Подписка приходит в двух видах, и оба должны дать один и тот же список.
     #[test]
     fn subscription_plain_and_base64() {
@@ -1048,6 +1086,7 @@ proxy-groups:
             (r#"{"server":"a.com"}"#, "нет поля type"),
             (r#"{"type":"vless"}"#, "не указан сервер"),
             (r#"{"outbounds":[{"type":"direct"}]}"#, "нет ни одного узла"),
+            (r#"{"type":"block","server":"a.com"}"#, "не поддерживается"),
         ] {
             let err = parse(link).unwrap_err();
             assert!(err.contains(expect), "ссылка {link:?} дала {err:?}, ожидали {expect:?}");

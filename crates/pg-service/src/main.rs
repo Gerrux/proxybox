@@ -465,6 +465,17 @@ fn probe_target(node: &Value) -> (String, u16) {
 /// идём напрямую; а не вышло через туннель — пробуем напрямую, потому что отказ
 /// сервера от блокировки здесь ничем не отличается.
 fn fetch(url: &str, via_tunnel: bool) -> Result<String, String> {
+    // Только https, и проверка здесь, а не в разборе команды: этот же fetch
+    // ходит за плановым обновлением подписки, адрес которой мог приехать в
+    // state.json ещё до этой проверки. Тело ответа — список серверов, через
+    // которые пойдёт весь трафик выбранных приложений; по открытому каналу его
+    // подменяет любой, кто на пути, и это не утечка, а подмена VPN целиком.
+    if !url.starts_with("https://") {
+        return Err(t(
+            "подписка только по https: по http список узлов подменит любой, кто на пути",
+            "subscriptions must use https: over http anyone on the path can replace the node list",
+        ));
+    }
     let direct = || get(url, None);
     if !via_tunnel {
         return direct();
@@ -1010,6 +1021,15 @@ mod tests {
         assert_eq!(explain("порт занят"), "порт занят", "не про TUN — не додумываем");
     }
 
+    /// Отказ от http обязан случиться до сети: этим же fetch ходит плановое
+    /// обновление подписки, а её адрес мог сохраниться до появления проверки.
+    #[test]
+    fn subscription_requires_https() {
+        let err = fetch("http://panel.example/sub", false).unwrap_err();
+        assert!(err.contains("https"), "{err}");
+        assert!(fetch("panel.example/sub", false).is_err(), "схемы нет — тоже не подписка");
+    }
+
     #[test]
     fn probe_goes_to_own_server() {
         std::env::remove_var("PG_PROBE");
@@ -1106,6 +1126,8 @@ fn serve(svc: &Mutex<Service>, mut conn: Stream) {
 /// функция не возвращается — работу заканчивает Ctrl+C.
 fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
     let svc = Arc::new(Mutex::new(Service::load()));
+    // Отказ здесь — на Windows это несозданный канал. Служба не поднимается:
+    // сокет вместо канала означал бы управление приватным режимом откуда угодно.
     let (listener, endpoint) = Listener::bind()?;
     {
         let mut s = lock(&svc);
@@ -1118,14 +1140,6 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
             &format!("служба слушает {where_}; приложений: {apps}, профилей: {profiles}"),
             &format!("service listening on {where_}; apps: {apps}, profiles: {profiles}"),
         ));
-        if cfg!(windows) && endpoint == Endpoint::Tcp {
-            // Канал ограничен списком доступа, сокет — нет: управлять службой
-            // сможет любой процесс на машине. Молчать об этом нельзя.
-            s.log(t(
-                "ВНИМАНИЕ: именованный канал не создался, работаем через локальный сокет — доступ к службе не ограничен",
-                "WARNING: the named pipe was not created, falling back to a local socket — access to the service is unrestricted",
-            ));
-        }
         if !elevated() {
             s.log(t(
                 "ВНИМАНИЕ: служба запущена без прав администратора — TUN и правила брандмауэра работать не будут",

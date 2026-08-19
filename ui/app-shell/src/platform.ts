@@ -62,7 +62,7 @@ export type Request =
   | { cmd: "set-lang"; arg: { lang: Lang } }
   | { cmd: "add-profile"; arg: { link: string } }
   | { cmd: "remove-profile"; arg: { name: string } }
-  /** Подписки заводятся через add-profile с http(s)-адресом; повторный импорт
+  /** Подписки заводятся через add-profile с https-адресом; повторный импорт
    *  того же адреса её обновляет. Отдельная команда нужна только на «отписаться». */
   | { cmd: "remove-subscription"; arg: { url: string } }
   /** Прогон всех профилей: каждый проверяется отдельным подключением, живой
