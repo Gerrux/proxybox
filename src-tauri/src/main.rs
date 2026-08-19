@@ -93,6 +93,10 @@ fn session_dir(profile: &str) -> std::path::PathBuf {
 /// сеансы независимыми: у каждого профиля свои входы, и одним сайтом можно
 /// пользоваться из разных стран одновременно.
 ///
+/// `--user-agent` и язык — личность браузерного профиля, и её потолок написан у
+/// `core_ipc::BrowserProfile`: строка запроса и `navigator.userAgent` меняются,
+/// `Sec-CH-UA` — нет.
+///
 /// `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` — не украшение.
 /// SOCKS5 у Chromium везёт TCP, а WebRTC собирает кандидатов по UDP с настоящих
 /// интерфейсов: STUN-запрос уходит мимо прокси, и сайт видит настоящий адрес
@@ -101,20 +105,30 @@ fn session_dir(profile: &str) -> std::path::PathBuf {
 ///
 /// `async` — по тому же правилу, что и у `ipc`.
 #[tauri::command(async)]
-fn open_browser(port: u16, profile: String) -> Result<(), String> {
+fn open_browser(port: u16, profile: String, ua: String, lang: String) -> Result<(), String> {
     let browser = core_apps::browser().ok_or_else(|| {
         core_ipc::t(
             "браузер на Chromium не найден: нужен Chrome, Edge, Brave или Яндекс",
             "no Chromium browser found: install Chrome, Edge, Brave or Yandex",
         )
     })?;
-    let mut child = std::process::Command::new(&browser.path)
+    let data = session_dir(&profile);
+    set_accept_language(&data, &lang);
+    let mut command = std::process::Command::new(&browser.path);
+    command
         .arg(format!("--proxy-server=socks5://127.0.0.1:{port}"))
-        .arg(format!("--user-data-dir={}", session_dir(&profile).display()))
+        .arg(format!("--user-data-dir={}", data.display()))
         .arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
-        .arg("--no-first-run")
-        .spawn()
-        .map_err(|e| format!("{}: {e}", browser.path))?;
+        .arg("--no-first-run");
+    if !ua.is_empty() {
+        command.arg(format!("--user-agent={ua}"));
+    }
+    // Языков в списке несколько, а интерфейсу браузера нужен один — первый.
+    // Сайту он не виден, но окно на чужом языке смущает человека, а не сайт.
+    if let Some(first) = lang.split(',').next().filter(|l| !l.is_empty()) {
+        command.arg(format!("--lang={first}"));
+    }
+    let mut child = command.spawn().map_err(|e| format!("{}: {e}", browser.path))?;
     // Закрытие окна службе не видно: она видит живой sing-box, а тот переживает
     // браузер легко — и метка «браузер» врала бы, пока жив процесс. Ждёт тот,
     // кто окно и запустил.
@@ -137,6 +151,31 @@ fn open_browser(port: u16, profile: String) -> Result<(), String> {
         });
     }
     Ok(())
+}
+
+/// `Accept-Language` Chromium берёт из настроек профиля, а не из аргументов, —
+/// поэтому язык кладётся в `Preferences` каталога сеанса до запуска. Читаем и
+/// правим одно поле, а не пишем файл целиком: всё остальное в нём — настройки
+/// самого браузера, накопленные человеком.
+///
+/// ponytail: у уже открытого окна язык прежний — Chrome держит настройки в
+/// памяти и при выходе перепишет файл своим. Потолок — правка применяется со
+/// следующего запуска окна; апгрейд — гасить сеанс при смене языка, но это
+/// значит закрыть человеку то, что он в окне делает.
+fn set_accept_language(data: &std::path::Path, lang: &str) {
+    if lang.is_empty() {
+        return;
+    }
+    let file = data.join("Default").join("Preferences");
+    let mut prefs: serde_json::Value = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    prefs["intl"]["accept_languages"] = serde_json::Value::String(lang.to_string());
+    if std::fs::create_dir_all(file.parent().unwrap_or(data)).is_err() {
+        return;
+    }
+    let _ = std::fs::write(&file, prefs.to_string());
 }
 
 /// Профили, за окнами которых уже кто-то ждёт. Своё состояние оболочке иметь не

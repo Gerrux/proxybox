@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { forgetBrowser, type Act, type Probe, type Status } from "./platform";
+import type { Act, Probe, Status } from "./platform";
 import { measuredAgo, strings } from "./i18n";
 import { AddField, Button, ConfirmButton, Empty, flag, Panel, SearchField } from "./ui";
 
@@ -44,14 +44,11 @@ const TONE = {
 export function Profiles({
   status,
   act,
-  browse,
   busy,
   className,
 }: {
   status: Status | null;
   act: Act;
-  /** Вкладка через отдельный туннель этого профиля — мимо общего режима. */
-  browse: (profile: string) => void;
   busy?: boolean;
   className?: string;
 }) {
@@ -148,20 +145,19 @@ export function Profiles({
               // её спросил сам туннель.
               const country = probe?.country ?? (active && status?.tunnel === "up" ? status.country : null);
               const live = active && status != null && status.tunnel !== "off";
-              // Открытое окно браузера — состояние профиля, а не общего режима,
-              // и в окне о нём больше не сказано нигде. Сеансы независимы:
-              // помечен бывает не один профиль сразу.
-              const browsing = status?.browsers.includes(name) ?? false;
+              // Окно браузера открыто через этот узел. Заводят и открывают их
+              // на своей вкладке, но узнать об этом отсюда человек должен: узел
+              // при этом несёт трафик, а в строке об этом иначе ни слова.
+              const browsing =
+                status?.browser_profiles.some((b) => b.node === name && status.browsers.includes(b.name)) ?? false;
               // Рельс профиля повторяет то, что показывает верх окна: выбран —
               // ещё не значит «несёт трафик», и путать это нельзя.
               const tone = TONE[live && status ? status.tunnel : "off"];
-              const remove = () => {
-                // Узла больше нет — хранить его входы и куки не для чего.
-                // Отказ проглатываем: каталог мог быть занят открытым окном
-                // браузера, а профиль уходит в любом случае.
-                void forgetBrowser(name).catch(() => {});
-                void act({ cmd: "remove-profile", arg: { name } });
-              };
+              // Каталоги сеансов зовутся по имени браузерного профиля, а не
+              // узла: стирать тут нечего. Браузерные профили удаление узла
+              // переживают намеренно — в их каталогах входы человека, и починка
+              // это выбрать другой узел, а не заводить всё заново.
+              const remove = () => void act({ cmd: "remove-profile", arg: { name } });
               return (
                 <li
                   key={name}
@@ -213,13 +209,6 @@ export function Profiles({
                       {s.turnOn}
                     </Button>
                   )}
-                  {/* Окно браузера через этот профиль: общий режим не трогается,
-                      трафик окна идёт своим sing-box без TUN. Словом, а не
-                      значком: единственный иероглиф в окне никто не нажимал —
-                      угадать в нём «браузер через этот узел» нельзя. */}
-                  <Button variant="quiet" title={s.browseProfile(name)} onClick={() => browse(name)}>
-                    {s.browse}
-                  </Button>
                   {/* У активного профиля удаление гасит туннель, и выбранные
                       приложения остаются без сети — такое по одному клику мимо
                       случаться не должно. Неактивный уходит сразу. */}

@@ -16,6 +16,10 @@ core-ipc = { path = "../crates/core-ipc" }
 # Только ради поиска браузера для «открыть вкладку через профиль»: где что
 # установлено, знает каталог core-apps, а не оболочка.
 core-apps = { path = "../crates/core-apps" }
+# Accept-Language Chromium берёт из Preferences профиля, а не из аргументов, —
+# значит оболочке приходится править этот файл. Новой зависимости в дереве это
+# не добавляет: serde_json и так тянут и tauri, и core-ipc.
+serde_json = "1"
 # tray-icon: значок в трее. Без него закрытое окно не оставляет о запертой
 # машине ни следа — см. `tray()`.
 tauri = { version = "2", features = ["tray-icon"] }

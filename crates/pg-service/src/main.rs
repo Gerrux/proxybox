@@ -9,8 +9,8 @@
 mod service;
 
 use core_ipc::{
-    dir_name, t, App, Endpoint, Listener, LogLine, Probe, Request, Response, Status, Stream, Tunnel as TunnelState,
-    ADDR,
+    dir_name, t, App, BrowserProfile, Endpoint, Listener, LogLine, Probe, Request, Response, Status, Stream,
+    Tunnel as TunnelState, ADDR,
 };
 use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
@@ -93,6 +93,11 @@ struct Saved {
     /// добывается оно секундами прогона на профиль.
     #[serde(default)]
     probes: Vec<Probe>,
+    /// Браузерные профили: имя, узел и личность окна. Переживают перезапуск —
+    /// в каталоге каждого лежат куки и входы человека, и потерять имя значило
+    /// бы потерять вход.
+    #[serde(default)]
+    browser_profiles: Vec<BrowserProfile>,
 }
 
 /// Секунды с эпохи. Часы могли прыгнуть назад — тогда измерение выглядит
@@ -169,6 +174,7 @@ impl Service {
                 profiles: saved.profiles.keys().cloned().collect(),
                 subscriptions: saved.subscriptions.keys().cloned().collect(),
                 probes: saved.probes,
+                browser_profiles: saved.browser_profiles,
                 ..Default::default()
             },
             profiles: saved.profiles,
@@ -200,6 +206,7 @@ impl Service {
             private: self.private,
             all_traffic: self.status.all_traffic,
             probes: self.status.probes.clone(),
+            browser_profiles: self.status.browser_profiles.clone(),
         };
         let _ = std::fs::create_dir_all(dir());
         if let Ok(raw) = serde_json::to_string_pretty(&saved) {
@@ -225,8 +232,10 @@ impl Service {
     /// выключить приватный режим руками, и приложения остаются защищёнными.
     fn forget_profile(&mut self, name: &str) {
         self.profiles.remove(name);
-        // Инстанс под браузер держал бы удалённый узел живым — а его больше нет.
-        self.browsers.remove(name);
+        // Сеансы, смотревшие на этот узел, держали бы живым то, чего больше
+        // нет. Сами браузерные профили остаются: в их каталогах входы человека,
+        // и починка — это выбрать им другой узел, а не завести всё заново.
+        self.stop_sessions_on(name);
         if self.status.profile.as_deref() == Some(name) {
             self.stop();
             self.status.profile = None;
@@ -351,18 +360,30 @@ impl Service {
         self.log(t("приватный режим выключен: правила сняты", "private mode off: rules removed"));
     }
 
-    /// Отдельный прокси под окно браузера. Тот же профиль второй раз — тот же
-    /// порт: окно уже открыто, поднимать ему второй sing-box незачем.
+    /// Отдельный прокси под окно браузера. Тот же браузерный профиль второй раз
+    /// — тот же порт: окно уже открыто, поднимать ему второй sing-box незачем.
     ///
-    /// Каталог у сеанса свой, по имени профиля: `Tunnel::start` добивает
-    /// процесс из `singbox.pid`, и общий каталог означал бы, что каждый новый
-    /// сеанс гасит предыдущий — ровно так и было, пока сеанс был один.
+    /// Каталог у сеанса свой, по имени браузерного профиля: `Tunnel::start`
+    /// добивает процесс из `singbox.pid`, и общий каталог означал бы, что
+    /// каждый новый сеанс гасит предыдущий.
     fn browse(&mut self, profile: &str) -> Result<u16, String> {
+        let node_name = self
+            .status
+            .browser_profiles
+            .iter()
+            .find(|b| b.name == profile)
+            .map(|b| b.node.clone())
+            .ok_or_else(|| {
+                t(&format!("нет браузерного профиля «{profile}»"), &format!("no browser profile \"{profile}\""))
+            })?;
+        // Узел могли удалить или он мог пропасть из подписки: сам браузерный
+        // профиль это переживает (в его каталоге входы), а вот открыть его
+        // теперь нечем — и молчать об этом нельзя.
         let node = self
             .profiles
-            .get(profile)
+            .get(&node_name)
             .cloned()
-            .ok_or_else(|| t(&format!("нет профиля «{profile}»"), &format!("no profile \"{profile}\"")))?;
+            .ok_or_else(|| t(&format!("нет узла «{node_name}»"), &format!("no node \"{node_name}\"")))?;
         if let Some(proc) = self.browsers.get_mut(profile) {
             if proc.alive() {
                 return Ok(proc.socks_port);
@@ -380,6 +401,20 @@ impl Service {
         ));
         self.browsers.insert(profile.to_string(), proc);
         Ok(port)
+    }
+
+    /// Погасить сеансы всех браузерных профилей, смотрящих на этот узел.
+    fn stop_sessions_on(&mut self, node: &str) {
+        let doomed: Vec<String> = self
+            .status
+            .browser_profiles
+            .iter()
+            .filter(|b| b.node == node)
+            .map(|b| b.name.clone())
+            .collect();
+        for name in doomed {
+            self.browsers.remove(&name);
+        }
     }
 
     /// Сеанс браузера погашен. Процесс уходит Drop'ом, порт закрывается — и
@@ -602,8 +637,13 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Response {
     s.subscriptions.insert(url.to_string(), names);
     // Окна браузера могли висеть на узлах, которых в подписке больше нет:
     // держать их живыми не за что, ровно как и активный профиль.
-    let gone: Vec<String> =
-        s.browsers.keys().filter(|name| !s.profiles.contains_key(*name)).cloned().collect();
+    let gone: Vec<String> = s
+        .status
+        .browser_profiles
+        .iter()
+        .filter(|b| !s.profiles.contains_key(&b.node))
+        .map(|b| b.name.clone())
+        .collect();
     for name in gone {
         s.browsers.remove(&name);
     }
@@ -828,6 +868,24 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
         // живой процесс sing-box, а он переживает окно браузера легко.
         Request::BrowseStop { profile } => {
             s.browse_stop(&profile);
+            Response::Done
+        }
+        // Правка личности — это перезапись профиля с тем же именем: каталог с
+        // куками привязан к имени и переживает её. Живой сеанс не трогаем: UA и
+        // язык браузер прочитал при запуске, применятся они со следующего окна,
+        // а гасить окно ради этого — потерять то, что человек в нём делает.
+        Request::SetBrowserProfile { profile } => {
+            match s.status.browser_profiles.iter_mut().find(|b| b.name == profile.name) {
+                Some(existing) => *existing = profile,
+                None => s.status.browser_profiles.push(profile),
+            }
+            s.save();
+            Response::Done
+        }
+        Request::RemoveBrowserProfile { name } => {
+            s.browsers.remove(&name);
+            s.status.browser_profiles.retain(|b| b.name != name);
+            s.save();
             Response::Done
         }
         Request::TestProfiles => {

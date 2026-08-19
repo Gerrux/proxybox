@@ -131,6 +131,35 @@ pub fn lang_from_env() -> Lang {
     }
 }
 
+/// Браузерный профиль — личность окна, и она не то же самое, что узел. Узел
+/// даёт адрес, каталог сеанса — куки и входы, `ua` с `lang` — то, что о
+/// браузере узнаёт сайт. На один узел их бывает несколько: два аккаунта через
+/// одну страну иначе не развести.
+///
+/// Чего этим не добиться, сказано один раз и честно: `--user-agent` меняет
+/// строку запроса и `navigator.userAgent`, а `Sec-CH-UA` и
+/// `navigator.userAgentData` Chromium собирает из настоящей сборки, и флагом
+/// они не трогаются. Canvas, шрифты, экран и GPU у всех профилей одной машины
+/// общие. Это разделение аккаунтов, а не антидетект: тот делается патченным
+/// Chromium, а не набором флагов.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BrowserProfile {
+    pub name: String,
+    /// Имя профиля узла — ключ из `Status::profiles`. Узел могли удалить: тогда
+    /// сеанс не поднимется, но сам браузерный профиль остаётся жить, потому что
+    /// в его каталоге лежат входы человека.
+    pub node: String,
+    /// Пусто — настоящий user-agent установленного браузера. Выдумка тем
+    /// заметнее, чем дальше она от него: расхождение со `Sec-CH-UA` видно.
+    #[serde(default)]
+    pub ua: String,
+    /// Значение `Accept-Language` вида `nl-NL,nl,en-US,en`. Пусто — системный.
+    /// Язык — второе по громкости после адреса: русский при голландском выходе
+    /// виден любому сайту.
+    #[serde(default)]
+    pub lang: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", content = "arg", rename_all = "kebab-case")]
 pub enum Request {
@@ -182,13 +211,21 @@ pub enum Request {
     /// порты, свой каталог и нет TUN. Запускает браузер клиент: служба работает
     /// в сессии 0, её окна человек не увидит.
     ///
-    /// Сеансов бывает несколько разом, по одному на профиль; тот же профиль
-    /// второй раз — тот же порт, второго sing-box ему не надо.
+    /// Сеансов бывает несколько разом, по одному на браузерный профиль; тот же
+    /// профиль второй раз — тот же порт, второго sing-box ему не надо. `profile`
+    /// здесь — имя браузерного профиля, а узел берётся из него.
     Browse { profile: String },
     /// Погасить сеанс браузера. Шлёт его тот, кто окно и открыл: оболочка ждёт
     /// закрытия окна браузера и сообщает. Без этого метка «браузер» пережила бы
     /// окно, а sing-box сеанса — обоих.
     BrowseStop { profile: String },
+    /// Завести браузерный профиль либо переписать существующий с тем же именем.
+    /// Одна команда на оба случая: правка личности — это и есть перезапись, а
+    /// каталог с куками привязан к имени и переживает её.
+    SetBrowserProfile { profile: BrowserProfile },
+    /// Убрать браузерный профиль. Сеанс его гаснет, а каталог с куками сносит
+    /// клиент: он лежит в `%LOCALAPPDATA%` человека, куда службе не дотянуться.
+    RemoveBrowserProfile { name: String },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,10 +319,13 @@ pub struct Status {
     /// туннеля и мимо `tunnel`: окна браузера живут своей жизнью, и узнать о
     /// них в интерфейсе больше неоткуда.
     ///
-    /// Список, а не один профиль: сеансы независимы, и в окне они и есть тот
-    /// самый список профилей — второму списку взяться неоткуда.
+    /// Список, а не один профиль: сеансы независимы.
     #[serde(default)]
     pub browsers: Vec<String>,
+    /// Заведённые браузерные профили. Переживают перезапуск: в их каталогах
+    /// лежат входы человека, и потерять имя значило бы потерять и вход.
+    #[serde(default)]
+    pub browser_profiles: Vec<BrowserProfile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -467,6 +507,15 @@ mod tests {
             Request::TestProfiles,
             Request::Browse { profile: "myvpn".into() },
             Request::BrowseStop { profile: "myvpn".into() },
+            Request::SetBrowserProfile {
+                profile: BrowserProfile {
+                    name: "работа".into(),
+                    node: "myvpn".into(),
+                    ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)".into(),
+                    lang: "nl-NL,nl,en-US,en".into(),
+                },
+            },
+            Request::RemoveBrowserProfile { name: "работа".into() },
         ];
         for r in reqs {
             let s = serde_json::to_string(&r).unwrap();
@@ -481,7 +530,12 @@ mod tests {
                 country: Some("Нидерланды, Амстердам".into()),
                 apps: vec![App { path: r"C:\app.exe".into(), name: "app".into(), enabled: true }],
                 profiles: vec!["myvpn".into()],
-                browsers: vec!["myvpn".into()],
+                browsers: vec!["работа".into()],
+                browser_profiles: vec![BrowserProfile {
+                    name: "работа".into(),
+                    node: "myvpn".into(),
+                    ..Default::default()
+                }],
                 probes: vec![Probe {
                     name: "myvpn".into(),
                     latency_ms: Some(42),
