@@ -3,9 +3,9 @@
  *  настройки открыты, списки не показываются: окно маленькое, и две вещи разом
  *  в нём всё равно не прочитать.
  *
- *  Сюда же уехал охват. Он не про список приложений, хотя и стоял над ним:
- *  «весь компьютер» — это отсутствие отбора, и список в этом режиме не
- *  применяется вовсе. Панель приложений об этом говорит и отсылает сюда.
+ *  Охвата здесь нет: он не настройка, а главный выключатель продукта — им
+ *  меняют, кого касается инвариант, и решают это глядя на состояние туннеля.
+ *  Поэтому он стоит на шапке, у канала, чей левый конец и подписывает.
  *
  *  Четыре настройки службы (сверка подписок, страна, цель пробы, путь к
  *  sing-box) до этого жили только в переменных окружения — то есть были у того,
@@ -34,7 +34,7 @@ import {
   type Status,
 } from "./platform";
 import { strings } from "./i18n";
-import { Button, FIELD, Panel } from "./ui";
+import { Button, FIELD, Panel, Segmented } from "./ui";
 
 const REPO = "Gerrux/proxybox";
 
@@ -141,23 +141,6 @@ export function Settings({
             ]}
             value={lang ?? "ru"}
             onPick={(v) => void act({ cmd: "set-lang", arg: { lang: v as Lang } })}
-          />
-        </Row>
-
-        <Line />
-
-        {/* Охват — самая тяжёлая настройка продукта: «весь компьютер» уносит в
-            туннель и то, за чем нет процесса. Поэтому она первой из тех, что
-            меняют поведение, а не оформление. */}
-        <Row title={s.scope} note={s.scopeHint}>
-          <Segmented
-            options={[
-              ["apps", s.scopeApps],
-              ["all", s.scopeAll],
-            ]}
-            value={status?.all_traffic ? "all" : "apps"}
-            disabled={!status}
-            onPick={(v) => void act({ cmd: "set-all-traffic", arg: { enabled: v === "all" } })}
           />
         </Row>
 
@@ -278,42 +261,8 @@ function Line() {
   return <div className="h-px bg-edge" />;
 }
 
-/** Переключатель из нескольких значений. Один на язык, охват и тумблеры:
- *  выбранное различимо и без цвета (`aria-pressed`) — как у любой другой
- *  развилки в этом окне. */
-function Segmented({
-  options,
-  value,
-  onPick,
-  disabled,
-}: {
-  /** `[значение, надпись]` либо `[значение, надпись, подсказка]`. */
-  options: [string, string, string?][];
-  value: string;
-  onPick: (value: string) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <div className="flex gap-0.5 rounded-md border border-edge bg-surface-2 p-0.5">
-      {options.map(([id, label, hint]) => (
-        <button
-          key={id}
-          type="button"
-          aria-pressed={value === id}
-          title={hint}
-          disabled={disabled}
-          onClick={() => onPick(id)}
-          className={`smooth engraved rounded-[3px] px-3.5 py-1.5 disabled:opacity-40 ${
-            value === id ? "bg-surface text-ink" : "text-muted hover:text-ink"
-          }`}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
+/** Да/нет той же полоской, что и остальные развилки: галочка и тумблер — ещё
+ *  два вида управления там, где хватает одного. */
 function OnOff({
   lang,
   value,

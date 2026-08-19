@@ -407,6 +407,12 @@ body {
     margin-top: 8px;
   }
 
+  /* Охват в плашке из трея: надписи те же, а воздух вокруг них панель шириной
+     380 px не выдерживает — канал ужался бы до своих min-width и упёрся. */
+  .st-cond .seg-btn {
+    padding: 2px 6px;
+  }
+
   .st-metrics {
     display: flex;
     flex-wrap: wrap;

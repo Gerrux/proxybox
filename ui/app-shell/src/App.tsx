@@ -207,7 +207,12 @@ export function App() {
           панель, и прокрутка живёт внутри неё. Это и есть цена, ради которой
           панели разошлись по вкладкам. */}
       <div className="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col gap-2.5 overflow-hidden p-3 xl:max-w-[1600px]">
-        <StatusBar status={status} busy={busy > 0} onToggle={toggle} />
+        <StatusBar
+          status={status}
+          busy={busy > 0}
+          onToggle={toggle}
+          onScope={(all) => void act({ cmd: "set-all-traffic", arg: { enabled: all } })}
+        />
 
         {error && (
           // Ошибка команды — это поломка, а не запертый канал: цвет тот же, что
