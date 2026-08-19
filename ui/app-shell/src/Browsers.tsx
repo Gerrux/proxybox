@@ -36,24 +36,66 @@ function acceptLanguage(lang: string, code: string | null | undefined): string {
   return (code && LANGS[code.toUpperCase()]) ?? "en-US,en";
 }
 
-/** Правдоподобный user-agent, а не выдуманный.
+/** Токены платформы в строке user-agent — ровно те, что пишет настоящий Chrome.
  *
- *  Мажорная версия берётся из самого окна: вебвью — это тот же Chromium, что
- *  стоит рядом, и угадывать её незачем. Хвост версии остаётся `0.0.0` не по
- *  лени: с версии 110 Chrome обнуляет его сам (UA reduction), и настоящий номер
- *  сборки в строке был бы аномалией, которую видно с первого запроса.
+ *  Windows 10 и Windows 11 отдельными пунктами не стоят: в user-agent они
+ *  неразличимы, обе — `Windows NT 10.0`. Различает их только `Sec-CH-UA-Platform-Version`,
+ *  а его флагом не подделать, и два пункта с одинаковым выводом были бы враньём
+ *  в интерфейсе.
  *
- *  Отсюда и смысл слова «уникальный»: профили различаются между собой мажорной
- *  версией, но каждая такая строка — общая для миллионов настоящих браузеров.
- *  Уникальность в смысле «единственный такой в интернете» здесь ровно то,
- *  чего надо избежать. */
-function makeUa(): string {
-  const real = Number(navigator.userAgent.match(/Chrome\/(\d+)/)?.[1] ?? 0);
-  const base = real > 0 ? real : 131;
-  // Не все обновляются в тот же день: версия на пару-тройку младше настоящей
-  // так же обычна, как сама настоящая.
-  const major = base - Math.floor(Math.random() * 4);
-  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+ *  macOS замер на `10_15_7`, а не потому что мы отстали: Chrome сам заморозил
+ *  этот номер (UA reduction), и любой другой в строке — аномалия. */
+const PLATFORMS = [
+  { id: "windows", token: "Windows NT 10.0; Win64; x64" },
+  { id: "macos", token: "Macintosh; Intel Mac OS X 10_15_7" },
+  { id: "linux", token: "X11; Linux x86_64" },
+] as const;
+
+/** Платформа этой машины — по вебвью. Нужна ровно для предупреждения: выбрали
+ *  другую, и `Sec-CH-UA-Platform` разойдётся со строкой. */
+function realPlatform(): string {
+  const ua = navigator.userAgent;
+  if (ua.includes("Windows")) return "windows";
+  if (ua.includes("Mac OS X")) return "macos";
+  return "linux";
+}
+
+/** Версия Chrome у самого окна: вебвью — тот же Chromium, что стоит рядом, и
+ *  угадывать её незачем. Ноль — не вебвью (разработка в браузере). */
+function realMajor(): number {
+  return Number(navigator.userAgent.match(/Chrome\/(\d+)/)?.[1] ?? 0) || 131;
+}
+
+/** Строка из платформы и мажорной версии.
+ *
+ *  Хвост версии остаётся `0.0.0` не по лени: с версии 110 Chrome обнуляет его
+ *  сам, и настоящий номер сборки в строке был бы аномалией, которую видно с
+ *  первого запроса. Отсюда и смысл слова «уникальный»: профили различаются
+ *  между собой, но каждая такая строка — общая для миллионов настоящих
+ *  браузеров. Уникальность в смысле «единственный такой в интернете» здесь
+ *  ровно то, чего надо избежать. */
+function buildUa(platform: string, major: number): string {
+  const token = PLATFORMS.find((p) => p.id === platform)?.token ?? PLATFORMS[0].token;
+  return `Mozilla/5.0 (${token}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
+
+/** Разбор строки обратно в поля конструктора: профиль открывают на правку, и
+ *  показать в списках надо то, что в строке уже написано. Строку могли и
+ *  вписать руками — тогда платформа «своя», и конструктор её не трогает. */
+function parseUa(ua: string): { platform: string; major: number } {
+  if (ua === "") return { platform: "", major: 0 };
+  const major = Number(ua.match(/Chrome\/(\d+)/)?.[1] ?? 0);
+  const platform = PLATFORMS.find((p) => ua.includes(p.token))?.id;
+  return platform && major ? { platform, major } : { platform: "custom", major: 0 };
+}
+
+/** Версии на выбор: настоящая и несколько предыдущих. Не все обновляются в тот
+ *  же день, поэтому версия на пару-тройку младше так же обычна, как настоящая;
+ *  а вот старше настоящей быть не может — такой сборки ещё нет ни у кого. */
+function versions(current: number): number[] {
+  const real = realMajor();
+  const list = Array.from({ length: 8 }, (_, i) => real - i);
+  return current > 0 && !list.includes(current) ? [current, ...list] : list;
 }
 
 const EMPTY: BrowserProfile = { name: "", node: "", ua: "", lang: AUTO };
@@ -77,6 +119,9 @@ export function Browsers({
   const nodes = status?.profiles ?? [];
   const [draft, setDraft] = useState<BrowserProfile>(EMPTY);
   const ready = draft.name.trim() !== "" && draft.node !== "";
+  // Поля конструктора не хранятся отдельно от строки: два источника правды
+  // разъезжаются на первой же правке руками.
+  const ua = parseUa(draft.ua);
   return (
     <Panel
       className={className}
@@ -120,28 +165,93 @@ export function Browsers({
                 ))}
               </select>
             </div>
-            <div className="flex gap-2">
+            {/* Конструктор личности. Поля не декоративные: каждое попадает в
+                строку user-agent, а строка остаётся редактируемой — вписанную
+                руками конструктор не переписывает, он её разбирает. */}
+            <fieldset className="flex flex-col gap-2 rounded-md border border-edge p-2.5">
+              <legend className="engraved px-1 text-[11px] text-muted">{s.browserIdentity}</legend>
+              <div className="flex flex-wrap gap-2">
+                <select
+                  aria-label={s.browserPlatform}
+                  value={ua.platform}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      // «Настоящая» — это пустая строка: подставлять нечего, и
+                      // браузер пойдёт со своим UA.
+                      ua: e.target.value === "" ? "" : buildUa(e.target.value, ua.major || realMajor()),
+                    })
+                  }
+                  className={FIELD}
+                >
+                  <option value="">{s.browserPlatformReal}</option>
+                  <option value="windows">Windows</option>
+                  <option value="macos">macOS</option>
+                  <option value="linux">Linux</option>
+                  {/* Пункт живёт, только пока строку вписали руками: выбрать его
+                      нельзя, но и врать про платформу он не даёт. */}
+                  {ua.platform === "custom" && <option value="custom">{s.browserPlatformCustom}</option>}
+                </select>
+                <select
+                  aria-label={s.browserVersion}
+                  value={ua.major}
+                  disabled={ua.platform === "" || ua.platform === "custom"}
+                  onChange={(e) => setDraft({ ...draft, ua: buildUa(ua.platform, Number(e.target.value)) })}
+                  className={FIELD}
+                >
+                  {ua.major === 0 && <option value={0}>{s.browserVersion}</option>}
+                  {versions(ua.major).map((v) => (
+                    <option key={v} value={v}>
+                      Chrome {v}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  variant="ghost"
+                  title={s.browserRandomHint}
+                  onClick={() => {
+                    const list = versions(0);
+                    const platform = ua.platform === "" || ua.platform === "custom" ? realPlatform() : ua.platform;
+                    setDraft({ ...draft, ua: buildUa(platform, list[Math.floor(Math.random() * list.length)]) });
+                  }}
+                >
+                  {s.browserRandom}
+                </Button>
+              </div>
               <input
                 value={draft.ua}
                 onChange={(e) => setDraft({ ...draft, ua: e.target.value })}
                 placeholder={s.browserUa}
-                title={s.browserUaHint}
                 spellCheck={false}
                 className={`${FIELD} font-mono text-[11px]`}
               />
-              <Button variant="ghost" title={s.browserUaHint} onClick={() => setDraft({ ...draft, ua: makeUa() })}>
-                {s.browserUaMake}
-              </Button>
-            </div>
-            <div className="flex gap-2">
-              <input
-                value={draft.lang}
-                onChange={(e) => setDraft({ ...draft, lang: e.target.value })}
-                placeholder={s.browserLang}
-                title={s.browserLangHint}
-                spellCheck={false}
-                className={`${FIELD} font-mono text-[11px]`}
-              />
+              {/* Предупреждение стоит там, где его игнорировать труднее всего, —
+                  под самим выбором. Тултипом это было бы косметикой. */}
+              {ua.platform !== "" && ua.platform !== realPlatform() && (
+                <p className="text-[11px] text-wait">{s.browserMismatch(realPlatform())}</p>
+              )}
+              <p className="text-[11px] text-muted">{s.browserUaHint}</p>
+            </fieldset>
+            <div className="flex flex-wrap gap-2">
+              <select
+                aria-label={s.browserLang}
+                value={draft.lang === AUTO || draft.lang === "" ? draft.lang : "custom"}
+                onChange={(e) => setDraft({ ...draft, lang: e.target.value === "custom" ? "en-US,en" : e.target.value })}
+                className={FIELD}
+              >
+                <option value={AUTO}>{s.browserLangAuto}</option>
+                <option value="">{s.browserLangSystem}</option>
+                <option value="custom">{s.browserLangCustom}</option>
+              </select>
+              {draft.lang !== AUTO && draft.lang !== "" && (
+                <input
+                  value={draft.lang}
+                  onChange={(e) => setDraft({ ...draft, lang: e.target.value })}
+                  title={s.browserLangHint}
+                  spellCheck={false}
+                  className={`${FIELD} font-mono text-[11px]`}
+                />
+              )}
               <Button type="submit" variant="primary" disabled={!ready}>
                 {s.browserCreate}
               </Button>
