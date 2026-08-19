@@ -163,10 +163,10 @@ export function App() {
 
   // Браузер запускает оболочка, а не служба, поэтому это не обычная команда:
   // ответ со статусом сюда не приходит, и показать нечего, кроме отказа.
-  const browse = useCallback((profile: BrowserProfile) => {
+  const browse = useCallback((profile: BrowserProfile, color: string) => {
     setError(null);
     setBusy((n) => n + 1);
-    void openBrowser(profile)
+    void openBrowser(profile, color)
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setBusy((n) => n - 1));
   }, []);

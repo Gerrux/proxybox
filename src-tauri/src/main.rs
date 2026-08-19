@@ -115,7 +115,7 @@ fn session_dir(profile: &str) -> std::path::PathBuf {
 ///
 /// `async` — по тому же правилу, что и у `ipc`.
 #[tauri::command(async)]
-fn open_browser(port: u16, profile: String, ua: String, lang: String) -> Result<(), String> {
+fn open_browser(port: u16, profile: String, ua: String, lang: String, color: String) -> Result<(), String> {
     let browser = core_apps::browser().ok_or_else(|| {
         core_ipc::t(
             "браузер на Chromium не найден: нужен Chrome, Edge, Brave или Яндекс",
@@ -139,6 +139,8 @@ fn open_browser(port: u16, profile: String, ua: String, lang: String) -> Result<
         command.arg(format!("--lang={first}"));
     }
     let mut child = command.spawn().map_err(|e| format!("{}: {e}", browser.path))?;
+    #[cfg(windows)]
+    paint_icon(child.id(), &data, &color);
     // Закрытие окна службе не видно: она видит живой sing-box, а тот переживает
     // браузер легко — и метка «браузер» врала бы, пока жив процесс. Ждёт тот,
     // кто окно и запустил.
@@ -186,6 +188,42 @@ fn set_accept_language(data: &std::path::Path, lang: &str) {
         return;
     }
     let _ = std::fs::write(&file, prefs.to_string());
+}
+
+/// Значок окна сеанса — тот, что видно в панели задач. Иконку самого Chromium
+/// подменить нечем: она в ресурсах `chrome.exe`. Зато окну можно послать свою,
+/// и делает это `core_apps::set_window_icon` — там же, где её и проверяет
+/// компилятор (`src-tauri` не собирается нигде, кроме Windows).
+///
+/// Ждём в своём потоке: окна в момент запуска ещё нет — Chrome распаковывает
+/// профиль, читает настройки и рисует окно спустя секунды, а на первом запуске
+/// нового профиля и дольше. Пятнадцать секунд с шагом в четверть — это про
+/// холодный старт на медленном диске, а не про красоту числа.
+#[cfg(windows)]
+fn paint_icon(pid: u32, data: &std::path::Path, color: &str) {
+    // Цвет приходит из окна строкой `#rrggbb` — той же, которой оно рисует точку
+    // в списке профилей. Разобрать не вышло — значка просто не будет: рисовать
+    // не тот цвет хуже, чем не рисовать вовсе.
+    let hex = color.strip_prefix('#').unwrap_or(color);
+    let byte = |at: usize| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok();
+    let (Some(r), Some(g), Some(b)) = (byte(0), byte(2), byte(4)) else {
+        return;
+    };
+    let icon = data.join("icon.ico");
+    if std::fs::create_dir_all(data).is_err() {
+        return;
+    }
+    if std::fs::write(&icon, core_apps::icon_bytes((r, g, b))).is_err() {
+        return;
+    }
+    std::thread::spawn(move || {
+        for _ in 0..60 {
+            if core_apps::set_window_icon(pid, &icon) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    });
 }
 
 /// Профили, за окнами которых уже кто-то ждёт. Своё состояние оболочке иметь не
