@@ -132,6 +132,9 @@ $loader = {
     while ($sw.Elapsed.TotalSeconds -lt $seconds) {
         try {
             $c = New-Object Net.WebClient
+            # Без User-Agent Cloudflare отвечает 403 и закачка не начинается:
+            # голый WebClient не шлёт его вовсе.
+            $c.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
             $c.Proxy = if ($proxy) { New-Object Net.WebProxy($proxy) } else { $null }
             $c.DownloadFile($url, $tmp)
         } catch {
@@ -203,7 +206,10 @@ function Measure-Window {
     $gb = -1.0
     if ($b1 -ge 0 -and $b0 -ge 0) { $gb = ($b1 - $b0) / 1GB }
 
-    Write-Host ("{0,-20} {1,7:N1} с   {2,5:N0}% одного ядра, {3,3:N0}% машины" -f `
+    # Два знака после запятой не для красоты: в первых прогонах все значения
+    # вышли ровными целыми, чего у дельт процессорного времени не бывает, —
+    # по второму знаку видно, настоящая это гранулярность или округление.
+    Write-Host ("{0,-20} {1,7:N2} с   {2,5:N0}% одного ядра, {3,3:N0}% машины" -f `
         "sing-box, ЦП:", $myCpu, (100 * $myCpu / $elapsed), (100 * $myCpu / $elapsed / $cores))
     $krnShare = 0
     if ($myCpu -gt 0) { $krnShare = 100 * $myKrn / $myCpu }
@@ -309,8 +315,26 @@ if ($idle.Cores -gt 0.25) {
     }
 }
 
+# Предельная цена трафика: сколько ЦП добавил гигабайт СВЕРХ покоя. Считается
+# по адаптеру и не ждёт удавшегося прохода 1 — а нулевая или отрицательная
+# прибавка и есть главный ответ: расход постоянный, к трафику отношения не имеет.
+$dGb = $through.TunGb - $idle.TunGb
+$dCpu = $through.Cpu - $idle.Cpu
+$dPk = $through.Packets - $idle.Packets
+if ($dPk -gt 1000) {
+    if ($dCpu -le 0.5) {
+        Write-Host ("  Трафик вырос на {0:N0} пакетов, а ЦП — на {1:N2} с. Расход постоянный: он не про трафик." -f $dPk, $dCpu) -ForegroundColor Yellow
+        Write-Host "  Ищите не цену пакета, а то, что крутится вхолостую: sing-box занят и когда делать нечего."
+    } else {
+        Write-Host ("{0,-20} {1,7:N1} мкс/пакет сверх покоя" -f "цена пакета:", (1e6 * $dCpu / $dPk))
+        if ($dGb -gt 0.005) {
+            Write-Host ("{0,-20} {1,7:N1} с/ГБ сверх покоя" -f "цена трафика:", ($dCpu / $dGb))
+        }
+    }
+}
+
 if ($without.PerGb -le 0 -or $through.PerGb -le 0) {
-    Write-Host "  Проход без трафика — цену гигабайта сравнить не на чем (см. предупреждения выше)."
+    Write-Host "  Проход без трафика — цену гигабайта по счётчику туннеля сравнить не на чем."
     return
 }
 # Из цены гигабайта вычитается покой: иначе постоянный расход размазывается по
