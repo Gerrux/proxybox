@@ -228,8 +228,23 @@ impl Service {
         }
     }
 
+    /// Пути выбранных приложений — для sing-box и для брандмауэра сразу.
+    ///
+    /// Отдаём и записанный путь, и приведённый к виду файловой системы: какой
+    /// из них совпадёт с тем, что Windows покажет про живой процесс, заранее не
+    /// известно, а промах здесь тихий — приложение уходит мимо туннеля, не
+    /// переставая считаться защищённым. Лишний путь стоит одной строки в
+    /// конфиге и одного правила брандмауэра, которое просто ни с чем не совпадёт.
     fn selected(&self) -> Vec<String> {
-        self.status.apps.iter().filter(|a| a.enabled).map(|a| a.path.clone()).collect()
+        let mut out = Vec::new();
+        for app in self.status.apps.iter().filter(|a| a.enabled) {
+            let canonical = core_apps::canonical(&app.path);
+            if canonical != app.path {
+                out.push(canonical);
+            }
+            out.push(app.path.clone());
+        }
+        out
     }
 
     /// Блокировка на всё время, пока туннель не подтверждён: выбранных
