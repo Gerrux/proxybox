@@ -36,6 +36,11 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 /// появится тогда же, когда её будет где показать.
 const REFRESH_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
+/// Сколько соединений уезжает в окно. Список живёт секунды и читается глазами:
+/// сотня строк — уже больше, чем успевают просмотреть, а в охвате «весь
+/// компьютер» их бывают тысячи.
+const MAX_CONNS: usize = 100;
+
 /// Замок службы, переживающий панику в чужом потоке. Поток обслуживания клиента
 /// вправе упасть — вместе со своим соединением; надзор упасть не вправе. С
 /// обычным `unwrap()` первая же паника под замком отравляла бы его, надзор умер
@@ -974,6 +979,30 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             s.status.browser_profiles.retain(|b| b.name != name);
             s.save();
             Response::Done
+        }
+        Request::Connections => {
+            // Порт снимается под замком, а список качается без него: ходить в
+            // сеть (пусть и по петле) под общим замком нельзя — на том конце
+            // sing-box, и его молчание стоило бы окну всего статуса.
+            let port = s.tunnel.as_ref().map(|t| t.api_port);
+            drop(s);
+            let Some(port) = port else {
+                // Туннеля нет — и соединений нет. Это не ошибка: ровно так
+                // выглядит выключенный приватный режим и fail-closed.
+                return Response::Connections { conns: Vec::new(), total: 0 };
+            };
+            match core_tunnel::connections(port) {
+                Ok(mut conns) => {
+                    let total = conns.len();
+                    // Обрезаем осознанно: в охвате «весь компьютер» соединений
+                    // бывают тысячи, а прочитать человек успевает десятки.
+                    // Сколько их было всего, едет рядом — молча обрезанный
+                    // список читался бы как полный.
+                    conns.truncate(MAX_CONNS);
+                    Response::Connections { conns, total }
+                }
+                Err(e) => Response::Error { message: e.to_string() },
+            }
         }
         Request::TestProfiles => {
             // Список снимается под замком, а меряется без него: профиль тратит

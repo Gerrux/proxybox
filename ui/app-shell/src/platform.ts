@@ -49,6 +49,26 @@ export type BrowserProfile = {
   lang: string;
 };
 
+/** Одно живое соединение туннеля. Смысл не в счётчиках, а в `tunneled`:
+ *  правило по `process_path` сверяет путь побайтово, и промах у него тихий —
+ *  приложение уходит мимо туннеля, не переставая считаться защищённым. Здесь
+ *  этот промах видно глазами.
+ *
+ *  Ничего не хранится ни в службе, ни здесь: список спрашивается, пока панель
+ *  открыта, и умирает вместе с ней. */
+export type Conn = {
+  /** Путь к процессу-владельцу целиком. Пусто — sing-box его не определил: так
+   *  выглядит трафик без процесса за ним (DNS, служба, драйвер). */
+  process: string;
+  /** Куда: домен, если известен, иначе адрес назначения, и порт рядом. */
+  host: string;
+  /** Идёт ли соединение в туннель — по цепочке маршрутов, а не по списку
+   *  приложений: список это намерение, цепочка — то, что вышло. */
+  tunneled: boolean;
+  rx: number;
+  tx: number;
+};
+
 export type Status = {
   tunnel: Tunnel;
   profile: string | null;
@@ -127,7 +147,9 @@ export type Request =
   | { cmd: "remove-browser-profile"; arg: { name: string } }
   /** Настройки службы приходят набором целиком: команда на поле означала бы
    *  четыре ветки в службе ради экрана, который отдаёт их разом. */
-  | { cmd: "set-settings"; arg: { settings: Settings } };
+  | { cmd: "set-settings"; arg: { settings: Settings } }
+  /** Живые соединения туннеля. Спрашивается только пока панель открыта. */
+  | { cmd: "connections" };
 
 export type Response =
   | { reply: "status"; data: Status }
@@ -137,6 +159,9 @@ export type Response =
   | { reply: "done" }
   /** Порт локального прокси, поднятого под профиль. */
   | { reply: "proxy"; data: { port: number } }
+  /** Живые соединения; `total` — сколько их всего: в списке едут только самые
+   *  говорливые, и без этого числа обрезанный список читался бы как полный. */
+  | { reply: "connections"; data: { conns: Conn[]; total: number } }
   | { reply: "error"; data: { message: string } };
 
 /** Подставляется сборкой из src-tauri/tauri.conf.json (см. vite.config.ts). */

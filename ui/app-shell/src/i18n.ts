@@ -96,6 +96,20 @@ const RU = {
   noMatches: "Ничего не подошло — попробуйте часть имени или папки.",
   journal: "Журнал",
   emptyJournal: "Пока ничего не происходило.",
+  tabConns: "Соединения",
+  conns: "Соединения",
+  connsNote: (shown: number, total: number) =>
+    shown < total ? `${shown} из ${total} — самые говорливые` : `${total}`,
+  connsHint:
+    "Что идёт через туннель прямо сейчас. Список спрашивается, пока эта панель открыта, и нигде не сохраняется: ни в журнале, ни на диске, ни тем более наружу.",
+  connsOff: "Туннеля нет — и соединений нет.",
+  connsEmpty: "Туннель поднят, но по нему пока никто не ходит.",
+  connsTunnel: "туннель",
+  connsDirect: "напрямую",
+  connsDirectHint:
+    "Это соединение идёт мимо туннеля. Для невыбранного приложения так и задумано; если приложение выбрано — правило по пути не совпало, и оно только считается защищённым.",
+  connsNoProcess: "без процесса",
+  connsNoProcessHint: "sing-box не определил владельца: так выглядит трафик службы, драйвера и DNS.",
   hideMessage: "Скрыть сообщение",
   minimizeWindow: "Свернуть окно",
   maximizeWindow: "Развернуть окно",
@@ -249,6 +263,20 @@ const EN: typeof RU = {
   noMatches: "Nothing matched — try part of the name or folder.",
   journal: "Journal",
   emptyJournal: "Nothing has happened yet.",
+  tabConns: "Connections",
+  conns: "Connections",
+  connsNote: (shown: number, total: number) =>
+    shown < total ? `${shown} of ${total} — the loudest` : `${total}`,
+  connsHint:
+    "What goes through the tunnel right now. The list is asked for while this panel is open and stored nowhere: not in the journal, not on disk, and certainly not outside.",
+  connsOff: "No tunnel — no connections.",
+  connsEmpty: "The tunnel is up, but nobody is using it yet.",
+  connsTunnel: "tunnel",
+  connsDirect: "direct",
+  connsDirectHint:
+    "This connection bypasses the tunnel. For an app you did not pick that is by design; if the app is picked, the path rule did not match and it is only considered protected.",
+  connsNoProcess: "no process",
+  connsNoProcessHint: "sing-box could not tell the owner: that is how service, driver and DNS traffic looks.",
   hideMessage: "Hide message",
   minimizeWindow: "Minimize window",
   maximizeWindow: "Maximize window",
