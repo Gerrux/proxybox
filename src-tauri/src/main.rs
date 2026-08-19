@@ -603,9 +603,9 @@ fn detached(req: Request) {
 /// отметки тот же клик, которым её закрывают, тут же открывал бы её заново.
 static HIDDEN_AT: Mutex<Option<Instant>> = Mutex::new(None);
 
-/// Показать плашку у значка. Положение считаем от самого значка, а не от
-/// курсора: значок стоит на месте, курсор — где попало, и плашка не должна
-/// прыгать по пикселю мыши.
+/// Показать плашку в углу рабочей области — там же, где всплывают панели самой
+/// Windows. Положение значка на это больше не влияет: значок уезжает в
+/// переполнение трея и обратно, а угол стоит на месте.
 fn show_flyout(app: &tauri::AppHandle, icon: Rect) {
     let Some(w) = app.get_webview_window("tray") else { return };
     if w.is_visible().unwrap_or(false) {
@@ -625,27 +625,24 @@ fn show_flyout(app: &tauri::AppHandle, icon: Rect) {
         tauri::Position::Physical(p) => (p.x as f64, p.y as f64),
         tauri::Position::Logical(p) => (p.x, p.y),
     };
-    let (iw, ih) = match icon.size {
-        tauri::Size::Physical(s) => (s.width as f64, s.height as f64),
-        tauri::Size::Logical(s) => (s.width, s.height),
-    };
-    let gap = 8.0;
-    let mut x = ix + iw / 2.0 - size.width as f64 / 2.0;
-    // Панель задач бывает и сверху: если значок стоит у верхней кромки, плашке
-    // место под ним, а не за краем экрана.
-    let mut y = iy - size.height as f64 - gap;
+    // Монитор ищем по значку: их бывает несколько, и всплыть плашка должна на
+    // том, где нажали. Угол считаем от рабочей области, а не от экрана: это
+    // экран без панели задач, иначе плашка уехала бы под неё.
     if let Ok(Some(m)) = app.monitor_from_point(ix, iy) {
-        let area = m.size();
-        let origin = m.position();
-        let (left, top) = (origin.x as f64, origin.y as f64);
-        let (right, bottom) = (left + area.width as f64, top + area.height as f64);
-        if y < top {
-            y = iy + ih + gap;
-        }
-        x = x.clamp(left + gap, (right - size.width as f64 - gap).max(left + gap));
-        y = y.clamp(top + gap, (bottom - size.height as f64 - gap).max(top + gap));
+        let area = m.work_area();
+        let (left, top) = (area.position.x as f64, area.position.y as f64);
+        let (right, bottom) = (left + area.size.width as f64, top + area.size.height as f64);
+        let gap = 8.0;
+        let x = right - size.width as f64 - gap;
+        // Панель задач бывает и сверху: тогда и угол верхний, иначе плашка
+        // всплывала бы у противоположной кромки экрана.
+        let y = if iy < (top + bottom) / 2.0 {
+            top + gap
+        } else {
+            bottom - size.height as f64 - gap
+        };
+        let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
     }
-    let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
     let _ = w.show();
     let _ = w.set_focus();
 }
