@@ -415,6 +415,19 @@ mod tests {
         assert_eq!(bytes(u64::MAX), "16777216 TB", "выше терабайта единиц нет — число растёт, а не единица");
     }
 
+    /// Имя бинарника у крейта своё (`[[bin]]` в Cargo.toml), и `pg-cli.exe` не
+    /// существует нигде: установщик кладёт `privacy-gateway.exe`, и он же
+    /// собирается в `target/`. `scripts/cpu.ps1` зовёт клиента, чтобы
+    /// переключить охват, и знает это имя третьим местом — разъедется, и
+    /// скрипт будет искать несуществующий файл, а человеку предложит собрать
+    /// то, чего не бывает. Проверено на живом: именно так и вышло.
+    #[test]
+    fn the_cpu_script_knows_the_cli_name() {
+        let script = include_str!("../../../scripts/cpu.ps1");
+        let want = format!("$CLI_NAME = \"{}\"", env!("CARGO_BIN_NAME"));
+        assert!(script.contains(&want), "в scripts/cpu.ps1 нет строки «{want}»");
+    }
+
     /// Справка не должна выглядеть отказом, а разбор — молча съедать команду.
     #[test]
     fn usage_is_not_a_command() {

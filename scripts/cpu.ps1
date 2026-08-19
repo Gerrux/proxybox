@@ -51,7 +51,8 @@ param(
     # `pg-cli scope apps`. Это единственный вопрос, на который замер сам ответить
     # не может, — правило process_path либо есть в конфиге, либо его нет.
     [switch]$Scope,
-    # Путь к pg-cli.exe. Пустой — ищем рядом со службой и в target/.
+    # Путь к клиенту. Пустой — ищем сами рядом с приложением и в target/.
+    # Файл зовётся privacy-gateway.exe: крейт pg-cli, а имя бинарника своё.
     [string]$Cli = ""
 )
 
@@ -393,14 +394,21 @@ if ($rules.Count -gt $apps + 1) {
     Write-Host "  больше, чем включённых приложений — похоже на осиротевшие, снимает их sweep() при выключении" -ForegroundColor Yellow
 }
 
+# Крейт зовётся pg-cli, а бинарник — privacy-gateway: так задано в [[bin]] его
+# Cargo.toml, и под этим же именем его кладёт установщик (installer/sidecars.ps1
+# копирует в src-tauri/binaries). Файла pg-cli.exe не существует нигде, и
+# искать надо именно это имя. Рядом стоит «Privacy Gateway.exe» — это окно, а
+# не клиент; имена различаются пробелом против дефиса.
+$CLI_NAME = "privacy-gateway"
+
 function Find-Cli {
     if ($Cli) { return $Cli }
     # Пустая база пропускается: Join-Path с null бросает, а с ErrorAction=Stop
     # это убивает весь замер из-за необязательного кандидата.
     $bases = @(${env:ProgramFiles}, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
-    $paths = @($bases | ForEach-Object { Join-Path $_ "Privacy Gateway\pg-cli.exe" })
-    $paths += (Join-Path $PSScriptRoot "..\target\release\pg-cli.exe")
-    $paths += (Join-Path $PSScriptRoot "..\target\debug\pg-cli.exe")
+    $paths = @($bases | ForEach-Object { Join-Path $_ "Privacy Gateway\$CLI_NAME.exe" })
+    $paths += (Join-Path $PSScriptRoot "..\target\release\$CLI_NAME.exe")
+    $paths += (Join-Path $PSScriptRoot "..\target\debug\$CLI_NAME.exe")
     foreach ($c in $paths) {
         if (Test-Path $c) { return (Resolve-Path $c).Path }
     }
@@ -421,19 +429,16 @@ function Wait-Tunnel {
 if ($Scope) {
     $cli = Find-Cli
     if (-not $cli) {
-        # Установщик кладёт только pg-service, privacy-gateway и sing-box
-        # (externalBin в tauri.conf.json). pg-cli в сборку не входит вовсе,
-        # поэтому «не нашли» здесь — обычное дело, а не поломка.
-        Write-Host "pg-cli.exe не найден — установщик его и не ставит. Соберите из репозитория:" -ForegroundColor Red
+        Write-Host "$CLI_NAME.exe не найден. Он ставится вместе с приложением; если нет — соберите:" -ForegroundColor Red
         Write-Host "    cargo build -p pg-cli --release" -ForegroundColor Red
-        Write-Host "Он ляжет в target\release\pg-cli.exe, и -Cli указывать не придётся." -ForegroundColor Red
+        Write-Host "Бинарник ляжет в target\release\$CLI_NAME.exe (крейт pg-cli, имя из [[bin]])." -ForegroundColor Red
         exit 1
     }
-    if ([IO.Path]::GetFileNameWithoutExtension($cli) -ne "pg-cli") {
+    if ([IO.Path]::GetFileNameWithoutExtension($cli) -ne $CLI_NAME) {
         # Ровно та ошибка, которую легко сделать: подсунуть pg-service.exe.
         # Служба команду `scope` не разбирает — она её слушает, а не шлёт.
-        Write-Host "«$cli» — это не pg-cli. Охват меняет клиент, а не служба." -ForegroundColor Red
-        Write-Host "Путь с пробелами обязателен в кавычках: -Cli `"C:\путь с пробелом\pg-cli.exe`"" -ForegroundColor Red
+        Write-Host "«$cli» — это не клиент. Охват меняет $CLI_NAME.exe, а не служба и не окно." -ForegroundColor Red
+        Write-Host "Путь с пробелами обязателен в кавычках: -Cli `"C:\Program Files\Privacy Gateway\$CLI_NAME.exe`"" -ForegroundColor Red
         exit 1
     }
     $was = if ($all) { "all" } else { "apps" }
