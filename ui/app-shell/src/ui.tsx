@@ -67,6 +67,55 @@ export function Button({
   );
 }
 
+/** Выбор одного из нескольких: короткие взаимоисключающие надписи, видимые
+ *  разом. Выбранное различимо и без цвета (`aria-pressed`) — как у любой другой
+ *  развилки в этом окне.
+ *
+ *  Лежит здесь, а не в настройках, с тех пор как охват уехал на шапку: одна и
+ *  та же полоска нужна теперь в двух разных местах окна. */
+export function Segmented({
+  options,
+  value,
+  onPick,
+  disabled,
+  label,
+  className = "",
+}: {
+  /** `[значение, надпись]` либо `[значение, надпись, подсказка]`. */
+  options: [string, string, string?][];
+  value: string;
+  onPick: (value: string) => void;
+  disabled?: boolean;
+  /** Подпись для чтения с экрана там, где рядом нет своей строки: на шапке
+   *  полоска стоит на канале, без слова «Охват» перед ней. */
+  label?: string;
+  className?: string;
+}) {
+  return (
+    <div
+      role="group"
+      aria-label={label}
+      className={`flex shrink-0 gap-0.5 rounded-md border border-edge bg-surface-2 p-0.5 ${className}`}
+    >
+      {options.map(([id, text, hint]) => (
+        <button
+          key={id}
+          type="button"
+          aria-pressed={value === id}
+          title={hint}
+          disabled={disabled}
+          onClick={() => onPick(id)}
+          className={`seg-btn smooth engraved rounded-[3px] px-3.5 py-1.5 disabled:opacity-40 ${
+            value === id ? "bg-surface text-ink" : "text-muted hover:text-ink"
+          }`}
+        >
+          {text}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** Значки полей. Свои `<svg>`, а не глифы шрифта, по той же причине, что и у
  *  кнопок окна: `Segoe MDL2 Assets` есть не на всякой системе, а отсутствующий
  *  глиф — пустой квадрат вместо смысла. Эмодзи не годятся тем же: их рисует

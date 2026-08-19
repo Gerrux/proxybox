@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Status } from "./platform";
 import { strings } from "./i18n";
-import { Button, flag } from "./ui";
+import { Button, Segmented, flag } from "./ui";
 
 /** Длина доезда числа. Заметно меньше периода опроса (2 с), иначе счётчик не
  *  успевал бы доехать до следующего значения и полз бы вечно. */
@@ -73,10 +73,14 @@ export function StatusBar({
   status,
   busy,
   onToggle,
+  onScope,
 }: {
   status: Status | null;
   busy: boolean;
   onToggle: () => void;
+  /** Смена охвата. Идёт наверх, а не в службу отсюда: команда перезапускает
+   *  туннель, и её ошибка обязана попасть туда же, куда ошибка «включить». */
+  onScope: (all: boolean) => void;
 }) {
   const s = strings(status?.lang);
   const all = status?.all_traffic ?? false;
@@ -148,11 +152,25 @@ export function StatusBar({
         </Button>
       </div>
 
-      {/* Канал: слева выбранные приложения, справа сеть. Поднят — по нему идут
-          штрихи; заперто — он перерублен и стоит. Другого способа показать
-          инвариант продукта одной картинкой у нас нет. */}
+      {/* Канал: слева источник, справа сеть. Поднят — по нему идут штрихи;
+          заперто — он перерублен и стоит. Другого способа показать инвариант
+          продукта одной картинкой у нас нет.
+
+          Левый конец не подписан, а выбран: охват — это и есть «кого канал
+          касается», и переключать его надо глядя на состояние туннеля, а не
+          в настройках через две панели от него. Полоска стоит ровно там, где
+          раньше стояла подпись, и говорит то же самое. */}
       <div className="st-cond mt-5 flex items-center gap-2.5">
-        <span className="engraved shrink-0 text-muted">{all ? s.conduitFromAll : s.conduitFrom}</span>
+        <Segmented
+          label={s.scope}
+          options={[
+            ["apps", s.scopeApps, s.scopeHint],
+            ["all", s.scopeAll, s.scopeHint],
+          ]}
+          value={all ? "all" : "apps"}
+          disabled={!status || busy}
+          onPick={(v) => onScope(v === "all")}
+        />
         <span className="conduit-lamp smooth" />
         <span className="conduit-line smooth" />
         <span className="conduit-end smooth" />
