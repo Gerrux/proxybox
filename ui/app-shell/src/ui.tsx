@@ -129,6 +129,15 @@ export function SearchField({
   );
 }
 
+/** Код страны → флаг. Две буквы кода становятся региональными индикаторами —
+ *  других способов записать флаг в юникоде нет. Глифы даёт свой шрифт
+ *  (см. index.css): системных в Windows не существует. Кода нет или он не
+ *  двухбуквенный — флага не будет, и вызывающий покажет название словами. */
+export function flag(code: string | null | undefined): string | null {
+  if (!code || !/^[A-Za-z]{2}$/.test(code)) return null;
+  return String.fromCodePoint(...[...code.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
+}
+
 export function Empty({ children }: { children: ReactNode }) {
   return <p className="py-6 text-center text-[13px] text-muted">{children}</p>;
 }

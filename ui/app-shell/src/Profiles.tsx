@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Probe, Request, Status } from "./platform";
 import { measuredAgo, strings } from "./i18n";
-import { AddField, Button, Empty, Panel, SearchField } from "./ui";
+import { AddField, Button, Empty, flag, Panel, SearchField } from "./ui";
 
 /** Со скольких профилей список перестаёт читаться глазом. Порог тот же, что у
  *  приложений: одна подписка приносит десятки узлов, а подписок бывает
@@ -182,15 +182,16 @@ export function Profiles({
                             {s.browserOn}
                           </span>
                         )}
-                        {/* Страна — кодом: «NL» стоит двух знаков, «Нидерланды,
-                            Амстердам» не помещается в строку вовсе. Название
-                            целиком остаётся подсказкой. Кода нет (старое
-                            состояние или сервис не прислал) — показываем как
-                            есть, обрезкой. */}
+                        {/* Страна — флагом: «Нидерланды, Амстердам» не
+                            помещается в строку вовсе, а флаг читается быстрее
+                            любой надписи. Название целиком остаётся подсказкой
+                            и подписью для чтения с экрана. Кода нет (состояние
+                            прошлых версий или сервис не прислал) — показываем
+                            название, обрезкой. */}
                         {country &&
-                          (probe?.code ? (
-                            <span className="engraved shrink-0 tracking-[0.08em]" title={country}>
-                              {probe.code}
+                          (flag(probe?.code) ? (
+                            <span className="shrink-0 text-[13px] leading-none" title={country} aria-label={country}>
+                              {flag(probe?.code)}
                             </span>
                           ) : (
                             <span className="truncate" title={country}>
