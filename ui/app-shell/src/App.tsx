@@ -14,8 +14,8 @@ import { Apps } from "./Apps";
 import { Browsers } from "./Browsers";
 import { Journal } from "./Journal";
 import { Profiles } from "./Profiles";
+import { Settings, useReleases } from "./Settings";
 import { StatusBar } from "./StatusBar";
-import { Updates } from "./Updates";
 import { TitleBar } from "./TitleBar";
 import { Button } from "./ui";
 
@@ -25,6 +25,20 @@ const POLL_MS = 2000;
  *  глаз. Подключение длится секунды, а не часы, лишний трафик по петле дешёвый. */
 const POLL_BUSY_MS = 600;
 
+/** Что показано под шапкой. Одна панель за раз — окно у нас маленькое: 900×620
+ *  это минимум, а из трея его открывают плашкой в 380 px, и делить эту высоту
+ *  на четыре списка значит не показать ни одного. Шире 1100 px делить нечего,
+ *  и первые три встают рядом (`.panes` в `index.css`); браузерные профили
+ *  остаются вкладкой на любой ширине — четвёртой колонки нет. */
+type Tab = "profiles" | "apps" | "journal" | "browsers";
+
+/** Показана ли панель. Классом, а не атрибутом: className есть у всех трёх
+ *  панелей и так, а `data-*` пришлось бы протаскивать через каждую из них и
+ *  через сам `Panel`. */
+function pane(tab: Tab, own: Tab): string {
+  return tab === own ? "pane pane-on" : "pane";
+}
+
 export function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -32,9 +46,13 @@ export function App() {
   // (reapply перезапускает sing-box, не отпуская мьютекс), поэтому «ждём» —
   // единственное, что окно может честно показать всё это время.
   const [busy, setBusy] = useState(0);
-  // Вкладок две, и это не украшение: браузерных профилей бывает больше, чем
-  // узлов, а на главной сетке из трёх панелей четвёртой места нет.
-  const [tab, setTab] = useState<"main" | "browsers">("main");
+  const [tab, setTab] = useState<Tab>("profiles");
+  // Настройки закрывают собой списки, а не приписываются к ним снизу: язык и
+  // обновления читают раз в месяц, и постоянной полки в окне им не положено.
+  const [settings, setSettings] = useState(false);
+  // Про вышедшую версию говорит кнопка в титульной полосе, и знать о ней надо
+  // с закрытыми настройками тоже — значит, состояние проверки живёт здесь.
+  const rel = useReleases();
 
   const send = useCallback(async (req: Request): Promise<Response | null> => {
     try {
@@ -108,81 +126,110 @@ export function App() {
     act({ cmd: "on", arg: { profile } });
   };
 
+  const s = strings(status?.lang);
+  const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <TitleBar title="Privacy Gateway" lang={status?.lang} />
+      <TitleBar
+        title="Privacy Gateway"
+        lang={status?.lang}
+        update={rel.latest && rel.fresh ? rel.latest.tag_name : null}
+        onUpdate={() => setSettings(true)}
+        settingsOpen={settings}
+        onSettings={() => setSettings((v) => !v)}
+      />
       {/* Содержимое не растягивается на всю ширину монитора: строки метрик и
           списков читаются глазом, а не рулеткой. Но и 1024 px на 27" — окно в
           окне, поэтому широкому экрану даётся третья колонка.
 
-          Если окно сузили руками, панели не сплющиваются в полоски: прокрутка
-          возвращается всей странице. */}
-      <div className="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col gap-4 overflow-y-auto p-5 md:overflow-hidden xl:max-w-[1600px]">
-        <StatusBar
-          status={status}
-          busy={busy > 0}
-          onToggle={toggle}
-          onLang={(lang: Lang) => act({ cmd: "set-lang", arg: { lang } })}
-        />
+          Страница не прокручивается никогда: высоту делят шапка и ровно одна
+          панель, и прокрутка живёт внутри неё. Это и есть цена, ради которой
+          панели разошлись по вкладкам. */}
+      <div className="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col gap-2.5 overflow-hidden p-3 xl:max-w-[1600px]">
+        <StatusBar status={status} busy={busy > 0} onToggle={toggle} />
 
         {error && (
           // Ошибка команды — это поломка, а не запертый канал: цвет тот же, что
           // у «служба не отвечает», и другой, чем у сработавшей защиты.
           <div className="enter flex shrink-0 items-start gap-3 rounded-lg border border-edge bg-fault-soft px-4 py-3 text-[13px] text-fault">
             <p className="selectable min-w-0 flex-1">{error}</p>
-            <Button variant="quiet" aria-label={strings(status?.lang).hideMessage} onClick={() => setError(null)}>
+            <Button variant="quiet" aria-label={s.hideMessage} onClick={() => setError(null)}>
               ✕
             </Button>
           </div>
         )}
 
-        {/* Вкладки: на главной — узлы, приложения и журнал, на второй —
-            браузерные профили. Разделены не по красоте: браузерный профиль
-            живёт своей жизнью, их бывает несколько на один узел, и в сетку из
-            трёх панелей четвёртый список не влезает никак. */}
-        <div className="flex shrink-0 gap-1">
-          <Button variant={tab === "main" ? "ghost" : "quiet"} onClick={() => setTab("main")}>
-            {strings(status?.lang).tabMain}
-          </Button>
-          <Button variant={tab === "browsers" ? "ghost" : "quiet"} onClick={() => setTab("browsers")}>
-            {strings(status?.lang).tabBrowsers}
-          </Button>
-        </div>
-
-        {/* Окно 1000×700: две колонки, журнал под профилями. Каждая панель
-            прокручивается сама, страница — никогда. Список приложений после
-            автообнаружения самый длинный, ему и отдана широкая колонка целиком.
-
-            Высоту в узкой колонке забирают профили, а не журнал: с парой
-            подписок их бывает под сотню, а журнал читают, когда что-то уже
-            пошло не так. С 1280 px журнал уезжает в свою колонку и высоту не
-            делит вовсе. */}
-        {tab === "main" ? (
-          <div
-            className="grid gap-4 md:min-h-0 md:flex-1 md:grid-cols-[minmax(260px,0.9fr)_1.2fr] md:grid-rows-[1.6fr_1fr]
-                       xl:grid-cols-[minmax(320px,1fr)_1.4fr_minmax(280px,0.9fr)] xl:grid-rows-1"
-          >
-            <Profiles status={status} act={act} busy={busy > 0} className="md:min-h-0" />
-            <Apps
-              status={status}
-              act={act}
-              busy={busy > 0}
-              className="md:col-start-2 md:row-start-1 md:row-span-2 md:min-h-0 xl:row-span-1"
-            />
-            <Journal
-              lines={status?.log ?? []}
-              lang={status?.lang}
-              className="min-h-[9rem] md:col-start-1 md:row-start-2 md:min-h-0 xl:col-start-3 xl:row-start-1"
-            />
-          </div>
+        {settings ? (
+          <Settings
+            className="min-h-0 flex-1"
+            lang={status?.lang}
+            onLang={(lang: Lang) => act({ cmd: "set-lang", arg: { lang } })}
+            onClose={() => setSettings(false)}
+            rel={rel}
+          />
         ) : (
-          <Browsers status={status} act={act} browse={browse} className="min-h-[20rem] md:min-h-0 md:flex-1" />
-        )}
+          <>
+            {/* Табы со счётчиками: сколько там строк, видно не открывая. Узкая
+                полоса и широкая «Главная» — одна навигация в двух видах, кто из
+                них показан, решает `index.css` по ширине окна. */}
+            <nav className="tabs flex shrink-0 gap-0.5 rounded-md border border-edge bg-surface-2 p-0.5">
+              <TabButton className="tab-narrow" active={tab === "profiles"} onClick={() => setTab("profiles")}
+                label={s.profiles} count={status?.profiles.length ?? 0} />
+              <TabButton className="tab-narrow" active={tab === "apps"} onClick={() => setTab("apps")}
+                label={s.apps} count={status?.all_traffic ? "—" : `${inTunnel}/${status?.apps.length ?? 0}`} />
+              <TabButton className="tab-narrow" active={tab === "journal"} onClick={() => setTab("journal")}
+                label={s.journal} count={status?.log.length ?? 0} />
+              {/* Шире 1100 px первые три стоят рядом, и выбирать между ними
+                  нечего: остаётся развилка «списки или браузерные профили». */}
+              <TabButton className="tab-wide" active={tab !== "browsers"} onClick={() => setTab("profiles")}
+                label={s.tabMain} />
+              <TabButton active={tab === "browsers"} onClick={() => setTab("browsers")}
+                label={s.tabBrowsers} count={status?.browser_profiles.length ?? 0} />
+            </nav>
 
-        {/* Версия и обновления — подвал: смотрят туда раз в месяц, а состояние
-            туннеля видно всё время. */}
-        <Updates lang={status?.lang} />
+            {tab === "browsers" ? (
+              <Browsers status={status} act={act} browse={browse} className="min-h-0 flex-1" />
+            ) : (
+              <div className="panes gap-2.5">
+                <Profiles className={pane(tab, "profiles")} status={status} act={act} busy={busy > 0} />
+                <Apps className={pane(tab, "apps")} status={status} act={act} busy={busy > 0} />
+                <Journal className={pane(tab, "journal")} lines={status?.log ?? []} lang={status?.lang} />
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
+  );
+}
+
+/** Кнопка таба: подпись и счётчик строк за ней. Счётчик — не украшение: он
+ *  единственное, что говорит о закрытой панели хоть что-то. */
+function TabButton({
+  label,
+  count,
+  active,
+  onClick,
+  className = "",
+}: {
+  label: string;
+  count?: number | string;
+  active: boolean;
+  onClick: () => void;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={`smooth inline-flex min-w-0 flex-1 items-baseline justify-center gap-1.5 rounded-[3px] px-1.5 py-1.5 ${
+        active ? "bg-surface text-ink" : "text-muted hover:text-ink"
+      } ${className}`}
+    >
+      <span className="engraved truncate">{label}</span>
+      {count != null && <span className="shrink-0 text-[11px] text-muted">{count}</span>}
+    </button>
   );
 }
