@@ -205,6 +205,73 @@ fn forget_browser(profile: String) -> Result<(), String> {
     }
 }
 
+/// Автозапуск окна вместе с Windows. Служба стартует сама — она в SCM, и
+/// туннель поднимается без всякого окна; автозапуск нужен ровно значку в трее:
+/// в охвате «весь компьютер» запертая машина иначе не оставляет о себе следа в
+/// интерфейсе, пока человек не вспомнит про ярлык.
+///
+/// Ключ `HKCU\...\Run`, а не плагин и не задача планировщика: это тот же
+/// приём, которым продукт уже пользуется у брандмауэра (`netsh` в
+/// `core-filter`) — системная команда вместо ещё одной зависимости в дереве.
+/// `HKCU`, а не `HKLM`: окно принадлежит человеку, а прав администратора у него
+/// может и не быть.
+///
+/// Ставится с `--hidden`: автозапуск, каждое утро открывающий окно поверх
+/// работы, выключат в первый же день.
+#[cfg(windows)]
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+#[cfg(windows)]
+const RUN_NAME: &str = "Privacy Gateway";
+
+#[cfg(windows)]
+#[tauri::command(async)]
+fn autostart() -> bool {
+    std::process::Command::new("reg")
+        .args(["query", RUN_KEY, "/v", RUN_NAME])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+#[cfg(windows)]
+#[tauri::command(async)]
+fn set_autostart(enabled: bool) -> Result<bool, String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| core_ipc::t(&format!("не найден свой путь: {e}"), &format!("own path not found: {e}")))?;
+    let value = format!("\"{}\" --hidden", exe.display());
+    let args: Vec<&str> = match enabled {
+        true => vec!["add", RUN_KEY, "/v", RUN_NAME, "/t", "REG_SZ", "/d", &value, "/f"],
+        false => vec!["delete", RUN_KEY, "/v", RUN_NAME, "/f"],
+    };
+    let out = std::process::Command::new("reg")
+        .args(&args)
+        .output()
+        .map_err(|e| core_ipc::t(&format!("не удалось править реестр: {e}"), &format!("could not edit the registry: {e}")))?;
+    // Снятие того, чего нет, — не отказ: тумблер выключен и был выключен.
+    if !out.status.success() && enabled {
+        return Err(core_ipc::t(
+            &format!("реестр не принял запись: {}", String::from_utf8_lossy(&out.stderr).trim()),
+            &format!("the registry refused the entry: {}", String::from_utf8_lossy(&out.stderr).trim()),
+        ));
+    }
+    Ok(enabled)
+}
+
+/// В разработке не на Windows автозапуска нет и подделывать его нечем: окно
+/// показывает тумблер выключенным и не даёт его тронуть.
+#[cfg(not(windows))]
+#[tauri::command(async)]
+fn autostart() -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+#[tauri::command(async)]
+fn set_autostart(_enabled: bool) -> Result<bool, String> {
+    Err(core_ipc::t("автозапуск есть только в Windows", "autostart exists on Windows only"))
+}
+
 /// Значок в трее живёт, пока живёт оболочка, и удался ли он — знать обязательно:
 /// без значка закрытое окно нельзя прятать, иначе приложение исчезнет совсем.
 static TRAY: AtomicBool = AtomicBool::new(false);
@@ -302,7 +369,18 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| raise(app)))
         .setup(|app| {
             match tray(app) {
-                Ok(()) => TRAY.store(true, Ordering::Relaxed),
+                Ok(()) => {
+                    TRAY.store(true, Ordering::Relaxed);
+                    // Запуск из автозапуска: окна не показываем, продукт живёт
+                    // значком. Прятать можно только со значком — без него
+                    // приложение стало бы невидимым и незакрываемым, ровно как
+                    // при закрытии окна.
+                    if std::env::args().any(|a| a == "--hidden") {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.hide();
+                        }
+                    }
+                }
                 // Не удался значок — окно остаётся единственным интерфейсом, и
                 // прятать его тогда нельзя ни в коем случае.
                 Err(e) => eprintln!("{}", core_ipc::t(&format!("значок в трее не создан: {e}"), &format!("tray icon not created: {e}"))),
@@ -319,7 +397,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![ipc, open_url, open_browser, forget_browser])
+        .invoke_handler(tauri::generate_handler![ipc, open_url, open_browser, forget_browser, autostart, set_autostart])
         .run(tauri::generate_context!())
         .expect("не удалось запустить окно");
 }

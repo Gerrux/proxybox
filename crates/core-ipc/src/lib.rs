@@ -226,6 +226,11 @@ pub enum Request {
     /// Убрать браузерный профиль. Сеанс его гаснет, а каталог с куками сносит
     /// клиент: он лежит в `%LOCALAPPDATA%` человека, куда службе не дотянуться.
     RemoveBrowserProfile { name: String },
+    /// Переписать настройки службы целиком. Туннель при этом не трогается:
+    /// ни одно из полей не меняет судьбу уже поднятого sing-box — путь к
+    /// бинарнику действует со следующего запуска, проба и страна со следующего
+    /// измерения, сверка подписок со следующего круга.
+    SetSettings { settings: Settings },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,6 +290,41 @@ pub struct LogLine {
     pub text: String,
 }
 
+/// Настройки службы. Всё, что раньше жило только в переменных окружения и
+/// потому было недоступно тому, у кого продукт установлен, а не собран.
+///
+/// Одной структурой, а не командой на поле: полей четыре, меняют их разом
+/// (экран настроек отдаёт весь набор), а команда на каждое — это четыре ветки
+/// в `handle()`, четыре разбора в CLI и четыре типа во фронтенде.
+///
+/// Переменная окружения по-прежнему сильнее настройки: ею пользуются e2e и
+/// разработка, и молча проиграть сохранённому полю она не должна. Служба
+/// говорит об этом строкой в журнале при старте — иначе тумблер в окне не
+/// липнет, и понять почему неоткуда.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Settings {
+    /// Сверять подписки в фоне раз в сутки. `PG_REFRESH=0` — то же самое.
+    pub refresh: bool,
+    /// Куда стучится проба, `host:port`. Пусто — сам сервер выбранного узла:
+    /// сторонних адресов продукт по умолчанию не трогает. `PG_PROBE` сильнее.
+    pub probe: String,
+    /// Путь к бинарнику sing-box. Пусто — рядом со службой, иначе `PATH`.
+    /// `PG_SINGBOX` сильнее.
+    pub singbox: String,
+    /// Спрашивать точку выхода у внешнего сервиса. Единственный запрос службы
+    /// наружу, и потому он выключаемый. `PG_GEO=0` — то же самое.
+    pub geo: bool,
+}
+
+/// Умолчания — то же поведение, что было до появления настроек: подписки
+/// сверяются, проба идёт на сервер пользователя, sing-box ищется рядом,
+/// страна спрашивается.
+impl Default for Settings {
+    fn default() -> Self {
+        Self { refresh: true, probe: String::new(), singbox: String::new(), geo: true }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Status {
     pub tunnel: Tunnel,
@@ -326,6 +366,10 @@ pub struct Status {
     /// лежат входы человека, и потерять имя значило бы потерять и вход.
     #[serde(default)]
     pub browser_profiles: Vec<BrowserProfile>,
+    /// Настройки службы — уже с учётом переменных окружения: окно показывает
+    /// то, что действует, а не то, что записано в state.json.
+    #[serde(default)]
+    pub settings: Settings,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -516,6 +560,14 @@ mod tests {
                 },
             },
             Request::RemoveBrowserProfile { name: "работа".into() },
+            Request::SetSettings {
+                settings: Settings {
+                    refresh: false,
+                    probe: "1.1.1.1:443".into(),
+                    singbox: r"C:\Program Files\sing-box\sing-box.exe".into(),
+                    geo: false,
+                },
+            },
         ];
         for r in reqs {
             let s = serde_json::to_string(&r).unwrap();

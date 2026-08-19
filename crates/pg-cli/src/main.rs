@@ -33,7 +33,13 @@ const USAGE_RU: &str = "privacy-gateway <команда>
                          адрес: браузер с --proxy-server пойдёт в него; сеансов
                          бывает несколько, по одному на браузерный профиль
   browse --stop --profile <имя>  погасить этот сеанс браузера
-  lang ru|en             язык сообщений службы и окна";
+  lang ru|en             язык сообщений службы и окна
+  settings               настройки службы: что действует прямо сейчас
+  settings [--refresh on|off] [--geo on|off] [--probe host:port]
+           [--singbox <путь>]
+                         сверка подписок, запрос страны у внешнего сервиса,
+                         цель пробы (пусто — сервер самого узла) и путь к
+                         sing-box. Переменные окружения сильнее настроек";
 
 const USAGE_EN: &str = "privacy-gateway <command>
 
@@ -61,7 +67,13 @@ const USAGE_EN: &str = "privacy-gateway <command>
                          its address: a browser with --proxy-server goes there;
                          sessions are per browser profile, several at once
   browse --stop --profile <name>  close that browser session
-  lang ru|en             language of service and window messages";
+  lang ru|en             language of service and window messages
+  settings               service settings: what is in force right now
+  settings [--refresh on|off] [--geo on|off] [--probe host:port]
+           [--singbox <path>]
+                         subscription refresh, exit-country lookup, probe target
+                         (empty — the node's own server) and the sing-box path.
+                         Environment variables win over settings";
 
 fn usage() -> String {
     t(USAGE_RU, USAGE_EN)
@@ -90,6 +102,52 @@ fn flag(args: &[String], name: &str) -> Option<String> {
     args.get(i + 1).cloned()
 }
 
+/// `on`/`off` у флага-тумблера. Молча принимать что угодно нельзя: `--geo 0`
+/// выглядит как выключение, а означало бы «включить».
+fn onoff(args: &[String], name: &str) -> Result<Option<bool>, String> {
+    match flag(args, name).as_deref() {
+        None => Ok(None),
+        Some("on") => Ok(Some(true)),
+        Some("off") => Ok(Some(false)),
+        Some(v) => Err(t(
+            &format!("{name}: нужно on или off, а не «{v}»"),
+            &format!("{name}: expected on or off, not \"{v}\""),
+        )),
+    }
+}
+
+/// Настройки служба принимает набором целиком, а команда меняет только
+/// названные поля — отсюда предварительный запрос статуса. Единственная
+/// команда CLI с двумя запросами, поэтому она и стоит отдельно от `parse`,
+/// который в сеть не ходит вовсе.
+///
+/// Правка идёт поверх действующих значений, а не сохранённых: других у клиента
+/// нет. Значит, `settings --geo off` под выставленной `PG_PROBE` запишет её
+/// цель на диск. Переменные ставят в разработке и в e2e, и служба про
+/// перебивку говорит в журнале при старте.
+fn patch_settings(args: &[String]) -> Result<Request, String> {
+    let Ok(Response::Status(status)) = call(&Request::Status) else {
+        return Err(t(
+            "служба недоступна: настройки хранит она",
+            "service unavailable: it is the one keeping the settings",
+        ));
+    };
+    let mut settings = status.settings;
+    if let Some(v) = onoff(args, "--refresh")? {
+        settings.refresh = v;
+    }
+    if let Some(v) = onoff(args, "--geo")? {
+        settings.geo = v;
+    }
+    if let Some(v) = flag(args, "--probe") {
+        settings.probe = v;
+    }
+    if let Some(v) = flag(args, "--singbox") {
+        settings.singbox = v;
+    }
+    Ok(Request::SetSettings { settings })
+}
+
 fn parse(args: &[String]) -> Result<Request, String> {
     match args.first().map(String::as_str) {
         Some("status") => Ok(Request::Status),
@@ -115,6 +173,7 @@ fn parse(args: &[String]) -> Result<Request, String> {
             _ => Err(t("нужен охват: apps или all", "pick a scope: apps or all")),
         },
         Some("profiles") => Ok(Request::Status),
+        Some("settings") => Ok(Request::Status),
         Some("test") => Ok(Request::TestProfiles),
         Some("browse") => flag(args, "--profile")
             .map(|profile| match args.iter().any(|a| a == "--stop") {
@@ -187,7 +246,14 @@ fn main() -> std::process::ExitCode {
             false => std::process::ExitCode::FAILURE,
         };
     }
-    let req = match parse(&args) {
+    let parsed = match args.first().map(String::as_str) {
+        // С флагами настройки правятся поверх нынешних, и для этого нужен
+        // предварительный запрос; без флагов это обычный `status`, который их и
+        // печатает.
+        Some("settings") if args.len() > 1 => patch_settings(&args),
+        _ => parse(&args),
+    };
+    let req = match parsed {
         Ok(r) => r,
         Err(e) => {
             eprintln!("{e}");
@@ -214,6 +280,19 @@ fn main() -> std::process::ExitCode {
             for a in apps {
                 println!("[{}] {} — {}", if a.enabled { "x" } else { " " }, a.name, a.path);
             }
+            std::process::ExitCode::SUCCESS
+        }
+        // Печатается то, что действует, — вместе с ответом на `settings --…`:
+        // увидеть результат правки в том же выводе важнее, чем сэкономить
+        // четыре строки.
+        Ok(Response::Status(s)) if args[0] == "settings" => {
+            adopt(s.lang);
+            let onoff = |v: bool| if v { "on" } else { "off" };
+            let or = |v: &str, empty: String| if v.is_empty() { empty } else { v.to_string() };
+            println!("{:<10} {}", "refresh", onoff(s.settings.refresh));
+            println!("{:<10} {}", "geo", onoff(s.settings.geo));
+            println!("{:<10} {}", "probe", or(&s.settings.probe, t("сервер узла", "the node's server")));
+            println!("{:<10} {}", "singbox", or(&s.settings.singbox, t("рядом со службой либо PATH", "next to the service or PATH")));
             std::process::ExitCode::SUCCESS
         }
         Ok(Response::Status(s)) if args[0] == "test" => {

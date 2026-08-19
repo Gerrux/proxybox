@@ -68,6 +68,24 @@ export type Status = {
   browsers: string[];
   /** Заведённые браузерные профили. */
   browser_profiles: BrowserProfile[];
+  /** Настройки службы — уже действующие: переменные окружения к ним применены,
+   *  и окно показывает то, что работает, а не то, что записано на диск. */
+  settings: Settings;
+};
+
+/** Настройки службы. Всё, что до этого жило только в переменных окружения и
+ *  потому было доступно тому, кто продукт собрал, а не тому, кто установил. */
+export type Settings = {
+  /** Сверять подписки в фоне. */
+  refresh: boolean;
+  /** Цель пробы, `host:port`. Пусто — сервер самого узла: сторонних адресов
+   *  продукт по умолчанию не трогает. */
+  probe: string;
+  /** Путь к бинарнику sing-box. Пусто — рядом со службой либо `PATH`. */
+  singbox: string;
+  /** Спрашивать точку выхода у внешнего сервиса — единственный запрос службы
+   *  наружу. */
+  geo: boolean;
 };
 
 /** Отправить команду службе. Возвращает «приняли ли»: единственный, кому это
@@ -104,7 +122,10 @@ export type Request =
   | { cmd: "browse-stop"; arg: { profile: string } }
   /** Завести браузерный профиль либо переписать такой же по имени. */
   | { cmd: "set-browser-profile"; arg: { profile: BrowserProfile } }
-  | { cmd: "remove-browser-profile"; arg: { name: string } };
+  | { cmd: "remove-browser-profile"; arg: { name: string } }
+  /** Настройки службы приходят набором целиком: команда на поле означала бы
+   *  четыре ветки в службе ради экрана, который отдаёт их разом. */
+  | { cmd: "set-settings"; arg: { settings: Settings } };
 
 export type Response =
   | { reply: "status"; data: Status }
@@ -164,6 +185,20 @@ export async function forgetBrowser(profile: string): Promise<void> {
   if (isTauri()) {
     await invoke("forget_browser", { profile });
   }
+}
+
+/** Автозапуск окна с Windows: ключ `HKCU\…\Run` правит оболочка — фронтенд в
+ *  вебвью, реестра ему не видно. Службы это не касается вовсе: она в SCM и
+ *  стартует сама, автозапуск нужен значку в трее.
+ *
+ *  В разработке в браузере автозапуска нет: `false` и отказ на попытку. */
+export async function autostart(): Promise<boolean> {
+  return isTauri() ? invoke<boolean>("autostart") : false;
+}
+
+export async function setAutostart(enabled: boolean): Promise<boolean> {
+  if (!isTauri()) throw new Error("autostart: Windows only");
+  return invoke<boolean>("set_autostart", { enabled });
 }
 
 export async function call(req: Request): Promise<Response> {

@@ -89,7 +89,7 @@ const RU = {
   noApps: "Список пуст — ничей трафик не перехватывается.",
   scopeApps: "Выбранные",
   scopeAll: "Весь компьютер",
-  scopeAllNote: "Весь трафик компьютера идёт через туннель — приложения не отбираются, и этот список сейчас не применяется.",
+  scopeAllNote: "Весь трафик компьютера идёт через туннель — приложения не отбираются, и этот список сейчас не применяется. Охват переключается в настройках.",
   searchApps: "Поиск по имени или пути",
   searchProfiles: "Поиск по имени профиля",
   appsShown: (shown: number) => `найдено ${shown}`,
@@ -103,6 +103,32 @@ const RU = {
   closeWindow: "Закрыть окно",
   removeProfile: (name: string) => `Удалить профиль ${name}`,
   removeApp: (name: string) => `Убрать ${name}`,
+  switchOn: "Вкл",
+  switchOff: "Выкл",
+  apply: "Применить",
+  scope: "Охват",
+  scopeHint:
+    "«Весь компьютер» — это не «выбрать все приложения»: под туннель попадает и трафик, за которым нет процесса, — служба, драйвер, DNS.",
+  refreshSubs: "Сверка подписок",
+  refreshSubsHint:
+    "Раз в сутки служба перечитывает подписки и заменяет узлы. Активный узел при этом не гаснет, а пропавший не выключает приватный режим.",
+  geoTitle: "Спрашивать страну",
+  geoHint:
+    "Единственный запрос службы наружу: страну узла спрашивают у стороннего сервиса — и только через туннель, с вашего настоящего адреса запрос не уходит. Выключите — страны в окне не будет.",
+  probeTitle: "Цель пробы",
+  probeHint:
+    "Куда стучаться, чтобы признать туннель поднятым. Пусто — сервер самого узла: сторонних адресов продукт по умолчанию не трогает.",
+  probePlaceholder: "host:port — пусто, значит сервер узла",
+  singboxTitle: "Путь к sing-box",
+  singboxHint:
+    "Пусто — рядом со службой, иначе из PATH. Новый путь действует со следующего запуска туннеля: ради настройки живой туннель не гасится.",
+  singboxPlaceholder: "C:\\Program Files\\sing-box\\sing-box.exe",
+  autostartTitle: "Запускать с Windows",
+  autostartHint:
+    "Окно стартует вместе с системой и сразу уходит в трей. Службы это не касается: она в SCM и поднимает туннель без всякого окна — автозапуск нужен значку, иначе о запертой машине в интерфейсе ни следа.",
+  autostartWindowsOnly: "Только в Windows",
+  envOverride: "Перебито переменной окружения — служба сказала об этом в журнале",
+  exitUnknown: "Точка выхода известна, пока туннель поднят",
   settings: "Настройки",
   settingsHint: "Настройки: язык, обновления",
   done: "Готово",
@@ -206,7 +232,7 @@ const EN: typeof RU = {
   noApps: "The list is empty — nobody's traffic is intercepted.",
   scopeApps: "Selected",
   scopeAll: "Whole computer",
-  scopeAllNote: "All computer traffic goes through the tunnel — nothing is picked per app, so this list is not applied right now.",
+  scopeAllNote: "All computer traffic goes through the tunnel — nothing is picked per app, so this list is not applied right now. The scope is switched in settings.",
   searchApps: "Search by name or path",
   searchProfiles: "Search profiles by name",
   appsShown: (shown: number) => `${shown} found`,
@@ -220,6 +246,32 @@ const EN: typeof RU = {
   closeWindow: "Close window",
   removeProfile: (name: string) => `Remove profile ${name}`,
   removeApp: (name: string) => `Remove ${name}`,
+  switchOn: "On",
+  switchOff: "Off",
+  apply: "Apply",
+  scope: "Scope",
+  scopeHint:
+    "\"Whole computer\" is not \"select every app\": traffic with no process behind it — the service, the driver, DNS — goes into the tunnel too.",
+  refreshSubs: "Subscription refresh",
+  refreshSubsHint:
+    "Once a day the service re-reads the subscriptions and replaces the nodes. The active node stays up, and a node that disappeared does not turn private mode off.",
+  geoTitle: "Ask for the country",
+  geoHint:
+    "The only request the service makes outwards: the node country is asked from a third-party service — and only through the tunnel, never from your real address. Turn it off and the window shows no country.",
+  probeTitle: "Probe target",
+  probeHint:
+    "Where to knock before calling the tunnel up. Empty — the node's own server: no third-party address is touched by default.",
+  probePlaceholder: "host:port — empty means the node's server",
+  singboxTitle: "Path to sing-box",
+  singboxHint:
+    "Empty — next to the service, otherwise from PATH. A new path takes effect on the next tunnel start: a live tunnel is not dropped for a setting.",
+  singboxPlaceholder: "C:\\Program Files\\sing-box\\sing-box.exe",
+  autostartTitle: "Start with Windows",
+  autostartHint:
+    "The window starts with the system and goes straight to the tray. The service is unaffected: it lives in the SCM and brings the tunnel up with no window at all — autostart is for the tray icon, without which a locked machine leaves no trace in the interface.",
+  autostartWindowsOnly: "Windows only",
+  envOverride: "Overridden by an environment variable — the service said so in the journal",
+  exitUnknown: "The exit point is known while the tunnel is up",
   settings: "Settings",
   settingsHint: "Settings: language, updates",
   done: "Done",
