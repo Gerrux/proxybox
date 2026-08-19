@@ -4,7 +4,9 @@
 //! Своей логики и своего состояния у оболочки нет.
 
 use core_ipc::{call, Request, Response};
+use std::collections::HashSet;
 use std::io;
+use std::sync::{Mutex, OnceLock};
 
 /// `async` здесь не про параллелизм, а про то, чтобы окно оставалось живым:
 /// синхронную команду Tauri выполняет прямо в цикле событий главного потока, а
@@ -60,12 +62,34 @@ fn open_url(url: String) -> Result<(), String> {
         .map_err(|e| format!("не удалось открыть браузер: {e}"))
 }
 
+/// Каталог сеанса браузера: входы, куки и закладки этого профиля. Он же —
+/// причина, по которой окно открывается пустым: это не общий профиль Chrome
+/// человека, а отдельный, свой на каждый узел.
+///
+/// Имя каталога считает `core_ipc::dir_name` — та же функция, что и у службы:
+/// чистка символов у обоих одинаковая, и два профиля с именами «a/b» и «a-b» не
+/// делят один каталог.
+fn session_dir(profile: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_default())
+        .join("privacy-gateway")
+        .join("browser")
+        .join(core_ipc::dir_name(profile))
+}
+
 /// Окно браузера через отдельный туннель профиля. Порт поднимает служба
 /// (`Request::Browse`), а браузер запускает оболочка: служба работает в сессии
 /// 0, и её окна человек бы не увидел.
 ///
 /// Свой `--user-data-dir` обязателен: без него Chromium передаёт аргументы уже
-/// запущенному экземпляру и открывает обычную вкладку мимо прокси.
+/// запущенному экземпляру и открывает обычную вкладку мимо прокси. Он же делает
+/// сеансы независимыми: у каждого профиля свои входы, и одним сайтом можно
+/// пользоваться из разных стран одновременно.
+///
+/// `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` — не украшение.
+/// SOCKS5 у Chromium везёт TCP, а WebRTC собирает кандидатов по UDP с настоящих
+/// интерфейсов: STUN-запрос уходит мимо прокси, и сайт видит настоящий адрес
+/// человека при поднятом туннеле. Обещание «прямого доступа не даёт ни на такт»
+/// без этого флага неправда.
 ///
 /// `async` — по тому же правилу, что и у `ipc`.
 #[tauri::command(async)]
@@ -76,25 +100,64 @@ fn open_browser(port: u16, profile: String) -> Result<(), String> {
             "no Chromium browser found: install Chrome, Edge, Brave or Yandex",
         )
     })?;
-    // Имя профиля пишет человек, а каталог из него делаем мы: в имени законны и
-    // слэш, и двоеточие.
-    let safe: String = profile.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
-    let data = std::path::PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_default())
-        .join("privacy-gateway")
-        .join("browser")
-        .join(&safe);
-    std::process::Command::new(&browser.path)
+    let mut child = std::process::Command::new(&browser.path)
         .arg(format!("--proxy-server=socks5://127.0.0.1:{port}"))
-        .arg(format!("--user-data-dir={}", data.display()))
+        .arg(format!("--user-data-dir={}", session_dir(&profile).display()))
+        .arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
         .arg("--no-first-run")
         .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("{}: {e}", browser.path))
+        .map_err(|e| format!("{}: {e}", browser.path))?;
+    // Закрытие окна службе не видно: она видит живой sing-box, а тот переживает
+    // браузер легко — и метка «браузер» врала бы, пока жив процесс. Ждёт тот,
+    // кто окно и запустил.
+    //
+    // Ждёт ровно один поток на профиль: второе нажатие при живом окне — это «ещё
+    // одна вкладка», Chromium передаёт аргументы уже запущенному экземпляру и
+    // тут же выходит сам. Дождаться такого выхода значило бы погасить сеанс
+    // из-под открытого окна.
+    //
+    // ponytail: ждём мы, а не служба, поэтому закрытое раньше браузера окно
+    // Privacy Gateway оставляет сеанс жить до перезапуска службы. Потолок —
+    // сирота на один сеанс: без TUN, без правил, никуда не маршрутизирует;
+    // апгрейд — сообщать службе время жизни сеанса и гасить по молчанию, но
+    // тогда придётся выдумывать «молчание» для окна, которое просто открыто.
+    if waiting().lock().is_ok_and(|mut w| w.insert(profile.clone())) {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+            let _ = waiting().lock().map(|mut w| w.remove(&profile));
+            let _ = call(&Request::BrowseStop { profile });
+        });
+    }
+    Ok(())
+}
+
+/// Профили, за окнами которых уже кто-то ждёт. Своё состояние оболочке иметь не
+/// положено, и это не оно: правда о сеансах живёт в службе, здесь — только
+/// список собственных потоков, чтобы их не заводилось по одному на нажатие.
+fn waiting() -> &'static Mutex<HashSet<String>> {
+    static WAITING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    WAITING.get_or_init(Mutex::default)
+}
+
+/// Стереть сеанс браузера: входы, куки и закладки этого профиля. Зовётся из
+/// окна вместе с удалением самого профиля — узла больше нет, и хранить его
+/// вход не для чего.
+///
+/// Делает это оболочка, а не служба: каталог лежит в `%LOCALAPPDATA%` человека,
+/// а служба работает под LocalSystem и видит там системный профиль.
+#[tauri::command(async)]
+fn forget_browser(profile: String) -> Result<(), String> {
+    match std::fs::remove_dir_all(session_dir(&profile)) {
+        Ok(()) => Ok(()),
+        // Сеанса просто не было: профиль в браузере ни разу не открывали.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("не удалось стереть сеанс браузера: {e}")),
+    }
 }
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![ipc, open_url, open_browser])
+        .invoke_handler(tauri::generate_handler![ipc, open_url, open_browser, forget_browser])
         .run(tauri::generate_context!())
         .expect("не удалось запустить окно");
 }

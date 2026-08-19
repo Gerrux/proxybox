@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Probe, Request, Status } from "./platform";
+import { forgetBrowser, type Probe, type Request, type Status } from "./platform";
 import { measuredAgo, strings } from "./i18n";
 import { AddField, Button, Empty, flag, Panel, SearchField } from "./ui";
 
@@ -151,8 +151,9 @@ export function Profiles({
               const country = probe?.country ?? (active && status?.tunnel === "up" ? status.country : null);
               const live = active && status != null && status.tunnel !== "off";
               // Открытое окно браузера — состояние профиля, а не общего режима,
-              // и в окне о нём больше не сказано нигде.
-              const browsing = status?.browser === name;
+              // и в окне о нём больше не сказано нигде. Сеансы независимы:
+              // помечен бывает не один профиль сразу.
+              const browsing = status?.browsers.includes(name) ?? false;
               // Рельс профиля повторяет то, что показывает верх окна: выбран —
               // ещё не значит «несёт трафик», и путать это нельзя.
               const tone = TONE[live && status ? status.tunnel : "off"];
@@ -208,14 +209,22 @@ export function Profiles({
                     </Button>
                   )}
                   {/* Окно браузера через этот профиль: общий режим не трогается,
-                      трафик вкладки идёт своим sing-box без TUN. */}
-                  <Button variant="quiet" aria-label={s.browseProfile(name)} onClick={() => browse(name)}>
-                    ⧉
+                      трафик окна идёт своим sing-box без TUN. Словом, а не
+                      значком: единственный иероглиф в окне никто не нажимал —
+                      угадать в нём «браузер через этот узел» нельзя. */}
+                  <Button variant="quiet" title={s.browseProfile(name)} onClick={() => browse(name)}>
+                    {s.browse}
                   </Button>
                   <Button
                     variant="danger"
                     aria-label={s.removeProfile(name)}
-                    onClick={() => act({ cmd: "remove-profile", arg: { name } })}
+                    onClick={() => {
+                      // Узла больше нет — хранить его входы и куки не для чего.
+                      // Отказ проглатываем: каталог мог быть занят открытым
+                      // окном браузера, а профиль уходит в любом случае.
+                      void forgetBrowser(name).catch(() => {});
+                      act({ cmd: "remove-profile", arg: { name } });
+                    }}
                   >
                     ✕
                   </Button>
