@@ -421,7 +421,19 @@ function Wait-Tunnel {
 if ($Scope) {
     $cli = Find-Cli
     if (-not $cli) {
-        Write-Host "pg-cli.exe не найден. Укажите путь: -Cli C:\путь\pg-cli.exe" -ForegroundColor Red
+        # Установщик кладёт только pg-service, privacy-gateway и sing-box
+        # (externalBin в tauri.conf.json). pg-cli в сборку не входит вовсе,
+        # поэтому «не нашли» здесь — обычное дело, а не поломка.
+        Write-Host "pg-cli.exe не найден — установщик его и не ставит. Соберите из репозитория:" -ForegroundColor Red
+        Write-Host "    cargo build -p pg-cli --release" -ForegroundColor Red
+        Write-Host "Он ляжет в target\release\pg-cli.exe, и -Cli указывать не придётся." -ForegroundColor Red
+        exit 1
+    }
+    if ([IO.Path]::GetFileNameWithoutExtension($cli) -ne "pg-cli") {
+        # Ровно та ошибка, которую легко сделать: подсунуть pg-service.exe.
+        # Служба команду `scope` не разбирает — она её слушает, а не шлёт.
+        Write-Host "«$cli» — это не pg-cli. Охват меняет клиент, а не служба." -ForegroundColor Red
+        Write-Host "Путь с пробелами обязателен в кавычках: -Cli `"C:\путь с пробелом\pg-cli.exe`"" -ForegroundColor Red
         exit 1
     }
     $was = if ($all) { "all" } else { "apps" }
