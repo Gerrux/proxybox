@@ -29,9 +29,14 @@
 param(
     # Окно замера. Короче 10 с всплеск сборщика мусора перебивает сигнал.
     [int]$Seconds = 20,
-    # Что качать. По умолчанию — открытая мерилка Cloudflare без регистрации;
-    # свой сервер подставляется сюда же, больше скрипт наружу не ходит.
-    [string]$Url = "https://speed.cloudflare.com/__down?bytes=104857600",
+    # Что качать, по порядку до первого удачного. Список, а не один адрес:
+    # проход 1 идёт через туннель, сервер видит адрес VPN, и Cloudflare на такой
+    # отвечает 403 — двух прогонов это стоило. Свой сервер ставится первым.
+    [string[]]$Url = @(
+        "https://ash-speed.hetzner.com/100MB.bin",
+        "http://speedtest.tele2.net/100MB.zip",
+        "https://speed.cloudflare.com/__down?bytes=104857600"
+    ),
     # Порты службы: mixed (обход TUN) и Clash API (счётчики байт).
     [int]$MixedPort = 48292,
     [int]$ApiPort = 48293,
@@ -122,30 +127,41 @@ function Get-TunStats {
 }
 
 $loader = {
-    param($url, $proxy, $seconds, $tmp)
+    # Список приходит одной строкой через перевод: -ArgumentList разворачивает
+    # массив в отдельные аргументы, и адреса разъехались бы по чужим параметрам.
+    param($urlList, $proxy, $seconds, $tmp)
+    $urls = $urlList -split "`n" | Where-Object { $_ }
     # Windows PowerShell 5.1 по умолчанию предлагает SSL3/TLS 1.0, современный
     # сервер такое рвёт на рукопожатии — закачка не начиналась вовсе, а окно
     # всё равно отсчитывалось, и замер выходил про покой под видом нагрузки.
     try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
-    $err = $null
+    $errors = @()
+    $good = $null
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while ($sw.Elapsed.TotalSeconds -lt $seconds) {
-        try {
-            $c = New-Object Net.WebClient
-            # Без User-Agent Cloudflare отвечает 403 и закачка не начинается:
-            # голый WebClient не шлёт его вовсе.
-            $c.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-            $c.Proxy = if ($proxy) { New-Object Net.WebProxy($proxy) } else { $null }
-            $c.DownloadFile($url, $tmp)
-        } catch {
-            # Отказ обязан долететь наверх: молчаливый break и дал два прохода
-            # с нулём байт и бессмысленным «сравнивать нечего» в итоге.
-            $err = $_.Exception.Message
-            break
+        # Пока рабочий адрес не найден — перебираем все; найденный держим.
+        $ok = $false
+        foreach ($u in $(if ($good) { @($good) } else { $urls })) {
+            try {
+                $c = New-Object Net.WebClient
+                # Голый WebClient не шлёт User-Agent вовсе, и часть зеркал
+                # отвечает на это отказом.
+                $c.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                $c.Proxy = if ($proxy) { New-Object Net.WebProxy($proxy) } else { $null }
+                $c.DownloadFile($u, $tmp)
+                $good = $u
+                $ok = $true
+                break
+            } catch {
+                # Отказ обязан долететь наверх: молчаливый break и дал проходы
+                # с нулём байт и «сравнивать нечего» в итоге, без причины.
+                $errors += "$u -> $($_.Exception.Message)"
+            }
         }
+        if (-not $ok) { break }
     }
     Remove-Item $tmp -ErrorAction SilentlyContinue
-    $err
+    if (-not $good) { $errors -join '; ' }
 }
 
 # Возвращает один объект: ЦП за окно и цену трафика в с/ГБ. Всё остальное
@@ -171,7 +187,7 @@ function Measure-Window {
         # GetTempPath, а не $env:TEMP: переменная бывает пустой, а с
         # ErrorActionPreference=Stop пустой путь убил бы замер посреди окна.
         $tmp = Join-Path ([IO.Path]::GetTempPath()) "pg-cpu.bin"
-        $job = Start-Job -ScriptBlock $loader -ArgumentList $Url, $Proxy, $Seconds, $tmp
+        $job = Start-Job -ScriptBlock $loader -ArgumentList ($Url -join "`n"), $Proxy, $Seconds, $tmp
     }
     $sw = [Diagnostics.Stopwatch]::StartNew()
     Start-Sleep -Seconds $Seconds
@@ -194,6 +210,7 @@ function Measure-Window {
     $delta = foreach ($id in $b.Keys) {
         if (-not $a.ContainsKey($id)) { continue }
         [pscustomobject]@{
+            Pid  = $id
             Name = $b[$id].Name
             Cpu  = [math]::Max(0, $b[$id].Cpu - $a[$id].Cpu)
             Krn  = [math]::Max(0, $b[$id].Krn - $a[$id].Krn)
@@ -211,6 +228,15 @@ function Measure-Window {
     # по второму знаку видно, настоящая это гранулярность или округление.
     Write-Host ("{0,-20} {1,7:N2} с   {2,5:N0}% одного ядра, {3,3:N0}% машины" -f `
         "sing-box, ЦП:", $myCpu, (100 * $myCpu / $elapsed), (100 * $myCpu / $elapsed / $cores))
+    # Разбивка по процессам — ради дарового опыта: сеанс браузера поднимает
+    # второй sing-box БЕЗ TUN (core_tunnel::sidecar), на той же машине, той же
+    # версии и том же сервере. Разница между ними и есть цена TUN, без остановки
+    # службы и без правки конфига.
+    if ($mine.Count -gt 1) {
+        foreach ($m in $mine | Sort-Object Cpu -Descending) {
+            Write-Host ("    pid {0,-8} {1,7:N2} с   в ядре {2,3:N0}%" -f $m.Pid, $m.Cpu, $(if ($m.Cpu -gt 0) { 100 * $m.Krn / $m.Cpu } else { 0 }))
+        }
+    }
     $krnShare = 0
     if ($myCpu -gt 0) { $krnShare = 100 * $myKrn / $myCpu }
     Write-Host ("{0,-20} {1,7:N0} %   много — работа в ядре: wintun, WFP, драйвер" -f "из них в ядре:", $krnShare)
@@ -304,15 +330,10 @@ if ($idle.Packets -gt 1000) {
 }
 if ($idle.Cores -gt 0.25) {
     Write-Host "  Столько ЦП без трафика — это уже не шифрование." -ForegroundColor Yellow
-    if (-not $all) {
-        Write-Host "  Главный подозреваемый: с auto_route в TUN заходит трафик ВСЕЙ машины, и в охвате"
-        Write-Host "  «выбранные приложения» каждое соединение сверяется с process_path — а это перебор"
-        Write-Host "  системной таблицы соединений. Отсюда и время в ядре."
-        Write-Host "  Проверка: переключите охват на «весь компьютер» и сравните проход 0 — там правила нет вовсе."
-    } else {
-        Write-Host "  process_path тут ни при чём (в этом охвате правила нет). Смотрите на долю в ядре:"
-        Write-Host "  высокая — wintun и WFP, и первым делом стоит проверить Defender над TUN-адаптером."
-    }
+    Write-Host "  Сверка process_path тут ни при чём: работа на соединение росла бы вместе с трафиком,"
+    Write-Host "  а этот расход плоский. Плоский, в ядре, размазанный по потокам — подпись холостого цикла."
+    Write-Host "  Проверка без остановки службы: откройте браузерный сеанс. Он поднимает второй sing-box"
+    Write-Host "  БЕЗ TUN, и разбивка по pid выше покажет обоих — дешёвый там расход, дорогой тут."
 }
 
 # Предельная цена трафика: сколько ЦП добавил гигабайт СВЕРХ покоя. Считается
