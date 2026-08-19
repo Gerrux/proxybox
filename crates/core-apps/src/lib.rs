@@ -363,6 +363,28 @@ fn pids() -> Vec<u32> {
     pids[..filled as usize / std::mem::size_of::<u32>()].to_vec()
 }
 
+/// Путь в том виде, в каком его увидит sing-box.
+///
+/// Правило `process_path` он сверяет побайтово — `processMap[ProcessPath]`,
+/// поиск по ключу, никакой нормализации, — а путь процесса Windows отдаёт таким,
+/// как тот записан в файловой системе: `C:\Windows\System32\OpenSSH\ssh.exe`.
+/// Наш же путь приходит из `PATH` (`C:\WINDOWS\system32\…`), из реестра или
+/// прямо из поля ввода, и регистр там какой угодно. Разойдись они на один
+/// символ — правило не совпадает, соединение уходит по `final: direct`, а
+/// брандмауэр про регистр не знает и блокирует исправно. Получается худшее из
+/// возможного: туннель поднят — приложение идёт мимо него, туннель упал —
+/// приложение без сети.
+pub fn canonical(path: &str) -> String {
+    let Ok(full) = std::fs::canonicalize(path) else { return path.to_string() };
+    let full = full.to_string_lossy().into_owned();
+    // canonicalize отдаёт путь с префиксом расширенной длины, а Windows
+    // показывает процесс без него.
+    match full.strip_prefix(r"\\?\UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => full.strip_prefix(r"\\?\").unwrap_or(&full).to_string(),
+    }
+}
+
 /// Иконка приложения как PNG в data-URL — окно показывает её прямо в `<img>`.
 /// Не Windows, не exe, нет ресурса — `None`, и список обходится без картинки.
 pub fn icon(path: &str) -> Option<String> {
@@ -907,6 +929,23 @@ mod tests {
         assert!(found[0].path.ends_with(&native("app/Claude.exe".into())), "{:?}", found[0].path);
         assert_eq!(found[1].name, "Telegram Desktop", "имя из манифеста лучше имени папки");
         assert!(packages_in(&root.join("нет")).is_empty(), "нет каталога — нет и пакетов");
+    }
+
+    /// Регистр в пути — разница между «приложение в туннеле» и «приложение
+    /// ходит мимо туннеля, считаясь защищённым».
+    #[test]
+    fn canonical_path_survives_detours() {
+        let dir = std::env::temp_dir().join("pg-canonical-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(dir.join("bin/app.exe"), b"").unwrap();
+        let real = canonical(&dir.join("bin/app.exe").to_string_lossy());
+
+        let detour = dir.join("bin/../bin/./app.exe").to_string_lossy().into_owned();
+        assert_eq!(canonical(&detour), real, "путь в обход и напрямую — один и тот же файл");
+        assert!(!real.starts_with(r"\\?\"), "префикс расширенной длины sing-box не увидит: {real}");
+        let missing = dir.join("нет.exe").to_string_lossy().into_owned();
+        assert_eq!(canonical(&missing), missing, "файла нет — путь остаётся как был");
     }
 
     /// Обновление пакета переносит exe в папку с новой версией. Выбранное
