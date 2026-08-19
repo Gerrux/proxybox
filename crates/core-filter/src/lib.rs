@@ -196,29 +196,50 @@ fn run(_args: &[String]) -> io::Result<()> {
 /// Поднятые адаптеры, похожие на чужой туннель. Два TUN в системе спорят за
 /// маршрут по умолчанию, и выигравший забирает трафик себе — наш статус при
 /// этом остаётся «Защищено», хотя приложения могут уйти в чужой туннель.
-pub fn foreign_tunnels() -> Vec<String> {
-    detect(&adapters())
+/// `ours` — имя нашего адаптера (`core_tunnel::TUN_NAME`). Передаётся, а не
+/// зашито: у крейта нет зависимостей, и заводить их ради одной строки дороже,
+/// чем принять её параметром.
+pub fn foreign_tunnels(ours: &str) -> Vec<String> {
+    detect(&adapters(), ours)
 }
 
-fn detect(adapters: &str) -> Vec<String> {
+/// Строки приходят как «Имя\tОписание», и различать их обязательно: имя мы
+/// задаём сами (`interface_name`), а описание ставит драйвер — у wintun это
+/// «sing-tun Tunnel», нашего имени в нём нет вовсе. Пока сверялось одно
+/// описание, служба на каждом запуске находила «чужой туннель» и жаловалась в
+/// журнал на саму себя. Сторож — `our_own_adapter_is_not_a_stranger`.
+fn detect(adapters: &str, ours: &str) -> Vec<String> {
     const MARKERS: [&str; 6] = ["wintun", "tap-", "tun", "wireguard", "openvpn", "vpn"];
+    let ours = ours.to_lowercase();
     adapters
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
-        // Свой адаптер в этот список попадать не должен: он именован явно.
-        .filter(|l| !l.contains("Privacy Gateway"))
-        .filter(|l| {
-            let low = l.to_lowercase();
+        .filter_map(|l| match l.split_once('\t') {
+            Some((name, desc)) => Some((name.trim(), desc.trim())),
+            // Без разделителя считаем строку описанием: так вывод старого
+            // формата не превращается в поток ложных срабатываний.
+            None => Some(("", l)),
+        })
+        .filter(|(name, desc)| {
+            let name = name.to_lowercase();
+            name != ours && !desc.to_lowercase().contains(&ours)
+        })
+        .filter(|(_, desc)| {
+            let low = desc.to_lowercase();
             MARKERS.iter().any(|m| low.contains(m))
         })
-        .map(str::to_string)
+        // Наружу идёт описание: «WireGuard Tunnel» человеку говорит больше, чем
+        // имя подключения, которое у чужого клиента бывает и «Ethernet 3».
+        .map(|(_, desc)| desc.to_string())
         .collect()
 }
 
 #[cfg(windows)]
 fn adapters() -> String {
-    powershell("Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | ForEach-Object {$_.InterfaceDescription}")
+    powershell(
+        "Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | ForEach-Object {\"$($_.Name)`t$($_.InterfaceDescription)\"}",
+    )
 }
 
 #[cfg(not(windows))]
@@ -257,11 +278,28 @@ mod tests {
         assert_eq!(policy(true, false), Policy::Drop);
     }
 
+    const OURS: &str = "Privacy Gateway";
+
     #[test]
     fn only_tunnel_adapters_are_flagged() {
-        let adapters = "Intel(R) Wi-Fi 6 AX201 160MHz\nWireGuard Tunnel\nRealtek PCIe GbE Family Controller\nTAP-Windows Adapter V9\nPrivacy Gateway Tunnel\n\n";
-        assert_eq!(detect(adapters), vec!["WireGuard Tunnel", "TAP-Windows Adapter V9"]);
-        assert!(detect("Intel(R) Wi-Fi 6 AX201 160MHz\n").is_empty());
+        let adapters = "Wi-Fi\tIntel(R) Wi-Fi 6 AX201 160MHz\n\
+                        wg0\tWireGuard Tunnel\n\
+                        Ethernet\tRealtek PCIe GbE Family Controller\n\
+                        tap\tTAP-Windows Adapter V9\n\
+                        Privacy Gateway\tsing-tun Tunnel\n\n";
+        assert_eq!(detect(adapters, OURS), vec!["WireGuard Tunnel", "TAP-Windows Adapter V9"]);
+        assert!(detect("Wi-Fi\tIntel(R) Wi-Fi 6 AX201 160MHz\n", OURS).is_empty());
+    }
+
+    /// Имя адаптера задаём мы, описание — драйвер, и у wintun это «sing-tun
+    /// Tunnel»: нашего имени там нет. Пока сверялось описание, служба на каждом
+    /// запуске писала в журнал, что рядом поднят чужой туннель, — и это была
+    /// она сама. Замер охватов из-за этой записи выглядел испорченным.
+    #[test]
+    fn our_own_adapter_is_not_a_stranger() {
+        assert!(detect("Privacy Gateway\tsing-tun Tunnel\n", OURS).is_empty());
+        // И наоборот: настоящий второй sing-box рядом обязан быть виден.
+        assert_eq!(detect("nekoray-tun\tsing-tun Tunnel\n", OURS), vec!["sing-tun Tunnel"]);
     }
 
     #[test]

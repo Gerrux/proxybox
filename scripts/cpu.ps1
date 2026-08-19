@@ -59,6 +59,12 @@ param(
 $ErrorActionPreference = "Stop"
 $cores = [int]$env:NUMBER_OF_PROCESSORS
 
+# Клиент и журнал службы пишут UTF-8, а PowerShell декодирует вывод дочернего
+# процесса кодировкой консоли (на русской Windows — 866). Без этой строки
+# `status` возвращался кракозябрами, проверка «поднят» не совпадала никогда, и
+# скрипт сорок секунд ждал туннель, который стоял поднятым с первой секунды.
+try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
+
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltinRole]::Administrator)) {
     Write-Host "Нужен PowerShell от администратора: служба крутит sing-box от SYSTEM," -ForegroundColor Red
@@ -407,6 +413,22 @@ Write-Host "Ядер: $cores.  Охват: $scopeName"
 # Правила брандмауэра — статья расхода, с трафиком через туннель не связанная:
 # осиротевшее правило WFP разбирает на каждом исходящем соединении в системе,
 # своём и чужом, и переживает перезагрузку.
+# Второй живой TUN рядом делает бессмысленным весь замер: маршруты уходят к
+# тому, кто выиграл, и чей это ЦП — уже не разобрать. Показываем имя вместе с
+# описанием: имя задаёт клиент, описание ставит драйвер, и у sing-box оно
+# «sing-tun Tunnel» независимо от того, чей это sing-box.
+try {
+    $ups = @(Get-NetAdapter -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' } |
+        Where-Object { $_.InterfaceDescription -match 'tun|tap-|wireguard|vpn' })
+    if ($ups) {
+        Write-Host "Поднятые туннельные адаптеры:"
+        foreach ($a in $ups) {
+            $mine = if ($a.Name -eq $TunName) { "  <- наш" } else { "  <- ЧУЖОЙ, замер испорчен" }
+            Write-Host ("   {0,-24} {1}{2}" -f $a.Name, $a.InterfaceDescription, $mine)
+        }
+    }
+} catch { }
+
 $rules = @(Get-NetFirewallRule -DisplayName 'Privacy Gateway: *' -ErrorAction SilentlyContinue)
 Write-Host "Правил 'Privacy Gateway: *': $($rules.Count)"
 if ($rules.Count -gt $apps + 1) {
@@ -455,7 +477,9 @@ function Show-WhyNot($cli) {
     $dir = Join-Path $env:ProgramData "privacy-gateway"
     Write-Host "-- журнал службы (свежее сверху) --" -ForegroundColor Yellow
     try {
-        $j = Get-Content (Join-Path $dir "journal.json") -Raw | ConvertFrom-Json
+        # -Encoding UTF8 обязателен: служба пишет журнал в UTF-8, а PowerShell
+        # 5.1 без указания читает файл в кодировке системы и выдаёт кракозябры.
+        $j = Get-Content (Join-Path $dir "journal.json") -Raw -Encoding UTF8 | ConvertFrom-Json
         $j | Select-Object -First 12 | ForEach-Object {
             $mark = if ($_.bad) { "!" } else { " " }
             Write-Host "  $mark $($_.text)"

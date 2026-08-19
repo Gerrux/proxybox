@@ -163,7 +163,7 @@ fn windows_checks() -> Vec<Check> {
     });
 
     // Разбор и запуск — в core-filter: тем же списком пользуется служба.
-    let foreign = core_filter::foreign_tunnels();
+    let foreign = core_filter::foreign_tunnels(core_tunnel::TUN_NAME);
     v.push(if foreign.is_empty() {
         check(&t("чужие туннели", "foreign tunnels"), Level::Ok, t("поднятых TUN/VPN-адаптеров нет", "no TUN/VPN adapters are up"))
     } else {
