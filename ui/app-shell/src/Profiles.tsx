@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Probe, Request, Status } from "./platform";
-import { strings } from "./i18n";
-import { AddField, Button, Empty, Panel, SearchField } from "./ui";
+import { measuredAgo, strings } from "./i18n";
+import { AddField, Button, Empty, flag, Panel, SearchField } from "./ui";
 
 /** Со скольких профилей список перестаёт читаться глазом. Порог тот же, что у
  *  приложений: одна подписка приносит десятки узлов, а подписок бывает
@@ -11,18 +11,35 @@ const SEARCH_FROM = 8;
 /** Итог прогона рядом с именем: задержка либо причина отказа. Отказ приезжает
  *  строкой от службы, поэтому он уже на нужном языке — и виден целиком по
  *  наведению, а не только в обрезке. */
-function Verdict({ probe, failed }: { probe: Probe | undefined; failed: string }) {
+function Verdict({ probe, failed, measured }: { probe: Probe | undefined; failed: string; measured?: string }) {
   if (!probe) return null;
   if (probe.latency_ms != null)
-    return <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted">{probe.latency_ms} ms</span>;
+    return (
+      // Возраст — в подсказке, а не в строке: цифра из прошлой недели выглядит
+      // как сегодняшняя, но занимать место в строке этому знанию незачем.
+      <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted" title={measured}>
+        {probe.latency_ms} ms
+      </span>
+    );
   return (
     // Мёртвый профиль — поломка, которую чинит человек, а не запертый канал:
     // цвет тот же, что у «служба не отвечает».
-    <span className="max-w-[9rem] shrink-0 truncate font-mono text-[11px] text-fault" title={probe.error ?? failed}>
+    // Она же длиннее всего в строке и потому уступает место первой.
+    <span className="min-w-0 truncate font-mono text-[11px] text-fault" title={probe.error ?? failed}>
       {failed}
     </span>
   );
 }
+
+/** Цвет строки. Рельс слева и подпись «активен» берут его отсюда: это одно и
+ *  то же состояние, и разойтись им нельзя. */
+const TONE = {
+  up: { rail: "bg-open", text: "text-open" },
+  connecting: { rail: "bg-wait", text: "text-wait" },
+  down: { rail: "bg-closed", text: "text-closed" },
+  // Выключено — и «профиль просто выбран» тоже: это не сигнал, цвета нет.
+  off: { rail: "bg-transparent", text: "text-muted" },
+} as const;
 
 export function Profiles({
   status,
@@ -133,33 +150,59 @@ export function Profiles({
               // её спросил сам туннель.
               const country = probe?.country ?? (active && status?.tunnel === "up" ? status.country : null);
               const live = active && status != null && status.tunnel !== "off";
+              // Открытое окно браузера — состояние профиля, а не общего режима,
+              // и в окне о нём больше не сказано нигде.
+              const browsing = status?.browser === name;
               // Рельс профиля повторяет то, что показывает верх окна: выбран —
               // ещё не значит «несёт трафик», и путать это нельзя.
-              const rail = !live
-                ? "bg-transparent"
-                : status.tunnel === "up"
-                  ? "bg-open"
-                  : status.tunnel === "connecting"
-                    ? "bg-wait"
-                    : "bg-closed";
+              const tone = TONE[live && status ? status.tunnel : "off"];
               return (
                 <li
                   key={name}
-                  className={`enter smooth relative flex items-center gap-2 rounded-md py-2 pl-3 pr-1 hover:bg-surface-2 ${active ? "bg-surface-2" : ""}`}
+                  className={`enter smooth relative flex items-center gap-2 rounded-md py-1.5 pl-3 pr-1 hover:bg-surface-2 ${active ? "bg-surface-2" : ""}`}
                 >
-                  <span className={`smooth absolute inset-y-1 left-0 w-[3px] rounded-full ${rail}`} />
-                  <span className={`min-w-0 flex-1 truncate text-[13px] ${active ? "font-medium" : "text-muted"}`}>
-                    {name}
-                  </span>
-                  {country && (
-                    <span className="max-w-[10rem] shrink-0 truncate text-[11px] text-muted" title={country}>
-                      {country}
+                  <span className={`smooth absolute inset-y-1 left-0 w-[3px] rounded-full ${tone.rail}`} />
+                  {/* Имя сверху, всё измеренное — строкой ниже, как в списке
+                      приложений: в одну строку имя, состояние, страна, задержка
+                      и кнопки не помещаются даже в окне минимальной ширины, и
+                      первым обрубается имя — единственное, чем строки и
+                      различаются. */}
+                  <div className="min-w-0 flex-1 leading-tight">
+                    <span
+                      className={`block truncate text-[13px] ${active ? "font-medium" : "text-muted"}`}
+                      title={name}
+                    >
+                      {name}
                     </span>
-                  )}
-                  <Verdict probe={probe} failed={s.probeFailed} />
-                  {active && status?.tunnel !== "off" ? (
-                    <span className="text-xs text-muted">{s.active}</span>
-                  ) : (
+                    {(live || browsing || country || probe) && (
+                      <span className="flex items-baseline gap-2 overflow-hidden text-[11px] text-muted">
+                        {live && <span className={`engraved shrink-0 ${tone.text}`}>{s.active}</span>}
+                        {browsing && (
+                          <span className="engraved shrink-0" title={s.browserOnHint}>
+                            {s.browserOn}
+                          </span>
+                        )}
+                        {/* Страна — флагом: «Нидерланды, Амстердам» не
+                            помещается в строку вовсе, а флаг читается быстрее
+                            любой надписи. Название целиком остаётся подсказкой
+                            и подписью для чтения с экрана. Кода нет (состояние
+                            прошлых версий или сервис не прислал) — показываем
+                            название, обрезкой. */}
+                        {country &&
+                          (flag(probe?.code) ? (
+                            <span className="shrink-0 text-[13px] leading-none" title={country} aria-label={country}>
+                              {flag(probe?.code)}
+                            </span>
+                          ) : (
+                            <span className="truncate" title={country}>
+                              {country}
+                            </span>
+                          ))}
+                        <Verdict probe={probe} failed={s.probeFailed} measured={measuredAgo(s, probe?.at ?? 0)} />
+                      </span>
+                    )}
+                  </div>
+                  {!live && (
                     <Button variant="quiet" onClick={() => act({ cmd: "on", arg: { profile: name } })}>
                       {s.turnOn}
                     </Button>

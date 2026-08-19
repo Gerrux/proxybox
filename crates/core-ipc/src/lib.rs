@@ -169,8 +169,14 @@ pub enum Tunnel {
     Down,
 }
 
-/// Итог прогона одного профиля. Ошибка строкой, а не `Result`: контракт едет
-/// в JSON и читается ещё и фронтендом.
+/// Последнее известное про профиль. Ошибка строкой, а не `Result`: контракт
+/// едет в JSON и читается ещё и фронтендом.
+///
+/// Переживает перезапуск службы: узел не переезжает из страны в страну, и
+/// заставлять человека прогонять профили заново ради того, что уже измерено, —
+/// значит показывать пустую строку там, где ответ известен. Возраст измерения
+/// едет рядом (`at`) именно поэтому: задержка стареет куда быстрее страны, и
+/// выдавать вчерашнюю цифру за сегодняшнюю нельзя.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Probe {
     pub name: String,
@@ -179,7 +185,15 @@ pub struct Probe {
     /// не ответил, спросить не вышло или точку выхода не спрашивают (`PG_GEO=0`).
     #[serde(default)]
     pub country: Option<String>,
+    /// Код страны ISO 3166-1 alpha-2 («NL»). Им подписана строка профиля:
+    /// полное название туда не помещается и живёт в подсказке.
+    #[serde(default)]
+    pub code: Option<String>,
     pub error: Option<String>,
+    /// Когда измерено, unix-время в секундах. 0 — неизвестно: так выглядят
+    /// записи из состояния, сохранённого прошлыми версиями.
+    #[serde(default)]
+    pub at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -219,6 +233,11 @@ pub struct Status {
     /// сохраняется на диск: это измерение, а не состояние.
     #[serde(default)]
     pub probes: Vec<Probe>,
+    /// Профиль, под которым сейчас поднят прокси для окна браузера. Мимо
+    /// туннеля и мимо `tunnel`: окно браузера живёт своей жизнью, и узнать о
+    /// нём в интерфейсе больше неоткуда.
+    #[serde(default)]
+    pub browser: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -384,11 +403,14 @@ mod tests {
                 country: Some("Нидерланды, Амстердам".into()),
                 apps: vec![App { path: r"C:\app.exe".into(), name: "app".into(), enabled: true }],
                 profiles: vec!["myvpn".into()],
+                browser: Some("myvpn".into()),
                 probes: vec![Probe {
                     name: "myvpn".into(),
                     latency_ms: Some(42),
                     country: Some("Нидерланды, Амстердам".into()),
+                    code: Some("NL".into()),
                     error: None,
+                    at: 1_755_000_000,
                 }],
                 ..Default::default()
             }),

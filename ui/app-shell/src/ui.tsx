@@ -21,11 +21,16 @@ export function Panel({
     <section
       className={`smooth flex min-h-0 flex-col overflow-hidden rounded-lg border border-edge bg-surface ${className}`}
     >
-      <header className="flex items-center justify-between gap-3 border-b border-edge px-4 py-2">
-        <h2 className="engraved flex items-baseline gap-2 text-muted">
-          {title}
+      {/* Подпись плиты обрезаться не имеет права — по ней и находят панель.
+          Ужимается сначала счётчик, потом действия уезжают на вторую строку;
+          shrink-0 держит саму полосу, когда панели тесно по высоте. */}
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-edge px-4 py-2">
+        <h2 className="engraved flex min-w-0 flex-1 items-baseline gap-2 text-muted">
+          <span className="shrink-0">{title}</span>
           {note != null && (
-            <span className="font-sans text-[11px] font-normal normal-case tracking-normal">{note}</span>
+            <span className="min-w-0 truncate font-sans text-[11px] font-normal normal-case tracking-normal">
+              {note}
+            </span>
           )}
         </h2>
         {action}
@@ -122,6 +127,15 @@ export function SearchField({
       className={FIELD}
     />
   );
+}
+
+/** Код страны → флаг. Две буквы кода становятся региональными индикаторами —
+ *  других способов записать флаг в юникоде нет. Глифы даёт свой шрифт
+ *  (см. index.css): системных в Windows не существует. Кода нет или он не
+ *  двухбуквенный — флага не будет, и вызывающий покажет название словами. */
+export function flag(code: string | null | undefined): string | null {
+  if (!code || !/^[A-Za-z]{2}$/.test(code)) return null;
+  return String.fromCodePoint(...[...code.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
 }
 
 export function Empty({ children }: { children: ReactNode }) {

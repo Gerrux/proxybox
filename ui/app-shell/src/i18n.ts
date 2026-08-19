@@ -39,9 +39,16 @@ const RU = {
   browseProfile: (name: string) => `Открыть окно браузера через «${name}»`,
   removeSubscription: (url: string) => `Отписаться от ${url}`,
   active: "активен",
+  browserOn: "браузер",
+  browserOnHint: "Под этим профилем поднят прокси для окна браузера",
   testProfiles: "Прогнать",
   testProfilesHint: "Проверить каждый профиль отдельным подключением, не трогая текущее",
   probeFailed: "не отвечает",
+  measured: (ago: string) => `Измерено ${ago}`,
+  agoNow: "только что",
+  agoMin: (n: number) => `${n} мин назад`,
+  agoHour: (n: number) => `${n} ч назад`,
+  agoDay: (n: number) => `${n} дн назад`,
   remove: "Удалить",
   apps: "Приложения",
   appsCount: (on: number, all: number) => `${on} из ${all} в туннеле`,
@@ -110,9 +117,16 @@ const EN: typeof RU = {
   browseProfile: (name: string) => `Open a browser window through "${name}"`,
   removeSubscription: (url: string) => `Unsubscribe from ${url}`,
   active: "active",
+  browserOn: "browser",
+  browserOnHint: "A proxy for the browser window is up on this profile",
   testProfiles: "Test all",
   testProfilesHint: "Check every profile with a separate connection, without touching the current one",
   probeFailed: "no answer",
+  measured: (ago: string) => `Measured ${ago}`,
+  agoNow: "just now",
+  agoMin: (n: number) => `${n} min ago`,
+  agoHour: (n: number) => `${n} h ago`,
+  agoDay: (n: number) => `${n} d ago`,
   remove: "Remove",
   apps: "Apps",
   appsCount: (on: number, all: number) => `${on} of ${all} in the tunnel`,
@@ -149,4 +163,21 @@ export type Strings = typeof RU;
 
 export function strings(lang: Lang | undefined): Strings {
   return lang === "en" ? EN : RU;
+}
+
+/** Возраст измерения словами. Задержка и страна переживают перезапуск службы,
+ *  и без возраста цифра прошлой недели читается как сегодняшняя. Точность
+ *  крупная нарочно: важно «сегодня или давно», а не сколько именно минут. */
+export function measuredAgo(s: Strings, at: number): string | undefined {
+  if (!at) return undefined;
+  const sec = Math.max(0, Math.floor(Date.now() / 1000) - at);
+  const ago =
+    sec < 90
+      ? s.agoNow
+      : sec < 3600
+        ? s.agoMin(Math.round(sec / 60))
+        : sec < 86400
+          ? s.agoHour(Math.round(sec / 3600))
+          : s.agoDay(Math.round(sec / 86400));
+  return s.measured(ago);
 }

@@ -19,14 +19,34 @@
   --color-closed-soft: var(--pg-closed-soft);
   --color-wait-soft: var(--pg-wait-soft);
   --color-fault-soft: var(--pg-fault-soft);
-  /* Шрифты только те, что уже стоят в системе: наружу окно не ходит ни за чем,
-     включая гарнитуры. Bahnschrift — виндовый DIN, шрифт приборных и дорожных
-     надписей; им подписаны состояния и панели, и он же отличает это окно от
-     любого другого на Segoe UI. Где его нет (разработка не на Windows) —
-     подхватывается Segoe UI, макет считался по нему, он шире. */
-  --font-display: "Bahnschrift", "Segoe UI Variable Display", "Segoe UI Semibold", "Segoe UI", system-ui, sans-serif;
-  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  /* Шрифты системные — кроме одного: наружу окно не ходит ни за чем, включая
+     гарнитуры, но флаги стран взять неоткуда. Bahnschrift — виндовый DIN, шрифт
+     приборных и дорожных надписей; им подписаны состояния и панели, и он же
+     отличает это окно от любого другого на Segoe UI. Где его нет (разработка не
+     на Windows) — подхватывается Segoe UI, макет считался по нему, он шире.
+
+     Шрифт флагов подмешан первым во все три стека: в нём только флаги
+     (см. unicode-range ниже), на остальные знаки он не влияет — зато флаги
+     работают всюду, включая имена профилей из подписок: их принято начинать
+     флагом, и в Windows они до сих пор показывались квадратиками. */
+  --font-display: "Twemoji Country Flags", "Bahnschrift", "Segoe UI Variable Display", "Segoe UI Semibold", "Segoe UI", system-ui, sans-serif;
+  --font-sans: "Twemoji Country Flags", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Twemoji Country Flags", "Cascadia Mono", Consolas, ui-monospace, monospace;
+}
+
+/* Единственная гарнитура, которая едет вместе с приложением, — и та по нужде:
+   глифов флагов в Windows нет и не было, Segoe UI Emoji их не содержит, и «🇳🇱»
+   система рисует двумя буквами в квадратиках. Файл лежит в сборке, за ним никуда
+   не ходят. 78 КБ — это подмножество Twemoji Mozilla (1,5 МБ) ровно по флагам;
+   `unicode-range` держит слово: на любой другой знак шрифт не подставляется и
+   не грузится, пока флага нет на экране.
+
+   Рисунок — Twemoji © Twitter, CC-BY 4.0; сборка шрифта — TalkJS, MIT. */
+@font-face {
+  font-family: "Twemoji Country Flags";
+  src: url("./assets/TwemojiCountryFlags.woff2") format("woff2");
+  unicode-range: U+1F1E6-1F1FF;
+  font-display: swap;
 }
 
 html,

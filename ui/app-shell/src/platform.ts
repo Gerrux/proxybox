@@ -9,9 +9,20 @@ export type Lang = "ru" | "en";
 
 export type App = { path: string; name: string; enabled: boolean };
 
-/** Итог прогона одного профиля: либо задержка, либо причина отказа. Точку
- *  выхода прогон спрашивает у ответивших — при `PG_GEO=0` её не будет ни у кого. */
-export type Probe = { name: string; latency_ms: number | null; country: string | null; error: string | null };
+/** Последнее известное про профиль: либо задержка, либо причина отказа, плюс
+ *  точка выхода. Точку выхода спрашивают у ответивших — при `PG_GEO=0` её не
+ *  будет ни у кого. Переживает перезапуск службы, поэтому рядом едет `at`:
+ *  вчерашняя задержка без возраста читается как сегодняшняя. */
+export type Probe = {
+  name: string;
+  latency_ms: number | null;
+  country: string | null;
+  /** Код страны ISO 3166-1 alpha-2 («NL»): им подписана строка профиля. */
+  code: string | null;
+  error: string | null;
+  /** Когда измерено, unix-секунды. 0 — неизвестно (состояние прошлых версий). */
+  at: number;
+};
 
 export type Status = {
   tunnel: Tunnel;
@@ -28,6 +39,9 @@ export type Status = {
   lang: Lang;
   log: string[];
   probes: Probe[];
+  /** Профиль, под которым сейчас поднят прокси окна браузера; null — окна нет.
+   *  С `tunnel` не связан: браузер ходит своим sing-box мимо общего режима. */
+  browser: string | null;
 };
 
 export type Request =

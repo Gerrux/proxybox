@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Lang, Status } from "./platform";
 import { strings } from "./i18n";
-import { Button } from "./ui";
+import { Button, flag } from "./ui";
 
 /** Длина доезда числа. Заметно меньше периода опроса (2 с), иначе счётчик не
  *  успевал бы доехать до следующего значения и полз бы вечно. */
@@ -107,6 +107,8 @@ export function StatusBar({
       }[status.tunnel];
 
   const on = status != null && status.tunnel !== "off";
+  const code = status?.probes.find((p) => p.name === status.profile)?.code;
+  const exit = status?.country ? `${flag(code) ?? ""} ${status.country}`.trim() : null;
 
   return (
     <header
@@ -168,7 +170,11 @@ export function StatusBar({
 
       <dl className="mt-4 grid grid-cols-2 gap-y-3 border-t border-edge pt-3 sm:grid-cols-3 md:grid-cols-5">
         <Metric name={s.profile} value={status?.profile ?? s.noProfile} />
-        <Metric name={s.exit} value={status?.country ?? "—"} />
+        {/* Флаг перед названием: точка выхода — единственная метрика, которую
+            читают глазом, а не цифрой, и в узкой ячейке название всё равно
+            обрезается. Код берётся из измерений того же профиля: страну и код
+            узнают одним запросом, и второго поля в статусе для этого не нужно. */}
+        <Metric name={s.exit} value={exit ?? "—"} />
         {/* Цвет — по настоящей задержке, а не по кадру анимации: порог должен
             переключаться по факту, а не по тому, докуда доехало число. */}
         <Metric

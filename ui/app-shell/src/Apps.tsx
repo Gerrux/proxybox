@@ -64,18 +64,22 @@ function useIcons(apps: App[]): Record<string, string> {
 
 /** Переключатель охвата. Две кнопки, а не галочка «выбрать все»: «весь
  *  компьютер» — это отсутствие отбора, а не отбор целиком. Служба в этом режиме
- *  не сверяет ни одного пути к .exe, поэтому и список приложений тут ни при чём. */
+ *  не сверяет ни одного пути к .exe, поэтому и список приложений тут ни при чём.
+ *
+ *  Стоит над списком, а не в шапке: он этим списком и распоряжается, а в шапке
+ *  вместе с подписью, счётчиком и «найти установленные» не помещался — в окне
+ *  минимальной ширины первым уезжала как раз подпись панели. */
 function Scope({ all, lang, onPick }: { all: boolean; lang: Lang | undefined; onPick: (all: boolean) => void }) {
   const s = strings(lang);
   return (
-    <div className="flex shrink-0 rounded-md border border-edge bg-surface-2 p-0.5">
+    <div className="flex rounded-md border border-edge bg-surface-2 p-0.5">
       {([false, true] as const).map((value) => (
         <button
           key={String(value)}
           type="button"
           aria-pressed={all === value}
           onClick={() => onPick(value)}
-          className={`smooth engraved rounded-[3px] px-2 py-1 ${
+          className={`smooth engraved flex-1 rounded-[3px] px-2 py-1.5 ${
             all === value ? "bg-surface text-ink" : "text-muted hover:text-ink"
           }`}
         >
@@ -112,85 +116,85 @@ export function Apps({ status, act, className }: { status: Status | null; act: (
         )
       }
       action={
-        <div className="flex items-center gap-2">
-          <Scope all={all} lang={status?.lang} onPick={(enabled) => act({ cmd: "set-all-traffic", arg: { enabled } })} />
-          {/* Искать приложения, когда их всё равно не отбирают, незачем. */}
-          {!all && (
-            <Button variant="quiet" onClick={() => act({ cmd: "discover", arg: { env: {} } })}>
-              {s.discover}
-            </Button>
-          )}
-        </div>
+        // Искать приложения, когда их всё равно не отбирают, незачем.
+        !all && (
+          <Button variant="quiet" onClick={() => act({ cmd: "discover", arg: { env: {} } })}>
+            {s.discover}
+          </Button>
+        )
       }
     >
-      {/* Список не показывается вовсе, а не гасится: он сейчас ни на что не
-          влияет, и оставить его на виду значило бы соврать про судьбу строк. */}
-      {all ? (
-        <Empty>{s.scopeAllNote}</Empty>
-      ) : (
-        <div className="flex flex-col gap-3">
-          <AddField
-            placeholder={s.appPlaceholder}
-            label={s.addApp}
-            onSubmit={(path) => act({ cmd: "add-app", arg: { path } })}
-          />
-          {searchable && <SearchField value={query} onChange={setQuery} placeholder={s.searchApps} />}
-          {apps.length === 0 ? (
-            <Empty>{s.noApps}</Empty>
-          ) : shown.length === 0 ? (
-            <Empty>{s.noMatches}</Empty>
-          ) : (
-            <ul className="flex flex-col">
-              {shown.map((app) => (
-                <li
-                  key={app.path}
-                  className="enter smooth relative flex items-center gap-3 rounded-md py-1.5 pl-3 pr-1 hover:bg-surface-2"
-                >
-                  {/* Рельс слева: что происходит с приложением прямо сейчас,
-                      видно по строке целиком, а не по состоянию мелкой галочки. */}
-                  <span
-                    className={`smooth absolute inset-y-1 left-0 w-[3px] rounded-full ${
-                      app.enabled ? railTone(status?.tunnel) : "bg-transparent"
-                    }`}
-                  />
-                  <input
-                    id={app.path}
-                    type="checkbox"
-                    checked={app.enabled}
-                    onChange={(e) => act({ cmd: "set-app", arg: { path: app.path, enabled: e.target.checked } })}
-                    // Галочка — действие оператора, а не состояние канала:
-                    // цвета состояний ей не положены, иначе зелёная галочка
-                    // спорила бы с янтарным рельсом той же строки.
-                    className="size-4 shrink-0 accent-[var(--pg-accent)]"
-                  />
-                  {/* Место под иконку держится всегда: без него строки без иконки
-                      съезжали бы влево, а пустой квадрат — это шум. */}
-                  {icons[app.path] ? (
-                    <img src={icons[app.path]} alt="" className="size-5 shrink-0" />
-                  ) : (
-                    <span className="size-5 shrink-0" />
-                  )}
-                  <label htmlFor={app.path} className="min-w-0 flex-1 cursor-pointer leading-tight">
-                    <span className={`block truncate text-[13px] ${app.enabled ? "font-medium" : "text-muted"}`}>
-                      {app.name}
-                    </span>
-                    <span className="selectable block truncate font-mono text-[11px] text-muted" title={app.path}>
-                      {app.path}
-                    </span>
-                  </label>
-                  <Button
-                    variant="danger"
-                    aria-label={s.removeApp(app.name)}
-                    onClick={() => act({ cmd: "remove-app", arg: { path: app.path } })}
+      <div className="flex flex-col gap-3">
+        <Scope all={all} lang={status?.lang} onPick={(enabled) => act({ cmd: "set-all-traffic", arg: { enabled } })} />
+        {/* Список не показывается вовсе, а не гасится: он сейчас ни на что не
+            влияет, и оставить его на виду значило бы соврать про судьбу строк. */}
+        {all ? (
+          <Empty>{s.scopeAllNote}</Empty>
+        ) : (
+          <>
+            <AddField
+              placeholder={s.appPlaceholder}
+              label={s.addApp}
+              onSubmit={(path) => act({ cmd: "add-app", arg: { path } })}
+            />
+            {searchable && <SearchField value={query} onChange={setQuery} placeholder={s.searchApps} />}
+            {apps.length === 0 ? (
+              <Empty>{s.noApps}</Empty>
+            ) : shown.length === 0 ? (
+              <Empty>{s.noMatches}</Empty>
+            ) : (
+              <ul className="flex flex-col">
+                {shown.map((app) => (
+                  <li
+                    key={app.path}
+                    className="enter smooth relative flex items-center gap-3 rounded-md py-1.5 pl-3 pr-1 hover:bg-surface-2"
                   >
-                    ✕
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
+                    {/* Рельс слева: что происходит с приложением прямо сейчас,
+                        видно по строке целиком, а не по состоянию мелкой галочки. */}
+                    <span
+                      className={`smooth absolute inset-y-1 left-0 w-[3px] rounded-full ${
+                        app.enabled ? railTone(status?.tunnel) : "bg-transparent"
+                      }`}
+                    />
+                    <input
+                      id={app.path}
+                      type="checkbox"
+                      checked={app.enabled}
+                      onChange={(e) => act({ cmd: "set-app", arg: { path: app.path, enabled: e.target.checked } })}
+                      // Галочка — действие оператора, а не состояние канала:
+                      // цвета состояний ей не положены, иначе зелёная галочка
+                      // спорила бы с янтарным рельсом той же строки.
+                      className="size-4 shrink-0 accent-[var(--pg-accent)]"
+                    />
+                    {/* Место под иконку держится всегда: без него строки без иконки
+                        съезжали бы влево, а пустой квадрат — это шум. */}
+                    {icons[app.path] ? (
+                      <img src={icons[app.path]} alt="" className="size-5 shrink-0" />
+                    ) : (
+                      <span className="size-5 shrink-0" />
+                    )}
+                    <label htmlFor={app.path} className="min-w-0 flex-1 cursor-pointer leading-tight">
+                      <span className={`block truncate text-[13px] ${app.enabled ? "font-medium" : "text-muted"}`}>
+                        {app.name}
+                      </span>
+                      <span className="selectable block truncate font-mono text-[11px] text-muted" title={app.path}>
+                        {app.path}
+                      </span>
+                    </label>
+                    <Button
+                      variant="danger"
+                      aria-label={s.removeApp(app.name)}
+                      onClick={() => act({ cmd: "remove-app", arg: { path: app.path } })}
+                    >
+                      ✕
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </div>
     </Panel>
   );
 }
