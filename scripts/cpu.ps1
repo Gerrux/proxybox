@@ -111,7 +111,10 @@ function Get-TrafficBytes {
     # Счётчики Clash API — те же, что показывает окно. Отказ значит «байты не
     # посчитаны»: взять их больше неоткуда, TUN своего счётчика не даёт.
     try {
-        $c = Invoke-RestMethod "http://127.0.0.1:$ApiPort/connections" -TimeoutSec 3
+        # Тайм-аут щедрый намеренно: на живой машине в списке за тысячу
+        # соединений, это мегабайт JSON, и трёх секунд на разбор не хватало —
+        # снимок молча выходил пустым, а разность потом врала.
+        $c = Invoke-RestMethod "http://127.0.0.1:$ApiPort/connections" -TimeoutSec 15
         [int64]$c.downloadTotal + [int64]$c.uploadTotal
     } catch { -1 }
 }
@@ -136,7 +139,10 @@ function Get-ConnIds {
     # успевшее открыться и закрыться внутри окна сюда не попадёт; настоящее
     # число генератор возвращает сам.
     try {
-        $c = Invoke-RestMethod "http://127.0.0.1:$ApiPort/connections" -TimeoutSec 3
+        # Тайм-аут щедрый намеренно: на живой машине в списке за тысячу
+        # соединений, это мегабайт JSON, и трёх секунд на разбор не хватало —
+        # снимок молча выходил пустым, а разность потом врала.
+        $c = Invoke-RestMethod "http://127.0.0.1:$ApiPort/connections" -TimeoutSec 15
         $h = @{}
         foreach ($x in $c.connections) { if ($x.id) { $h[$x.id] = $true } }
         $h
@@ -149,6 +155,7 @@ function Get-ConnIds {
 $churner = {
     param($target, $port, $seconds)
     $n = 0
+    $err = $null
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while ($sw.Elapsed.TotalSeconds -lt $seconds) {
         try {
@@ -156,9 +163,14 @@ $churner = {
             $c.Connect($target, [int]$port)
             $c.Close()
             $n++
-        } catch { Start-Sleep -Milliseconds 50 }
+        } catch {
+            # Причина обязана долететь: молча глотая отказ, проход отчитывался
+            # «соединений не создал (цель недоступна?)» и оставлял гадать.
+            if (-not $err) { $err = $_.Exception.Message }
+            Start-Sleep -Milliseconds 100
+        }
     }
-    $n
+    [pscustomobject]@{ Made = $n; Error = $err }
 }
 
 $loader = {
@@ -241,7 +253,11 @@ function Measure-Window {
         $got = @(Receive-Job $job -ErrorAction SilentlyContinue) | Where-Object { $_ }
         Remove-Job $job -Force -ErrorAction SilentlyContinue
         if ($Churn) {
-            $made = [int](@($got)[-1])
+            $r = @($got)[-1]
+            $made = [int]$r.Made
+            $why = ""
+            if ($r.Error) { $why = " (первая ошибка: $($r.Error))" }
+            Write-Host ("  сделано подключений: {0}{1}" -f $made, $why)
         } elseif ($got) {
             Write-Host ("  закачка не пошла: {0}" -f ($got -join '; ')) -ForegroundColor Yellow
         }
@@ -336,12 +352,12 @@ function Measure-Window {
     # соединение и сто тысяч пакетов. Меняя байты, я не менял ничего.
     $newConns = 0
     foreach ($k in $c1.Keys) { if (-not $c0.ContainsKey($k)) { $newConns++ } }
-    if ($made -gt $newConns) { $newConns = $made }
-    if ($newConns -gt 0) {
-        Write-Host ("{0,-20} {1,7:N0}" -f "новых соединений:", $newConns)
-        if ($myCpu -gt 0) {
-            Write-Host ("{0,-20} {1,7:N0} мкс на соединение" -f "цена соединения:", (1e6 * $myCpu / $newConns))
-        }
+    # Печатаются оба снимка, а не только разность: «новых 1030» в каждом проходе
+    # означало либо полную смену списка, либо пустой первый снимок, и по одному
+    # числу это неразличимо. «Было 0» теперь видно сразу.
+    Write-Host ("{0,-20} было {1:N0}, стало {2:N0}, новых {3:N0}" -f "соединений:", $c0.Count, $c1.Count, $newConns)
+    if ($newConns -gt 0 -and $myCpu -gt 0) {
+        Write-Host ("{0,-20} {1,7:N0} мкс на соединение" -f "цена соединения:", (1e6 * $myCpu / $newConns))
     }
 
     $perGb = 0.0
@@ -390,10 +406,15 @@ if ($idle.Packets -gt 1000) {
 }
 if ($idle.Cores -gt 0.25) {
     Write-Host "  Столько ЦП без трафика — это уже не шифрование." -ForegroundColor Yellow
-    Write-Host "  Сверка process_path тут ни при чём: работа на соединение росла бы вместе с трафиком,"
-    Write-Host "  а этот расход плоский. Плоский, в ядре, размазанный по потокам — подпись холостого цикла."
-    Write-Host "  Проверка без остановки службы: откройте браузерный сеанс. Он поднимает второй sing-box"
-    Write-Host "  БЕЗ TUN, и разбивка по pid выше покажет обоих — дешёвый там расход, дорогой тут."
+    # Плоскость расхода долго читалась как «холостой цикл». Это была ошибка:
+    # байты я менял, а соединения — нет, и постоянная фоновая частота соединений
+    # даёт ровно такую же ровную линию. Отсюда и совет ниже.
+    Write-Host "  Плоский по байтам — ещё не холостой: фоновая частота соединений тоже постоянна,"
+    Write-Host "  а sing-box выясняет процесс на каждом соединении, входящем в TUN. Смотрите строку"
+    Write-Host "  «соединений» выше: если их тысячи, вот вам и расход, и время в ядре, и Defender рядом."
+    if (-not $all) {
+        Write-Host "  Решающая проверка — охват «весь компьютер»: там правила process_path нет вовсе."
+    }
 }
 
 # Соединения против покоя — сравнение, которого не хватало всё это время.
