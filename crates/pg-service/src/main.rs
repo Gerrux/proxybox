@@ -9,8 +9,8 @@
 mod service;
 
 use core_ipc::{
-    dir_name, t, App, BrowserProfile, Endpoint, Listener, LogLine, Probe, Request, Response, Status, Stream,
-    Tunnel as TunnelState, ADDR,
+    dir_name, t, App, BrowserProfile, Endpoint, Listener, LogLine, Probe, Request, Response, Settings,
+    Status, Stream, Tunnel as TunnelState, ADDR,
 };
 use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
@@ -98,6 +98,11 @@ struct Saved {
     /// бы потерять вход.
     #[serde(default)]
     browser_profiles: Vec<BrowserProfile>,
+    /// Настройки службы — то, что выбрал человек, без учёта переменных
+    /// окружения: перебивка окружением не должна записываться на диск и
+    /// переживать ту сессию, в которой переменная стояла.
+    #[serde(default)]
+    settings: Settings,
 }
 
 /// Секунды с эпохи. Часы могли прыгнуть назад — тогда измерение выглядит
@@ -151,7 +156,11 @@ struct Service {
     /// апгрейд — предел с отказом в `browse()`, когда найдётся, из чего его
     /// выбирать.
     browsers: BTreeMap<String, Process>,
-    /// Номер поколения туннеля: растёт на каждом запуске и на каждом гашении.
+    /// Сохранённые настройки — ровно то, что выбрал человек. Действующие (с
+    /// учётом переменных окружения) лежат в `status.settings`: окно показывает
+    /// то, что работает, а на диск уходит то, что выбрано.
+    settings: Settings,
+        /// Номер поколения туннеля: растёт на каждом запуске и на каждом гашении.
     /// Проба идёт без замка и занимает секунды — за это время туннель успевают
     /// перезапустить, а порты у нас постоянные. Номер отличает ответ про
     /// нынешний процесс от ответа про прошлый.
@@ -165,7 +174,7 @@ impl Service {
         // Язык поднимается до первой строки журнала — иначе стартовые сообщения
         // выходили бы не на том языке, который выбрал пользователь.
         core_ipc::set_lang(saved.lang);
-        Self {
+        let mut me = Self {
             status: Status {
                 lang: saved.lang,
                 profile: saved.profile,
@@ -177,6 +186,7 @@ impl Service {
                 browser_profiles: saved.browser_profiles,
                 ..Default::default()
             },
+            settings: saved.settings,
             profiles: saved.profiles,
             subscriptions: saved.subscriptions,
             private: saved.private,
@@ -187,7 +197,48 @@ impl Service {
             applied: None,
             browsers: BTreeMap::new(),
             generation: 0,
+        };
+        me.apply_settings();
+        me
+    }
+
+    /// Действующие настройки = сохранённые, перебитые переменными окружения.
+    /// Считается один раз на старте и на каждой записи настроек: окружение под
+    /// работающим процессом не меняется.
+    ///
+    /// Перебивку служба проговаривает в журнале. Без этой строки тумблер в
+    /// окне не липнет, а почему — не видно ниоткуда: переменную ставили в
+    /// скрипте запуска, который человек уже не помнит.
+    fn apply_settings(&mut self) {
+        let mut eff = self.settings.clone();
+        let mut overridden: Vec<&str> = Vec::new();
+        if std::env::var("PG_REFRESH").as_deref() == Ok("0") && eff.refresh {
+            eff.refresh = false;
+            overridden.push("PG_REFRESH");
         }
+        if std::env::var("PG_GEO").as_deref() == Ok("0") && eff.geo {
+            eff.geo = false;
+            overridden.push("PG_GEO");
+        }
+        if let Some(v) = std::env::var("PG_PROBE").ok().filter(|v| !v.is_empty() && *v != eff.probe) {
+            eff.probe = v;
+            overridden.push("PG_PROBE");
+        }
+        if let Some(v) = std::env::var("PG_SINGBOX").ok().filter(|v| !v.is_empty() && *v != eff.singbox) {
+            eff.singbox = v;
+            overridden.push("PG_SINGBOX");
+        }
+        // Путь к бинарнику знает core-tunnel: он его и запускает, а заодно
+        // именно этот путь получает разрешение брандмауэра в killswitch.
+        core_tunnel::set_binary(&eff.singbox);
+        if !overridden.is_empty() {
+            let list = overridden.join(", ");
+            self.log(t(
+                &format!("настройки перебиты окружением: {list}"),
+                &format!("settings overridden by the environment: {list}"),
+            ));
+        }
+        self.status.settings = eff;
     }
 
     fn save(&mut self) {
@@ -207,6 +258,7 @@ impl Service {
             all_traffic: self.status.all_traffic,
             probes: self.status.probes.clone(),
             browser_profiles: self.status.browser_profiles.clone(),
+            settings: self.settings.clone(),
         };
         let _ = std::fs::create_dir_all(dir());
         if let Ok(raw) = serde_json::to_string_pretty(&saved) {
@@ -314,7 +366,7 @@ impl Service {
 
         let opts = Options { tun: tun_enabled(), apps: self.selected(), all: self.status.all_traffic, ..Default::default() };
         let config = build_config(&node, &opts);
-        self.probe_target = probe_target(&node);
+        self.probe_target = probe_target(&self.status.settings.probe, &node);
         match Process::start(&config, &dir()) {
             Ok(process) => {
                 self.tunnel = Some(process);
@@ -463,12 +515,6 @@ impl Service {
     }
 }
 
-/// Единственный запрос наружу должен выключаться: продукт про приватность, и
-/// решение обращаться к третьей стороне принадлежит пользователю, а не нам.
-fn geo_enabled() -> bool {
-    std::env::var("PG_GEO").as_deref() != Ok("0")
-}
-
 /// Есть ли у службы права администратора. Без них не поднять TUN и не тронуть
 /// брандмауэр — а узнать об этом лучше сразу, а не из потока отказов.
 #[cfg(windows)]
@@ -501,10 +547,13 @@ fn explain(error: &str) -> String {
     format!("{error} — проверьте, не поднят ли рядом другой VPN: два TUN спорят за имя адаптера и маршруты")
 }
 
-fn probe_target(node: &Value) -> (String, u16) {
-    if let Some((h, p)) = std::env::var("PG_PROBE").ok().and_then(|v| {
-        let (h, p) = v.rsplit_once(':')?;
-        Some((h.to_string(), p.parse().ok()?))
+/// `configured` — цель пробы из настроек, уже с учётом `PG_PROBE`. Мусор в ней
+/// не отменяет пробу, а откатывает её к серверу пользователя: настройка, из-за
+/// которой перестаёт подтверждаться туннель, — это выбранные приложения без
+/// сети, и опечатка такого стоить не должна.
+fn probe_target(configured: &str, node: &Value) -> (String, u16) {
+    if let Some((h, p)) = configured.rsplit_once(':').and_then(|(h, p)| {
+        (!h.is_empty()).then_some((h.to_string(), p.parse::<u16>().ok()?))
     }) {
         return (h, p);
     }
@@ -711,7 +760,16 @@ fn after_refresh(before: Option<&Value>, after: Option<&Value>, private: bool, s
 fn refresh_loop(svc: Arc<Mutex<Service>>) {
     loop {
         std::thread::sleep(REFRESH_EVERY);
-        let urls: Vec<String> = lock(&svc).subscriptions.keys().cloned().collect();
+        // Настройку спрашиваем каждый круг, а не при запуске потока: её
+        // выключают в работающей службе, и молчать поток обязан с этого
+        // момента, а не со следующего запуска.
+        let urls: Vec<String> = {
+            let s = lock(&svc);
+            if !s.status.settings.refresh {
+                continue;
+            }
+            s.subscriptions.keys().cloned().collect()
+        };
         for url in urls {
             // Ошибку сверки глотаем намеренно: панель бывает недоступна, и
             // существующие профили в этом случае остаются как есть.
@@ -882,6 +940,35 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             s.save();
             Response::Done
         }
+        Request::SetSettings { settings } => {
+            // Клиент показывает действующие значения и присылает их обратно
+            // набором. Перебитые окружением поля при этом возвращаем к
+            // сохранённым: переменная живёт ровно столько, сколько выставлена,
+            // и переживать себя записью в state.json не должна — иначе e2e и
+            // разработка молча меняли бы настройки того, кто их запустил.
+            let mut next = settings;
+            if std::env::var("PG_REFRESH").as_deref() == Ok("0") {
+                next.refresh = s.settings.refresh;
+            }
+            if std::env::var("PG_GEO").as_deref() == Ok("0") {
+                next.geo = s.settings.geo;
+            }
+            if std::env::var("PG_PROBE").is_ok_and(|v| !v.is_empty()) {
+                next.probe = s.settings.probe.clone();
+            }
+            if std::env::var("PG_SINGBOX").is_ok_and(|v| !v.is_empty()) {
+                next.singbox = s.settings.singbox.clone();
+            }
+            s.settings = next;
+            // Туннель не трогаем намеренно: ни одно поле не меняет судьбу уже
+            // поднятого sing-box. Путь к бинарнику действует со следующего
+            // запуска, проба и страна — со следующего измерения, сверка
+            // подписок — со следующего круга. Перезапуск ради настройки означал
+            // бы окно без сети у выбранных приложений на ровном месте.
+            s.apply_settings();
+            s.save();
+            Response::Status(s.status.clone())
+        }
         Request::RemoveBrowserProfile { name } => {
             s.browsers.remove(&name);
             s.status.browser_profiles.retain(|b| b.name != name);
@@ -906,11 +993,14 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             // живого туннеля. Прогон идёт по профилю за раз и по запросу на
             // профиль: сервис считает флудом десятки запросов в минуту, а
             // столько подряд у нас и не выходит — каждый профиль стоит секунд.
-            let geo = geo_enabled();
+            let (geo, target) = {
+                let s = lock(svc);
+                (s.status.settings.geo, s.status.settings.probe.clone())
+            };
             let measured: Vec<(String, Option<u32>, Option<core_tunnel::Exit>, Option<String>)> = profiles
                 .iter()
                 .map(|(name, node)| {
-                    let (host, port) = probe_target(node);
+                    let (host, port) = probe_target(&target, node);
                     match core_tunnel::measure(node, &probe_dir, (&host, port), geo) {
                         Ok((ms, exit)) => (name.clone(), Some(ms), exit, None),
                         Err(e) => (name.clone(), None, None, Some(e.to_string())),
@@ -1042,13 +1132,16 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
         if let Some((rx, tx)) = traffic {
             (s.status.rx, s.status.tx) = (rx, tx);
         }
+        // Настройку снимаем под тем же замком: ниже он уже отпущен, а брать его
+        // второй раз ради одного бита незачем.
+        let geo = s.status.settings.geo;
         drop(s);
 
         // Единственный запрос наружу за всю работу службы — и только на переходе
         // в «поднят»: дёргать чужой сервис каждые три секунды незачем, он и сам
         // считает это флудом. Замок на это время отпущен: сеть медленная, а под
         // ним стоит весь GUI.
-        if just_up && geo_enabled() {
+        if just_up && geo {
             let found = core_tunnel::exit_country(socks_port);
             let mut s = lock(svc);
             match found {
@@ -1118,12 +1211,17 @@ mod tests {
 
     #[test]
     fn probe_goes_to_own_server() {
-        std::env::remove_var("PG_PROBE");
         let vless = json!({ "type": "vless", "server": "a.com", "server_port": 8443 });
-        assert_eq!(probe_target(&vless), ("a.com".to_string(), 8443));
+        assert_eq!(probe_target("", &vless), ("a.com".to_string(), 8443));
         // У WireGuard сервер описан узлом peers, а не полем server.
         let wg = json!({ "type": "wireguard", "peers": [{ "address": "b.com", "port": 51820 }] });
-        assert_eq!(probe_target(&wg), ("b.com".to_string(), 51820));
+        assert_eq!(probe_target("", &wg), ("b.com".to_string(), 51820));
+        // Заданная цель перебивает сервер узла — ради неё настройка и заведена.
+        assert_eq!(probe_target("1.1.1.1:443", &vless), ("1.1.1.1".to_string(), 443));
+        // Мусор откатывает к серверу пользователя, а не оставляет туннель без
+        // подтверждения: цена опечатки — выбранные приложения без сети.
+        assert_eq!(probe_target("ерунда", &vless), ("a.com".to_string(), 8443));
+        assert_eq!(probe_target("a.com:70000", &vless), ("a.com".to_string(), 8443));
     }
 
     /// Фоновая сверка подписки не вправе выключить приватный режим: панель
@@ -1258,10 +1356,10 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
     let watched = Arc::clone(&svc);
     std::thread::spawn(move || supervise(&watched));
 
-    if std::env::var("PG_REFRESH").as_deref() != Ok("0") {
-        let refreshed = Arc::clone(&svc);
-        std::thread::spawn(move || refresh_loop(refreshed));
-    }
+    // Поток заводится всегда: выключенная сверка — это его молчание, а не его
+    // отсутствие, иначе включить её без перезапуска службы было бы нечем.
+    let refreshed = Arc::clone(&svc);
+    std::thread::spawn(move || refresh_loop(refreshed));
 
     let accepting = Arc::clone(&svc);
     std::thread::spawn(move || loop {

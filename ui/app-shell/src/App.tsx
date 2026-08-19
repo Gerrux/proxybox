@@ -4,7 +4,6 @@ import {
   call,
   type Act,
   type BrowserProfile,
-  type Lang,
   type Request,
   type Response,
   type Status,
@@ -163,9 +162,10 @@ export function App() {
         {settings ? (
           <Settings
             className="min-h-0 flex-1"
-            lang={status?.lang}
-            onLang={(lang: Lang) => act({ cmd: "set-lang", arg: { lang } })}
+            status={status}
+            act={act}
             onClose={() => setSettings(false)}
+            onError={setError}
             rel={rel}
           />
         ) : (

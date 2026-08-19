@@ -17,6 +17,7 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub const TAG_PROXY: &str = "proxy";
@@ -108,10 +109,28 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
     cfg
 }
 
-/// Где искать sing-box: переменная окружения → рядом с бинарником → PATH.
+/// Путь к sing-box из настроек службы. Глобальный на процесс по той же
+/// причине, что и язык в `core-ipc`: он один на всю службу, а протаскивать его
+/// параметром пришлось бы через каждую функцию, которая запускает sing-box, —
+/// включая проверку конфига, которой до настроек дела нет.
+static CONFIGURED: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Пусто — забыть про настройку и искать как раньше.
+pub fn set_binary(path: &str) {
+    let value = (!path.trim().is_empty()).then(|| PathBuf::from(path.trim()));
+    if let Ok(mut slot) = CONFIGURED.lock() {
+        *slot = value;
+    }
+}
+
+/// Где искать sing-box: переменная окружения → настройка → рядом с бинарником
+/// → PATH.
 pub fn binary() -> PathBuf {
     if let Some(p) = std::env::var_os("PG_SINGBOX") {
         return PathBuf::from(p);
+    }
+    if let Some(p) = CONFIGURED.lock().ok().and_then(|s| s.clone()) {
+        return p;
     }
     let name = if cfg!(windows) { "sing-box.exe" } else { "sing-box" };
     match std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(name))) {

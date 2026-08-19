@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { call, type Act, type App, type Lang, type Status, type Tunnel } from "./platform";
+import { call, type Act, type App, type Status, type Tunnel } from "./platform";
 import { strings } from "./i18n";
 import { AddField, Button, Empty, Panel, SearchField } from "./ui";
 
@@ -84,34 +84,6 @@ function useIcons(apps: App[]): Record<string, string> {
   return icons;
 }
 
-/** Переключатель охвата. Две кнопки, а не галочка «выбрать все»: «весь
- *  компьютер» — это отсутствие отбора, а не отбор целиком. Служба в этом режиме
- *  не сверяет ни одного пути к .exe, поэтому и список приложений тут ни при чём.
- *
- *  Стоит над списком, а не в шапке: он этим списком и распоряжается, а в шапке
- *  вместе с подписью, счётчиком и «найти установленные» не помещался — в окне
- *  минимальной ширины первым уезжала как раз подпись панели. */
-function Scope({ all, lang, onPick }: { all: boolean; lang: Lang | undefined; onPick: (all: boolean) => void }) {
-  const s = strings(lang);
-  return (
-    <div className="flex rounded-md border border-edge bg-surface-2 p-0.5">
-      {([false, true] as const).map((value) => (
-        <button
-          key={String(value)}
-          type="button"
-          aria-pressed={all === value}
-          onClick={() => onPick(value)}
-          className={`smooth engraved flex-1 rounded-[3px] px-2 py-1.5 ${
-            all === value ? "bg-surface text-ink" : "text-muted hover:text-ink"
-          }`}
-        >
-          {value ? s.scopeAll : s.scopeApps}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 export function Apps({
   status,
   act,
@@ -174,8 +146,11 @@ export function Apps({
       }
     >
       <div className="flex flex-col gap-3">
-        <Scope all={all} lang={status?.lang} onPick={(enabled) => void act({ cmd: "set-all-traffic", arg: { enabled } })} />
-        {/* Список не показывается вовсе, а не гасится: он сейчас ни на что не
+        {/* Переключатель охвата живёт в настройках, а не здесь: «весь
+            компьютер» — это отсутствие отбора, а не отбор целиком, и список в
+            этом режиме не применяется вовсе. Панель об этом и говорит.
+
+            Список не показывается вовсе, а не гасится: он сейчас ни на что не
             влияет, и оставить его на виду значило бы соврать про судьбу строк. */}
         {all ? (
           <Empty>{s.scopeAllNote}</Empty>
