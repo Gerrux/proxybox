@@ -84,6 +84,39 @@ struct Saved {
     /// перезагрузки значило бы выпустить наружу то, что пользователь закрыл.
     #[serde(default)]
     all_traffic: bool,
+    /// Последнее известное про каждый профиль: страна, код, задержка, когда
+    /// измерено. Переживает перезапуск намеренно — в отличие от всего
+    /// остального в статусе, это не состояние службы, а свойства узла, и
+    /// добывается оно секундами прогона на профиль.
+    #[serde(default)]
+    probes: Vec<Probe>,
+}
+
+/// Секунды с эпохи. Часы могли прыгнуть назад — тогда измерение выглядит
+/// сделанным только что, и это лучше паники на ровном месте.
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Запомнить измерение профиля. Страна остаётся от прошлого раза, если в этот
+/// узнать её не вышло: узел из страны в страну не переезжает, а не ответить он
+/// может по дороге — и терять из-за этого уже известное незачем.
+fn remember(probes: &mut Vec<Probe>, name: &str, latency_ms: Option<u32>, exit: Option<core_tunnel::Exit>, error: Option<String>) {
+    let i = match probes.iter().position(|p| p.name == name) {
+        Some(i) => i,
+        None => {
+            probes.push(Probe { name: name.to_string(), latency_ms: None, country: None, code: None, error: None, at: 0 });
+            probes.len() - 1
+        }
+    };
+    let p = &mut probes[i];
+    p.latency_ms = latency_ms;
+    p.error = error;
+    p.at = now();
+    if let Some(exit) = exit {
+        p.code = exit.code;
+        p.country = Some(exit.name);
+    }
 }
 
 struct Service {
@@ -130,6 +163,7 @@ impl Service {
                 all_traffic: saved.all_traffic,
                 profiles: saved.profiles.keys().cloned().collect(),
                 subscriptions: saved.subscriptions.keys().cloned().collect(),
+                probes: saved.probes,
                 ..Default::default()
             },
             profiles: saved.profiles,
@@ -148,6 +182,10 @@ impl Service {
     fn save(&mut self) {
         self.status.profiles = self.profiles.keys().cloned().collect();
         self.status.subscriptions = self.subscriptions.keys().cloned().collect();
+        // Профиля больше нет — и мерить нечего: без этой прополки кэш измерений
+        // рос бы вечно, а подписка на сотню узлов переписывает их именами раз в
+        // сутки. Здесь, а не в каждом месте удаления: через save() проходят все.
+        self.status.probes.retain(|p| self.profiles.contains_key(&p.name));
         let saved = Saved {
             apps: self.status.apps.clone(),
             profiles: self.profiles.clone(),
@@ -156,6 +194,7 @@ impl Service {
             lang: self.status.lang,
             private: self.private,
             all_traffic: self.status.all_traffic,
+            probes: self.status.probes.clone(),
         };
         let _ = std::fs::create_dir_all(dir());
         if let Ok(raw) = serde_json::to_string_pretty(&saved) {
@@ -729,26 +768,30 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             // профиль: сервис считает флудом десятки запросов в минуту, а
             // столько подряд у нас и не выходит — каждый профиль стоит секунд.
             let geo = geo_enabled();
-            let probes: Vec<Probe> = profiles
+            let measured: Vec<(String, Option<u32>, Option<core_tunnel::Exit>, Option<String>)> = profiles
                 .iter()
                 .map(|(name, node)| {
                     let (host, port) = probe_target(node);
-                    let (latency_ms, country, error) =
-                        match core_tunnel::measure(node, &probe_dir, (&host, port), geo) {
-                            Ok((ms, country)) => (Some(ms), country, None),
-                            Err(e) => (None, None, Some(e.to_string())),
-                        };
-                    Probe { name: name.clone(), latency_ms, country, error }
+                    match core_tunnel::measure(node, &probe_dir, (&host, port), geo) {
+                        Ok((ms, exit)) => (name.clone(), Some(ms), exit, None),
+                        Err(e) => (name.clone(), None, None, Some(e.to_string())),
+                    }
                 })
                 .collect();
             let mut s = lock(svc);
-            let live = probes.iter().filter(|p| p.latency_ms.is_some()).count();
-            let all = probes.len();
+            let live = measured.iter().filter(|(_, ms, _, _)| ms.is_some()).count();
+            let all = measured.len();
             s.log(t(
                 &format!("прогон профилей: отвечают {live} из {all}"),
                 &format!("profile run: {live} of {all} alive"),
             ));
-            s.status.probes = probes;
+            // Не замена списка, а обновление: прогон переписывает задержку и
+            // отказ, но страну неответившего оставляет — она от того, что узел
+            // сегодня молчит, не изменилась.
+            for (name, latency, exit, error) in measured {
+                remember(&mut s.status.probes, &name, latency, exit, error);
+            }
+            s.save();
             Response::Status(s.status.clone())
         }
     }
@@ -829,6 +872,13 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
                 }
                 s.status.tunnel = TunnelState::Up;
                 s.status.latency_ms = Some(latency);
+                // Живая задержка активного профиля — она же его последнее
+                // измерение: строка профиля не должна показывать цифру прошлого
+                // прогона, пока туннель под ней жив. На диск не пишем — надзор
+                // тикает каждые три секунды, а сохранит это ближайший save().
+                if let Some(name) = s.status.profile.clone() {
+                    remember(&mut s.status.probes, &name, Some(latency), None, None);
+                }
             }
             Err(e) => {
                 if s.status.tunnel != TunnelState::Down {
@@ -856,9 +906,18 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             let found = core_tunnel::exit_country(socks_port);
             let mut s = lock(svc);
             match found {
-                Ok(country) => {
-                    s.log(t(&format!("точка выхода: {country}"), &format!("exit point: {country}")));
-                    s.status.country = Some(country);
+                Ok(exit) => {
+                    let name = &exit.name;
+                    s.log(t(&format!("точка выхода: {name}"), &format!("exit point: {name}")));
+                    s.status.country = Some(exit.name.clone());
+                    // Единственный раз, когда страна вообще спрашивается, —
+                    // этот. Не запомнить её здесь значит потерять до следующего
+                    // подключения и заставить прогонять профили ради известного.
+                    if let Some(profile) = s.status.profile.clone() {
+                        let latency = s.status.latency_ms;
+                        remember(&mut s.status.probes, &profile, latency, Some(exit), None);
+                        s.save();
+                    }
                 }
                 // Страна — украшение статуса; не узнали, значит не показываем.
                 // На fail-closed это не влияет никак.
@@ -875,6 +934,23 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Прогон, в котором узел не ответил, стирает задержку, но не страну: узел
+    /// стоит там же, где стоял, и потерять её значит показать пустую строку
+    /// вместо известного ответа.
+    #[test]
+    fn a_silent_run_does_not_erase_the_country() {
+        let mut probes = Vec::new();
+        let nl = core_tunnel::Exit { name: "Нидерланды, Амстердам".into(), code: Some("NL".into()) };
+        remember(&mut probes, "myvpn", Some(84), Some(nl), None);
+        remember(&mut probes, "myvpn", None, None, Some("таймаут".into()));
+
+        assert_eq!(probes.len(), 1, "профиль один — и запись одна");
+        assert_eq!(probes[0].country.as_deref(), Some("Нидерланды, Амстердам"));
+        assert_eq!(probes[0].code.as_deref(), Some("NL"));
+        assert_eq!(probes[0].latency_ms, None, "а вот задержка отказ пережить не может");
+        assert_eq!(probes[0].error.as_deref(), Some("таймаут"));
+    }
 
     #[test]
     fn tun_failures_named_correctly() {

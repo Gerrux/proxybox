@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Probe, Request, Status } from "./platform";
-import { strings } from "./i18n";
+import { measuredAgo, strings } from "./i18n";
 import { AddField, Button, Empty, Panel, SearchField } from "./ui";
 
 /** Со скольких профилей список перестаёт читаться глазом. Порог тот же, что у
@@ -11,10 +11,16 @@ const SEARCH_FROM = 8;
 /** Итог прогона рядом с именем: задержка либо причина отказа. Отказ приезжает
  *  строкой от службы, поэтому он уже на нужном языке — и виден целиком по
  *  наведению, а не только в обрезке. */
-function Verdict({ probe, failed }: { probe: Probe | undefined; failed: string }) {
+function Verdict({ probe, failed, measured }: { probe: Probe | undefined; failed: string; measured?: string }) {
   if (!probe) return null;
   if (probe.latency_ms != null)
-    return <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted">{probe.latency_ms} ms</span>;
+    return (
+      // Возраст — в подсказке, а не в строке: цифра из прошлой недели выглядит
+      // как сегодняшняя, но занимать место в строке этому знанию незачем.
+      <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted" title={measured}>
+        {probe.latency_ms} ms
+      </span>
+    );
   return (
     // Мёртвый профиль — поломка, которую чинит человек, а не запертый канал:
     // цвет тот же, что у «служба не отвечает».
@@ -176,12 +182,22 @@ export function Profiles({
                             {s.browserOn}
                           </span>
                         )}
-                        {country && (
-                          <span className="truncate" title={country}>
-                            {country}
-                          </span>
-                        )}
-                        <Verdict probe={probe} failed={s.probeFailed} />
+                        {/* Страна — кодом: «NL» стоит двух знаков, «Нидерланды,
+                            Амстердам» не помещается в строку вовсе. Название
+                            целиком остаётся подсказкой. Кода нет (старое
+                            состояние или сервис не прислал) — показываем как
+                            есть, обрезкой. */}
+                        {country &&
+                          (probe?.code ? (
+                            <span className="engraved shrink-0 tracking-[0.08em]" title={country}>
+                              {probe.code}
+                            </span>
+                          ) : (
+                            <span className="truncate" title={country}>
+                              {country}
+                            </span>
+                          ))}
+                        <Verdict probe={probe} failed={s.probeFailed} measured={measuredAgo(s, probe?.at ?? 0)} />
                       </span>
                     )}
                   </div>

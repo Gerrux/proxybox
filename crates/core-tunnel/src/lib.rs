@@ -272,7 +272,7 @@ fn free_port() -> io::Result<u16> {
 ///
 /// `geo` — спрашивать ли заодно точку выхода. Решает это служба (`PG_GEO`):
 /// адрес наружу один на весь проект, и распоряжаться им должно одно место.
-pub fn measure(node: &Value, dir: &Path, target: (&str, u16), geo: bool) -> io::Result<(u32, Option<String>)> {
+pub fn measure(node: &Value, dir: &Path, target: (&str, u16), geo: bool) -> io::Result<(u32, Option<Exit>)> {
     let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, apps: Vec::new(), all: false };
     let mut proc = Tunnel::start(&build_config(node, &opts), dir)?;
     let result = probe(opts.socks_port, target);
@@ -331,11 +331,11 @@ pub const GEO_HOST: &str = "ip-api.com";
 /// не прячет. Чего оно бы дало — защиту от подмены ответа: по пути от выходного
 /// узла до сервиса страну можно подделать. Если это станет важно, менять на
 /// https://www.cloudflare.com/cdn-cgi/trace, но это тянет TLS-стек в зависимости.
-pub fn exit_country(socks_port: u16) -> io::Result<String> {
+pub fn exit_country(socks_port: u16) -> io::Result<Exit> {
     let mut s = socks5_connect(socks_port, (GEO_HOST, 80))?;
     s.write_all(
         format!(
-            "GET /json/?fields=status,message,country,city&lang=ru HTTP/1.0\r\n\
+            "GET /json/?fields=status,message,country,countryCode,city&lang=ru HTTP/1.0\r\n\
              Host: {GEO_HOST}\r\nConnection: close\r\n\r\n"
         )
         .as_bytes(),
@@ -345,9 +345,21 @@ pub fn exit_country(socks_port: u16) -> io::Result<String> {
     parse_country(&raw)
 }
 
-/// Из HTTP-ответа ip-api — «Страна, Город». Сервис отвечает 200 и на отказ,
-/// уводя причину в поле status, так что код ответа тут ничего не решает.
-fn parse_country(raw: &str) -> io::Result<String> {
+/// Точка выхода: как её называет геосервис и её код ISO 3166-1 alpha-2. Код —
+/// ради окна: «NL» помещается в строку профиля, «Нидерланды, Амстердам» нет, и
+/// полное название уходит в подсказку. Флагом код не рисуется намеренно: глифов
+/// флагов в Windows нет (Segoe UI Emoji их не содержит), пара региональных
+/// индикаторов показалась бы теми же двумя буквами, только в квадратиках.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Exit {
+    pub name: String,
+    /// None — сервис кода не прислал; тогда в окне остаётся полное название.
+    pub code: Option<String>,
+}
+
+/// Из HTTP-ответа ip-api — «Страна, Город» и код страны. Сервис отвечает 200 и
+/// на отказ, уводя причину в поле status, так что код ответа тут ничего не решает.
+fn parse_country(raw: &str) -> io::Result<Exit> {
     // Ответ обязан начинаться со статусной строки. Иначе в потоке остался
     // невычитанный хвост SOCKS, и молча резать по первому \r\n\r\n нельзя:
     // тело разберётся как ни в чём не бывало, а ошибка уедет в тихую.
@@ -364,9 +376,15 @@ fn parse_country(raw: &str) -> io::Result<String> {
     if country.is_empty() {
         return Err(io::Error::other(t(&format!("{GEO_HOST}: в ответе нет страны"), &format!("{GEO_HOST}: no country in the reply"))));
     }
-    Ok(match v["city"].as_str().unwrap_or_default() {
-        "" => country.to_string(),
-        city => format!("{country}, {city}"),
+    Ok(Exit {
+        name: match v["city"].as_str().unwrap_or_default() {
+            "" => country.to_string(),
+            city => format!("{country}, {city}"),
+        },
+        code: match v["countryCode"].as_str().unwrap_or_default() {
+            "" => None,
+            code => Some(code.to_uppercase()),
+        },
     })
 }
 
@@ -432,11 +450,16 @@ mod tests {
     #[test]
     fn country_from_reply() {
         let ok = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n\
-                  {\"status\":\"success\",\"country\":\"Нидерланды\",\"city\":\"Амстердам\"}";
-        assert_eq!(parse_country(ok).unwrap(), "Нидерланды, Амстердам");
+                  {\"status\":\"success\",\"country\":\"Нидерланды\",\"countryCode\":\"NL\",\"city\":\"Амстердам\"}";
+        let exit = parse_country(ok).unwrap();
+        assert_eq!(exit.name, "Нидерланды, Амстердам");
+        assert_eq!(exit.code.as_deref(), Some("NL"));
 
         let no_city = "HTTP/1.1 200 OK\r\n\r\n{\"status\":\"success\",\"country\":\"Нидерланды\",\"city\":\"\"}";
-        assert_eq!(parse_country(no_city).unwrap(), "Нидерланды");
+        let exit = parse_country(no_city).unwrap();
+        assert_eq!(exit.name, "Нидерланды");
+        // Кода в ответе нет — окно покажет полное название, а не пустую метку.
+        assert_eq!(exit.code, None);
     }
 
     /// Хвост ответа SOCKS (BND.ADDR+BND.PORT) обязан быть вычитан до тела HTTP.
@@ -484,7 +507,7 @@ mod tests {
             .unwrap();
         });
 
-        assert_eq!(exit_country(port).unwrap(), "Нидерланды, Амстердам");
+        assert_eq!(exit_country(port).unwrap().name, "Нидерланды, Амстердам");
         server.join().unwrap();
     }
 
