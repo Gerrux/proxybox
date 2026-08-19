@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { forgetBrowser, type BrowserProfile, type Request, type Status } from "./platform";
+import { forgetBrowser, type Act, type BrowserProfile, type Status } from "./platform";
 import { strings } from "./i18n";
-import { Button, Empty, FIELD, flag, Panel } from "./ui";
+import { Button, ConfirmButton, Empty, FIELD, flag, Panel } from "./ui";
 
 /** `Accept-Language` по коду страны узла — это и есть «Авто». Список короткий
  *  намеренно: тут самые частые точки выхода, всем остальным достаётся
@@ -68,7 +68,7 @@ export function Browsers({
   className,
 }: {
   status: Status | null;
-  act: (req: Request) => void;
+  act: Act;
   browse: (profile: BrowserProfile) => void;
   className?: string;
 }) {
@@ -92,8 +92,9 @@ export function Browsers({
             onSubmit={(e) => {
               e.preventDefault();
               if (!ready) return;
-              act({ cmd: "set-browser-profile", arg: { profile: { ...draft, name: draft.name.trim() } } });
-              setDraft(EMPTY);
+              void act({ cmd: "set-browser-profile", arg: { profile: { ...draft, name: draft.name.trim() } } }).then(
+                (ok) => ok && setDraft(EMPTY),
+              );
             }}
           >
             <div className="flex gap-2">
@@ -195,19 +196,19 @@ export function Browsers({
                   <Button variant="quiet" aria-label={s.browserEdit(item.name)} onClick={() => setDraft(item)}>
                     ✎
                   </Button>
-                  <Button
-                    variant="danger"
-                    aria-label={s.browserRemove(item.name)}
-                    onClick={() => {
+                  {/* В два клика: с профилем уходят его куки и входы, а это
+                      единственное, чего здесь не восстановить. */}
+                  <ConfirmButton
+                    label={s.browserRemove(item.name)}
+                    ask={s.confirmRemove}
+                    onConfirm={() => {
                       // Профиля больше нет — хранить его куки и входы не для
                       // чего. Отказ проглатываем: каталог мог быть занят
                       // открытым окном, а профиль уходит в любом случае.
                       void forgetBrowser(item.name).catch(() => {});
-                      act({ cmd: "remove-browser-profile", arg: { name: item.name } });
+                      void act({ cmd: "remove-browser-profile", arg: { name: item.name } });
                     }}
-                  >
-                    ✕
-                  </Button>
+                  />
                 </li>
               );
             })}

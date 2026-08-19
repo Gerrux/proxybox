@@ -8,12 +8,13 @@ const RU = {
   serviceDownHint: "Запустите PrivacyGateway от имени администратора — без службы ничего не работает",
   off: "Приватный режим выключен",
   offHint: "Выбранные приложения ходят в сеть напрямую",
+  offNoProfiles: "Сначала добавьте профиль — включать пока нечего",
   offHintAll: "Компьютер ходит в сеть напрямую",
   connecting: "Подключение…",
   connectingHint: "Пока туннель не подтверждён, выбранные приложения остаются без сети",
   connectingHintAll: "Пока туннель не подтверждён, компьютер остаётся без сети",
   up: "Защищено",
-  upHint: (n: number) => `${n} прил. идут только через туннель, остальной трафик не тронут`,
+  upHint: (n: number) => `В туннеле приложений: ${n}. Остальной трафик не тронут`,
   upHintAll: "Весь трафик компьютера идёт через туннель",
   upNoApps: "Туннель поднят, но ни одно приложение не выбрано",
   down: "Туннеля нет — доступ закрыт",
@@ -67,17 +68,25 @@ const RU = {
   testProfilesHint: "Проверить каждый профиль отдельным подключением, не трогая текущее",
   probeFailed: "не отвечает",
   measured: (ago: string) => `Измерено ${ago}`,
+  logged: (ago: string) => `Записано ${ago}`,
   agoNow: "только что",
   agoMin: (n: number) => `${n} мин назад`,
   agoHour: (n: number) => `${n} ч назад`,
   agoDay: (n: number) => `${n} дн назад`,
   remove: "Удалить",
+  confirmRemove: "Удалить?",
+  langRu: "Русский",
+  langEn: "Английский",
+  trafficHint: "За текущее подключение: счётчики начинаются заново с каждым запуском туннеля",
+  railUp: "Идёт через туннель",
+  railClosed: "Без сети: туннель не подтверждён",
+  railDirect: "Идёт напрямую, мимо туннеля",
   apps: "Приложения",
   appsCount: (on: number, all: number) => `${on} из ${all} в туннеле`,
   discover: "Найти установленные",
   addApp: "Добавить",
   appPlaceholder: "C:\\Program Files\\…\\app.exe",
-  noApps: "Список пуст — трафик никого не перехватывается.",
+  noApps: "Список пуст — ничей трафик не перехватывается.",
   scopeApps: "Выбранные",
   scopeAll: "Весь компьютер",
   scopeAllNote: "Весь трафик компьютера идёт через туннель — приложения не отбираются, и этот список сейчас не применяется.",
@@ -108,12 +117,13 @@ const EN: typeof RU = {
   serviceDownHint: "Start PrivacyGateway as administrator — nothing works without the service",
   off: "Private mode is off",
   offHint: "Selected apps reach the network directly",
+  offNoProfiles: "Add a profile first — there is nothing to turn on yet",
   offHintAll: "The computer reaches the network directly",
   connecting: "Connecting…",
   connectingHint: "Until the tunnel is confirmed, selected apps stay without network",
   connectingHintAll: "Until the tunnel is confirmed, the computer stays without network",
   up: "Protected",
-  upHint: (n: number) => `${n} app(s) go only through the tunnel, other traffic is untouched`,
+  upHint: (n: number) => `Apps in the tunnel: ${n}. Other traffic is untouched`,
   upHintAll: "All computer traffic goes through the tunnel",
   upNoApps: "The tunnel is up, but no app is selected",
   down: "No tunnel — access is closed",
@@ -166,11 +176,19 @@ const EN: typeof RU = {
   testProfilesHint: "Check every profile with a separate connection, without touching the current one",
   probeFailed: "no answer",
   measured: (ago: string) => `Measured ${ago}`,
+  logged: (ago: string) => `Logged ${ago}`,
   agoNow: "just now",
   agoMin: (n: number) => `${n} min ago`,
   agoHour: (n: number) => `${n} h ago`,
   agoDay: (n: number) => `${n} d ago`,
   remove: "Remove",
+  confirmRemove: "Remove?",
+  langRu: "Russian",
+  langEn: "English",
+  trafficHint: "For the current connection: the counters start over with every tunnel start",
+  railUp: "Goes through the tunnel",
+  railClosed: "No network: the tunnel is not confirmed",
+  railDirect: "Goes directly, past the tunnel",
   apps: "Apps",
   appsCount: (on: number, all: number) => `${on} of ${all} in the tunnel`,
   discover: "Find installed",
@@ -208,19 +226,30 @@ export function strings(lang: Lang | undefined): Strings {
   return lang === "en" ? EN : RU;
 }
 
-/** Возраст измерения словами. Задержка и страна переживают перезапуск службы,
- *  и без возраста цифра прошлой недели читается как сегодняшняя. Точность
- *  крупная нарочно: важно «сегодня или давно», а не сколько именно минут. */
-export function measuredAgo(s: Strings, at: number): string | undefined {
+/** Возраст события словами. Точность крупная нарочно: важно «сейчас или
+ *  давно», а не сколько именно минут. */
+function ago(s: Strings, at: number): string | undefined {
   if (!at) return undefined;
   const sec = Math.max(0, Math.floor(Date.now() / 1000) - at);
-  const ago =
-    sec < 90
-      ? s.agoNow
-      : sec < 3600
-        ? s.agoMin(Math.round(sec / 60))
-        : sec < 86400
-          ? s.agoHour(Math.round(sec / 3600))
-          : s.agoDay(Math.round(sec / 86400));
-  return s.measured(ago);
+  return sec < 90
+    ? s.agoNow
+    : sec < 3600
+      ? s.agoMin(Math.round(sec / 60))
+      : sec < 86400
+        ? s.agoHour(Math.round(sec / 3600))
+        : s.agoDay(Math.round(sec / 86400));
+}
+
+/** Задержка и страна переживают перезапуск службы, и без возраста цифра
+ *  прошлой недели читается как сегодняшняя. */
+export function measuredAgo(s: Strings, at: number): string | undefined {
+  const when = ago(s, at);
+  return when && s.measured(when);
+}
+
+/** То же для журнала: его читают, когда уже что-то сломалось, и «когда именно»
+ *  там половина ответа. В самой строке времени нет — лента и так узкая. */
+export function loggedAgo(s: Strings, at: number): string | undefined {
+  const when = ago(s, at);
+  return when && s.logged(when);
 }

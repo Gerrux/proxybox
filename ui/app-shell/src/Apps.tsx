@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { call, type App, type Lang, type Request, type Status, type Tunnel } from "./platform";
+import { call, type Act, type App, type Lang, type Status, type Tunnel } from "./platform";
 import { strings } from "./i18n";
 import { AddField, Button, Empty, Panel, SearchField } from "./ui";
+
+/** `id` для связки галочки с подписью. Путь к .exe в `id` класть нельзя: там
+ *  пробелы, а `id` с пробелом невалиден — сейчас это сходит с рук только
+ *  потому, что `htmlFor` сверяет строку целиком. */
+function fieldId(path: string): string {
+  return `app-${path.replace(/[^\w]+/g, "-")}`;
+}
 
 /** Список короче этого искать незачем — поле только мешало бы. */
 const SEARCH_FROM = 8;
@@ -38,6 +45,21 @@ function railTone(tunnel: Tunnel | undefined): string {
     // Выключено или службы нет: приложение ходит само, и хвастаться нечем.
     default:
       return "bg-muted";
+  }
+}
+
+/** То же самое словами. Три цвета рельса нигде не расшифрованы, и догадаться,
+ *  что янтарь — это «так и задумано», а не поломка, по одной полоске нельзя. */
+function railHint(s: ReturnType<typeof strings>, enabled: boolean, tunnel: Tunnel | undefined): string {
+  if (!enabled) return s.railDirect;
+  switch (tunnel) {
+    case "up":
+      return s.railUp;
+    case "connecting":
+    case "down":
+      return s.railClosed;
+    default:
+      return s.railDirect;
   }
 }
 
@@ -90,7 +112,19 @@ function Scope({ all, lang, onPick }: { all: boolean; lang: Lang | undefined; on
   );
 }
 
-export function Apps({ status, act, className }: { status: Status | null; act: (req: Request) => void; className?: string }) {
+export function Apps({
+  status,
+  act,
+  busy,
+  className,
+}: {
+  status: Status | null;
+  act: Act;
+  /** Служба занята командой. Обход реестра и каталога пакетов идёт секундами,
+   *  а полоска ожидания рисуется на шапке — далеко от нажатой кнопки. */
+  busy?: boolean;
+  className?: string;
+}) {
   const s = strings(status?.lang);
   const all = status?.all_traffic ?? false;
   const apps = status?.apps ?? [];
@@ -118,14 +152,14 @@ export function Apps({ status, act, className }: { status: Status | null; act: (
       action={
         // Искать приложения, когда их всё равно не отбирают, незачем.
         !all && (
-          <Button variant="quiet" onClick={() => act({ cmd: "discover", arg: { env: {} } })}>
+          <Button variant="quiet" disabled={busy} onClick={() => void act({ cmd: "discover", arg: { env: {} } })}>
             {s.discover}
           </Button>
         )
       }
     >
       <div className="flex flex-col gap-3">
-        <Scope all={all} lang={status?.lang} onPick={(enabled) => act({ cmd: "set-all-traffic", arg: { enabled } })} />
+        <Scope all={all} lang={status?.lang} onPick={(enabled) => void act({ cmd: "set-all-traffic", arg: { enabled } })} />
         {/* Список не показывается вовсе, а не гасится: он сейчас ни на что не
             влияет, и оставить его на виду значило бы соврать про судьбу строк. */}
         {all ? (
@@ -147,6 +181,7 @@ export function Apps({ status, act, className }: { status: Status | null; act: (
                 {shown.map((app) => (
                   <li
                     key={app.path}
+                    title={railHint(s, app.enabled, status?.tunnel)}
                     className="enter smooth relative flex items-center gap-3 rounded-md py-1.5 pl-3 pr-1 hover:bg-surface-2"
                   >
                     {/* Рельс слева: что происходит с приложением прямо сейчас,
@@ -157,10 +192,10 @@ export function Apps({ status, act, className }: { status: Status | null; act: (
                       }`}
                     />
                     <input
-                      id={app.path}
+                      id={fieldId(app.path)}
                       type="checkbox"
                       checked={app.enabled}
-                      onChange={(e) => act({ cmd: "set-app", arg: { path: app.path, enabled: e.target.checked } })}
+                      onChange={(e) => void act({ cmd: "set-app", arg: { path: app.path, enabled: e.target.checked } })}
                       // Галочка — действие оператора, а не состояние канала:
                       // цвета состояний ей не положены, иначе зелёная галочка
                       // спорила бы с янтарным рельсом той же строки.
@@ -173,7 +208,7 @@ export function Apps({ status, act, className }: { status: Status | null; act: (
                     ) : (
                       <span className="size-5 shrink-0" />
                     )}
-                    <label htmlFor={app.path} className="min-w-0 flex-1 cursor-pointer leading-tight">
+                    <label htmlFor={fieldId(app.path)} className="min-w-0 flex-1 cursor-pointer leading-tight">
                       <span className={`block truncate text-[13px] ${app.enabled ? "font-medium" : "text-muted"}`}>
                         {app.name}
                       </span>
@@ -184,7 +219,7 @@ export function Apps({ status, act, className }: { status: Status | null; act: (
                     <Button
                       variant="danger"
                       aria-label={s.removeApp(app.name)}
-                      onClick={() => act({ cmd: "remove-app", arg: { path: app.path } })}
+                      onClick={() => void act({ cmd: "remove-app", arg: { path: app.path } })}
                     >
                       ✕
                     </Button>

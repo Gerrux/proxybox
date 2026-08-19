@@ -2,9 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import {
   browse as openBrowser,
   call,
+  type Act,
   type BrowserProfile,
   type Lang,
   type Request,
+  type Response,
   type Status,
 } from "./platform";
 import { strings } from "./i18n";
@@ -34,14 +36,22 @@ export function App() {
   // узлов, а на главной сетке из трёх панелей четвёртой места нет.
   const [tab, setTab] = useState<"main" | "browsers">("main");
 
-  const send = useCallback(async (req: Request) => {
+  const send = useCallback(async (req: Request): Promise<Response | null> => {
     try {
       const r = await call(req);
-      setError(r.reply === "error" ? r.data.message : null);
+      // Ошибку баннер только показывает, но никогда не снимает по своей воле:
+      // сразу за командой идёт перечитывание статуса, и «успех» от него стирал
+      // бы сообщение раньше, чем его успевали прочитать. Снимает ошибку
+      // следующая команда или крестик.
+      if (r.reply === "error") setError(r.data.message);
       if (r.reply === "status") setStatus(r.data);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      return r;
+    } catch {
+      // Служба не отвечает — про это во весь рост говорит шапка (status === null),
+      // и повторять то же самое баннером незачем. Заодно такое сообщение
+      // некому было бы снять: команды в этом состоянии не проходят.
       setStatus(null);
+      return null;
     }
   }, []);
 
@@ -49,18 +59,25 @@ export function App() {
 
   const connecting = status?.tunnel === "connecting";
   useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, connecting ? POLL_BUSY_MS : POLL_MS);
+    void refresh();
+    // Спрятанное в трей окно живёт сколько угодно долго, и спрашивать за него
+    // некому: подпись значка обновляет оболочка сама. Показали обратно —
+    // ближайший тик и вернёт свежий статус.
+    const id = setInterval(() => {
+      if (!document.hidden) void refresh();
+    }, connecting ? POLL_BUSY_MS : POLL_MS);
     return () => clearInterval(id);
   }, [refresh, connecting]);
 
   // Команда и сразу перечитанный статус: окно не гадает, что получилось, —
   // единственный источник истины остаётся у службы.
-  const act = useCallback(
+  const act = useCallback<Act>(
     (req: Request) => {
+      // Прошлая ошибка снимается здесь: новое действие — новый разговор.
+      setError(null);
       setBusy((n) => n + 1);
-      void send(req)
-        .then(refresh)
+      return send(req)
+        .then((r) => refresh().then(() => r != null && r.reply !== "error"))
         .finally(() => setBusy((n) => n - 1));
     },
     [send, refresh],
@@ -69,9 +86,9 @@ export function App() {
   // Браузер запускает оболочка, а не служба, поэтому это не обычная команда:
   // ответ со статусом сюда не приходит, и показать нечего, кроме отказа.
   const browse = useCallback((profile: BrowserProfile) => {
+    setError(null);
     setBusy((n) => n + 1);
     void openBrowser(profile)
-      .then(() => setError(null))
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setBusy((n) => n - 1));
   }, []);
@@ -149,6 +166,7 @@ export function App() {
             <Apps
               status={status}
               act={act}
+              busy={busy > 0}
               className="md:col-start-2 md:row-start-1 md:row-span-2 md:min-h-0 xl:row-span-1"
             />
             <Journal

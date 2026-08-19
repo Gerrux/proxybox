@@ -58,6 +58,10 @@ export function Button({
     <button
       type="button"
       {...props}
+      // Кнопки-символы (✕, ⟳, ⧉) подписаны только для чтения с экрана, а мышь
+      // о них не узнаёт ничего: ту же строку отдаём и всплывающей подсказке.
+      // После расстановки props — иначе своя `title` затёрлась бы пустой.
+      title={props.title ?? props["aria-label"]}
       className={`inline-flex h-8 shrink-0 items-center justify-center whitespace-nowrap rounded-md border px-3 text-[13px] font-medium transition duration-200 active:scale-95 disabled:opacity-40 ${VARIANTS[variant]} ${className}`}
     />
   );
@@ -69,7 +73,11 @@ export function Button({
 export const FIELD =
   "selectable h-8 w-full min-w-0 flex-1 rounded-md border border-edge bg-surface-2 px-3 text-[13px] outline-none transition-colors placeholder:text-muted focus:border-accent";
 
-/** Поле «ввести и добавить»: своё состояние держит само — снаружи оно не нужно. */
+/** Поле «ввести и добавить»: своё состояние держит само — снаружи оно не нужно.
+ *
+ *  Чистится только на «приняли». Разобрать ссылку служба может отказаться — и
+ *  тогда очищенное поле означало бы, что вставленный share-link надо искать
+ *  заново, хотя в нём чаще всего опечатка в один символ. */
 export function AddField({
   placeholder,
   label,
@@ -77,18 +85,23 @@ export function AddField({
 }: {
   placeholder: string;
   label: string;
-  onSubmit: (value: string) => void;
+  onSubmit: (value: string) => Promise<boolean>;
 }) {
   const [value, setValue] = useState("");
+  // Подписка выкачивается секундами: без этого второй Enter уходил бы службе
+  // вдогонку первому.
+  const [busy, setBusy] = useState(false);
   return (
     <form
       className="flex gap-2"
       onSubmit={(e) => {
         e.preventDefault();
         const trimmed = value.trim();
-        if (!trimmed) return;
-        onSubmit(trimmed);
-        setValue("");
+        if (!trimmed || busy) return;
+        setBusy(true);
+        void onSubmit(trimmed)
+          .then((accepted) => accepted && setValue(""))
+          .finally(() => setBusy(false));
       }}
     >
       <input
@@ -98,10 +111,55 @@ export function AddField({
         spellCheck={false}
         className={FIELD}
       />
-      <Button type="submit" variant="primary" disabled={!value.trim()}>
+      <Button type="submit" variant="primary" disabled={busy || !value.trim()}>
         {label}
       </Button>
     </form>
+  );
+}
+
+/** Разрушающее действие в два клика: первый спрашивает, второй делает.
+ *
+ *  Системного `confirm()` в вебвью нет, а своё модальное окно ради одного
+ *  вопроса — целый слой. Вопрос гаснет сам, стоит увести мышь или уйти с
+ *  кнопки клавишей: передумавшему не нужно ничего нажимать.
+ *
+ *  Ставится не на всё подряд: удаление приложения из списка человек повторит за
+ *  секунду, а вот отписка уносит с собой десятки профилей разом, и `✕` у
+ *  активного профиля гасит туннель — выбранные приложения при этом остаются без
+ *  сети, и по одному клику мимо такое случаться не должно. */
+export function ConfirmButton({
+  label,
+  ask,
+  onConfirm,
+}: {
+  label: string;
+  ask: string;
+  onConfirm: () => void;
+}) {
+  const [armed, setArmed] = useState(false);
+  if (!armed) {
+    return (
+      <Button variant="danger" aria-label={label} onClick={() => setArmed(true)}>
+        ✕
+      </Button>
+    );
+  }
+  return (
+    <Button
+      variant="danger"
+      aria-label={`${label} — ${ask}`}
+      className="text-fault"
+      autoFocus
+      onMouseLeave={() => setArmed(false)}
+      onBlur={() => setArmed(false)}
+      onClick={() => {
+        setArmed(false);
+        onConfirm();
+      }}
+    >
+      {ask}
+    </Button>
   );
 }
 

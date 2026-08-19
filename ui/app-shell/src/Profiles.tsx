@@ -1,7 +1,7 @@
 import { useState } from "react";
-import type { Probe, Request, Status } from "./platform";
+import type { Act, Probe, Status } from "./platform";
 import { measuredAgo, strings } from "./i18n";
-import { AddField, Button, Empty, flag, Panel, SearchField } from "./ui";
+import { AddField, Button, ConfirmButton, Empty, flag, Panel, SearchField } from "./ui";
 
 /** Со скольких профилей список перестаёт читаться глазом. Порог тот же, что у
  *  приложений: одна подписка приносит десятки узлов, а подписок бывает
@@ -48,7 +48,7 @@ export function Profiles({
   className,
 }: {
   status: Status | null;
-  act: (req: Request) => void;
+  act: Act;
   busy?: boolean;
   className?: string;
 }) {
@@ -82,7 +82,7 @@ export function Profiles({
             variant="quiet"
             disabled={busy}
             title={s.testProfilesHint}
-            onClick={() => act({ cmd: "test-profiles" })}
+            onClick={() => void act({ cmd: "test-profiles" })}
           >
             {s.testProfiles}
           </Button>
@@ -117,17 +117,15 @@ export function Profiles({
                   <Button
                     variant="quiet"
                     aria-label={s.refreshSubscription(url)}
-                    onClick={() => act({ cmd: "add-profile", arg: { link: url } })}
+                    onClick={() => void act({ cmd: "add-profile", arg: { link: url } })}
                   >
                     ⟳
                   </Button>
-                  <Button
-                    variant="danger"
-                    aria-label={s.removeSubscription(url)}
-                    onClick={() => act({ cmd: "remove-subscription", arg: { url } })}
-                  >
-                    ✕
-                  </Button>
+                  <ConfirmButton
+                    label={s.removeSubscription(url)}
+                    ask={s.confirmRemove}
+                    onConfirm={() => void act({ cmd: "remove-subscription", arg: { url } })}
+                  />
                 </li>
               ))}
             </ul>
@@ -155,6 +153,11 @@ export function Profiles({
               // Рельс профиля повторяет то, что показывает верх окна: выбран —
               // ещё не значит «несёт трафик», и путать это нельзя.
               const tone = TONE[live && status ? status.tunnel : "off"];
+              // Каталоги сеансов зовутся по имени браузерного профиля, а не
+              // узла: стирать тут нечего. Браузерные профили удаление узла
+              // переживают намеренно — в их каталогах входы человека, и починка
+              // это выбрать другой узел, а не заводить всё заново.
+              const remove = () => void act({ cmd: "remove-profile", arg: { name } });
               return (
                 <li
                   key={name}
@@ -202,17 +205,20 @@ export function Profiles({
                     )}
                   </div>
                   {!live && (
-                    <Button variant="quiet" onClick={() => act({ cmd: "on", arg: { profile: name } })}>
+                    <Button variant="quiet" onClick={() => void act({ cmd: "on", arg: { profile: name } })}>
                       {s.turnOn}
                     </Button>
                   )}
-                  <Button
-                    variant="danger"
-                    aria-label={s.removeProfile(name)}
-                    onClick={() => act({ cmd: "remove-profile", arg: { name } })}
-                  >
-                    ✕
-                  </Button>
+                  {/* У активного профиля удаление гасит туннель, и выбранные
+                      приложения остаются без сети — такое по одному клику мимо
+                      случаться не должно. Неактивный уходит сразу. */}
+                  {live ? (
+                    <ConfirmButton label={s.removeProfile(name)} ask={s.confirmRemove} onConfirm={remove} />
+                  ) : (
+                    <Button variant="danger" aria-label={s.removeProfile(name)} onClick={remove}>
+                      ✕
+                    </Button>
+                  )}
                 </li>
               );
             })}
