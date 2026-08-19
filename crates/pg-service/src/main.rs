@@ -346,9 +346,9 @@ impl Service {
     /// известно, а промах здесь тихий — приложение уходит мимо туннеля, не
     /// переставая считаться защищённым. Лишний путь стоит одной строки в
     /// конфиге и одного правила брандмауэра, которое просто ни с чем не совпадёт.
-    fn selected(&self) -> Vec<String> {
+    fn selected(status: &Status) -> Vec<String> {
         let mut out = Vec::new();
-        for app in self.status.apps.iter().filter(|a| a.enabled) {
+        for app in status.apps.iter().filter(|a| a.enabled) {
             let canonical = core_apps::canonical(&app.path);
             if canonical != app.path {
                 out.push(canonical);
@@ -358,6 +358,29 @@ impl Service {
         out
     }
 
+    /// Всё, что попадёт в конфиг sing-box и в правила брандмауэра: маршрут по
+    /// умолчанию и поимённый список путей. Отсюда же выводится и надобность
+    /// перезапуска — см. `edit`.
+    fn seen(status: &Status) -> (bool, Vec<String>) {
+        (status.all_traffic, Self::selected(status))
+    }
+
+    /// Правка списка приложений или охвата. Туннель перезапускается ровно
+    /// тогда, когда изменилось видимое sing-box: конфиг перечисляет
+    /// `process_path` поимённо и `final` держит охват, поэтому без перезапуска
+    /// добавленное приложение продолжит ходить напрямую под надписью
+    /// «Защищено». Решение выводится, а не вспоминается в каждой ветке: именно
+    /// его и забывают. Найденное автообнаружением выключенным ключа не меняет —
+    /// и туннеля не трогает, а перезапуск ради него значил бы выбранные
+    /// приложения без сети на ровном месте.
+    fn edit(&mut self, change: impl FnOnce(&mut Self)) {
+        let before = Self::seen(&self.status);
+        change(self);
+        if Self::seen(&self.status) != before {
+            self.reapply();
+        }
+    }
+
     /// Блокировка на всё время, пока туннель не подтверждён: выбранных
     /// приложений — правилами по путям, всей машины — политикой брандмауэра.
     ///
@@ -365,7 +388,8 @@ impl Service {
     /// иначе оставила бы правила прошлого режима висеть — а это либо
     /// заблокированные навсегда приложения, либо машина без сети.
     fn guard(&mut self, blocked: bool) {
-        let want = (blocked, self.status.all_traffic, self.selected());
+        let (all, apps) = Self::seen(&self.status);
+        let want = (blocked, all, apps);
         if self.applied.as_ref() == Some(&want) {
             return;
         }
@@ -409,7 +433,8 @@ impl Service {
         self.tunnel = None; // старый процесс убивается Drop'ом до запуска нового
         self.generation += 1; // всё, что проба знала о прошлом процессе, устарело
 
-        let opts = Options { tun: tun_enabled(), apps: self.selected(), all: self.status.all_traffic, ..Default::default() };
+        let (all, apps) = Self::seen(&self.status);
+        let opts = Options { tun: tun_enabled(), apps, all, ..Default::default() };
         let config = build_config(&node, &opts);
         self.probe_target = probe_target(&self.status.settings.probe, &node);
         match Process::start(&config, &dir()) {
@@ -889,8 +914,11 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 0 => t("автообнаружение: ничего нового не найдено", "discovery: nothing new found"),
                 n => t(&format!("автообнаружение: добавлено приложений — {n}"), &format!("discovery: {n} apps added")),
             });
-            s.status.apps.extend(added);
-            s.save();
+            // Добавленное выключенным sing-box не видит: перезапуска не будет.
+            s.edit(|s| {
+                s.status.apps.extend(added);
+                s.save();
+            });
             Response::Apps(s.status.apps.clone())
         }
         // Иконку не храним: она есть у системы, и спрашивают её один раз за окно.
@@ -903,45 +931,47 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                     .unwrap_or(&path)
                     .trim_end_matches(".exe")
                     .to_string();
-                s.status.apps.push(App { path, name, enabled: true });
-                s.save();
-                s.reapply();
+                s.edit(|s| {
+                    s.status.apps.push(App { path, name, enabled: true });
+                    s.save();
+                });
             }
             Response::Done
         }
         Request::SetAllTraffic { enabled } => {
             if s.status.all_traffic != enabled {
-                s.status.all_traffic = enabled;
-                s.log(match enabled {
-                    true => t("охват: весь трафик компьютера", "scope: all computer traffic"),
-                    false => t("охват: только выбранные приложения", "scope: selected apps only"),
-                });
-                s.save();
-                // Охват живёт в конфиге sing-box (маршрут по умолчанию), а не
-                // только в статусе: без перезапуска трафик пошёл бы по-старому.
                 // Правила прошлого охвата снимет ближайший цикл надзора — при
                 // выключенном приватном режиме блокировать всё равно нечего.
-                s.reapply();
+                s.edit(|s| {
+                    s.status.all_traffic = enabled;
+                    s.log(match enabled {
+                        true => t("охват: весь трафик компьютера", "scope: all computer traffic"),
+                        false => t("охват: только выбранные приложения", "scope: selected apps only"),
+                    });
+                    s.save();
+                });
             }
             Response::Done
         }
-        Request::SetApp { path, enabled } => match s.status.apps.iter_mut().find(|a| a.path == path) {
-            Some(app) => {
-                app.enabled = enabled;
-                s.save();
-                s.reapply();
+        Request::SetApp { path, enabled } => match s.status.apps.iter().any(|a| a.path == path) {
+            true => {
+                s.edit(|s| {
+                    if let Some(app) = s.status.apps.iter_mut().find(|a| a.path == path) {
+                        app.enabled = enabled;
+                    }
+                    s.save();
+                });
                 Response::Done
             }
-            None => Response::Error {
+            false => Response::Error {
                 message: t(&format!("приложение не в списке: {path}"), &format!("app is not in the list: {path}")),
             },
         },
         Request::RemoveApp { path } => {
-            s.status.apps.retain(|a| a.path != path);
-            s.save();
-            // Приложение выпало из списка — конфиг туннеля больше не должен его
-            // упоминать, иначе оно останется в туннеле до перезапуска.
-            s.reapply();
+            s.edit(|s| {
+                s.status.apps.retain(|a| a.path != path);
+                s.save();
+            });
             Response::Done
         }
         Request::AddProfile { link } => match core_config::parse(&link) {
@@ -1147,9 +1177,9 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             // уехал в папку с новой версией, и оба слоя перехвата смотрят в
             // пустоту, пока приложение уже ходит напрямую. Переезд для нас — то
             // же самое, что смена списка: конфиг надо пересобрать.
-            if s.rebind_packages() {
-                s.reapply();
-            }
+            s.edit(|s| {
+                s.rebind_packages();
+            });
             let alive = s.tunnel.as_mut().map(Process::alive).unwrap_or(false);
             match (alive, s.tunnel.as_ref()) {
                 (true, Some(t)) => Some((s.generation, t.socks_port, t.api_port, s.probe_target.clone())),
@@ -1352,6 +1382,37 @@ mod tests {
         }
         assert_eq!(after_refresh(Some(&old), None, true, true), Active::Drop, "в фоне режим остаётся, приложения без сети");
         assert_eq!(after_refresh(Some(&old), None, true, false), Active::Stop, "нажатие человека — он видит, что узла нет");
+    }
+
+    /// Перезапуск туннеля выводится из состояния, а не вспоминается в каждой
+    /// ветке: конфиг перечисляет `process_path` поимённо, и забытый перезапуск —
+    /// это добавленное приложение, которое ходит напрямую под надписью
+    /// «Защищено». Ровно так правило и нарушается молча: всё зелено, туннель
+    /// поднят, а приложения в нём нет.
+    #[test]
+    fn the_tunnel_restarts_exactly_when_singbox_would_see_another_config() {
+        let mut st = Status::default();
+        let empty = Service::seen(&st);
+        st.apps.push(App { path: "/bin/true".into(), name: "true".into(), enabled: false });
+        assert_eq!(Service::seen(&st), empty, "найденное выключенным sing-box не видит — и трогать туннель незачем");
+
+        st.apps[0].enabled = true;
+        let one = Service::seen(&st);
+        assert_ne!(one, empty, "приложение вошло в туннель — конфиг другой");
+
+        st.apps[0].path = "/bin/false".into();
+        let moved = Service::seen(&st);
+        assert_ne!(moved, one, "переехавший пакет — та же смена списка");
+
+        st.all_traffic = true;
+        assert_ne!(Service::seen(&st), moved, "охват живёт в конфиге, а не только в статусе");
+
+        // Решение принимает один `edit`, а не всякая ветка своей памятью:
+        // прямой вызов возвращает правило человеку, у которого оно и терялось.
+        // Иголка собирается на месте: написанная целиком, она нашла бы саму себя.
+        let needle = format!(".{}()", "reapply");
+        let calls = include_str!("main.rs").matches(&needle).count();
+        assert_eq!(calls, 1, "перезапуск зовётся только из edit, а нашлось вызовов: {calls}");
     }
 
     /// Перезапуск не должен ни тихо возвращать выбранные приложения в открытую
