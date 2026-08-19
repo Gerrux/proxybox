@@ -77,6 +77,7 @@ pub fn discover(env: &BTreeMap<String, String>) -> Vec<Found> {
     }
     found.extend(from_registry());
     found.extend(from_packages());
+    found.extend(from_processes());
     let mut seen = std::collections::HashSet::new();
     found.retain(|f| seen.insert(f.path.to_lowercase()));
     found
@@ -167,6 +168,84 @@ pub fn browser() -> Option<Found> {
 /// Имена из каталога, а не пути: пути там уже описаны, и дублировать их значило
 /// бы разъехаться с ними на первом же обновлении каталога.
 const CHROMIUM: [&str; 4] = ["Google Chrome", "Microsoft Edge", "Brave", "Яндекс.Браузер"];
+
+/// Что работает прямо сейчас. Единственный источник, отвечающий про машину, а
+/// не про установленное: распакованный архив, программа из «Загрузок», игра из
+/// библиотеки Steam на втором диске — ничего этого в реестре нет и не будет.
+/// Чужие per-app-фаерволы (Portmaster, simplewall, OpenSnitch) на этом и стоят:
+/// список строится из того, кто реально работает, а не из того, что кто-то
+/// когда-то установил.
+///
+/// Идёт последним: имя тут — просто имя файла, и человеческое имя из каталога
+/// или реестра выигрывает дедуп.
+#[cfg(not(windows))]
+fn from_processes() -> Vec<Found> {
+    Vec::new()
+}
+
+#[cfg(windows)]
+fn from_processes() -> Vec<Found> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // Служба видит все процессы машины, включая начинку Windows: её отсекаем
+    // по каталогу. Предлагать человеку выбрать svchost — это не «полный
+    // список», это ловушка: под правило попадут и службы, и обновления.
+    let system = expand("%SystemRoot%", &[]).unwrap_or_default().to_lowercase();
+    let mut out = Vec::new();
+    for pid in pids() {
+        // Ограниченный доступ хватает для имени и не требует прав на сам
+        // процесс: защищённые процессы иначе отвечали бы отказом.
+        let Ok(handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else { continue };
+        let mut buffer = [0u16; 260 * 2];
+        let mut len = buffer.len() as u32;
+        // SAFETY: буфер и длина — наши, дескриптор жив до CloseHandle ниже.
+        let path = unsafe {
+            let ok = QueryFullProcessImageNameW(
+                handle,
+                PROCESS_NAME_WIN32,
+                windows::core::PWSTR(buffer.as_mut_ptr()),
+                &mut len,
+            );
+            let _ = CloseHandle(handle);
+            ok.is_ok().then(|| String::from_utf16_lossy(&buffer[..len as usize]))
+        };
+        let Some(path) = path else { continue };
+        if !is_own_process(&path, &system) {
+            continue;
+        }
+        let name = Path::new(&path).file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        out.push(Found { name, path });
+    }
+    out
+}
+
+/// Процесс человека, а не начинка Windows. Начинку отсекаем по каталогу:
+/// предлагать выбрать svchost — это не «полный список», а ловушка, под правило
+/// попали бы и службы, и обновления системы.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_own_process(path: &str, system: &str) -> bool {
+    is_exe(path) && (system.is_empty() || !path.to_lowercase().starts_with(&system.to_lowercase()))
+}
+
+/// ponytail: список процессов берётся одним заходом в буфер на 4096 записей —
+/// столько их не бывает даже на сервере. Потолок: хвост сверх этого не увидим;
+/// апгрейд — повторять с растущим буфером, пока заполнен целиком.
+#[cfg(windows)]
+fn pids() -> Vec<u32> {
+    use windows::Win32::System::ProcessStatus::EnumProcesses;
+
+    let mut pids = [0u32; 4096];
+    let mut filled = 0u32;
+    // SAFETY: размер передаётся в байтах, ответ — сколько байт заполнено.
+    let ok = unsafe { EnumProcesses(pids.as_mut_ptr(), std::mem::size_of_val(&pids) as u32, &mut filled) };
+    if ok.is_err() {
+        return Vec::new();
+    }
+    pids[..filled as usize / std::mem::size_of::<u32>()].to_vec()
+}
 
 /// Иконка приложения как PNG в data-URL — окно показывает её прямо в `<img>`.
 /// Не Windows, не exe, нет ресурса — `None`, и список обходится без картинки.
@@ -741,6 +820,20 @@ mod tests {
             "пакет удалён совсем — заменять нечем"
         );
         assert_eq!(rebind(&format!("C:{sep}Program Files{sep}app.exe")), None, "обычная программа не переезжает");
+    }
+
+    /// Служебные процессы Windows в списке приложений не нужны, а вот программа
+    /// из «Загрузок» — единственное место, где она вообще может найтись.
+    #[test]
+    fn keeps_only_processes_worth_showing() {
+        let dir = std::env::temp_dir().join("pg-process-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("game.exe"), b"").unwrap();
+        let exe = dir.join("game.exe").to_string_lossy().into_owned();
+        assert!(is_own_process(&exe, r"C:\Windows"));
+        assert!(!is_own_process(&exe, &dir.to_string_lossy().to_uppercase()), "регистр каталога не важен");
+        assert!(!is_own_process(&dir.join("нет.exe").to_string_lossy(), ""), "процесс есть, файла нет");
+        assert!(!is_own_process(&dir.join("game.dll").to_string_lossy(), ""), "не exe");
     }
 
     /// Дедуп по пути: каталог и реестр находят одно и то же, в списке это одна строка.
