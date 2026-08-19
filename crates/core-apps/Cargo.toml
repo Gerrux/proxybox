@@ -12,3 +12,5 @@ serde_json.workspace = true
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
 windows-icons = "0.4"
+# Список процессов: единственный источник, который знает про portable-программы.
+windows = { version = "0.62", features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }

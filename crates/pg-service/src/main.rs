@@ -230,6 +230,11 @@ impl Service {
         self.private = true;
         self.status.profile = Some(profile.to_string());
         self.save();
+        // Пакет MSIX после обновления лежит уже по другому пути, а оба слоя
+        // перехвата знают приложение только по пути. Переспрашиваем до
+        // guard(true): иначе и правило брандмауэра, и `process_path` встанут на
+        // папку, которой больше нет.
+        self.rebind_packages();
         // Сначала блокируем, потом поднимаем: между командой и живым туннелем
         // выбранные приложения должны быть без сети, а не в обход него.
         // Блокировка идёт и впереди убийства старого процесса: при перезапуске
@@ -311,6 +316,28 @@ impl Service {
         ));
         self.browser = Some((profile.to_string(), proc));
         Ok(port)
+    }
+
+    /// Список приложений переезжает вслед за обновившимися пакетами MSIX.
+    /// Молчать тут нельзя: путь в списке меняется сам собой, и человек должен
+    /// увидеть в журнале, почему.
+    fn rebind_packages(&mut self) -> bool {
+        let mut moved = Vec::new();
+        for app in &mut self.status.apps {
+            if let Some(path) = core_apps::rebind(&app.path) {
+                app.path = path;
+                moved.push(app.name.clone());
+            }
+        }
+        if !moved.is_empty() {
+            let names = moved.join(", ");
+            self.log(t(
+                &format!("приложения обновились, пути в списке освежены: {names}"),
+                &format!("apps updated, paths refreshed: {names}"),
+            ));
+            self.save();
+        }
+        !moved.is_empty()
     }
 
     /// Перезапуск с новым списком приложений — иначе только что добавленное
@@ -757,6 +784,13 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
                 // без неё выбранные приложения остались бы без сети навсегда.
                 s.guard(false);
                 continue;
+            }
+            // Пакет MSIX мог обновиться прямо сейчас, под живым туннелем: exe
+            // уехал в папку с новой версией, и оба слоя перехвата смотрят в
+            // пустоту, пока приложение уже ходит напрямую. Переезд для нас — то
+            // же самое, что смена списка: конфиг надо пересобрать.
+            if s.rebind_packages() {
+                s.reapply();
             }
             let alive = s.tunnel.as_mut().map(Process::alive).unwrap_or(false);
             match (alive, s.tunnel.as_ref()) {
