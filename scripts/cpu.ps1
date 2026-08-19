@@ -282,6 +282,20 @@ function Measure-Window {
         }
     }
     $total = [double](($delta | Measure-Object Cpu -Sum).Sum)
+    # Дельта берёт только процессы, дожившие от начала окна до конца. Если
+    # sing-box за это время перезапустился, PID сменился, оба экземпляра выпали
+    # из расчёта и ЦП вышел нулём — не «стало бесплатно», а «не посчитано».
+    # Именно так выглядит неподтверждённый туннель: надзор поднимает sing-box
+    # заново каждые три секунды, и ноль в отчёте выглядел победой.
+    $sbA = @($a.Keys | Where-Object { $a[$_].Name -eq "sing-box" })
+    $sbB = @($b.Keys | Where-Object { $b[$_].Name -eq "sing-box" })
+    $appeared = @($sbB | Where-Object { $sbA -notcontains $_ }).Count
+    $vanished = @($sbA | Where-Object { $sbB -notcontains $_ }).Count
+    $restarted = ($appeared -gt 0) -or ($vanished -gt 0)
+    if ($restarted) {
+        Write-Host "  sing-box перезапускался внутри окна (PID сменился): его ЦП занижен или обнулён." -ForegroundColor Yellow
+        Write-Host "  Так ведёт себя неподтверждённый туннель — сравнивать такой замер нельзя." -ForegroundColor Yellow
+    }
     $mine = @($delta | Where-Object { $_.Name -eq "sing-box" })
     $myCpu = [double](($mine | Measure-Object Cpu -Sum).Sum)
     $myKrn = [double](($mine | Measure-Object Krn -Sum).Sum)
@@ -302,9 +316,13 @@ function Measure-Window {
             Write-Host ("    pid {0,-8} {1,7:N2} с   в ядре {2,3:N0}%" -f $m.Pid, $m.Cpu, $(if ($m.Cpu -gt 0) { 100 * $m.Krn / $m.Cpu } else { 0 }))
         }
     }
-    $krnShare = 0
-    if ($myCpu -gt 0) { $krnShare = 100 * $myKrn / $myCpu }
-    Write-Host ("{0,-20} {1,7:N0} %   много — работа в ядре: wintun, WFP, драйвер" -f "из них в ядре:", $krnShare)
+    # При нулевом ЦП строка про долю ядра — «0 %, много работы в ядре» — читалась
+    # как вывод, хотя считать было нечего.
+    if ($myCpu -gt 0) {
+        Write-Host ("{0,-20} {1,7:N0} %   много — работа в ядре: wintun, WFP, драйвер" -f "из них в ядре:", (100 * $myKrn / $myCpu))
+    } else {
+        Write-Host "                       ЦП sing-box за окно не посчитан — см. предупреждение выше"
+    }
     $myShare = 0
     if ($total -gt 0) { $myShare = 100 * $myCpu / $total }
     Write-Host ("{0,-20} {1,7:N1} с   {2,3:N0}% машины, доля sing-box в этом — {3:N0}%" -f `
@@ -374,8 +392,9 @@ function Measure-Window {
         Cores   = $myCpu / $elapsed   # во сколько ядер это обошлось
         PerGb   = $perGb           # по счётчику туннеля; 0, если трафика не было
         TunGb   = $tunGb           # весь трафик через адаптер
-        Packets = $packets
-        Conns   = $newConns        # новых соединений за окно
+        Packets   = $packets
+        Conns     = $newConns      # новых соединений за окно
+        Restarted = $restarted     # sing-box сменил PID: числу верить нельзя
     }
 }
 
@@ -415,12 +434,20 @@ function Find-Cli {
     $null
 }
 
-function Wait-Tunnel {
-    # Смена охвата перезапускает sing-box (`final` живёт в его конфиге), и
-    # мерить надо поднявшийся, а не поднимающийся. Ждём ответа Clash API —
-    # он и означает, что процесс жив, — и даём ещё три секунды устояться.
-    for ($i = 0; $i -lt 30; $i++) {
-        if ((Get-TrafficBytes) -ge 0) { Start-Sleep -Seconds 3; return $true }
+function Get-TunnelUp($cli) {
+    # Ответа Clash API мало: он приходит от живого процесса, а не от
+    # подтверждённого туннеля. Пока проба не прошла, служба держит блокировку
+    # и каждые три секунды поднимает sing-box заново — мерить там нечего.
+    # Состояние знает только служба, и спрашивать надо её.
+    try { $out = (& $cli status 2>&1 | Out-String) } catch { return $false }
+    # Служба отвечает на языке, который ей выставили, — проверяем оба слова.
+    ($out -match "поднят") -or ($out -match "\bup,")
+}
+
+function Wait-Tunnel($cli) {
+    # Смена охвата перезапускает sing-box: `final` живёт в его конфиге.
+    for ($i = 0; $i -lt 40; $i++) {
+        if (Get-TunnelUp $cli) { Start-Sleep -Seconds 3; return $true }
         Start-Sleep -Seconds 1
     }
     $false
@@ -449,7 +476,7 @@ if ($Scope) {
         Write-Host ""
         Write-Host "переключаю охват на «$other»…"
         & $cli scope $other | Out-Null
-        if (-not (Wait-Tunnel)) {
+        if (-not (Wait-Tunnel $cli)) {
             Write-Host "  туннель не поднялся после смены охвата — замер отменён" -ForegroundColor Red
             $second = $null
         } else {
@@ -461,7 +488,7 @@ if ($Scope) {
         Write-Host ""
         Write-Host "возвращаю охват «$was»…"
         & $cli scope $was | Out-Null
-        [void](Wait-Tunnel)
+        [void](Wait-Tunnel $cli)
     }
 
     Write-Host ""
@@ -472,6 +499,12 @@ if ($Scope) {
     }
     Write-Host ("{0,-22} {1,6:N2} ядра, {2:N0} соединений" -f "охват «$was»:", $first.Cores, $first.Conns)
     Write-Host ("{0,-22} {1,6:N2} ядра, {2:N0} соединений" -f "охват «$other»:", $second.Cores, $second.Conns)
+    if ($first.Restarted -or $second.Restarted) {
+        Write-Host "  Вывода не будет: sing-box перезапускался внутри окна, и его ЦП там не посчитан." -ForegroundColor Red
+        Write-Host "  Ноль ядер здесь означает «туннель не поднялся», а не «расход исчез»: под" -ForegroundColor Red
+        Write-Host "  неподтверждённым туннелем машина сидит без сети, оттого и всё остальное тихо." -ForegroundColor Red
+        exit 1
+    }
     $drop = $first.Cores - $second.Cores
     if ([math]::Abs($drop) -lt 0.15) {
         Write-Host "  Разницы нет. process_path ни при чём — расход не от сверки процессов." -ForegroundColor Yellow
