@@ -9,8 +9,8 @@
 //!    которые не регистрируются в реестре: без сети, без файла рядом с exe.
 //! 2. Реестр Windows — то, что система и так знает об установленном:
 //!    `Uninstall` (имя + `DisplayIcon`, почти всегда главный exe) и `App Paths`
-//!    (имя exe → полный путь). Каталог покрывал три десятка программ, реестр —
-//!    всё, что человек ставил сам.
+//!    (имя exe → полный путь), у машины и у каждого пользователя в `HKEY_USERS`.
+//!    Каталог покрывал три десятка программ, реестр — всё, что человек ставил сам.
 //! 3. Пакеты MSIX (Store, winget) — их нет ни в `Uninstall`, ни в `App Paths`,
 //!    а путь вида `…\WindowsApps\Claude_1.6608.0.0_x64__pzs8sxrjxfjjc\app` несёт
 //!    в себе версию и меняется при каждом обновлении, так что шаблоном каталога
@@ -116,9 +116,11 @@ fn user_vars(profile: &str) -> Vec<(&'static str, String)> {
 /// SERVICE: именно их окружение служба и так видит, и именно оно бесполезно.
 // Список профилей читается только на Windows, но фильтр SID проверяется везде —
 // иначе на Linux он числился бы мёртвым кодом.
+/// В `HKEY_USERS` рядом с профилем лежит его же ветка классов
+/// (`S-1-5-21-…_Classes`) — то же самое, только про ассоциации файлов.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn is_user_sid(sid: &str) -> bool {
-    sid.starts_with("S-1-5-21-")
+    sid.starts_with("S-1-5-21-") && !sid.ends_with("_Classes")
 }
 
 #[cfg(not(windows))]
@@ -270,40 +272,50 @@ fn from_registry() -> Vec<Found> {
 
 #[cfg(windows)]
 fn from_registry() -> Vec<Found> {
-    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ};
+    use winreg::enums::KEY_READ;
     use winreg::RegKey;
 
-    const UNINSTALL: [(winreg::HKEY, &str); 3] = [
-        (HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-        // 32-битные программы на 64-битной системе живут в своей ветке.
-        (HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
-        (HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    // Ветки есть и у машины, и у каждого пользователя; 32-битные программы на
+    // 64-битной системе живут в своей.
+    const UNINSTALL: [&str; 2] = [
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
     ];
-    const APP_PATHS: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths";
+    const APP_PATHS: [&str; 2] = [
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths",
+        r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths",
+    ];
 
     let mut out = Vec::new();
-    for (hive, branch) in UNINSTALL {
-        let Ok(root) = RegKey::predef(hive).open_subkey_with_flags(branch, KEY_READ) else { continue };
+    for (hive, branch) in branches(&UNINSTALL) {
+        let Ok(root) = RegKey::predef(hive).open_subkey_with_flags(&branch, KEY_READ) else { continue };
         for key in root.enum_keys().flatten() {
             let Ok(entry) = root.open_subkey_with_flags(&key, KEY_READ) else { continue };
             // Обновления и системные компоненты — не программы пользователя.
             if entry.get_value::<u32, _>("SystemComponent").unwrap_or(0) == 1 {
                 continue;
             }
-            let (Ok(name), Ok(resource)) =
-                (entry.get_value::<String, _>("DisplayName"), entry.get_value::<String, _>("DisplayIcon"))
-            else {
-                continue;
-            };
-            if let Some(path) = exe_from_icon_resource(&resource) {
-                out.push(Found { name: name.trim().to_string(), path });
+            let Ok(name) = entry.get_value::<String, _>("DisplayName") else { continue };
+            let name = name.trim();
+            // `DisplayIcon` — почти всегда главный exe, но пишут его не все;
+            // тогда остаётся каталог установки, где exe надо ещё и опознать.
+            let path = entry
+                .get_value::<String, _>("DisplayIcon")
+                .ok()
+                .and_then(|resource| exe_from_icon_resource(&resource))
+                .or_else(|| {
+                    let location = entry.get_value::<String, _>("InstallLocation").ok()?;
+                    main_exe(Path::new(&expand(location.trim(), &[])?), name)
+                });
+            if let Some(path) = path {
+                out.push(Found { name: name.to_string(), path });
             }
         }
     }
     // `App Paths` — канонический ответ Windows на вопрос «где лежит этот exe».
     // Подбирает то, у чего в `Uninstall` иконкой стоит `.ico`.
-    for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
-        let Ok(root) = RegKey::predef(hive).open_subkey_with_flags(APP_PATHS, KEY_READ) else { continue };
+    for (hive, branch) in branches(&APP_PATHS) {
+        let Ok(root) = RegKey::predef(hive).open_subkey_with_flags(&branch, KEY_READ) else { continue };
         for key in root.enum_keys().flatten() {
             let Ok(entry) = root.open_subkey_with_flags(&key, KEY_READ) else { continue };
             let Ok(raw) = entry.get_value::<String, _>("") else { continue };
@@ -316,6 +328,53 @@ fn from_registry() -> Vec<Found> {
         }
     }
     out
+}
+
+/// Одна и та же ветка у машины и у каждого пользователя. Собственный
+/// `HKEY_CURRENT_USER` службе бесполезен ровно так же, как её `%USERPROFILE%`:
+/// под LocalSystem это hive SYSTEM, и установленного «для меня» — VS Code,
+/// Discord, Telegram — там нет вовсе. Настоящие ветки лежат в `HKEY_USERS`.
+///
+/// ponytail: видны только загруженные hive, то есть вошедших в систему. Профиль
+/// вышедшего лежит файлом `NTUSER.DAT` и требует `RegLoadKey` с
+/// `SeRestorePrivilege`. Потолок — программы такого пользователя не найдутся;
+/// апгрейд — грузить hive руками, когда это кому-нибудь понадобится.
+#[cfg(windows)]
+fn branches(under: &[&str]) -> Vec<(winreg::HKEY, String)> {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, HKEY_USERS, KEY_READ};
+    use winreg::RegKey;
+
+    let mut out: Vec<(winreg::HKEY, String)> =
+        under.iter().map(|branch| (HKEY_LOCAL_MACHINE, branch.to_string())).collect();
+    let Ok(users) = RegKey::predef(HKEY_USERS).open_subkey_with_flags("", KEY_READ) else { return out };
+    for sid in users.enum_keys().flatten().filter(|sid| is_user_sid(sid)) {
+        out.extend(under.iter().map(|branch| (HKEY_USERS, format!(r"{sid}\{branch}"))));
+    }
+    out
+}
+
+/// Какой exe в каталоге установки главный — вопрос без надёжного ответа, а
+/// ошибиться тут дороже, чем промолчать: в туннель попадёт не то приложение.
+/// Поэтому только два бесспорных случая — имя exe совпадает с именем программы
+/// или exe в каталоге ровно один. Деинсталляторы не в счёт: они есть почти
+/// везде и «единственным» exe оказались бы чаще всех.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn main_exe(dir: &Path, name: &str) -> Option<String> {
+    let simplify = |s: &str| s.to_lowercase().replace([' ', '-', '_'], "");
+    let mut exes: Vec<String> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|file| file.to_lowercase().ends_with(".exe"))
+        .filter(|file| !file.to_lowercase().starts_with("unins"))
+        .collect();
+    let wanted = simplify(name);
+    exes.sort();
+    let exe = exes
+        .iter()
+        .find(|file| simplify(file.trim_end_matches(".exe")) == wanted)
+        .or_else(|| exes.first().filter(|_| exes.len() == 1))?;
+    Some(dir.join(exe).to_string_lossy().into_owned())
 }
 
 /// Пакеты MSIX лежат в одном общем каталоге, папкой на пакет, и какой exe в
@@ -496,6 +555,27 @@ mod tests {
         assert!(!is_user_sid("S-1-5-19"), "LOCAL SERVICE");
         assert!(!is_user_sid("S-1-5-20"), "NETWORK SERVICE");
         assert!(!is_user_sid(".DEFAULT"));
+        assert!(!is_user_sid("S-1-5-21-3623811015-3361044348-30300820-1013_Classes"), "ветка классов, не профиль");
+    }
+
+    /// Запись без `DisplayIcon` — половина установщиков MSI. Промолчать про неё
+    /// дешевле, чем угадать не тот exe: угаданное попадёт в туннель как есть.
+    #[test]
+    fn picks_main_exe_from_install_location() {
+        let dir = std::env::temp_dir().join("pg-location-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("solo")).unwrap();
+        std::fs::write(dir.join("solo/tool.exe"), b"").unwrap();
+        std::fs::write(dir.join("solo/unins000.exe"), b"").unwrap();
+        assert!(main_exe(&dir.join("solo"), "Что-то своё").unwrap().ends_with("tool.exe"), "единственный exe");
+
+        std::fs::create_dir_all(dir.join("many")).unwrap();
+        for exe in ["Cool App.exe", "crashpad.exe", "helper.exe"] {
+            std::fs::write(dir.join("many").join(exe), b"").unwrap();
+        }
+        assert!(main_exe(&dir.join("many"), "Cool App").unwrap().ends_with("Cool App.exe"), "имя совпало с программой");
+        assert_eq!(main_exe(&dir.join("many"), "Совсем другое"), None, "гадать среди нескольких не будем");
+        assert_eq!(main_exe(&dir.join("нет"), "X"), None, "каталога нет");
     }
 
     /// Имена браузеров — единственная связь кода с каталогом по имени: их
