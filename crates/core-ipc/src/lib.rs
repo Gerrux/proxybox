@@ -160,6 +160,27 @@ pub struct BrowserProfile {
     pub lang: String,
 }
 
+/// Одно живое соединение sing-box, как его видит Clash API. Смысл этого списка
+/// не в счётчиках, а в колонке `tunneled`: правило по `process_path` сверяет
+/// путь побайтово, и промах у него тихий — приложение уходит мимо туннеля, не
+/// переставая считаться защищённым. Здесь этот промах видно глазами.
+///
+/// Ничего не хранится: список собирается на запрос и живёт до ответа.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Conn {
+    /// Путь к процессу-владельцу целиком, как его отдал sing-box. Пусто — он
+    /// его не определил: так выглядит трафик без процесса за ним (DNS, служба,
+    /// драйвер), и в охвате «весь компьютер» его особенно много.
+    pub process: String,
+    /// Куда: домен, если он известен, иначе адрес назначения, и порт рядом.
+    pub host: String,
+    /// Идёт ли соединение в туннель. Считается по цепочке маршрутов, а не по
+    /// списку приложений: список — это намерение, а цепочка — то, что вышло.
+    pub tunneled: bool,
+    pub rx: u64,
+    pub tx: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", content = "arg", rename_all = "kebab-case")]
 pub enum Request {
@@ -226,6 +247,16 @@ pub enum Request {
     /// Убрать браузерный профиль. Сеанс его гаснет, а каталог с куками сносит
     /// клиент: он лежит в `%LOCALAPPDATA%` человека, куда службе не дотянуться.
     RemoveBrowserProfile { name: String },
+    /// Живые соединения туннеля: кто, куда, каким маршрутом и сколько байт.
+    /// Спрашивается по требованию и только пока панель открыта — служба
+    /// соединения не хранит, не пишет в журнал и не сохраняет на диск. Это тот
+    /// же принцип «ни логов трафика»: посмотреть можно, накопить — нет.
+    Connections,
+    /// Переписать настройки службы целиком. Туннель при этом не трогается:
+    /// ни одно из полей не меняет судьбу уже поднятого sing-box — путь к
+    /// бинарнику действует со следующего запуска, проба и страна со следующего
+    /// измерения, сверка подписок со следующего круга.
+    SetSettings { settings: Settings },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -283,6 +314,47 @@ pub struct App {
 pub struct LogLine {
     pub at: u64,
     pub text: String,
+    /// Сломалось, а не случилось. Флагом, а не уровнем: у службы их ровно два —
+    /// «сделано» и «не вышло», и третьего ей неоткуда взять. Без этой отметки
+    /// «туннель поднят» и «туннель недоступен» в ленте выглядят одинаково, а
+    /// читают её как раз тогда, когда искать глазами уже некогда.
+    #[serde(default)]
+    pub bad: bool,
+}
+
+/// Настройки службы. Всё, что раньше жило только в переменных окружения и
+/// потому было недоступно тому, у кого продукт установлен, а не собран.
+///
+/// Одной структурой, а не командой на поле: полей четыре, меняют их разом
+/// (экран настроек отдаёт весь набор), а команда на каждое — это четыре ветки
+/// в `handle()`, четыре разбора в CLI и четыре типа во фронтенде.
+///
+/// Переменная окружения по-прежнему сильнее настройки: ею пользуются e2e и
+/// разработка, и молча проиграть сохранённому полю она не должна. Служба
+/// говорит об этом строкой в журнале при старте — иначе тумблер в окне не
+/// липнет, и понять почему неоткуда.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Settings {
+    /// Сверять подписки в фоне раз в шесть часов. `PG_REFRESH=0` — то же самое.
+    pub refresh: bool,
+    /// Куда стучится проба, `host:port`. Пусто — сам сервер выбранного узла:
+    /// сторонних адресов продукт по умолчанию не трогает. `PG_PROBE` сильнее.
+    pub probe: String,
+    /// Путь к бинарнику sing-box. Пусто — рядом со службой, иначе `PATH`.
+    /// `PG_SINGBOX` сильнее.
+    pub singbox: String,
+    /// Спрашивать точку выхода у внешнего сервиса. Единственный запрос службы
+    /// наружу, и потому он выключаемый. `PG_GEO=0` — то же самое.
+    pub geo: bool,
+}
+
+/// Умолчания — то же поведение, что было до появления настроек: подписки
+/// сверяются, проба идёт на сервер пользователя, sing-box ищется рядом,
+/// страна спрашивается.
+impl Default for Settings {
+    fn default() -> Self {
+        Self { refresh: true, probe: String::new(), singbox: String::new(), geo: true }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -326,6 +398,17 @@ pub struct Status {
     /// лежат входы человека, и потерять имя значило бы потерять и вход.
     #[serde(default)]
     pub browser_profiles: Vec<BrowserProfile>,
+    /// Настройки службы — уже с учётом переменных окружения: окно показывает
+    /// то, что действует, а не то, что записано в state.json.
+    #[serde(default)]
+    pub settings: Settings,
+    /// Когда подписки последний раз пришли с панели, unix-секунды. Переживает
+    /// перезапуск: по этой же отметке служба решает, не пора ли сверяться, —
+    /// иначе срок отсчитывался бы от старта, и на машине, которую выключают на
+    /// ночь, шесть часов аптайма не набирались бы никогда. `None` — не
+    /// сверялись ни разу: список узлов ровно такой, каким его завели руками.
+    #[serde(default)]
+    pub refreshed_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -338,6 +421,10 @@ pub enum Response {
     Done,
     /// Локальный порт mixed-прокси, поднятого под профиль (`Browse`).
     Proxy { port: u16 },
+    /// Живые соединения. `total` — сколько их было всего: в списке едут только
+    /// самые говорливые, и без этого числа обрезанный список читался бы как
+    /// полный.
+    Connections { conns: Vec<Conn>, total: usize },
     Error { message: String },
 }
 
@@ -516,6 +603,15 @@ mod tests {
                 },
             },
             Request::RemoveBrowserProfile { name: "работа".into() },
+            Request::Connections,
+            Request::SetSettings {
+                settings: Settings {
+                    refresh: false,
+                    probe: "1.1.1.1:443".into(),
+                    singbox: r"C:\Program Files\sing-box\sing-box.exe".into(),
+                    geo: false,
+                },
+            },
         ];
         for r in reqs {
             let s = serde_json::to_string(&r).unwrap();
@@ -544,13 +640,23 @@ mod tests {
                     error: None,
                     at: 1_755_000_000,
                 }],
-                log: vec![LogLine { at: 1_755_000_000, text: "туннель поднят".into() }],
+                log: vec![LogLine { at: 1_755_000_000, text: "туннель поднят".into(), bad: false }],
                 ..Default::default()
             }),
             Response::Apps(vec![]),
             Response::Icon(Some("data:image/png;base64,iVBOR".into())),
             Response::Icon(None),
             Response::Done,
+            Response::Connections {
+                conns: vec![Conn {
+                    process: r"C:\Program Files\Google\Chrome\chrome.exe".into(),
+                    host: "example.com:443".into(),
+                    tunneled: true,
+                    rx: 1024,
+                    tx: 512,
+                }],
+                total: 17,
+            },
             Response::Error { message: "нет".into() },
         ];
         for r in resps {

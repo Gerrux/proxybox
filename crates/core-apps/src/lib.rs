@@ -707,9 +707,145 @@ fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     tag.split_once(&format!("{name}=\""))?.1.split('"').next()
 }
 
+/// Значок окна браузерного сеанса — тот, что видно в панели задач.
+///
+/// Живёт здесь, а не в оболочке, по одной причине: `src-tauri` — отдельный
+/// Cargo-проект вне воркспейса, и `cargo check --workspace --target
+/// x86_64-pc-windows-msvc` его не трогает. Полсотни строк небезопасных вызовов
+/// Win32, которые нигде, кроме живой Windows, даже не компилируются, — плохая
+/// сделка; здесь их проверяет тот же прогон, что и всё остальное.
+///
+/// Заменить иконку самого Chromium нельзя: она лежит в ресурсах `chrome.exe`,
+/// и аргументом командной строки не переопределяется. Зато окну можно послать
+/// свою (`WM_SETICON`) — панель задач берёт значок кнопки из окна.
+///
+/// ponytail: красим окна, которые есть на момент вызова. Откроет человек из
+/// того же сеанса второе окно — у него будет значок Chrome. Потолок — первое
+/// окно сеанса; апгрейд — свой хук на появление окон процесса, а это уже
+/// `SetWinEventHook` и цикл сообщений в отдельном потоке.
+#[cfg(windows)]
+pub fn set_window_icon(pid: u32, icon: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::{BOOL, PCWSTR};
+    use windows::Win32::Foundation::{FALSE, HWND, LPARAM, TRUE, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindow, GetWindowThreadProcessId, IsWindowVisible, LoadImageW, SendMessageW, GW_OWNER,
+        ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_LOADFROMFILE, WM_SETICON,
+    };
+
+    struct Found {
+        pid: u32,
+        hwnd: HWND,
+    }
+
+    /// У Chrome полно окон без рамки — служебных, невидимых, принадлежащих
+    /// другим окнам. В панели задач видно ровно то, у которого нет владельца и
+    /// которое показано; ему значок и нужен.
+    unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let found = unsafe { &mut *(lparam.0 as *mut Found) };
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        let top = unsafe { GetWindow(hwnd, GW_OWNER) }.is_err();
+        if pid == found.pid && top && unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            found.hwnd = hwnd;
+            return FALSE; // нашли — перечислять дальше нечего
+        }
+        TRUE
+    }
+
+    let mut found = Found { pid, hwnd: HWND::default() };
+    let _ = unsafe { EnumWindows(Some(visit), LPARAM(&mut found as *mut Found as isize)) };
+    if found.hwnd.is_invalid() {
+        return false;
+    }
+    let path: Vec<u16> = icon.as_os_str().encode_wide().chain([0]).collect();
+    // Два размера, а не один: панель задач берёт большой, заголовок окна и
+    // Alt+Tab — маленький, и растянутый из большого выглядит грязно.
+    let big = unsafe { LoadImageW(None, PCWSTR(path.as_ptr()), IMAGE_ICON, 32, 32, LR_LOADFROMFILE) };
+    let small = unsafe { LoadImageW(None, PCWSTR(path.as_ptr()), IMAGE_ICON, 16, 16, LR_LOADFROMFILE) };
+    let (Ok(big), Ok(small)) = (big, small) else { return false };
+    unsafe {
+        SendMessageW(found.hwnd, WM_SETICON, Some(WPARAM(ICON_BIG as usize)), Some(LPARAM(big.0 as isize)));
+        SendMessageW(found.hwnd, WM_SETICON, Some(WPARAM(ICON_SMALL as usize)), Some(LPARAM(small.0 as isize)));
+    }
+    true
+}
+
+/// Значок профиля: круг заданного цвета. Байты `.ico` собираются руками —
+/// формат тривиален (заголовок, `BITMAPINFOHEADER`, пиксели снизу вверх, пустая
+/// маска), а декодер PNG ради одного круга был бы дороже всего остального.
+///
+/// Цвет приходит снаружи, а не считается здесь: тот же цвет окно рисует точкой
+/// в списке профилей, и посчитанный дважды он разъехался бы на первой же правке
+/// палитры — а разъехавшись, стал бы врать про то, какое окно чьё.
+///
+/// Круг, а не буква: буква требует шрифта и растеризации, а различить окна
+/// хватает цвета — панель задач показывает значок размером с ноготь.
+pub fn icon_bytes((r, g, b): (u8, u8, u8)) -> Vec<u8> {
+    const SIZE: usize = 32;
+
+    // Пиксели снизу вверх и в порядке BGRA — так их читает Windows.
+    let mut pixels = Vec::with_capacity(SIZE * SIZE * 4);
+    for row in (0..SIZE).rev() {
+        for col in 0..SIZE {
+            // Четыре подпробы на пиксель: край круга в 32 точках без этого
+            // выглядит рваным, а полноценное сглаживание тут не нужно.
+            let mut inside = 0u32;
+            for (dy, dx) in [(0.25, 0.25), (0.25, 0.75), (0.75, 0.25), (0.75, 0.75)] {
+                let y = row as f32 + dy - SIZE as f32 / 2.0;
+                let x = col as f32 + dx - SIZE as f32 / 2.0;
+                if x * x + y * y <= 15.0 * 15.0 {
+                    inside += 1;
+                }
+            }
+            pixels.extend_from_slice(&[b, g, r, (inside * 255 / 4) as u8]);
+        }
+    }
+    // Маска прозрачности старого формата: у 32-битного значка её роль играет
+    // альфа-канал, но поле обязано присутствовать — нулями.
+    let mask = vec![0u8; SIZE * SIZE / 8];
+    let header: [u8; 40] = {
+        let mut h = [0u8; 40];
+        h[0] = 40; // размер BITMAPINFOHEADER
+        h[4..8].copy_from_slice(&(SIZE as u32).to_le_bytes());
+        // Высота вдвое больше настоящей: в неё считают и картинку, и маску.
+        h[8..12].copy_from_slice(&(SIZE as u32 * 2).to_le_bytes());
+        h[12..14].copy_from_slice(&1u16.to_le_bytes()); // плоскостей
+        h[14..16].copy_from_slice(&32u16.to_le_bytes()); // бит на пиксель
+        h
+    };
+    let image_len = header.len() + pixels.len() + mask.len();
+
+    let mut ico = Vec::with_capacity(22 + image_len);
+    ico.extend_from_slice(&[0, 0, 1, 0, 1, 0]); // ICONDIR: значок, одна картинка
+    ico.extend_from_slice(&[SIZE as u8, SIZE as u8, 0, 0]); // ширина, высота, палитра, резерв
+    ico.extend_from_slice(&1u16.to_le_bytes()); // плоскостей
+    ico.extend_from_slice(&32u16.to_le_bytes()); // бит на пиксель
+    ico.extend_from_slice(&(image_len as u32).to_le_bytes());
+    ico.extend_from_slice(&22u32.to_le_bytes()); // смещение картинки
+    ico.extend_from_slice(&header);
+    ico.extend_from_slice(&pixels);
+    ico.extend_from_slice(&mask);
+    ico
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Значок собирается руками, и ошибка в смещении делает файл, который
+    /// Windows молча не покажет. Проверяем то, на что она смотрит: подпись,
+    /// длину и заявленный размер картинки.
+    #[test]
+    fn icon_is_a_valid_ico() {
+        let ico = icon_bytes((0x4c, 0x8d, 0xff));
+        assert_eq!(&ico[..6], &[0, 0, 1, 0, 1, 0], "подпись ICONDIR");
+        assert_eq!(ico.len(), 22 + 40 + 32 * 32 * 4 + 32 * 32 / 8, "заголовок, пиксели и маска");
+        let len = u32::from_le_bytes(ico[14..18].try_into().unwrap()) as usize;
+        let offset = u32::from_le_bytes(ico[18..22].try_into().unwrap()) as usize;
+        assert_eq!(offset + len, ico.len(), "картинка обязана кончаться вместе с файлом");
+        assert_ne!(icon_bytes((0x4c, 0x8d, 0xff)), icon_bytes((0x2e, 0xb8, 0x72)), "цвет доезжает до пикселей");
+    }
 
     #[test]
     fn catalog_is_sane() {

@@ -310,3 +310,161 @@ body {
     }
   }
 }
+
+/* Раскладка окна по его ширине. Правила лежат здесь, а не классами Tailwind:
+   они переключают display у тех же узлов, что и утилиты, а нелоенный CSS в
+   этом споре выигрывает у @layer utilities независимо от порядка — иначе
+   «панель видна/скрыта» зависело бы от того, как Tailwind отсортировал файл.
+
+   Ниже 1100 px одна панель за раз: список профилей после пары подписок длиннее
+   любого окна, и делить с ним высоту журналу, который читают post factum,
+   нечем. Выше — прятать нечего, и все три стоят рядом. */
+.panes {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+
+.pane {
+  display: none;
+}
+
+.pane-on {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Узкая полоса табов и широкая «Главная» — одна и та же навигация в двух
+   видах. Браузерные профили остаются вкладкой на любой ширине: в сетку из трёх
+   панелей четвёртый список не влезает, а увести его некуда. */
+.tab-wide {
+  display: none;
+}
+
+@media (min-width: 1100px) {
+  .tab-narrow {
+    display: none;
+  }
+
+  /* Осталась развилка из двух кнопок — растягивать её на всю ширину окна
+     нечего: полоса ужимается по содержимому. */
+  .tabs {
+    align-self: flex-start;
+  }
+
+  .tabs > button {
+    flex: none;
+  }
+
+  .tab-wide {
+    display: inline-flex;
+  }
+
+  .panes {
+    display: grid;
+    grid-template-columns: minmax(300px, 1fr) 1.4fr minmax(260px, 0.9fr);
+  }
+
+  .pane {
+    display: flex;
+    min-width: 0;
+  }
+}
+
+/* Плашка из трея — единственная ширина, где приборная линейка сжимается в
+   строку: подписи уходят в подсказки, точка выхода остаётся флагом, счётчики —
+   стрелками. Шапка при этом занимает 125 px вместо 258, и списку достаётся то,
+   ради чего окно и открыли. */
+.m-icon {
+  display: none;
+}
+
+@media (max-width: 470px) {
+  .st {
+    padding: 9px 11px;
+  }
+
+  /* Заголовок и тумблер встают в одну строку и не переносятся: перенос отдал бы
+     кнопке целую строку, а её высота тут и есть тот дефицит, ради которого всё. */
+  .st-head {
+    flex-wrap: nowrap;
+    gap: 8px;
+  }
+
+  .st-title {
+    font-size: 16px;
+    letter-spacing: 0.03em;
+  }
+
+  .st-hint {
+    margin-top: 3px;
+    font-size: 11px;
+    line-height: 1.3;
+  }
+
+  .st-cond {
+    margin-top: 8px;
+  }
+
+  .st-metrics {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    margin-top: 8px;
+    padding-top: 8px;
+    column-gap: 12px;
+    row-gap: 4px;
+  }
+
+  .m-cell {
+    display: flex;
+    flex: none;
+    align-items: baseline;
+    gap: 5px;
+    border: 0;
+    padding: 0;
+  }
+
+  /* Имя профиля забирает остаток строки: остальные четыре ячейки — короткие. */
+  .m-cell:first-child {
+    min-width: 90px;
+    flex: 1;
+  }
+
+  /* Подпись уходит с глаз, но не из разметки: display:none унёс бы её и от
+     чтения с экрана, а «399 MB» без «принято» не значит ничего. */
+  .m-label {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .m-country {
+    display: none;
+  }
+
+  .m-icon {
+    display: inline-flex;
+  }
+
+  .m-value {
+    margin-top: 0;
+    font-size: 13px;
+  }
+
+  .st-toggle {
+    height: 32px;
+    min-width: 104px;
+    max-width: 112px;
+    flex: none;
+    padding: 0 10px;
+  }
+
+  .tb-name,
+  .tb-version {
+    display: none;
+  }
+}

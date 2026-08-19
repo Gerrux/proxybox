@@ -4,6 +4,26 @@
 
 !include LogicLib.nsh
 
+!macro NSIS_HOOK_PREINSTALL
+  ; Пока служба работает, заняты и её exe, и sing-box рядом: NSIS отвечает на
+  ; `File` окном «Error opening file for writing», и исправное обновление
+  ; выглядит сломанным установщиком. Своё окно Tauri закрывает сам
+  ; (CheckIfAppIsRunning), но сайдкары ему неизвестны — гасим службу здесь, до
+  ; копирования файлов. `net stop` вместо `sc stop`: второй возвращает
+  ; управление на STOP_PENDING, то есть ровно тогда, когда файлы ещё заняты.
+  ; Вместе со службой уходит и её sing-box — она сама его убивает при остановке,
+  ; сама же снимает и правила брандмауэра.
+  ;
+  ; Останавливаем, но не удаляем: удалённую службу SCM держит помеченной
+  ; MARKED_FOR_DELETE, пока открыт хоть один дескриптор, и регистрация после
+  ; установки упёрлась бы в это до перезагрузки.
+  DetailPrint "Остановка службы Privacy Gateway на время установки..."
+  nsExec::ExecToLog 'net stop PrivacyGateway'
+  ; Код не проверяем: «служба не установлена» и «уже остановлена» — норма, а
+  ; настоящую занятость файла установщик покажет сам.
+  Pop $0
+!macroend
+
 !macro NSIS_HOOK_POSTINSTALL
   DetailPrint "Регистрация службы Privacy Gateway..."
   nsExec::ExecToLog '"$INSTDIR\pg-service.exe" install'

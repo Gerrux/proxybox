@@ -2,6 +2,8 @@
 // ponytail: типы контракта продублированы с Rust вручную. Генератор (ts-rs)
 // оправдан, когда типов станет заметно больше шести.
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export type Tunnel = "off" | "connecting" | "up" | "down";
 
@@ -11,7 +13,7 @@ export type App = { path: string; name: string; enabled: boolean };
 
 /** Строка журнала со временем записи (unix-секунды): возраст словами считает
  *  окно — служба не знает ни часового пояса того, кто смотрит, ни его языка. */
-export type LogLine = { at: number; text: string };
+export type LogLine = { at: number; text: string; /** Сломалось, а не случилось. */ bad: boolean };
 
 /** Последнее известное про профиль: либо задержка, либо причина отказа, плюс
  *  точка выхода. Точку выхода спрашивают у ответивших — при `PG_GEO=0` её не
@@ -47,6 +49,26 @@ export type BrowserProfile = {
   lang: string;
 };
 
+/** Одно живое соединение туннеля. Смысл не в счётчиках, а в `tunneled`:
+ *  правило по `process_path` сверяет путь побайтово, и промах у него тихий —
+ *  приложение уходит мимо туннеля, не переставая считаться защищённым. Здесь
+ *  этот промах видно глазами.
+ *
+ *  Ничего не хранится ни в службе, ни здесь: список спрашивается, пока панель
+ *  открыта, и умирает вместе с ней. */
+export type Conn = {
+  /** Путь к процессу-владельцу целиком. Пусто — sing-box его не определил: так
+   *  выглядит трафик без процесса за ним (DNS, служба, драйвер). */
+  process: string;
+  /** Куда: домен, если известен, иначе адрес назначения, и порт рядом. */
+  host: string;
+  /** Идёт ли соединение в туннель — по цепочке маршрутов, а не по списку
+   *  приложений: список это намерение, цепочка — то, что вышло. */
+  tunneled: boolean;
+  rx: number;
+  tx: number;
+};
+
 export type Status = {
   tunnel: Tunnel;
   profile: string | null;
@@ -61,6 +83,8 @@ export type Status = {
   subscriptions: string[];
   lang: Lang;
   log: LogLine[];
+  /** Когда подписки последний раз пришли с панели, unix-секунды. */
+  refreshed_at: number | null;
   probes: Probe[];
   /** Профили, под которыми сейчас подняты прокси окон браузера. С `tunnel` не
    *  связаны: браузер ходит своим sing-box мимо общего режима, а сеансов бывает
@@ -68,6 +92,24 @@ export type Status = {
   browsers: string[];
   /** Заведённые браузерные профили. */
   browser_profiles: BrowserProfile[];
+  /** Настройки службы — уже действующие: переменные окружения к ним применены,
+   *  и окно показывает то, что работает, а не то, что записано на диск. */
+  settings: Settings;
+};
+
+/** Настройки службы. Всё, что до этого жило только в переменных окружения и
+ *  потому было доступно тому, кто продукт собрал, а не тому, кто установил. */
+export type Settings = {
+  /** Сверять подписки в фоне. */
+  refresh: boolean;
+  /** Цель пробы, `host:port`. Пусто — сервер самого узла: сторонних адресов
+   *  продукт по умолчанию не трогает. */
+  probe: string;
+  /** Путь к бинарнику sing-box. Пусто — рядом со службой либо `PATH`. */
+  singbox: string;
+  /** Спрашивать точку выхода у внешнего сервиса — единственный запрос службы
+   *  наружу. */
+  geo: boolean;
 };
 
 /** Отправить команду службе. Возвращает «приняли ли»: единственный, кому это
@@ -104,7 +146,12 @@ export type Request =
   | { cmd: "browse-stop"; arg: { profile: string } }
   /** Завести браузерный профиль либо переписать такой же по имени. */
   | { cmd: "set-browser-profile"; arg: { profile: BrowserProfile } }
-  | { cmd: "remove-browser-profile"; arg: { name: string } };
+  | { cmd: "remove-browser-profile"; arg: { name: string } }
+  /** Настройки службы приходят набором целиком: команда на поле означала бы
+   *  четыре ветки в службе ради экрана, который отдаёт их разом. */
+  | { cmd: "set-settings"; arg: { settings: Settings } }
+  /** Живые соединения туннеля. Спрашивается только пока панель открыта. */
+  | { cmd: "connections" };
 
 export type Response =
   | { reply: "status"; data: Status }
@@ -114,6 +161,9 @@ export type Response =
   | { reply: "done" }
   /** Порт локального прокси, поднятого под профиль. */
   | { reply: "proxy"; data: { port: number } }
+  /** Живые соединения; `total` — сколько их всего: в списке едут только самые
+   *  говорливые, и без этого числа обрезанный список читался бы как полный. */
+  | { reply: "connections"; data: { conns: Conn[]; total: number } }
   | { reply: "error"; data: { message: string } };
 
 /** Подставляется сборкой из src-tauri/tauri.conf.json (см. vite.config.ts). */
@@ -137,7 +187,7 @@ export async function openUrl(url: string): Promise<void> {
  *  отдаёт порт, браузер запускает оболочка — фронтенд живёт в вебвью, процессов
  *  ему не завести. Она же дожидается закрытия окна и гасит сеанс, поэтому
  *  «закрыть» отсюда не вызывается вовсе. */
-export async function browse(profile: BrowserProfile): Promise<void> {
+export async function browse(profile: BrowserProfile, color: string): Promise<void> {
   const r = await call({ cmd: "browse", arg: { profile: profile.name } });
   if (r.reply !== "proxy") {
     throw new Error(r.reply === "error" ? r.data.message : "служба не вернула порт");
@@ -153,6 +203,8 @@ export async function browse(profile: BrowserProfile): Promise<void> {
     profile: profile.name,
     ua: profile.ua,
     lang: profile.lang,
+    // Цвет значка окна: считает его интерфейс, оболочка только красит.
+    color,
   });
 }
 
@@ -164,6 +216,56 @@ export async function forgetBrowser(profile: string): Promise<void> {
   if (isTauri()) {
     await invoke("forget_browser", { profile });
   }
+}
+
+/** Автозапуск окна с Windows: ключ `HKCU\…\Run` правит оболочка — фронтенд в
+ *  вебвью, реестра ему не видно. Службы это не касается вовсе: она в SCM и
+ *  стартует сама, автозапуск нужен значку в трее.
+ *
+ *  В разработке в браузере автозапуска нет: `false` и отказ на попытку. */
+export async function autostart(): Promise<boolean> {
+  return isTauri() ? invoke<boolean>("autostart") : false;
+}
+
+export async function setAutostart(enabled: boolean): Promise<boolean> {
+  if (!isTauri()) throw new Error("autostart: Windows only");
+  return invoke<boolean>("set_autostart", { enabled });
+}
+
+/** Плашка из трея — то же приложение во втором окне (`tray` в `src-tauri`).
+ *  Отличать её надо: рамки у неё нет и быть не должно, разворачивать некуда, а
+ *  «закрыть» для неё значит спрятаться. Метка окна, а не параметр адреса: окно
+ *  заводит оболочка, и метка у неё уже есть. */
+export const isFlyout = () => isTauri() && getCurrentWindow().label === "tray";
+
+/** Спрятать своё окно. Главное так уходит в трей, плашка — гаснет. */
+export async function hideWindow(): Promise<void> {
+  if (isTauri()) await getCurrentWindow().hide();
+}
+
+/** Выйти из окна совсем. Служба остаётся работать: закрывается окно, а не
+ *  продукт, — и диалог закрытия говорит об этом теми же словами. */
+export async function quitApp(): Promise<void> {
+  if (isTauri()) await invoke("quit_app");
+}
+
+/** Открыть главное окно из плашки. Через оболочку, а не из вебвью: поднять
+ *  чужое окно фронтенду нечем, а свёрнутое ещё и нужно развернуть. */
+export async function openMain(): Promise<void> {
+  if (isTauri()) await invoke("open_main");
+}
+
+/** События от оболочки: «нажали крестик» и «открой настройки» из меню значка.
+ *  Возвращает отписку — слушателей заводят в эффектах. */
+export function onShell(event: "close-requested" | "open-settings", run: () => void): () => void {
+  if (!isTauri()) return () => {};
+  let off: (() => void) | null = null;
+  let dead = false;
+  void listen(event, run).then((fn) => (dead ? fn() : (off = fn)));
+  return () => {
+    dead = true;
+    off?.();
+  };
 }
 
 export async function call(req: Request): Promise<Response> {
