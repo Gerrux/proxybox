@@ -13,7 +13,7 @@ export type App = { path: string; name: string; enabled: boolean };
 
 /** Строка журнала со временем записи (unix-секунды): возраст словами считает
  *  окно — служба не знает ни часового пояса того, кто смотрит, ни его языка. */
-export type LogLine = { at: number; text: string };
+export type LogLine = { at: number; text: string; /** Сломалось, а не случилось. */ bad: boolean };
 
 /** Последнее известное про профиль: либо задержка, либо причина отказа, плюс
  *  точка выхода. Точку выхода спрашивают у ответивших — при `PG_GEO=0` её не
@@ -83,6 +83,8 @@ export type Status = {
   subscriptions: string[];
   lang: Lang;
   log: LogLine[];
+  /** Когда подписки последний раз пришли с панели, unix-секунды. */
+  refreshed_at: number | null;
   probes: Probe[];
   /** Профили, под которыми сейчас подняты прокси окон браузера. С `tunnel` не
    *  связаны: браузер ходит своим sing-box мимо общего режима, а сеансов бывает

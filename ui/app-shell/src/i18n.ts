@@ -69,6 +69,8 @@ const RU = {
   probeFailed: "не отвечает",
   measured: (ago: string) => `Измерено ${ago}`,
   logged: (ago: string) => `Записано ${ago}`,
+  synced: (ago: string) => `Сверено ${ago}`,
+  neverSynced: "не сверялись",
   agoNow: "только что",
   agoMin: (n: number) => `${n} мин назад`,
   agoHour: (n: number) => `${n} ч назад`,
@@ -125,7 +127,7 @@ const RU = {
     "«Весь компьютер» — это не «выбрать все приложения»: под туннель попадает и трафик, за которым нет процесса, — служба, драйвер, DNS.",
   refreshSubs: "Сверка подписок",
   refreshSubsHint:
-    "Раз в сутки служба перечитывает подписки и заменяет узлы. Активный узел при этом не гаснет, а пропавший не выключает приватный режим.",
+    "Раз в шесть часов служба перечитывает подписки и заменяет узлы. Срок считается от последней сверки, а не от запуска службы. Активный узел при этом не гаснет, а пропавший не выключает приватный режим.",
   geoTitle: "Спрашивать страну",
   geoHint:
     "Единственный запрос службы наружу: страну узла спрашивают у стороннего сервиса — и только через туннель, с вашего настоящего адреса запрос не уходит. Выключите — страны в окне не будет.",
@@ -236,6 +238,8 @@ const EN: typeof RU = {
   probeFailed: "no answer",
   measured: (ago: string) => `Measured ${ago}`,
   logged: (ago: string) => `Logged ${ago}`,
+  synced: (ago: string) => `Synced ${ago}`,
+  neverSynced: "never synced",
   agoNow: "just now",
   agoMin: (n: number) => `${n} min ago`,
   agoHour: (n: number) => `${n} h ago`,
@@ -292,7 +296,7 @@ const EN: typeof RU = {
     "\"Whole computer\" is not \"select every app\": traffic with no process behind it — the service, the driver, DNS — goes into the tunnel too.",
   refreshSubs: "Subscription refresh",
   refreshSubsHint:
-    "Once a day the service re-reads the subscriptions and replaces the nodes. The active node stays up, and a node that disappeared does not turn private mode off.",
+    "Every six hours the service re-reads the subscriptions and replaces the nodes. The clock runs from the last sync, not from the service start. The active node stays up, and a node that disappeared does not turn private mode off.",
   geoTitle: "Ask for the country",
   geoHint:
     "The only request the service makes outwards: the node country is asked from a third-party service — and only through the tunnel, never from your real address. Turn it off and the window shows no country.",
@@ -370,4 +374,12 @@ export function measuredAgo(s: Strings, at: number): string | undefined {
 export function loggedAgo(s: Strings, at: number): string | undefined {
   const when = ago(s, at);
   return when && s.logged(when);
+}
+
+/** Возраст списка узлов. Без него по строке подписки не отличить список,
+ *  пришедший час назад, от импортированного в прошлом месяце и с тех пор ни
+ *  разу не сверенного: адрес-то один и тот же. */
+export function syncedAgo(s: Strings, at: number | null): string {
+  const when = at ? ago(s, at) : undefined;
+  return when ? s.synced(when) : s.neverSynced;
 }

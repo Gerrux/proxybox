@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Act, Probe, Status } from "./platform";
-import { measuredAgo, strings } from "./i18n";
+import { measuredAgo, strings, syncedAgo } from "./i18n";
 import { AddField, Button, ConfirmButton, Empty, flag, Panel, SearchField } from "./ui";
 
 /** Со скольких профилей список перестаёт читаться глазом. Порог тот же, что у
@@ -119,6 +119,12 @@ export function Profiles({
               {s.subscriptions}
               <span className="font-sans text-[11px] font-normal normal-case tracking-normal">
                 {subscriptions.length}
+              </span>
+              {/* Возраст списка, а не адреса: узлы в подписке меняет панель, и
+                  по одному адресу не видно, пришли они час назад или лежат тут
+                  с прошлого месяца. */}
+              <span className="ml-auto font-sans text-[11px] font-normal normal-case tracking-normal">
+                {syncedAgo(s, status?.refreshed_at ?? null)}
               </span>
             </h3>
             <ul className="flex flex-col">
