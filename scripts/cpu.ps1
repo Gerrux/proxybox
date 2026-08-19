@@ -46,7 +46,13 @@ param(
     # Куда долбиться короткими соединениями. Отвечает быстро, рвётся сразу,
     # байтов почти нет — нужны именно соединения, а не трафик.
     [string]$ChurnTarget = "1.1.1.1",
-    [int]$ChurnPort = 443
+    [int]$ChurnPort = 443,
+    # Сравнить охваты и вернуть как было: замер, `pg-cli scope all`, замер,
+    # `pg-cli scope apps`. Это единственный вопрос, на который замер сам ответить
+    # не может, — правило process_path либо есть в конфиге, либо его нет.
+    [switch]$Scope,
+    # Путь к pg-cli.exe. Пустой — ищем рядом со службой и в target/.
+    [string]$Cli = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -372,8 +378,11 @@ function Measure-Window {
     }
 }
 
-$scope = if ($all) { "весь компьютер" } else { "выбранные приложения ($apps шт.)" }
-Write-Host "Ядер: $cores.  Охват: $scope"
+# Не `$scope`: так зовётся параметр -Scope, а имена переменных в PowerShell
+# регистра не различают. Строка затирала флаг, и скрипт всегда уходил в режим
+# сравнения охватов — поймано тестом, глазами не видно вовсе.
+$scopeName = if ($all) { "весь компьютер" } else { "выбранные приложения ($apps шт.)" }
+Write-Host "Ядер: $cores.  Охват: $scopeName"
 
 # Правила брандмауэра — статья расхода, с трафиком через туннель не связанная:
 # осиротевшее правило WFP разбирает на каждом исходящем соединении в системе,
@@ -382,6 +391,80 @@ $rules = @(Get-NetFirewallRule -DisplayName 'Privacy Gateway: *' -ErrorAction Si
 Write-Host "Правил 'Privacy Gateway: *': $($rules.Count)"
 if ($rules.Count -gt $apps + 1) {
     Write-Host "  больше, чем включённых приложений — похоже на осиротевшие, снимает их sweep() при выключении" -ForegroundColor Yellow
+}
+
+function Find-Cli {
+    if ($Cli) { return $Cli }
+    # Пустая база пропускается: Join-Path с null бросает, а с ErrorAction=Stop
+    # это убивает весь замер из-за необязательного кандидата.
+    $bases = @(${env:ProgramFiles}, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
+    $paths = @($bases | ForEach-Object { Join-Path $_ "Privacy Gateway\pg-cli.exe" })
+    $paths += (Join-Path $PSScriptRoot "..\target\release\pg-cli.exe")
+    $paths += (Join-Path $PSScriptRoot "..\target\debug\pg-cli.exe")
+    foreach ($c in $paths) {
+        if (Test-Path $c) { return (Resolve-Path $c).Path }
+    }
+    $null
+}
+
+function Wait-Tunnel {
+    # Смена охвата перезапускает sing-box (`final` живёт в его конфиге), и
+    # мерить надо поднявшийся, а не поднимающийся. Ждём ответа Clash API —
+    # он и означает, что процесс жив, — и даём ещё три секунды устояться.
+    for ($i = 0; $i -lt 30; $i++) {
+        if ((Get-TrafficBytes) -ge 0) { Start-Sleep -Seconds 3; return $true }
+        Start-Sleep -Seconds 1
+    }
+    $false
+}
+
+if ($Scope) {
+    $cli = Find-Cli
+    if (-not $cli) {
+        Write-Host "pg-cli.exe не найден. Укажите путь: -Cli C:\путь\pg-cli.exe" -ForegroundColor Red
+        exit 1
+    }
+    $was = if ($all) { "all" } else { "apps" }
+    $other = if ($all) { "apps" } else { "all" }
+    Write-Host "CLI: $cli.  Текущий охват: $was, сравниваем с $other."
+    try {
+        $first = Measure-Window -Label "охват «$was» (как сейчас)" -Proxy $null -Load $false -Prompt $false
+        Write-Host ""
+        Write-Host "переключаю охват на «$other»…"
+        & $cli scope $other | Out-Null
+        if (-not (Wait-Tunnel)) {
+            Write-Host "  туннель не поднялся после смены охвата — замер отменён" -ForegroundColor Red
+            $second = $null
+        } else {
+            $second = Measure-Window -Label "охват «$other»" -Proxy $null -Load $false -Prompt $false
+        }
+    } finally {
+        # Охват возвращается всегда, даже если замер оборвали: оставить чужую
+        # машину в другом режиме перехвата — это не «побочный эффект замера».
+        Write-Host ""
+        Write-Host "возвращаю охват «$was»…"
+        & $cli scope $was | Out-Null
+        [void](Wait-Tunnel)
+    }
+
+    Write-Host ""
+    Write-Host "== итог: охваты ==" -ForegroundColor Cyan
+    if (-not $second) {
+        Write-Host "  Второй замер не состоялся."
+        exit 1
+    }
+    Write-Host ("{0,-22} {1,6:N2} ядра, {2:N0} соединений" -f "охват «$was»:", $first.Cores, $first.Conns)
+    Write-Host ("{0,-22} {1,6:N2} ядра, {2:N0} соединений" -f "охват «$other»:", $second.Cores, $second.Conns)
+    $drop = $first.Cores - $second.Cores
+    if ([math]::Abs($drop) -lt 0.15) {
+        Write-Host "  Разницы нет. process_path ни при чём — расход не от сверки процессов." -ForegroundColor Yellow
+    } elseif (($was -eq "apps") -eq ($drop -gt 0)) {
+        Write-Host ("  «Выбранные приложения» дороже на {0:N2} ядра. Это и есть сверка process_path:" -f [math]::Abs($drop)) -ForegroundColor Yellow
+        Write-Host "  в охвате «весь компьютер» правила нет в конфиге вовсе, и расход уходит вместе с ним."
+    } else {
+        Write-Host ("  Дороже оказался охват «весь компьютер», на {0:N2} ядра — версию про process_path это не подтверждает." -f [math]::Abs($drop))
+    }
+    exit 0
 }
 
 # Покой идёт первым и меряется всерьёз: расход, не зависящий от трафика, —
