@@ -66,7 +66,7 @@ export function Button({
 /** Вид поля ввода — один на все поля: внутри строки-формы `flex-1` растягивает,
  *  отдельно стоящее поле держит `w-full`. Поле утоплено в плиту: тот же приём,
  *  что и у списков, — вводить в паз, а не поверх. */
-const FIELD =
+export const FIELD =
   "selectable h-8 w-full min-w-0 flex-1 rounded-md border border-edge bg-surface-2 px-3 text-[13px] outline-none transition-colors placeholder:text-muted focus:border-accent";
 
 /** Поле «ввести и добавить»: своё состояние держит само — снаружи оно не нужно. */

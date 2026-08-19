@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
-import { browse as openBrowser, call, type Lang, type Request, type Status } from "./platform";
+import {
+  browse as openBrowser,
+  call,
+  type BrowserProfile,
+  type Lang,
+  type Request,
+  type Status,
+} from "./platform";
 import { strings } from "./i18n";
 import { Apps } from "./Apps";
+import { Browsers } from "./Browsers";
 import { Journal } from "./Journal";
 import { Profiles } from "./Profiles";
 import { StatusBar } from "./StatusBar";
@@ -22,6 +30,9 @@ export function App() {
   // (reapply перезапускает sing-box, не отпуская мьютекс), поэтому «ждём» —
   // единственное, что окно может честно показать всё это время.
   const [busy, setBusy] = useState(0);
+  // Вкладок две, и это не украшение: браузерных профилей бывает больше, чем
+  // узлов, а на главной сетке из трёх панелей четвёртой места нет.
+  const [tab, setTab] = useState<"main" | "browsers">("main");
 
   const send = useCallback(async (req: Request) => {
     try {
@@ -57,7 +68,7 @@ export function App() {
 
   // Браузер запускает оболочка, а не служба, поэтому это не обычная команда:
   // ответ со статусом сюда не приходит, и показать нечего, кроме отказа.
-  const browse = useCallback((profile: string) => {
+  const browse = useCallback((profile: BrowserProfile) => {
     setBusy((n) => n + 1);
     void openBrowser(profile)
       .then(() => setError(null))
@@ -108,6 +119,19 @@ export function App() {
           </div>
         )}
 
+        {/* Вкладки: на главной — узлы, приложения и журнал, на второй —
+            браузерные профили. Разделены не по красоте: браузерный профиль
+            живёт своей жизнью, их бывает несколько на один узел, и в сетку из
+            трёх панелей четвёртый список не влезает никак. */}
+        <div className="flex shrink-0 gap-1">
+          <Button variant={tab === "main" ? "ghost" : "quiet"} onClick={() => setTab("main")}>
+            {strings(status?.lang).tabMain}
+          </Button>
+          <Button variant={tab === "browsers" ? "ghost" : "quiet"} onClick={() => setTab("browsers")}>
+            {strings(status?.lang).tabBrowsers}
+          </Button>
+        </div>
+
         {/* Окно 1000×700: две колонки, журнал под профилями. Каждая панель
             прокручивается сама, страница — никогда. Список приложений после
             автообнаружения самый длинный, ему и отдана широкая колонка целиком.
@@ -116,22 +140,26 @@ export function App() {
             подписок их бывает под сотню, а журнал читают, когда что-то уже
             пошло не так. С 1280 px журнал уезжает в свою колонку и высоту не
             делит вовсе. */}
-        <div
-          className="grid gap-4 md:min-h-0 md:flex-1 md:grid-cols-[minmax(260px,0.9fr)_1.2fr] md:grid-rows-[1.6fr_1fr]
-                     xl:grid-cols-[minmax(320px,1fr)_1.4fr_minmax(280px,0.9fr)] xl:grid-rows-1"
-        >
-          <Profiles status={status} act={act} browse={browse} busy={busy > 0} className="md:min-h-0" />
-          <Apps
-            status={status}
-            act={act}
-            className="md:col-start-2 md:row-start-1 md:row-span-2 md:min-h-0 xl:row-span-1"
-          />
-          <Journal
-            lines={status?.log ?? []}
-            lang={status?.lang}
-            className="min-h-[9rem] md:col-start-1 md:row-start-2 md:min-h-0 xl:col-start-3 xl:row-start-1"
-          />
-        </div>
+        {tab === "main" ? (
+          <div
+            className="grid gap-4 md:min-h-0 md:flex-1 md:grid-cols-[minmax(260px,0.9fr)_1.2fr] md:grid-rows-[1.6fr_1fr]
+                       xl:grid-cols-[minmax(320px,1fr)_1.4fr_minmax(280px,0.9fr)] xl:grid-rows-1"
+          >
+            <Profiles status={status} act={act} busy={busy > 0} className="md:min-h-0" />
+            <Apps
+              status={status}
+              act={act}
+              className="md:col-start-2 md:row-start-1 md:row-span-2 md:min-h-0 xl:row-span-1"
+            />
+            <Journal
+              lines={status?.log ?? []}
+              lang={status?.lang}
+              className="min-h-[9rem] md:col-start-1 md:row-start-2 md:min-h-0 xl:col-start-3 xl:row-start-1"
+            />
+          </div>
+        ) : (
+          <Browsers status={status} act={act} browse={browse} className="min-h-[20rem] md:min-h-0 md:flex-1" />
+        )}
 
         {/* Версия и обновления — подвал: смотрят туда раз в месяц, а состояние
             туннеля видно всё время. */}

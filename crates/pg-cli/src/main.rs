@@ -24,9 +24,14 @@ const USAGE_RU: &str = "privacy-gateway <команда>
                          тот же адрес повторно — обновить подписку
   profiles               список профилей
   test                   прогнать все профили: кто отвечает и за сколько
-  browse --profile <имя> поднять отдельный прокси под этот профиль и напечатать
-                         его адрес: браузер с --proxy-server пойдёт в него;
-                         сеансов бывает несколько, по одному на профиль
+  browsers               список браузерных профилей
+  add-browser --name <имя> --node <профиль> [--ua <строка>] [--lang <языки>]
+                         завести браузерный профиль либо переписать такой же:
+                         узел даёт адрес, ua и lang — то, что видит сайт
+  remove-browser --name <имя>    убрать браузерный профиль
+  browse --profile <имя> поднять прокси под браузерный профиль и напечатать его
+                         адрес: браузер с --proxy-server пойдёт в него; сеансов
+                         бывает несколько, по одному на браузерный профиль
   browse --stop --profile <имя>  погасить этот сеанс браузера
   lang ru|en             язык сообщений службы и окна";
 
@@ -47,9 +52,14 @@ const USAGE_EN: &str = "privacy-gateway <command>
                          the same URL again refreshes the subscription
   profiles               list profiles
   test                   run every profile: who answers and how fast
-  browse --profile <name> bring up a separate proxy for that profile and print
+  browsers               list browser profiles
+  add-browser --name <name> --node <profile> [--ua <string>] [--lang <langs>]
+                         create or overwrite a browser profile: the node gives
+                         the address, ua and lang are what the site sees
+  remove-browser --name <name>   drop a browser profile
+  browse --profile <name> bring up a proxy for that browser profile and print
                          its address: a browser with --proxy-server goes there;
-                         sessions are per profile, several may run at once
+                         sessions are per browser profile, several at once
   browse --stop --profile <name>  close that browser session
   lang ru|en             language of service and window messages";
 
@@ -94,6 +104,21 @@ fn parse(args: &[String]) -> Result<Request, String> {
                 false => Request::Browse { profile },
             })
             .ok_or_else(|| t("нужен --profile <имя>", "needs --profile <name>")),
+        Some("browsers") => Ok(Request::Status),
+        Some("add-browser") => match (flag(args, "--name"), flag(args, "--node")) {
+            (Some(name), Some(node)) => Ok(Request::SetBrowserProfile {
+                profile: core_ipc::BrowserProfile {
+                    name,
+                    node,
+                    ua: flag(args, "--ua").unwrap_or_default(),
+                    lang: flag(args, "--lang").unwrap_or_default(),
+                },
+            }),
+            _ => Err(t("нужны --name <имя> и --node <профиль>", "needs --name <name> and --node <profile>")),
+        },
+        Some("remove-browser") => flag(args, "--name")
+            .map(|name| Request::RemoveBrowserProfile { name })
+            .ok_or_else(|| t("нужно --name <имя>", "needs --name <name>")),
         Some("lang") => match args.get(1).map(String::as_str) {
             Some("ru") => Ok(Request::SetLang { lang: core_ipc::Lang::Ru }),
             Some("en") => Ok(Request::SetLang { lang: core_ipc::Lang::En }),
@@ -184,6 +209,23 @@ fn main() -> std::process::ExitCode {
                 true => std::process::ExitCode::SUCCESS,
                 false => std::process::ExitCode::FAILURE,
             }
+        }
+        Ok(Response::Status(s)) if args[0] == "browsers" => {
+            adopt(s.lang);
+            for b in &s.browser_profiles {
+                let open = match s.browsers.contains(&b.name) {
+                    true => t("открыт", "open"),
+                    false => t("закрыт", "closed"),
+                };
+                println!("{:<20} {:<20} {open}", b.name, b.node);
+                if !b.ua.is_empty() {
+                    println!("{:<20} ua: {}", "", b.ua);
+                }
+                if !b.lang.is_empty() {
+                    println!("{:<20} lang: {}", "", b.lang);
+                }
+            }
+            std::process::ExitCode::SUCCESS
         }
         Ok(Response::Status(s)) if args[0] == "profiles" => {
             adopt(s.lang);

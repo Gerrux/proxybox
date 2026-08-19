@@ -24,6 +24,25 @@ export type Probe = {
   at: number;
 };
 
+/** Браузерный профиль — личность окна, отдельная от узла: узел даёт адрес,
+ *  каталог сеанса — куки и входы, `ua` и `lang` — то, что видит сайт. На один
+ *  узел их бывает несколько: два аккаунта через одну страну иначе не развести.
+ *
+ *  Чего этим не добиться: `--user-agent` меняет строку и `navigator.userAgent`,
+ *  а `Sec-CH-UA` и `navigator.userAgentData` Chromium берёт из настоящей
+ *  сборки. Canvas, шрифты, экран и GPU у профилей одной машины общие. Это
+ *  разделение аккаунтов, а не антидетект. */
+export type BrowserProfile = {
+  name: string;
+  /** Имя профиля узла. Узел могли удалить — профиль это переживает, открыть
+   *  его тогда нечем. */
+  node: string;
+  /** Пусто — настоящий user-agent установленного браузера. */
+  ua: string;
+  /** `Accept-Language`; `auto` — по стране узла, пусто — системный. */
+  lang: string;
+};
+
 export type Status = {
   tunnel: Tunnel;
   profile: string | null;
@@ -41,8 +60,10 @@ export type Status = {
   probes: Probe[];
   /** Профили, под которыми сейчас подняты прокси окон браузера. С `tunnel` не
    *  связаны: браузер ходит своим sing-box мимо общего режима, а сеансов бывает
-   *  несколько разом — по одному на профиль. */
+   *  несколько разом — по одному на браузерный профиль. */
   browsers: string[];
+  /** Заведённые браузерные профили. */
+  browser_profiles: BrowserProfile[];
 };
 
 export type Request =
@@ -72,7 +93,10 @@ export type Request =
   /** Отдельный прокси под профиль — для окна браузера. Ответ: порт. */
   | { cmd: "browse"; arg: { profile: string } }
   /** Погасить сеанс браузера. Шлёт оболочка, дождавшись закрытия окна. */
-  | { cmd: "browse-stop"; arg: { profile: string } };
+  | { cmd: "browse-stop"; arg: { profile: string } }
+  /** Завести браузерный профиль либо переписать такой же по имени. */
+  | { cmd: "set-browser-profile"; arg: { profile: BrowserProfile } }
+  | { cmd: "remove-browser-profile"; arg: { name: string } };
 
 export type Response =
   | { reply: "status"; data: Status }
@@ -105,8 +129,8 @@ export async function openUrl(url: string): Promise<void> {
  *  отдаёт порт, браузер запускает оболочка — фронтенд живёт в вебвью, процессов
  *  ему не завести. Она же дожидается закрытия окна и гасит сеанс, поэтому
  *  «закрыть» отсюда не вызывается вовсе. */
-export async function browse(profile: string): Promise<void> {
-  const r = await call({ cmd: "browse", arg: { profile } });
+export async function browse(profile: BrowserProfile): Promise<void> {
+  const r = await call({ cmd: "browse", arg: { profile: profile.name } });
   if (r.reply !== "proxy") {
     throw new Error(r.reply === "error" ? r.data.message : "служба не вернула порт");
   }
@@ -116,7 +140,12 @@ export async function browse(profile: string): Promise<void> {
   if (!isTauri()) {
     throw new Error(`socks5://127.0.0.1:${r.data.port}`);
   }
-  await invoke("open_browser", { port: r.data.port, profile });
+  await invoke("open_browser", {
+    port: r.data.port,
+    profile: profile.name,
+    ua: profile.ua,
+    lang: profile.lang,
+  });
 }
 
 /** Стереть сохранённый сеанс браузера (входы, куки, закладки этого профиля).
