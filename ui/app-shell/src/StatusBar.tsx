@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import type { Lang, Status } from "./platform";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import type { Status } from "./platform";
 import { strings } from "./i18n";
 import { Button, flag } from "./ui";
 
@@ -12,7 +12,9 @@ const COUNT_MS = 450;
  *  параллельными таблицами. */
 type State = "fault" | "off" | "connecting" | "up" | "down";
 
-function bytes(n: number): string {
+/** Экспортируется ради панели соединений: там те же байты в тех же единицах, а
+ *  второй такой же форматтер разошёлся бы с этим на первом же округлении. */
+export function bytes(n: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   while (n >= 1024 && i < units.length - 1) {
@@ -71,12 +73,10 @@ export function StatusBar({
   status,
   busy,
   onToggle,
-  onLang,
 }: {
   status: Status | null;
   busy: boolean;
   onToggle: () => void;
-  onLang: (lang: Lang) => void;
 }) {
   const s = strings(status?.lang);
   const all = status?.all_traffic ?? false;
@@ -115,14 +115,14 @@ export function StatusBar({
 
   const on = status != null && status.tunnel !== "off";
   const code = status?.probes.find((p) => p.name === status.profile)?.code;
-  const exit = status?.country ? `${flag(code) ?? ""} ${status.country}`.trim() : null;
+  const exitFlag = status?.country ? flag(code) : null;
 
   return (
     <header
       data-state={view.state}
-      className="smooth relative shrink-0 overflow-hidden rounded-lg border border-edge bg-[color:var(--tone-soft)] px-5 pb-4 pt-4"
+      className="st smooth relative shrink-0 overflow-hidden rounded-lg border border-edge bg-[color:var(--tone-soft)] px-5 pb-4 pt-4"
     >
-      <div className="flex items-start justify-between gap-6">
+      <div className="st-head flex items-start justify-between gap-6">
         <div className="min-w-0">
           {/* key — чтобы React заменил узел: надпись состояния сменяется
               вплывом, а не подменой символов на месте. */}
@@ -130,49 +130,28 @@ export function StatusBar({
             key={view.title}
             // Не обрезаем: в узком окне «Туннеля нет — доступ закрыт» обрубается
             // до «Туннел…», а это ровно та надпись, ради которой окно открыли.
-            className="swap font-display text-[26px] font-semibold uppercase leading-[1.05] tracking-[0.055em] text-[color:var(--tone)]"
+            className="st-title swap font-display text-[26px] font-semibold uppercase leading-[1.05] tracking-[0.055em] text-[color:var(--tone)]"
           >
             {view.title}
           </h1>
-          <p key={view.hint} className="swap mt-2 text-[13px] text-muted">
+          <p key={view.hint} className="st-hint swap mt-2 text-[13px] text-muted">
             {view.hint}
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-4">
-          <div className="flex gap-2">
-            {(["ru", "en"] as const).map((code) => (
-              // aria-pressed, а не только цвет: выбранный язык обязан быть
-              // различим и без цвета, и на слух — как у переключателя охвата.
-              <button
-                key={code}
-                type="button"
-                aria-pressed={(status?.lang ?? "ru") === code}
-                aria-label={code === "ru" ? s.langRu : s.langEn}
-                title={code === "ru" ? s.langRu : s.langEn}
-                onClick={() => onLang(code)}
-                className={`engraved rounded-sm px-1.5 py-1 transition-colors ${
-                  (status?.lang ?? "ru") === code ? "bg-surface-2 text-ink" : "text-muted hover:text-ink"
-                }`}
-              >
-                {code}
-              </button>
-            ))}
-          </div>
-          <Button
-            variant={on ? "ghost" : "primary"}
-            disabled={!status || (!on && !status.profile && status.profiles.length === 0)}
-            onClick={onToggle}
-            className="h-9 px-5 font-display uppercase tracking-[0.08em]"
-          >
-            {on ? s.turnOff : s.turnOn}
-          </Button>
-        </div>
+        <Button
+          variant={on ? "ghost" : "primary"}
+          disabled={!status || (!on && !status.profile && status.profiles.length === 0)}
+          onClick={onToggle}
+          className="st-toggle h-9 px-5 font-display uppercase tracking-[0.08em]"
+        >
+          {on ? s.turnOff : s.turnOn}
+        </Button>
       </div>
 
       {/* Канал: слева выбранные приложения, справа сеть. Поднят — по нему идут
           штрихи; заперто — он перерублен и стоит. Другого способа показать
           инвариант продукта одной картинкой у нас нет. */}
-      <div className="mt-5 flex items-center gap-2.5">
+      <div className="st-cond mt-5 flex items-center gap-2.5">
         <span className="engraved shrink-0 text-muted">{all ? s.conduitFromAll : s.conduitFrom}</span>
         <span className="conduit-lamp smooth" />
         <span className="conduit-line smooth" />
@@ -180,13 +159,33 @@ export function StatusBar({
         <span className="engraved shrink-0 text-muted">{s.conduitTo}</span>
       </div>
 
-      <dl className="mt-4 grid grid-cols-2 gap-y-3 border-t border-edge pt-3 sm:grid-cols-3 md:grid-cols-5">
+      <dl className="st-metrics mt-4 grid grid-cols-2 gap-y-3 border-t border-edge pt-3 sm:grid-cols-3 md:grid-cols-5">
         <Metric name={s.profile} value={status?.profile ?? s.noProfile} />
         {/* Флаг перед названием: точка выхода — единственная метрика, которую
             читают глазом, а не цифрой, и в узкой ячейке название всё равно
             обрезается. Код берётся из измерений того же профиля: страну и код
             узнают одним запросом, и второго поля в статусе для этого не нужно. */}
-        <Metric name={s.exit} value={exit ?? "—"} />
+        {/* Прочерк без объяснения читается как поломка. Настоящую страну при
+            выключенном режиме не показываем намеренно: спросить её можно только
+            у стороннего сервиса, а без туннеля запрос ушёл бы с настоящего
+            адреса — продукт про приватность выдал бы человека ровно тогда,
+            когда он не прикрыт. */}
+        <Metric name={s.exit} value={status?.country ?? "—"} hint={status?.country ? undefined : s.exitUnknown}>
+          {status?.country ? (
+            <>
+              {exitFlag && (
+                <span className="shrink-0 leading-none" aria-hidden="true">
+                  {exitFlag}
+                </span>
+              )}
+              {/* Название прячется только тогда, когда вместо него остаётся
+                  флаг: без флага пустая ячейка не значила бы ничего. */}
+              <span className={`truncate ${exitFlag ? "m-country" : ""}`}>{status.country}</span>
+            </>
+          ) : (
+            "—"
+          )}
+        </Metric>
         {/* Цвет — по настоящей задержке, а не по кадру анимации: порог должен
             переключаться по факту, а не по тому, докуда доехало число. */}
         <Metric
@@ -194,8 +193,8 @@ export function StatusBar({
           value={latency != null ? `${Math.round(latency)} ms` : "—"}
           tone={latencyTone(status?.latency_ms)}
         />
-        <Metric name={s.received} value={rx != null ? bytes(rx) : "—"} hint={s.trafficHint} />
-        <Metric name={s.sent} value={tx != null ? bytes(tx) : "—"} hint={s.trafficHint} />
+        <Metric name={s.received} value={rx != null ? bytes(rx) : "—"} hint={s.trafficHint} icon="down" />
+        <Metric name={s.sent} value={tx != null ? bytes(tx) : "—"} hint={s.trafficHint} icon="up" />
       </dl>
 
       {/* Пока служба не ответила, по нижней кромке панели идёт бегунок. Прогресса
@@ -210,12 +209,19 @@ export function StatusBar({
 
 /** Ячейка приборной линейки: гравированная подпись, под ней значение.
  *  Цифры табличные — статус приходит каждые две секунды, и прыгать по ширине
- *  им нельзя. */
+ *  им нельзя.
+ *
+ *  В плашке из трея (`@media (max-width: 470px)` в `index.css`) подписи уходят
+ *  с глаз, и всё, что ячейка о себе рассказывает, остаётся в подсказке — она
+ *  поэтому и собирается из имени, значения и пояснения разом, а не из одного
+ *  значения. */
 function Metric({
   name,
   value,
   tone = "",
   hint,
+  icon,
+  children,
 }: {
   name: string;
   value: string;
@@ -223,18 +229,43 @@ function Metric({
   /** Что именно измерено, если из подписи это не следует: счётчики трафика
    *  считают с запуска туннеля, а не с установки приложения. */
   hint?: string;
+  /** Стрелка вместо подписи там, где подписи не осталось. Только у счётчиков:
+   *  «принято» и «отправлено» — единственная пара, которую рисунок различает
+   *  не хуже слова. */
+  icon?: "down" | "up";
+  /** Значение сложнее строки — точка выхода: флаг и название живут отдельно,
+   *  чтобы в узком окне название могло уйти, а флаг остаться. */
+  children?: ReactNode;
 }) {
   return (
     // Разделители только там, где линейка стоит одной строкой: в две колонки
     // левая граница второго ряда висела бы посреди пустоты.
-    <div className="min-w-0 md:border-l md:border-edge md:px-3 md:first:border-l-0 md:first:pl-0">
-      <dt className="engraved text-muted" title={hint}>
-        {name}
-      </dt>
+    <div className="m-cell min-w-0 md:border-l md:border-edge md:px-3 md:first:border-l-0 md:first:pl-0">
+      <dt className="m-label engraved text-muted">{name}</dt>
       {/* tabular-nums обязателен именно из-за доезда: цифры разной ширины
           меняются каждый кадр и дёргали бы линейку по всей строке. */}
-      <dd className={`smooth mt-1 truncate font-display text-[15px] tabular-nums ${tone}`} title={value}>
-        {value}
+      <dd
+        className={`m-value smooth mt-1 flex items-baseline gap-1.5 overflow-hidden font-display text-[15px] tabular-nums ${tone}`}
+        title={hint ? `${name}: ${value} — ${hint}` : `${name}: ${value}`}
+      >
+        {icon && (
+          <span className="m-icon shrink-0 self-center text-muted">
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 12 12"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              {icon === "down" ? <path d="M6 2v8M3 7l3 3 3-3" /> : <path d="M6 10V2M3 5l3-3 3 3" />}
+            </svg>
+          </span>
+        )}
+        {children ?? <span className="truncate">{value}</span>}
       </dd>
     </div>
   );

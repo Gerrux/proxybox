@@ -8,6 +8,9 @@ cd "$(dirname "$0")/.."
 
 SB="${PG_SINGBOX:-sing-box}"
 UUID=b831381d-6324-4d53-ad4f-8cda48b30811
+# Проверки ищут в выводе русские слова, а язык CLI берётся из окружения: под
+# английской локалью скрипт падал бы на своих же grep, а не на продукте.
+export PG_LANG=ru
 WORK=$(mktemp -d)
 export XDG_CONFIG_HOME="$WORK/cfg"
 # Служба, убитая сигналом, не успевает прибрать за собой sing-box — в жизни его
@@ -56,6 +59,23 @@ BODY=$(curl -s --socks5-hostname 127.0.0.1:48292 http://127.0.0.1:18080/)
 [ "$BODY" = "привет из туннеля" ] || fail "через туннель пришло: $BODY"
 sleep 4  # счётчики обновляются раз в тик присмотра
 ./target/debug/privacy-gateway status | grep -qE 'трафик: +↓[1-9]' || fail "счётчики трафика пусты"
+
+step "соединения видны и подписаны маршрутом"
+# Список показывает открытые прямо сейчас соединения, а curl из прошлого шага
+# закрылся вместе с ответом сервера. Нужен тот, кто принимает и молчит.
+python3 -c 'import socket
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 18081)); s.listen(4)
+# Принятое держим: брошенный сокет Python закрывает сам, и соединение
+# умирает раньше вопроса — ровно то, что и пряталось за пустым списком.
+held = []
+while True: held.append(s.accept())' &
+sleep 1
+curl -s -m 20 --socks5-hostname 127.0.0.1:48292 http://127.0.0.1:18081/ >/dev/null &
+sleep 2
+./target/debug/privacy-gateway conns
+./target/debug/privacy-gateway conns | grep -q "18081" || fail "живое соединение не попало в список"
+./target/debug/privacy-gateway conns | grep -q "туннель" || fail "соединение не подписано маршрутом"
 
 step "перезапуск службы: приватный режим восстанавливается сам"
 SVC=$(ss -ltnp 2>/dev/null | grep ':48291 ' | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)

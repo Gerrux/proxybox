@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Act, Probe, Status } from "./platform";
-import { measuredAgo, strings } from "./i18n";
+import { measuredAgo, strings, syncedAgo } from "./i18n";
 import { AddField, Button, ConfirmButton, Empty, flag, Panel, SearchField } from "./ui";
 
 /** Со скольких профилей список перестаёт читаться глазом. Порог тот же, что у
@@ -57,6 +57,11 @@ export function Profiles({
   const subscriptions = status?.subscriptions ?? [];
   const probes = status?.probes ?? [];
   const [query, setQuery] = useState("");
+  // Поле импорта показывается по «+», а не стоит всегда: две строки под
+  // редчайшим действием — это две строки, которых нет у списка. Пока профилей
+  // нет вовсе, добавить их больше нечем, и поле открыто само.
+  const [importOpen, setImportOpen] = useState(false);
+  const adding = importOpen || profiles.length === 0;
   const needle = query.trim().toLowerCase();
   const shown = needle ? profiles.filter((name) => name.toLowerCase().includes(needle)) : profiles;
   // Поле не прячем, пока в нём что-то есть: иначе фильтр остался бы включённым
@@ -75,32 +80,51 @@ export function Profiles({
         )
       }
       action={
-        profiles.length > 0 && (
-          // Пока прогон идёт, кнопка заперта: второй прогон добил бы sing-box
-          // первого — они делят каталог проверки.
+        <>
+          {profiles.length > 0 && (
+            // Пока прогон идёт, кнопка заперта: второй прогон добил бы sing-box
+            // первого — они делят каталог проверки.
+            <Button
+              variant="quiet"
+              disabled={busy}
+              title={s.testProfilesHint}
+              onClick={() => void act({ cmd: "test-profiles" })}
+            >
+              {s.testProfiles}
+            </Button>
+          )}
           <Button
-            variant="quiet"
-            disabled={busy}
-            title={s.testProfilesHint}
-            onClick={() => void act({ cmd: "test-profiles" })}
+            aria-pressed={adding}
+            aria-label={s.importLink}
+            title={s.linkPlaceholder}
+            onClick={() => setImportOpen((v) => !v)}
+            className="w-8 px-0 text-[15px] leading-none"
           >
-            {s.testProfiles}
+            +
           </Button>
-        )
+        </>
       }
     >
       <div className="flex flex-col gap-3">
-        <AddField
-          placeholder={s.linkPlaceholder}
-          label={s.importLink}
-          onSubmit={(link) => act({ cmd: "add-profile", arg: { link } })}
-        />
+        {adding && (
+          <AddField
+            placeholder={s.linkPlaceholder}
+            label={s.importLink}
+            onSubmit={(link) => act({ cmd: "add-profile", arg: { link } })}
+          />
+        )}
         {subscriptions.length > 0 && (
           <div className="flex flex-col gap-1">
             <h3 className="engraved flex items-baseline gap-2 text-muted">
               {s.subscriptions}
               <span className="font-sans text-[11px] font-normal normal-case tracking-normal">
                 {subscriptions.length}
+              </span>
+              {/* Возраст списка, а не адреса: узлы в подписке меняет панель, и
+                  по одному адресу не видно, пришли они час назад или лежат тут
+                  с прошлого месяца. */}
+              <span className="ml-auto font-sans text-[11px] font-normal normal-case tracking-normal">
+                {syncedAgo(s, status?.refreshed_at ?? null)}
               </span>
             </h3>
             <ul className="flex flex-col">

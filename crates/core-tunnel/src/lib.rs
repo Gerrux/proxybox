@@ -11,12 +11,13 @@
 //! и отбирать некого. Это не «выбрать все приложения» списком: `process_path`
 //! сверяется с путём процесса, а под `final` попадает и то, у чего пути нет.
 
-use core_ipc::t;
+use core_ipc::{t, Conn};
 use serde_json::{json, Value};
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub const TAG_PROXY: &str = "proxy";
@@ -131,10 +132,28 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
     cfg
 }
 
-/// Где искать sing-box: переменная окружения → рядом с бинарником → PATH.
+/// Путь к sing-box из настроек службы. Глобальный на процесс по той же
+/// причине, что и язык в `core-ipc`: он один на всю службу, а протаскивать его
+/// параметром пришлось бы через каждую функцию, которая запускает sing-box, —
+/// включая проверку конфига, которой до настроек дела нет.
+static CONFIGURED: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Пусто — забыть про настройку и искать как раньше.
+pub fn set_binary(path: &str) {
+    let value = (!path.trim().is_empty()).then(|| PathBuf::from(path.trim()));
+    if let Ok(mut slot) = CONFIGURED.lock() {
+        *slot = value;
+    }
+}
+
+/// Где искать sing-box: переменная окружения → настройка → рядом с бинарником
+/// → PATH.
 pub fn binary() -> PathBuf {
     if let Some(p) = std::env::var_os("PG_SINGBOX") {
         return PathBuf::from(p);
+    }
+    if let Some(p) = CONFIGURED.lock().ok().and_then(|s| s.clone()) {
+        return p;
     }
     let name = if cfg!(windows) { "sing-box.exe" } else { "sing-box" };
     match std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(name))) {
@@ -413,8 +432,10 @@ fn parse_country(raw: &str) -> io::Result<Exit> {
     })
 }
 
-/// Счётчики трафика из Clash API sing-box: (принято, отправлено) байт за сеанс.
-pub fn traffic(api_port: u16) -> io::Result<(u64, u64)> {
+/// Ответ Clash API `/connections` целиком: и суммарные счётчики, и список живых
+/// соединений. Один запрос на обоих потребителей — надзор качал это тело каждые
+/// три секунды и всё, кроме двух чисел, выбрасывал.
+fn clash(api_port: u16) -> io::Result<Value> {
     let addr = SocketAddr::from(([127, 0, 0, 1], api_port));
     let mut s = TcpStream::connect_timeout(&addr, PROBE_TIMEOUT)?;
     s.set_read_timeout(Some(PROBE_TIMEOUT))?;
@@ -422,8 +443,56 @@ pub fn traffic(api_port: u16) -> io::Result<(u64, u64)> {
     let mut raw = String::new();
     s.read_to_string(&mut raw)?;
     let body = raw.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or_default();
-    let v: Value = serde_json::from_str(body).map_err(io::Error::other)?;
+    serde_json::from_str(body).map_err(io::Error::other)
+}
+
+/// Счётчики трафика из Clash API sing-box: (принято, отправлено) байт за сеанс.
+pub fn traffic(api_port: u16) -> io::Result<(u64, u64)> {
+    let v = clash(api_port)?;
     Ok((v["downloadTotal"].as_u64().unwrap_or(0), v["uploadTotal"].as_u64().unwrap_or(0)))
+}
+
+/// Живые соединения туннеля, самые говорливые первыми. Ничего не сохраняется:
+/// список собирается на запрос и умирает вместе с ответом.
+pub fn connections(api_port: u16) -> io::Result<Vec<Conn>> {
+    let v = clash(api_port)?;
+    let mut conns: Vec<Conn> = v["connections"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(|c| parse_conn(c))
+        .collect();
+    // Самые говорливые первыми: список живёт секунды, и первые строки — это
+    // единственное, что человек успевает прочитать.
+    conns.sort_by_key(|c| std::cmp::Reverse(c.rx + c.tx));
+    Ok(conns)
+}
+
+/// Разбор одного соединения. Цепочка маршрутов, а не список приложений: список
+/// — намерение, цепочка — то, что вышло на самом деле.
+fn parse_conn(c: &Value) -> Conn {
+    let meta = &c["metadata"];
+    let str_of = |v: &Value| v.as_str().unwrap_or_default().to_string();
+    // Домен известен не всегда: соединение по голому адресу так и остаётся
+    // адресом, и подменять его нечем — DNS у нас никто не подслушивает.
+    let host = match str_of(&meta["host"]) {
+        empty if empty.is_empty() => str_of(&meta["destinationIP"]),
+        host => host,
+    };
+    let port = str_of(&meta["destinationPort"]);
+    Conn {
+        process: str_of(&meta["processPath"]),
+        host: if port.is_empty() { host } else { format!("{host}:{port}") },
+        tunneled: c["chains"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .any(|tag| tag == TAG_PROXY),
+        rx: c["download"].as_u64().unwrap_or(0),
+        tx: c["upload"].as_u64().unwrap_or(0),
+    }
 }
 
 /// SOCKS5 CONNECT через локальный вход sing-box. Отдаёт установленный поток:
@@ -471,6 +540,37 @@ fn socks5_connect(port: u16, (host, target_port): (&str, u16)) -> io::Result<Tcp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Разбор соединения из Clash API. Проверяется главное: маршрут читается
+    /// из цепочки, а не из имени процесса, и голый адрес не подменяется
+    /// пустым доменом.
+    #[test]
+    fn conn_reads_its_route_from_the_chain() {
+        let tunneled = parse_conn(&json!({
+            "metadata": {
+                "host": "example.com",
+                "destinationIP": "93.184.216.34",
+                "destinationPort": "443",
+                "processPath": r"C:\Program Files\app.exe",
+            },
+            "chains": [TAG_PROXY],
+            "download": 2048,
+            "upload": 512,
+        }));
+        assert_eq!(tunneled.host, "example.com:443", "домен известен — показываем его");
+        assert!(tunneled.tunneled);
+        assert_eq!((tunneled.rx, tunneled.tx), (2048, 512));
+
+        // Тот же процесс мимо туннеля — тихий промах правила по process_path,
+        // ради которого весь список и заведён.
+        let direct = parse_conn(&json!({
+            "metadata": { "destinationIP": "1.1.1.1", "destinationPort": "53" },
+            "chains": ["direct"],
+        }));
+        assert_eq!(direct.host, "1.1.1.1:53", "домена нет — остаётся адрес");
+        assert!(!direct.tunneled);
+        assert!(direct.process.is_empty(), "процесса за DNS не бывает");
+    }
 
     #[test]
     fn country_from_reply() {

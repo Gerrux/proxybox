@@ -26,7 +26,12 @@ export function Journal({ lines, lang, className }: { lines: LogLine[]; lang?: L
             <li
               key={`${i}-${line.text}`}
               title={loggedAgo(s, line.at)}
-              className={i === 0 ? "enter selectable text-ink" : "selectable text-muted"}
+              // Поломку красим, а не помечаем значком: лента моноширинная и
+              // узкая, и лишний символ в начале строки сдвинул бы весь текст
+              // ради того, что цвет говорит и так.
+              className={`selectable ${line.bad ? "text-fault" : i === 0 ? "text-ink" : "text-muted"} ${
+                i === 0 ? "enter" : ""
+              }`}
             >
               {line.text}
             </li>
