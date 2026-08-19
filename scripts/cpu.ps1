@@ -34,7 +34,10 @@ param(
     [string]$Url = "https://speed.cloudflare.com/__down?bytes=104857600",
     # Порты службы: mixed (обход TUN) и Clash API (счётчики байт).
     [int]$MixedPort = 48292,
-    [int]$ApiPort = 48293
+    [int]$ApiPort = 48293,
+    # Имя нашего TUN-адаптера — core_tunnel::TUN_NAME. Разъедется с ним, и
+    # главный знаменатель (пакеты через TUN) молча пропадёт из вывода.
+    [string]$TunName = "Privacy Gateway"
 )
 
 $ErrorActionPreference = "Stop"
@@ -104,28 +107,53 @@ function Get-TrafficBytes {
     } catch { -1 }
 }
 
+function Get-TunStats {
+    # Счётчик Clash API считает только то, что ушло в туннель, — а с auto_route
+    # через TUN проходит трафик всей машины, включая тот, что уйдёт напрямую
+    # по `final: direct`. Работу sing-box меряет адаптер, а не Clash: иначе
+    # выходит 27 секунд ЦП на «один мегабайт» и полная бессмыслица.
+    try {
+        $s = Get-NetAdapterStatistics -Name "$TunName*" -ErrorAction Stop | Select-Object -First 1
+        [pscustomobject]@{
+            Bytes   = [int64]$s.ReceivedBytes + [int64]$s.SentBytes
+            Packets = [int64]$s.ReceivedUnicastPackets + [int64]$s.SentUnicastPackets
+        }
+    } catch { $null }
+}
+
 $loader = {
     param($url, $proxy, $seconds, $tmp)
+    # Windows PowerShell 5.1 по умолчанию предлагает SSL3/TLS 1.0, современный
+    # сервер такое рвёт на рукопожатии — закачка не начиналась вовсе, а окно
+    # всё равно отсчитывалось, и замер выходил про покой под видом нагрузки.
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+    $err = $null
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while ($sw.Elapsed.TotalSeconds -lt $seconds) {
         try {
             $c = New-Object Net.WebClient
             $c.Proxy = if ($proxy) { New-Object Net.WebProxy($proxy) } else { $null }
             $c.DownloadFile($url, $tmp)
-        } catch { break }
+        } catch {
+            # Отказ обязан долететь наверх: молчаливый break и дал два прохода
+            # с нулём байт и бессмысленным «сравнивать нечего» в итоге.
+            $err = $_.Exception.Message
+            break
+        }
     }
     Remove-Item $tmp -ErrorAction SilentlyContinue
+    $err
 }
 
-# Возвращает одно число — цену трафика в с/ГБ. Всё остальное печатается через
-# Write-Host: голая строка в PowerShell уходит в возвращаемое значение и
-# смешалась бы с ним.
+# Возвращает один объект: ЦП за окно и цену трафика в с/ГБ. Всё остальное
+# печатается через Write-Host — голая строка в PowerShell уходит в
+# возвращаемое значение и смешалась бы с ним.
 function Measure-Window {
-    param([string]$Label, [string]$Proxy, [bool]$Auto)
+    param([string]$Label, [string]$Proxy, [bool]$Load, [bool]$Prompt)
 
     Write-Host ""
     Write-Host "== $Label ==" -ForegroundColor Cyan
-    if (-not $Auto) {
+    if ($Prompt) {
         Write-Host "Запустите большую закачку выбранным приложением и нажмите Enter — окно $Seconds с" -NoNewline
         [void](Read-Host)
     }
@@ -134,8 +162,9 @@ function Measure-Window {
     $t0 = Get-ThreadTimes $mainId
     $a = Get-Snapshot
     $b0 = Get-TrafficBytes
+    $n0 = Get-TunStats
     $job = $null
-    if ($Auto) {
+    if ($Load) {
         # GetTempPath, а не $env:TEMP: переменная бывает пустой, а с
         # ErrorActionPreference=Stop пустой путь убил бы замер посреди окна.
         $tmp = Join-Path ([IO.Path]::GetTempPath()) "pg-cpu.bin"
@@ -145,11 +174,16 @@ function Measure-Window {
     Start-Sleep -Seconds $Seconds
     $elapsed = $sw.Elapsed.TotalSeconds
     $b1 = Get-TrafficBytes
+    $n1 = Get-TunStats
     $b = Get-Snapshot
     $t1 = Get-ThreadTimes $mainId
     if ($job) {
         Stop-Job $job -ErrorAction SilentlyContinue
+        $err = @(Receive-Job $job -ErrorAction SilentlyContinue) | Where-Object { $_ }
         Remove-Job $job -Force -ErrorAction SilentlyContinue
+        if ($err) {
+            Write-Host ("  закачка не пошла: {0}" -f ($err -join '; ')) -ForegroundColor Yellow
+        }
     }
 
     # Считаем только процессы, дожившие до конца окна: у мелькнувшего между
@@ -181,6 +215,9 @@ function Measure-Window {
 
     if ($gb -lt 0) {
         Write-Host "  Clash API не ответил на $ApiPort — байты не посчитаны"
+    } elseif (-not $Load -and -not $Prompt) {
+        # Проход покоя: трафика тут и не должно быть, это не жалоба.
+        Write-Host ("{0,-20} {1,7:N3} ГБ  фон, нагрузки не было" -f "прошло трафика:", $gb)
     } elseif ($gb -le 0.01) {
         Write-Host ("  трафика прошло всего {0:N3} ГБ — число с/ГБ было бы шумом, повторите с реальной загрузкой" -f $gb)
     } else {
@@ -200,7 +237,35 @@ function Measure-Window {
     $delta | Sort-Object Cpu -Descending | Select-Object -First 6 |
         ForEach-Object { Write-Host ("    {0,-24} {1,6:N1} с" -f $_.Name, $_.Cpu) }
 
-    if ($myCpu -gt 0 -and $gb -gt 0.01) { $myCpu / $gb } else { 0 }
+    # Через TUN проходит трафик всей машины, а не только уходящий в туннель.
+    # Это и есть настоящий объём работы sing-box, и настоящий знаменатель.
+    $tunGb = 0.0
+    $packets = [int64]0
+    if ($n0 -and $n1) {
+        $tunGb = ($n1.Bytes - $n0.Bytes) / 1GB
+        $packets = $n1.Packets - $n0.Packets
+    }
+    if (-not $n0 -or -not $n1) {
+        Write-Host "  адаптер «$TunName» не найден — работа TUN не посчитана (TUN поднят?)"
+    } else {
+        Write-Host ("{0,-20} {1,7:N3} ГБ, {2:N0} пакетов" -f "через TUN всего:", $tunGb, $packets)
+        if ($packets -gt 1000 -and $myCpu -gt 0) {
+            # Микросекунды на пакет — та метрика, по которой TUN и судят:
+            # единицы это норма, десятки означают, что на каждый пакет
+            # делается что-то лишнее.
+            Write-Host ("{0,-20} {1,7:N1} мкс   <- цена одного пакета" -f "на пакет:", (1e6 * $myCpu / $packets))
+        }
+    }
+
+    $perGb = 0.0
+    if ($myCpu -gt 0 -and $gb -gt 0.01) { $perGb = $myCpu / $gb }
+    [pscustomobject]@{
+        Cpu     = $myCpu           # секунд ЦП за окно
+        Cores   = $myCpu / $elapsed   # во сколько ядер это обошлось
+        PerGb   = $perGb           # по счётчику туннеля; 0, если трафика не было
+        TunGb   = $tunGb           # весь трафик через адаптер
+        Packets = $packets
+    }
 }
 
 $scope = if ($all) { "весь компьютер" } else { "выбранные приложения ($apps шт.)" }
@@ -215,24 +280,53 @@ if ($rules.Count -gt $apps + 1) {
     Write-Host "  больше, чем включённых приложений — похоже на осиротевшие, снимает их sweep() при выключении" -ForegroundColor Yellow
 }
 
-$without = Measure-Window -Label "проход 1: мимо TUN (через mixed-порт $MixedPort)" -Proxy "http://127.0.0.1:$MixedPort" -Auto $true
-$through = Measure-Window -Label "проход 2: через TUN" -Proxy $null -Auto $all
+# Покой идёт первым и меряется всерьёз: расход, не зависящий от трафика, —
+# это не цена шифрования, и искать его надо не там. С него же начинается вывод,
+# потому что вычитать его придётся из обоих остальных проходов.
+$idle = Measure-Window -Label "проход 0: покой, нагрузки нет" -Proxy $null -Load $false -Prompt $false
+$without = Measure-Window -Label "проход 1: мимо TUN (через mixed-порт $MixedPort)" -Proxy "http://127.0.0.1:$MixedPort" -Load $true -Prompt $false
+$through = Measure-Window -Label "проход 2: через TUN" -Proxy $null -Load $all -Prompt (-not $all)
 
 Write-Host ""
 Write-Host "== итог ==" -ForegroundColor Cyan
-if ($without -le 0 -or $through -le 0) {
-    Write-Host "  Один из проходов остался без трафика — сравнивать нечего."
+Write-Host ("{0,-20} {1,7:N2} ядра" -f "покой:", $idle.Cores)
+# Покой с трафиком через TUN — это не покой, а фоновая работа всей машины:
+# при auto_route sing-box разбирает и те пакеты, что уйдут напрямую.
+if ($idle.Packets -gt 1000) {
+    Write-Host ("{0,-20} {1,7:N1} мкс на пакет при {2:N0} пакетах фона" -f "  в покое:", (1e6 * $idle.Cpu / $idle.Packets), $idle.Packets)
+    Write-Host "  Трафика в туннель почти нет, а пакеты через TUN идут: с auto_route в него заходит вся машина."
+}
+if ($idle.Cores -gt 0.25) {
+    Write-Host "  Столько ЦП без трафика — это уже не шифрование." -ForegroundColor Yellow
+    if (-not $all) {
+        Write-Host "  Главный подозреваемый: с auto_route в TUN заходит трафик ВСЕЙ машины, и в охвате"
+        Write-Host "  «выбранные приложения» каждое соединение сверяется с process_path — а это перебор"
+        Write-Host "  системной таблицы соединений. Отсюда и время в ядре."
+        Write-Host "  Проверка: переключите охват на «весь компьютер» и сравните проход 0 — там правила нет вовсе."
+    } else {
+        Write-Host "  process_path тут ни при чём (в этом охвате правила нет). Смотрите на долю в ядре:"
+        Write-Host "  высокая — wintun и WFP, и первым делом стоит проверить Defender над TUN-адаптером."
+    }
+}
+
+if ($without.PerGb -le 0 -or $through.PerGb -le 0) {
+    Write-Host "  Проход без трафика — цену гигабайта сравнить не на чем (см. предупреждения выше)."
     return
 }
-$ratio = $through / $without
-Write-Host ("{0,-20} {1,7:N2} с/ГБ" -f "мимо TUN:", $without)
-Write-Host ("{0,-20} {1,7:N2} с/ГБ" -f "через TUN:", $through)
+# Из цены гигабайта вычитается покой: иначе постоянный расход размазывается по
+# трафику и тем сильнее врёт, чем меньше успели скачать.
+$netWithout = [math]::Max(0, $without.Cpu - $idle.Cpu)
+$netThrough = [math]::Max(0, $through.Cpu - $idle.Cpu)
+Write-Host ("{0,-20} {1,7:N2} с/ГБ  (с покоем {2:N2})" -f "мимо TUN:", ($netWithout / $without.Cpu * $without.PerGb), $without.PerGb)
+Write-Host ("{0,-20} {1,7:N2} с/ГБ  (с покоем {2:N2})" -f "через TUN:", ($netThrough / $through.Cpu * $through.PerGb), $through.PerGb)
+if ($netWithout -le 0) {
+    Write-Host "  Мимо TUN расход не отличим от покоя — цену TUN считать не от чего."
+    return
+}
+$ratio = $netThrough / $netWithout
 Write-Host ("{0,-20} {1,7:N2} x" -f "цена TUN:", $ratio)
 if ($ratio -lt 1.3) {
     Write-Host "  TUN почти бесплатен: ЦП уходит на шифрование, и это потолок протокола, а не наш конфиг."
 } else {
     Write-Host "  TUN дорог. Первый подозреваемый — UDP/QUIC через gVisor: stack 'mixed' в core-tunnel/build_config."
-    if (-not $all) {
-        Write-Host "  Второй — сверка process_path на каждом соединении. Повторите в охвате «весь компьютер»: там правила нет вовсе."
-    }
 }
