@@ -96,7 +96,14 @@ export function StatusBar({
     : {
         // Охват меняет не состояние, а того, о ком оно: подсказка про
         // «выбранные приложения» при включённом «весь компьютер» была бы враньём.
-        off: { state: "off" as const, title: s.off, hint: all ? s.offHintAll : s.offHint },
+        // Без профилей «Включить» заперта, и сказать об этом должна подсказка
+        // под заголовком: гаснущая кнопка сама по себе ничего не объясняет, а
+        // единственное объяснение лежало ниже, в пустом списке профилей.
+        off: {
+          state: "off" as const,
+          title: s.off,
+          hint: status.profiles.length === 0 ? s.offNoProfiles : all ? s.offHintAll : s.offHint,
+        },
         connecting: { state: "connecting" as const, title: s.connecting, hint: all ? s.connectingHintAll : s.connectingHint },
         up: {
           state: "up" as const,
@@ -134,12 +141,17 @@ export function StatusBar({
         <div className="flex shrink-0 items-center gap-4">
           <div className="flex gap-2">
             {(["ru", "en"] as const).map((code) => (
+              // aria-pressed, а не только цвет: выбранный язык обязан быть
+              // различим и без цвета, и на слух — как у переключателя охвата.
               <button
                 key={code}
                 type="button"
+                aria-pressed={(status?.lang ?? "ru") === code}
+                aria-label={code === "ru" ? s.langRu : s.langEn}
+                title={code === "ru" ? s.langRu : s.langEn}
                 onClick={() => onLang(code)}
-                className={`engraved rounded-sm px-0.5 transition-colors ${
-                  (status?.lang ?? "ru") === code ? "text-ink" : "text-muted hover:text-ink"
+                className={`engraved rounded-sm px-1.5 py-1 transition-colors ${
+                  (status?.lang ?? "ru") === code ? "bg-surface-2 text-ink" : "text-muted hover:text-ink"
                 }`}
               >
                 {code}
@@ -182,8 +194,8 @@ export function StatusBar({
           value={latency != null ? `${Math.round(latency)} ms` : "—"}
           tone={latencyTone(status?.latency_ms)}
         />
-        <Metric name={s.received} value={rx != null ? bytes(rx) : "—"} />
-        <Metric name={s.sent} value={tx != null ? bytes(tx) : "—"} />
+        <Metric name={s.received} value={rx != null ? bytes(rx) : "—"} hint={s.trafficHint} />
+        <Metric name={s.sent} value={tx != null ? bytes(tx) : "—"} hint={s.trafficHint} />
       </dl>
 
       {/* Пока служба не ответила, по нижней кромке панели идёт бегунок. Прогресса
@@ -199,12 +211,26 @@ export function StatusBar({
 /** Ячейка приборной линейки: гравированная подпись, под ней значение.
  *  Цифры табличные — статус приходит каждые две секунды, и прыгать по ширине
  *  им нельзя. */
-function Metric({ name, value, tone = "" }: { name: string; value: string; tone?: string }) {
+function Metric({
+  name,
+  value,
+  tone = "",
+  hint,
+}: {
+  name: string;
+  value: string;
+  tone?: string;
+  /** Что именно измерено, если из подписи это не следует: счётчики трафика
+   *  считают с запуска туннеля, а не с установки приложения. */
+  hint?: string;
+}) {
   return (
     // Разделители только там, где линейка стоит одной строкой: в две колонки
     // левая граница второго ряда висела бы посреди пустоты.
     <div className="min-w-0 md:border-l md:border-edge md:px-3 md:first:border-l-0 md:first:pl-0">
-      <dt className="engraved text-muted">{name}</dt>
+      <dt className="engraved text-muted" title={hint}>
+        {name}
+      </dt>
       {/* tabular-nums обязателен именно из-за доезда: цифры разной ширины
           меняются каждый кадр и дёргали бы линейку по всей строке. */}
       <dd className={`smooth mt-1 truncate font-display text-[15px] tabular-nums ${tone}`} title={value}>

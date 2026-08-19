@@ -238,6 +238,16 @@ pub struct App {
     pub enabled: bool,
 }
 
+/// Строка журнала со временем записи. Время здесь не украшение: журнал читают,
+/// когда уже что-то пошло не так, и «когда именно» — половина ответа. Формат
+/// тот же, что у `Probe::at` (unix-секунды), а словами возраст переводит клиент:
+/// служба не знает ни языка окна, ни часового пояса того, кто смотрит.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LogLine {
+    pub at: u64,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Status {
     pub tunnel: Tunnel,
@@ -263,7 +273,7 @@ pub struct Status {
     pub lang: Lang,
     /// Последние события службы, новое сверху. Не переживает перезапуск.
     #[serde(default)]
-    pub log: Vec<String>,
+    pub log: Vec<LogLine>,
     /// Итог последнего прогона профилей. Держится до следующего прогона и не
     /// сохраняется на диск: это измерение, а не состояние.
     #[serde(default)]
@@ -480,6 +490,7 @@ mod tests {
                     error: None,
                     at: 1_755_000_000,
                 }],
+                log: vec![LogLine { at: 1_755_000_000, text: "туннель поднят".into() }],
                 ..Default::default()
             }),
             Response::Apps(vec![]),

@@ -1,5 +1,5 @@
-import type { Lang } from "./platform";
-import { strings } from "./i18n";
+import type { Lang, LogLine } from "./platform";
+import { loggedAgo, strings } from "./i18n";
 import { Empty, Panel } from "./ui";
 
 /** Журнал службы: что она сделала и почему. Своих сообщений окно не выдумывает,
@@ -7,7 +7,7 @@ import { Empty, Panel } from "./ui";
  *
  *  Лента моноширинная и верхняя строка ярче остальных: это запись прибора, а
  *  новость в ней всегда одна — последняя. */
-export function Journal({ lines, lang, className }: { lines: string[]; lang?: Lang; className?: string }) {
+export function Journal({ lines, lang, className }: { lines: LogLine[]; lang?: Lang; className?: string }) {
   const s = strings(lang);
   return (
     <Panel className={className} title={s.journal}>
@@ -19,11 +19,16 @@ export function Journal({ lines, lang, className }: { lines: string[]; lang?: La
             // Ключи в журнале сдвигаются при каждой новой строке, поэтому
             // React пересоздаёт весь список; вплывает только верхняя — она и
             // есть новость, остальные просто переехали.
+            //
+            // Возраст — в подсказке, а не в строке: лента узкая, а «час назад»
+            // и «только что» различать всё равно нужно — без этого повтор
+            // недельной давности читается как то, что происходит сейчас.
             <li
-              key={`${i}-${line}`}
+              key={`${i}-${line.text}`}
+              title={loggedAgo(s, line.at)}
               className={i === 0 ? "enter selectable text-ink" : "selectable text-muted"}
             >
-              {line}
+              {line.text}
             </li>
           ))}
         </ol>
