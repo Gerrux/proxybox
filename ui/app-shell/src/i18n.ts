@@ -93,6 +93,7 @@ const RU = {
   probeFailed: "не отвечает",
   measured: (ago: string) => `Измерено ${ago}`,
   logged: (ago: string) => `Записано ${ago}`,
+  yesterday: "вчера",
   synced: (ago: string) => `Сверено ${ago}`,
   neverSynced: "не сверялись",
   agoNow: "только что",
@@ -285,6 +286,7 @@ const EN: typeof RU = {
   probeFailed: "no answer",
   measured: (ago: string) => `Measured ${ago}`,
   logged: (ago: string) => `Logged ${ago}`,
+  yesterday: "yesterday",
   synced: (ago: string) => `Synced ${ago}`,
   neverSynced: "never synced",
   agoNow: "just now",
@@ -416,11 +418,30 @@ export function measuredAgo(s: Strings, at: number): string | undefined {
   return when && s.measured(when);
 }
 
-/** То же для журнала: его читают, когда уже что-то сломалось, и «когда именно»
- *  там половина ответа. В самой строке времени нет — лента и так узкая. */
+/** То же для журнала. Час и минуты в ленте есть, а возраста в них нет: «5 мин
+ *  назад» глаз из «14:32» не считает, и подсказка отвечает именно на это. */
 export function loggedAgo(s: Strings, at: number): string | undefined {
   const when = ago(s, at);
   return when && s.logged(when);
+}
+
+const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+
+/** Подпись дня в журнале. У сегодняшнего её нет — это умолчание, и подписывать
+ *  его значит спорить с ним же. Год печатается только чужой: тридцать строк
+ *  переживают перезапуск службы, а машина — и зимовку. */
+export function dayLabel(s: Strings, lang: Lang, at: number): string | undefined {
+  if (!at) return undefined;
+  const when = new Date(at * 1000);
+  const now = new Date();
+  const days = Math.round((midnight(now) - midnight(when)) / 86_400_000);
+  if (days <= 0) return undefined;
+  if (days === 1) return s.yesterday;
+  return when.toLocaleDateString(lang, {
+    day: "numeric",
+    month: "long",
+    ...(when.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+  });
 }
 
 /** Возраст списка узлов. Без него по строке подписки не отличить список,
