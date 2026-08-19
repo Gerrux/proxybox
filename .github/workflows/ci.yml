@@ -1,0 +1,28 @@
+# Сторожа держат ровно до тех пор, пока их кто-то запускает. Тег бывает раз в
+# месяц, а правило нарушают в тот же день — поэтому весь `pnpm validate` бежит
+# на каждый пуш и каждый PR. Linux: службе тут не подняться, но проверяют
+# сторожа не живой туннель, а совпадение поверхностей и чистую логику.
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: corepack enable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # tsc --noEmit + vite build + cargo test --workspace
+      - run: pnpm validate
+      # Ветки под Windows компилятор здесь иначе не увидит вовсе: половина
+      # службы за `cfg(windows)`, и разъезжается она молча до самой сборки.
+      - run: rustup target add x86_64-pc-windows-msvc
+      - run: cargo check --workspace --target x86_64-pc-windows-msvc
