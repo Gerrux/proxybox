@@ -67,6 +67,44 @@ export function Button({
   );
 }
 
+/** Значки полей. Свои `<svg>`, а не глифы шрифта, по той же причине, что и у
+ *  кнопок окна: `Segoe MDL2 Assets` есть не на всякой системе, а отсутствующий
+ *  глиф — пустой квадрат вместо смысла. Эмодзи не годятся тем же: их рисует
+ *  система, и в тёмной панели они цветные и чужие, а эти наследуют `currentColor`.
+ *
+ *  Сетка 12×12 и толщина 1.3 — те же, что у стрелок приборной линейки: два
+ *  разных штриха в одном окне видно сразу. */
+const ICONS = {
+  tag: "M6.5 1.5H1.5V6.5L6.5 11.5 11.5 6.5ZM3.8 3.8h.01",
+  node: "M6 1a5 5 0 100 10A5 5 0 006 1ZM1 6h10M6 1c2.4 2.7 2.4 7.3 0 10M6 1C3.6 3.7 3.6 8.3 6 11",
+  screen: "M1.5 2.5h9v6h-9zM4.5 10.5h3M6 8.5v2",
+  chip: "M3.5 3.5h5v5h-5zM5 1.5v2M7 1.5v2M5 8.5v2M7 8.5v2M1.5 5h2M1.5 7h2M8.5 5h2M8.5 7h2",
+  speech: "M1.5 2.5h9v5.5h-5L2.5 10.5V8H1.5z",
+  dice: "M2 2h8v8H2zM4.2 4.2h.01M7.8 7.8h.01M6 6h.01",
+  warn: "M6 1.5 11 10.5H1zM6 4.5v2.5M6 9h.01",
+} as const;
+
+export type IconName = keyof typeof ICONS;
+
+export function Icon({ name, className = "" }: { name: IconName; className?: string }) {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 12 12"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={`shrink-0 ${className}`}
+    >
+      <path d={ICONS[name]} />
+    </svg>
+  );
+}
+
 /** Вид поля ввода — один на все поля: внутри строки-формы `flex-1` растягивает,
  *  отдельно стоящее поле держит `w-full`. Поле утоплено в плиту: тот же приём,
  *  что и у списков, — вводить в паз, а не поверх. */

@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { forgetBrowser, type Act, type BrowserProfile, type Status } from "./platform";
 import { strings } from "./i18n";
-import { Button, ConfirmButton, Empty, FIELD, flag, Panel } from "./ui";
+import { Button, ConfirmButton, Empty, FIELD, flag, Icon, Panel, type IconName } from "./ui";
 
 /** `Accept-Language` по коду страны узла — это и есть «Авто». Список короткий
  *  намеренно: тут самые частые точки выхода, всем остальным достаётся
@@ -60,6 +60,13 @@ function realPlatform(): string {
   return "linux";
 }
 
+/** Как называется настоящая платформа в интерфейсе. Те же слова, что в списке
+ *  выбора: человек сравнивает их глазами, и «win32» рядом с «Windows» заставило
+ *  бы гадать, одно это и то же или нет. */
+function realName(): string {
+  return { windows: "Windows", macos: "macOS", linux: "Linux" }[realPlatform()] ?? "Linux";
+}
+
 /** Версия Chrome у самого окна: вебвью — тот же Chromium, что стоит рядом, и
  *  угадывать её незачем. Ноль — не вебвью (разработка в браузере). */
 function realMajor(): number {
@@ -100,6 +107,36 @@ function versions(current: number): number[] {
 
 const EMPTY: BrowserProfile = { name: "", node: "", ua: "", lang: AUTO };
 
+/** Поле формы: значок, подпись, само поле и описание под ним. Подпись обнимает
+ *  поле `<label>`'ом — тогда по ней можно нажать, и читалке с экрана не нужно
+ *  ничего дополнительно объяснять. */
+function Field({
+  icon,
+  label,
+  hint,
+  className = "",
+  children,
+}: {
+  icon: IconName;
+  label: string;
+  hint?: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <label className={`flex min-w-0 flex-col gap-1 ${className}`}>
+      <span className="engraved flex items-center gap-1.5 text-muted">
+        <Icon name={icon} />
+        {label}
+      </span>
+      {/* Строка вокруг поля обязательна: в `FIELD` живёт `flex-1`, и в
+          колоночной раскладке он растянул бы поле по высоте вместо ширины. */}
+      <div className="flex min-w-0 gap-2">{children}</div>
+      {hint != null && <span className="text-[11px] text-muted">{hint}</span>}
+    </label>
+  );
+}
+
 /** Браузерные профили: имя, узел, личность. Отдельным списком, а не строкой у
  *  узла, именно потому, что их бывает несколько на один узел — иначе два
  *  аккаунта через одну страну не развести. */
@@ -122,6 +159,14 @@ export function Browsers({
   // Поля конструктора не хранятся отдельно от строки: два источника правды
   // разъезжаются на первой же правке руками.
   const ua = parseUa(draft.ua);
+  // Страна узла — из прогона профилей: до него её никто не знает, и «по стране
+  // узла» честно об этом говорит вместо молчаливого английского.
+  const probe = status?.probes.find((p) => p.name === draft.node);
+  const code = probe?.code;
+  const country = probe?.country;
+  // Имя занято — значит это правка, а не создание: каталог с куками привязан к
+  // имени и перезапись его переживает.
+  const editing = items.some((i) => i.name === draft.name.trim());
   return (
     <Panel
       className={className}
@@ -133,7 +178,7 @@ export function Browsers({
           <Empty>{s.browserNeedsNode}</Empty>
         ) : (
           <form
-            className="flex flex-col gap-2 rounded-md border border-edge bg-surface-2 p-3"
+            className="flex max-h-[60vh] shrink-0 flex-col gap-3 overflow-y-auto rounded-md border border-edge bg-surface-2 p-3"
             onSubmit={(e) => {
               e.preventDefault();
               if (!ready) return;
@@ -142,14 +187,16 @@ export function Browsers({
               );
             }}
           >
-            <div className="flex gap-2">
+            <Field icon="tag" label={s.browserName} hint={s.browserNameHint}>
               <input
                 value={draft.name}
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                placeholder={s.browserName}
+                placeholder={s.browserNamePlaceholder}
                 spellCheck={false}
                 className={FIELD}
               />
+            </Field>
+            <Field icon="node" label={s.browserNode} hint={s.browserNodeHint}>
               {/* Родной select, а не свой список: узлов бывает под сотню, и
                   системный уже умеет и поиск с клавиатуры, и прокрутку. */}
               <select
@@ -157,57 +204,60 @@ export function Browsers({
                 onChange={(e) => setDraft({ ...draft, node: e.target.value })}
                 className={FIELD}
               >
-                <option value="">{s.browserNode}</option>
+                <option value="">{s.browserNodePick}</option>
                 {nodes.map((node) => (
                   <option key={node} value={node}>
                     {node}
                   </option>
                 ))}
               </select>
-            </div>
+            </Field>
             {/* Конструктор личности. Поля не декоративные: каждое попадает в
                 строку user-agent, а строка остаётся редактируемой — вписанную
                 руками конструктор не переписывает, он её разбирает. */}
-            <fieldset className="flex flex-col gap-2 rounded-md border border-edge p-2.5">
+            <fieldset className="flex flex-col gap-2.5 rounded-md border border-edge p-2.5">
               <legend className="engraved px-1 text-[11px] text-muted">{s.browserIdentity}</legend>
               <div className="flex flex-wrap gap-2">
-                <select
-                  aria-label={s.browserPlatform}
-                  value={ua.platform}
-                  onChange={(e) =>
-                    setDraft({
-                      ...draft,
-                      // «Настоящая» — это пустая строка: подставлять нечего, и
-                      // браузер пойдёт со своим UA.
-                      ua: e.target.value === "" ? "" : buildUa(e.target.value, ua.major || realMajor()),
-                    })
-                  }
-                  className={FIELD}
-                >
-                  <option value="">{s.browserPlatformReal}</option>
-                  <option value="windows">Windows</option>
-                  <option value="macos">macOS</option>
-                  <option value="linux">Linux</option>
-                  {/* Пункт живёт, только пока строку вписали руками: выбрать его
-                      нельзя, но и врать про платформу он не даёт. */}
-                  {ua.platform === "custom" && <option value="custom">{s.browserPlatformCustom}</option>}
-                </select>
-                <select
-                  aria-label={s.browserVersion}
-                  value={ua.major}
-                  disabled={ua.platform === "" || ua.platform === "custom"}
-                  onChange={(e) => setDraft({ ...draft, ua: buildUa(ua.platform, Number(e.target.value)) })}
-                  className={FIELD}
-                >
-                  {ua.major === 0 && <option value={0}>{s.browserVersion}</option>}
-                  {versions(ua.major).map((v) => (
-                    <option key={v} value={v}>
-                      Chrome {v}
-                    </option>
-                  ))}
-                </select>
+                <Field icon="screen" label={s.browserPlatform} className="min-w-[9rem] flex-1">
+                  <select
+                    value={ua.platform}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        // «Настоящая» — это пустая строка: подставлять нечего, и
+                        // браузер пойдёт со своим UA.
+                        ua: e.target.value === "" ? "" : buildUa(e.target.value, ua.major || realMajor()),
+                      })
+                    }
+                    className={FIELD}
+                  >
+                    <option value="">{s.browserPlatformReal}</option>
+                    <option value="windows">Windows</option>
+                    <option value="macos">macOS</option>
+                    <option value="linux">Linux</option>
+                    {/* Пункт живёт, только пока строку вписали руками: выбрать
+                        его нельзя, но и врать про платформу он не даёт. */}
+                    {ua.platform === "custom" && <option value="custom">{s.browserPlatformCustom}</option>}
+                  </select>
+                </Field>
+                <Field icon="chip" label={s.browserVersion} className="min-w-[8rem] flex-1">
+                  <select
+                    value={ua.major}
+                    disabled={ua.platform === "" || ua.platform === "custom"}
+                    onChange={(e) => setDraft({ ...draft, ua: buildUa(ua.platform, Number(e.target.value)) })}
+                    className={FIELD}
+                  >
+                    {ua.major === 0 && <option value={0}>—</option>}
+                    {versions(ua.major).map((v) => (
+                      <option key={v} value={v}>
+                        Chrome {v}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
                 <Button
                   variant="ghost"
+                  className="gap-1.5 self-end"
                   title={s.browserRandomHint}
                   onClick={() => {
                     const list = versions(0);
@@ -215,45 +265,75 @@ export function Browsers({
                     setDraft({ ...draft, ua: buildUa(platform, list[Math.floor(Math.random() * list.length)]) });
                   }}
                 >
+                  <Icon name="dice" />
                   {s.browserRandom}
                 </Button>
               </div>
               <input
+                aria-label={s.browserUaField}
                 value={draft.ua}
                 onChange={(e) => setDraft({ ...draft, ua: e.target.value })}
                 placeholder={s.browserUa}
                 spellCheck={false}
                 className={`${FIELD} font-mono text-[11px]`}
               />
+              {/* Что подставится на самом деле, видно тут же: «настоящая»
+                  оставляет строку браузера, и знать, какая она, человеку надо
+                  не меньше, чем видеть выдуманную. */}
+              <p className="text-[11px] text-muted">
+                {ua.platform === "" ? s.browserUaRealNow(realName(), realMajor()) : s.browserUaSet}
+              </p>
               {/* Предупреждение стоит там, где его игнорировать труднее всего, —
                   под самим выбором. Тултипом это было бы косметикой. */}
-              {ua.platform !== "" && ua.platform !== realPlatform() && (
-                <p className="text-[11px] text-wait">{s.browserMismatch(realPlatform())}</p>
+              {ua.platform !== "" && ua.platform !== "custom" && ua.platform !== realPlatform() && (
+                <p className="flex items-start gap-1.5 text-[11px] text-wait">
+                  <Icon name="warn" className="mt-0.5" />
+                  {s.browserMismatch(realName())}
+                </p>
               )}
               <p className="text-[11px] text-muted">{s.browserUaHint}</p>
             </fieldset>
-            <div className="flex flex-wrap gap-2">
+            <Field icon="speech" label={s.browserLang} hint={s.browserLangHint}>
               <select
-                aria-label={s.browserLang}
                 value={draft.lang === AUTO || draft.lang === "" ? draft.lang : "custom"}
-                onChange={(e) => setDraft({ ...draft, lang: e.target.value === "custom" ? "en-US,en" : e.target.value })}
+                onChange={(e) =>
+                  setDraft({ ...draft, lang: e.target.value === "custom" ? acceptLanguage(AUTO, code) : e.target.value })
+                }
                 className={FIELD}
               >
                 <option value={AUTO}>{s.browserLangAuto}</option>
                 <option value="">{s.browserLangSystem}</option>
                 <option value="custom">{s.browserLangCustom}</option>
               </select>
+              {/* Своё значение правится тут же, рядом с выбором: уводить его в
+                  отдельную строку значило бы оторвать поле от подписи. */}
               {draft.lang !== AUTO && draft.lang !== "" && (
                 <input
                   value={draft.lang}
                   onChange={(e) => setDraft({ ...draft, lang: e.target.value })}
-                  title={s.browserLangHint}
                   spellCheck={false}
                   className={`${FIELD} font-mono text-[11px]`}
                 />
               )}
+            </Field>
+            {/* Тулинг для «авто»: что оно даст прямо сейчас и почему. Без этой
+                строки «по стране узла» — обещание, которое нечем проверить, а
+                страна берётся из прогона профилей и до него неизвестна. */}
+            {draft.lang === AUTO && (
+              <p className="text-[11px] text-muted">
+                {country
+                  ? s.browserLangAutoNow(country, acceptLanguage(AUTO, code))
+                  : s.browserLangAutoUnknown(acceptLanguage(AUTO, code))}
+              </p>
+            )}
+            <div className="flex flex-wrap justify-end gap-2">
+              {editing && (
+                <Button variant="quiet" onClick={() => setDraft(EMPTY)}>
+                  {s.browserCancel}
+                </Button>
+              )}
               <Button type="submit" variant="primary" disabled={!ready}>
-                {s.browserCreate}
+                {editing ? s.browserSave : s.browserCreate}
               </Button>
             </div>
           </form>
