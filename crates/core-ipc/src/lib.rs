@@ -76,6 +76,28 @@ pub fn t(ru: &str, en: &str) -> String {
     .to_string()
 }
 
+/// Имя каталога под сеанс браузера. Нужно обоим клиентам сразу: службе — под
+/// свой каталог sing-box, оболочке — под свой `--user-data-dir`, а имя профиля
+/// приходит из подписки, и законны в нём и слэш, и двоеточие.
+///
+/// Хвост-хеш здесь не украшение: одной чисткой символов «a/b» и «a-b» дают один
+/// каталог, а каталог сеанса — это его `singbox.pid`, по которому `Tunnel::start`
+/// добивает предшественника. Два профиля молча гасили бы друг друга. Пока сеанс
+/// был один, столкнуться было не с чем.
+///
+/// FNV-1a, а не `DefaultHasher`: каталог обязан пережить перезапуск (в нём
+/// лежат входы и куки человека), а стабильность `DefaultHasher` между версиями
+/// компилятора никто не обещал.
+pub fn dir_name(profile: &str) -> String {
+    let safe: String =
+        profile.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).take(40).collect();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in profile.as_bytes() {
+        hash = (hash ^ *byte as u64).wrapping_mul(0x100_0000_01b3);
+    }
+    format!("{safe}-{hash:016x}")
+}
+
 /// Окружение пользователя, от имени которого работает клиент, — для `Discover`.
 /// Живёт в контракте, потому что нужно обоим клиентам и означает ровно то, что
 /// написано у команды.
@@ -155,11 +177,18 @@ pub enum Request {
     /// переключает, только меряет.
     TestProfiles,
     /// Поднять под профиль отдельный локальный прокси и вернуть его порт
-    /// (`Response::Proxy`). Нужен окну браузера: одна вкладка ходит в выбранный
+    /// (`Response::Proxy`). Нужен окну браузера: одно окно ходит в выбранный
     /// туннель мимо общего режима. Живой туннель не трогается — у инстанса свои
     /// порты, свой каталог и нет TUN. Запускает браузер клиент: служба работает
     /// в сессии 0, её окна человек не увидит.
+    ///
+    /// Сеансов бывает несколько разом, по одному на профиль; тот же профиль
+    /// второй раз — тот же порт, второго sing-box ему не надо.
     Browse { profile: String },
+    /// Погасить сеанс браузера. Шлёт его тот, кто окно и открыл: оболочка ждёт
+    /// закрытия окна браузера и сообщает. Без этого метка «браузер» пережила бы
+    /// окно, а sing-box сеанса — обоих.
+    BrowseStop { profile: String },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,11 +268,14 @@ pub struct Status {
     /// сохраняется на диск: это измерение, а не состояние.
     #[serde(default)]
     pub probes: Vec<Probe>,
-    /// Профиль, под которым сейчас поднят прокси для окна браузера. Мимо
-    /// туннеля и мимо `tunnel`: окно браузера живёт своей жизнью, и узнать о
-    /// нём в интерфейсе больше неоткуда.
+    /// Профили, под которыми сейчас подняты прокси для окон браузера. Мимо
+    /// туннеля и мимо `tunnel`: окна браузера живут своей жизнью, и узнать о
+    /// них в интерфейсе больше неоткуда.
+    ///
+    /// Список, а не один профиль: сеансы независимы, и в окне они и есть тот
+    /// самый список профилей — второму списку взяться неоткуда.
     #[serde(default)]
-    pub browser: Option<String>,
+    pub browsers: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -424,6 +456,7 @@ mod tests {
             Request::SetLang { lang: Lang::En },
             Request::TestProfiles,
             Request::Browse { profile: "myvpn".into() },
+            Request::BrowseStop { profile: "myvpn".into() },
         ];
         for r in reqs {
             let s = serde_json::to_string(&r).unwrap();
@@ -438,7 +471,7 @@ mod tests {
                 country: Some("Нидерланды, Амстердам".into()),
                 apps: vec![App { path: r"C:\app.exe".into(), name: "app".into(), enabled: true }],
                 profiles: vec!["myvpn".into()],
-                browser: Some("myvpn".into()),
+                browsers: vec!["myvpn".into()],
                 probes: vec![Probe {
                     name: "myvpn".into(),
                     latency_ms: Some(42),
@@ -481,6 +514,16 @@ mod tests {
         std::env::set_var("PG_LANG", "ru_RU.UTF-8");
         assert_eq!(lang_from_env(), Lang::Ru);
         std::env::remove_var("PG_LANG");
+    }
+
+    /// Каталог сеанса — это его `singbox.pid`: совпали каталоги — второй сеанс
+    /// добил первого. Одной чистки символов для этого мало.
+    #[test]
+    fn session_dirs_do_not_collide() {
+        assert_ne!(dir_name("a/b"), dir_name("a-b"), "разные профили — разные каталоги");
+        assert_eq!(dir_name("узел №1"), dir_name("узел №1"), "тот же профиль — тот же каталог");
+        let name = dir_name("NL / Amsterdam: 01");
+        assert!(!name.contains(['/', ':', ' ']), "имя каталога, а не имя профиля: {name}");
     }
 
     #[test]
