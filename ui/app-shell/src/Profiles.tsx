@@ -57,6 +57,11 @@ export function Profiles({
   const subscriptions = status?.subscriptions ?? [];
   const probes = status?.probes ?? [];
   const [query, setQuery] = useState("");
+  // Поле импорта показывается по «+», а не стоит всегда: две строки под
+  // редчайшим действием — это две строки, которых нет у списка. Пока профилей
+  // нет вовсе, добавить их больше нечем, и поле открыто само.
+  const [importOpen, setImportOpen] = useState(false);
+  const adding = importOpen || profiles.length === 0;
   const needle = query.trim().toLowerCase();
   const shown = needle ? profiles.filter((name) => name.toLowerCase().includes(needle)) : profiles;
   // Поле не прячем, пока в нём что-то есть: иначе фильтр остался бы включённым
@@ -75,26 +80,39 @@ export function Profiles({
         )
       }
       action={
-        profiles.length > 0 && (
-          // Пока прогон идёт, кнопка заперта: второй прогон добил бы sing-box
-          // первого — они делят каталог проверки.
+        <>
+          {profiles.length > 0 && (
+            // Пока прогон идёт, кнопка заперта: второй прогон добил бы sing-box
+            // первого — они делят каталог проверки.
+            <Button
+              variant="quiet"
+              disabled={busy}
+              title={s.testProfilesHint}
+              onClick={() => void act({ cmd: "test-profiles" })}
+            >
+              {s.testProfiles}
+            </Button>
+          )}
           <Button
-            variant="quiet"
-            disabled={busy}
-            title={s.testProfilesHint}
-            onClick={() => void act({ cmd: "test-profiles" })}
+            aria-pressed={adding}
+            aria-label={s.importLink}
+            title={s.linkPlaceholder}
+            onClick={() => setImportOpen((v) => !v)}
+            className="w-8 px-0 text-[15px] leading-none"
           >
-            {s.testProfiles}
+            +
           </Button>
-        )
+        </>
       }
     >
       <div className="flex flex-col gap-3">
-        <AddField
-          placeholder={s.linkPlaceholder}
-          label={s.importLink}
-          onSubmit={(link) => act({ cmd: "add-profile", arg: { link } })}
-        />
+        {adding && (
+          <AddField
+            placeholder={s.linkPlaceholder}
+            label={s.importLink}
+            onSubmit={(link) => act({ cmd: "add-profile", arg: { link } })}
+          />
+        )}
         {subscriptions.length > 0 && (
           <div className="flex flex-col gap-1">
             <h3 className="engraved flex items-baseline gap-2 text-muted">

@@ -131,6 +131,10 @@ export function Apps({
   const on = apps.filter((a) => a.enabled).length;
   const icons = useIcons(apps);
   const [query, setQuery] = useState("");
+  // Поле пути показывается по «+»: путь к .exe вписывают руками раз в жизни, а
+  // строку у списка оно отнимало бы всегда. Пустому списку поле нужно сразу.
+  const [importOpen, setImportOpen] = useState(false);
+  const adding = importOpen || apps.length === 0;
   const shown = matching(ordered(apps), query);
   // Поле не прячем, пока в нём что-то есть: иначе фильтр остался бы включённым
   // и невидимым, а строки просто пропали бы.
@@ -150,11 +154,22 @@ export function Apps({
         )
       }
       action={
-        // Искать приложения, когда их всё равно не отбирают, незачем.
+        // Искать и добавлять приложения, когда их всё равно не отбирают, незачем.
         !all && (
-          <Button variant="quiet" disabled={busy} onClick={() => void act({ cmd: "discover", arg: { env: {} } })}>
-            {s.discover}
-          </Button>
+          <>
+            <Button variant="quiet" disabled={busy} onClick={() => void act({ cmd: "discover", arg: { env: {} } })}>
+              {s.discover}
+            </Button>
+            <Button
+              aria-pressed={adding}
+              aria-label={s.addApp}
+              title={s.appPlaceholder}
+              onClick={() => setImportOpen((v) => !v)}
+              className="w-8 px-0 text-[15px] leading-none"
+            >
+              +
+            </Button>
+          </>
         )
       }
     >
@@ -166,11 +181,13 @@ export function Apps({
           <Empty>{s.scopeAllNote}</Empty>
         ) : (
           <>
-            <AddField
-              placeholder={s.appPlaceholder}
-              label={s.addApp}
-              onSubmit={(path) => act({ cmd: "add-app", arg: { path } })}
-            />
+            {adding && (
+              <AddField
+                placeholder={s.appPlaceholder}
+                label={s.addApp}
+                onSubmit={(path) => act({ cmd: "add-app", arg: { path } })}
+              />
+            )}
             {searchable && <SearchField value={query} onChange={setQuery} placeholder={s.searchApps} />}
             {apps.length === 0 ? (
               <Empty>{s.noApps}</Empty>
