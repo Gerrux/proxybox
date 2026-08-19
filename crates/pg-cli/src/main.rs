@@ -53,6 +53,24 @@ fn usage() -> String {
     t(USAGE_RU, USAGE_EN)
 }
 
+/// Байты человеку, ровно как в окне: `12.4 MB` вместо тринадцати цифр подряд.
+/// Скрипту сырое число тут и не нужно — оно приходит к нему прямо из core-ipc.
+fn bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = n as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    match i {
+        0 => format!("{n} B"),
+        // Десятая доля читается только у малых чисел: «1023.9 MB» — это шум.
+        _ if v < 10.0 => format!("{v:.1} {}", UNITS[i]),
+        _ => format!("{} {}", v.round(), UNITS[i]),
+    }
+}
+
 fn flag(args: &[String], name: &str) -> Option<String> {
     let i = args.iter().position(|a| a == name)?;
     args.get(i + 1).cloned()
@@ -123,6 +141,13 @@ fn main() -> std::process::ExitCode {
     // Язык клиента: сначала из окружения — статус придёт позже и уточнит его.
     core_ipc::set_lang(core_ipc::lang_from_env());
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Справка идёт в stdout и с нулевым кодом: `--help`, отвечающий как отказ,
+    // ломает любой скрипт, который его вызвал осознанно. Без аргументов вовсе —
+    // это как раз ошибка, и та же справка уходит в stderr ниже.
+    if args.first().is_some_and(|a| matches!(a.as_str(), "help" | "--help" | "-h" | "/?")) {
+        println!("{}", usage());
+        return std::process::ExitCode::SUCCESS;
+    }
     // Единственная команда мимо службы: она нужна как раз когда служба молчит.
     if args.first().is_some_and(|a| a == "doctor") {
         return match doctor::report(&doctor::run()) {
@@ -209,7 +234,7 @@ fn main() -> std::process::ExitCode {
             );
             println!("{:<11} {}", t("профиль:", "profile:"), s.profile.unwrap_or_else(|| "—".into()));
             println!("{:<11} {}", t("страна:", "exit:"), s.country.unwrap_or_else(|| "—".into()));
-            println!("{:<11} ↓{} ↑{} {}", t("трафик:", "traffic:"), s.rx, s.tx, t("байт", "bytes"));
+            println!("{:<11} ↓{} ↑{}", t("трафик:", "traffic:"), bytes(s.rx), bytes(s.tx));
             println!(
                 "{:<11} {} ({} {})",
                 t("приложения:", "apps:"),
@@ -221,9 +246,33 @@ fn main() -> std::process::ExitCode {
                 println!("{:<11} {profile}", t("браузер:", "browser:"));
             }
             if let Some(last) = s.log.first() {
-                println!("{:<11} {last}", t("последнее:", "last:"));
+                println!("{:<11} {}", t("последнее:", "last:"), last.text);
             }
             std::process::ExitCode::SUCCESS
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Округление и выбор единицы — единственная арифметика в клиенте.
+    #[test]
+    fn bytes_read_like_in_the_window() {
+        assert_eq!(bytes(0), "0 B");
+        assert_eq!(bytes(1023), "1023 B", "до килобайта единицу не меняем");
+        assert_eq!(bytes(1024), "1.0 KB");
+        assert_eq!(bytes(1024 * 12), "12 KB", "у больших чисел десятая доля — шум");
+        assert_eq!(bytes(1024 * 1024 * 3 + 512 * 1024), "3.5 MB");
+        assert_eq!(bytes(u64::MAX), "16777216 TB", "выше терабайта единиц нет — число растёт, а не единица");
+    }
+
+    /// Справка не должна выглядеть отказом, а разбор — молча съедать команду.
+    #[test]
+    fn usage_is_not_a_command() {
+        assert!(parse(&["--help".into()]).is_err(), "справку разбирает main, до parse");
+        assert!(parse(&[]).is_err());
+        assert!(matches!(parse(&["status".into()]), Ok(Request::Status)));
     }
 }

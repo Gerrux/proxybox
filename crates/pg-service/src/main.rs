@@ -8,7 +8,7 @@
 #[cfg(windows)]
 mod service;
 
-use core_ipc::{t, App, Endpoint, Listener, Probe, Request, Response, Status, Stream, Tunnel as TunnelState, ADDR};
+use core_ipc::{t, App, Endpoint, Listener, LogLine, Probe, Request, Response, Status, Stream, Tunnel as TunnelState, ADDR};
 use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -203,13 +203,15 @@ impl Service {
     }
 
     fn log(&mut self, line: impl Into<String>) {
-        let line = line.into();
+        let text = line.into();
         // Повтор в цикле перезапуска не должен вытеснять из журнала всё остальное.
-        if self.status.log.first() == Some(&line) {
+        // Время повтора при этом не обновляется намеренно: в журнале стоит,
+        // когда это началось, а не когда служба сказала то же самое в сотый раз.
+        if self.status.log.first().map(|l| l.text.as_str()) == Some(text.as_str()) {
             return;
         }
-        eprintln!("{line}");
-        self.status.log.insert(0, line);
+        eprintln!("{text}");
+        self.status.log.insert(0, LogLine { at: now(), text });
         self.status.log.truncate(30);
     }
 

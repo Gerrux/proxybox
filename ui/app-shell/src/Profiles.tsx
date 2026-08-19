@@ -1,7 +1,7 @@
 import { useState } from "react";
-import type { Probe, Request, Status } from "./platform";
+import type { Act, Probe, Status } from "./platform";
 import { measuredAgo, strings } from "./i18n";
-import { AddField, Button, Empty, flag, Panel, SearchField } from "./ui";
+import { AddField, Button, ConfirmButton, Empty, flag, Panel, SearchField } from "./ui";
 
 /** Со скольких профилей список перестаёт читаться глазом. Порог тот же, что у
  *  приложений: одна подписка приносит десятки узлов, а подписок бывает
@@ -49,7 +49,7 @@ export function Profiles({
   className,
 }: {
   status: Status | null;
-  act: (req: Request) => void;
+  act: Act;
   /** Вкладка через отдельный туннель этого профиля — мимо общего режима. */
   browse: (profile: string) => void;
   busy?: boolean;
@@ -85,7 +85,7 @@ export function Profiles({
             variant="quiet"
             disabled={busy}
             title={s.testProfilesHint}
-            onClick={() => act({ cmd: "test-profiles" })}
+            onClick={() => void act({ cmd: "test-profiles" })}
           >
             {s.testProfiles}
           </Button>
@@ -120,17 +120,15 @@ export function Profiles({
                   <Button
                     variant="quiet"
                     aria-label={s.refreshSubscription(url)}
-                    onClick={() => act({ cmd: "add-profile", arg: { link: url } })}
+                    onClick={() => void act({ cmd: "add-profile", arg: { link: url } })}
                   >
                     ⟳
                   </Button>
-                  <Button
-                    variant="danger"
-                    aria-label={s.removeSubscription(url)}
-                    onClick={() => act({ cmd: "remove-subscription", arg: { url } })}
-                  >
-                    ✕
-                  </Button>
+                  <ConfirmButton
+                    label={s.removeSubscription(url)}
+                    ask={s.confirmRemove}
+                    onConfirm={() => void act({ cmd: "remove-subscription", arg: { url } })}
+                  />
                 </li>
               ))}
             </ul>
@@ -203,7 +201,7 @@ export function Profiles({
                     )}
                   </div>
                   {!live && (
-                    <Button variant="quiet" onClick={() => act({ cmd: "on", arg: { profile: name } })}>
+                    <Button variant="quiet" onClick={() => void act({ cmd: "on", arg: { profile: name } })}>
                       {s.turnOn}
                     </Button>
                   )}
@@ -212,13 +210,21 @@ export function Profiles({
                   <Button variant="quiet" aria-label={s.browseProfile(name)} onClick={() => browse(name)}>
                     ⧉
                   </Button>
-                  <Button
-                    variant="danger"
-                    aria-label={s.removeProfile(name)}
-                    onClick={() => act({ cmd: "remove-profile", arg: { name } })}
-                  >
-                    ✕
-                  </Button>
+                  {live ? (
+                    <ConfirmButton
+                      label={s.removeProfile(name)}
+                      ask={s.confirmRemove}
+                      onConfirm={() => void act({ cmd: "remove-profile", arg: { name } })}
+                    />
+                  ) : (
+                    <Button
+                      variant="danger"
+                      aria-label={s.removeProfile(name)}
+                      onClick={() => void act({ cmd: "remove-profile", arg: { name } })}
+                    >
+                      ✕
+                    </Button>
+                  )}
                 </li>
               );
             })}

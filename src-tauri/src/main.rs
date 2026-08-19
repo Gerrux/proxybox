@@ -1,10 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 //! Тонкий клиент службы: пробрасывает contract-запросы из фронтенда в core-ipc.
-//! Своей логики и своего состояния у оболочки нет.
+//! Своей логики и своего состояния у оболочки нет: всё, что она показывает, —
+//! ответ службы. Решает она сама ровно одно — судьбу окна: закрытое окно
+//! прячется в трей, потому что служба держит туннель и правила и без окна, а
+//! значок в трее — единственное, что об этом говорит.
 
 use core_ipc::{call, Request, Response};
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::Manager;
 
 /// `async` здесь не про параллелизм, а про то, чтобы окно оставалось живым:
 /// синхронную команду Tauri выполняет прямо в цикле событий главного потока, а
@@ -30,10 +37,11 @@ fn ipc(req: Request) -> Result<Response, String> {
     call(&req).map_err(|e| match e.kind() {
         // Ни канала, ни сокета — служба не запущена. Код ошибки об этом не
         // говорит, а человеку нужно ровно одно действие.
-        io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound => {
-            format!("служба не запущена ({e}): запустите Privacy Gateway")
-        }
-        _ => format!("служба недоступна: {e}"),
+        io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound => core_ipc::t(
+            &format!("служба не запущена ({e}): запустите Privacy Gateway"),
+            &format!("the service is not running ({e}): start Privacy Gateway"),
+        ),
+        _ => core_ipc::t(&format!("служба недоступна: {e}"), &format!("service unavailable: {e}")),
     })
 }
 
@@ -51,13 +59,13 @@ fn ipc(req: Request) -> Result<Response, String> {
 #[tauri::command(async)]
 fn open_url(url: String) -> Result<(), String> {
     if !url.starts_with("https://github.com/") {
-        return Err(format!("ссылка не с github.com: {url}"));
+        return Err(core_ipc::t(&format!("ссылка не с github.com: {url}"), &format!("link is not from github.com: {url}")));
     }
     std::process::Command::new("rundll32")
         .args(["url.dll,FileProtocolHandler", &url])
         .spawn()
         .map(|_| ())
-        .map_err(|e| format!("не удалось открыть браузер: {e}"))
+        .map_err(|e| core_ipc::t(&format!("не удалось открыть браузер: {e}"), &format!("could not open the browser: {e}")))
 }
 
 /// Окно браузера через отдельный туннель профиля. Порт поднимает служба
@@ -92,8 +100,120 @@ fn open_browser(port: u16, profile: String) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", browser.path))
 }
 
+/// Значок в трее живёт, пока живёт оболочка, и удался ли он — знать обязательно:
+/// без значка закрытое окно нельзя прятать, иначе приложение исчезнет совсем.
+static TRAY: AtomicBool = AtomicBool::new(false);
+
+/// Показать окно с любого места: из меню значка и по клику по нему. Свёрнутое
+/// окно `show()` не поднимает — нужен ещё и `unminimize()`.
+fn raise(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+/// Подпись значка: то же состояние, что и в шапке окна, теми же словами.
+/// Оболочка не заводит своего состояния — она спрашивает службу и показывает
+/// ответ, ровно как это делает окно; решает по-прежнему одна служба.
+fn tooltip() -> String {
+    let Ok(Response::Status(s)) = call(&Request::Status) else {
+        return format!("Privacy Gateway — {}", core_ipc::t("служба не отвечает", "service is not responding"));
+    };
+    // Язык выбирают в окне, и хранит его служба: подпись значка обязана
+    // говорить на нём же. Заодно на него переходят и сообщения оболочки.
+    core_ipc::set_lang(s.lang);
+    let state = match s.tunnel {
+        core_ipc::Tunnel::Off => core_ipc::t("приватный режим выключен", "private mode is off"),
+        core_ipc::Tunnel::Connecting => core_ipc::t("подключение…", "connecting…"),
+        core_ipc::Tunnel::Up => core_ipc::t("защищено", "protected"),
+        core_ipc::Tunnel::Down => core_ipc::t("туннеля нет — доступ закрыт", "no tunnel — access is closed"),
+    };
+    format!("Privacy Gateway — {state}")
+}
+
+/// Значок в трее и его меню.
+///
+/// Нужен он ровно из-за инварианта продукта: служба держит туннель и правила
+/// брандмауэра независимо от окна, и в охвате «весь компьютер» закрытое окно
+/// оставляло машину запертой вообще без единого следа в интерфейсе. Значок —
+/// и есть этот след, поэтому закрытие окна его прячет, а не гасит продукт.
+///
+/// Выключения приватного режима в меню нет намеренно: это ровно то действие,
+/// после которого выбранные приложения уходят в открытую сеть, и делать его
+/// одним кликом из меню, не показав, что вообще происходит, нельзя.
+///
+/// ponytail: значок один на все состояния, состояние живёт только в подписке.
+/// Потолок — цвет канала не виден, пока не наведёшь мышь; апгрейд — три .ico
+/// (открыт/заперт/поломка) и `set_icon` в том же потоке, что и подпись.
+fn tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let open = MenuItem::with_id(app, "open", core_ipc::t("Открыть окно", "Open window"), true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", core_ipc::t("Выйти из окна", "Quit the window"), true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
+    TrayIconBuilder::with_id("pg")
+        .icon(app.default_window_icon().cloned().ok_or("у окна нет иконки, брать значку нечего")?)
+        .tooltip("Privacy Gateway")
+        .menu(&menu)
+        // Левый клик открывает окно, а меню остаётся на правом: показывать меню
+        // на оба — значит отобрать самый частый жест.
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, e| match e.id.as_ref() {
+            "open" => raise(app),
+            // Именно из окна: служба остаётся работать, туннель — поднятым.
+            // Обещать здесь «выход» целиком было бы неправдой.
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                raise(tray.app_handle());
+            }
+        })
+        .build(app)?;
+
+    // Подпись обновляется своим потоком: чаще службы всё равно не узнать, а
+    // окно к этому времени может быть спрятано — спрашивать за него некому.
+    let handle = app.handle().clone();
+    std::thread::spawn(move || loop {
+        let text = tooltip();
+        if let Some(tray) = handle.tray_by_id("pg") {
+            let _ = tray.set_tooltip(Some(text));
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    });
+    Ok(())
+}
+
 fn main() {
+    // Язык до первого ответа службы берётся из окружения — как в CLI. Дальше
+    // его уточнит подпись значка: она спрашивает статус и знает выбранный.
+    core_ipc::set_lang(core_ipc::lang_from_env());
     tauri::Builder::default()
+        // Плагин обязан стоять первым в цепочке — таково его условие. Второй
+        // запуск не заводит своего окна: он поднимает окно первого и уходит.
+        // Без этого спрятанный в трей продукт открывался бы по ярлыку заново,
+        // и окон становилось бы столько, сколько раз по нему нажали.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| raise(app)))
+        .setup(|app| {
+            match tray(app) {
+                Ok(()) => TRAY.store(true, Ordering::Relaxed),
+                // Не удался значок — окно остаётся единственным интерфейсом, и
+                // прятать его тогда нельзя ни в коем случае.
+                Err(e) => eprintln!("{}", core_ipc::t(&format!("значок в трее не создан: {e}"), &format!("tray icon not created: {e}"))),
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if TRAY.load(Ordering::Relaxed) {
+                    // Закрывают окно, а не продукт: служба продолжает держать
+                    // туннель и правила, и значок в трее об этом говорит.
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![ipc, open_url, open_browser])
         .run(tauri::generate_context!())
         .expect("не удалось запустить окно");
