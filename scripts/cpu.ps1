@@ -444,6 +444,37 @@ function Get-TunnelUp($cli) {
     ($out -match "поднят") -or ($out -match "\bup,")
 }
 
+function Show-WhyNot($cli) {
+    # «Не поднялся» без причины — это приглашение гадать, а причина уже записана:
+    # служба ведёт журнал, sing-box пишет свой лог, состояние знает status.
+    # Показываем всё три, вместо того чтобы спрашивать человека ещё раз.
+    Write-Host ""
+    Write-Host "-- состояние службы --" -ForegroundColor Yellow
+    try { & $cli status 2>&1 | ForEach-Object { Write-Host "   $_" } } catch { Write-Host "   status не ответил" }
+
+    $dir = Join-Path $env:ProgramData "privacy-gateway"
+    Write-Host "-- журнал службы (свежее сверху) --" -ForegroundColor Yellow
+    try {
+        $j = Get-Content (Join-Path $dir "journal.json") -Raw | ConvertFrom-Json
+        $j | Select-Object -First 12 | ForEach-Object {
+            $mark = if ($_.bad) { "!" } else { " " }
+            Write-Host "  $mark $($_.text)"
+        }
+    } catch { Write-Host "   журнал не прочитан: $($_.Exception.Message)" }
+
+    Write-Host "-- хвост singbox.log --" -ForegroundColor Yellow
+    try {
+        Get-Content (Join-Path $dir "singbox.log") -Tail 15 | ForEach-Object { Write-Host "   $_" }
+    } catch { Write-Host "   лог не прочитан: $($_.Exception.Message)" }
+
+    # Kill-switch в этом охвате — политика брандмауэра, а не правило, и если
+    # туннель не встал, машина сидит без сети именно из-за неё.
+    Write-Host "-- политика брандмауэра --" -ForegroundColor Yellow
+    try {
+        netsh advfirewall show allprofiles | Select-String -Pattern "Outbound|Исходящ" | ForEach-Object { Write-Host "   $_" }
+    } catch { Write-Host "   netsh не ответил" }
+}
+
 function Wait-Tunnel($cli) {
     # Смена охвата перезапускает sing-box: `final` живёт в его конфиге.
     for ($i = 0; $i -lt 40; $i++) {
@@ -478,6 +509,7 @@ if ($Scope) {
         & $cli scope $other | Out-Null
         if (-not (Wait-Tunnel $cli)) {
             Write-Host "  туннель не поднялся после смены охвата — замер отменён" -ForegroundColor Red
+            Show-WhyNot $cli
             $second = $null
         } else {
             $second = Measure-Window -Label "охват «$other»" -Proxy $null -Load $false -Prompt $false
