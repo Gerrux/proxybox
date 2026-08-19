@@ -12,7 +12,9 @@ const COUNT_MS = 450;
  *  параллельными таблицами. */
 type State = "fault" | "off" | "connecting" | "up" | "down";
 
-function bytes(n: number): string {
+/** Экспортируется ради панели соединений: там те же байты в тех же единицах, а
+ *  второй такой же форматтер разошёлся бы с этим на первом же округлении. */
+export function bytes(n: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   while (n >= 1024 && i < units.length - 1) {

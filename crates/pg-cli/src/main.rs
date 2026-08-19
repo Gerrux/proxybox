@@ -24,6 +24,8 @@ const USAGE_RU: &str = "privacy-gateway <команда>
                          тот же адрес повторно — обновить подписку
   profiles               список профилей
   test                   прогнать все профили: кто отвечает и за сколько
+  conns                  живые соединения туннеля: кто, куда, каким маршрутом.
+                         Ничего не сохраняется — список собирается на запрос
   browsers               список браузерных профилей
   add-browser --name <имя> --node <профиль> [--ua <строка>] [--lang <языки>]
                          завести браузерный профиль либо переписать такой же:
@@ -58,6 +60,8 @@ const USAGE_EN: &str = "privacy-gateway <command>
                          the same URL again refreshes the subscription
   profiles               list profiles
   test                   run every profile: who answers and how fast
+  conns                  live tunnel connections: who, where, which route.
+                         Nothing is stored — the list is built per request
   browsers               list browser profiles
   add-browser --name <name> --node <profile> [--ua <string>] [--lang <langs>]
                          create or overwrite a browser profile: the node gives
@@ -175,6 +179,7 @@ fn parse(args: &[String]) -> Result<Request, String> {
         Some("profiles") => Ok(Request::Status),
         Some("settings") => Ok(Request::Status),
         Some("test") => Ok(Request::TestProfiles),
+        Some("conns") => Ok(Request::Connections),
         Some("browse") => flag(args, "--profile")
             .map(|profile| match args.iter().any(|a| a == "--stop") {
                 true => Request::BrowseStop { profile },
@@ -274,6 +279,20 @@ fn main() -> std::process::ExitCode {
         // Адрес целиком: его вставляют в --proxy-server как есть.
         Ok(Response::Proxy { port }) => {
             println!("socks5://127.0.0.1:{port}");
+            std::process::ExitCode::SUCCESS
+        }
+        Ok(Response::Connections { conns, total }) => {
+            for c in &conns {
+                // Маршрут первой колонкой: ради него список и спрашивают.
+                // Процесс — именем файла: путь целиком гонит строку за край, а
+                // отличать один chrome.exe от другого тут всё равно нечем.
+                let route = if c.tunneled { t("туннель", "tunnel") } else { t("напрямую", "direct") };
+                let name = c.process.rsplit(['\\', '/']).next().unwrap_or("—");
+                println!("{route:<10} {:<24} {:<40} ↓{} ↑{}", if name.is_empty() { "—" } else { name }, c.host, bytes(c.rx), bytes(c.tx));
+            }
+            if total > conns.len() {
+                println!("{}", t(&format!("… и ещё {}", total - conns.len()), &format!("… and {} more", total - conns.len())));
+            }
             std::process::ExitCode::SUCCESS
         }
         Ok(Response::Apps(apps)) => {
