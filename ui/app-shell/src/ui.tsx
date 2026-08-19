@@ -234,6 +234,41 @@ export function flag(code: string | null | undefined): string | null {
   return String.fromCodePoint(...[...code.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
 }
 
+/** Цвет браузерного профиля: он же становится значком окна в панели задач
+ *  (`icon_bytes` в оболочке) и точкой в списке. Считается здесь, а не в Rust, и
+ *  оттуда передаётся строкой: посчитанный дважды, он разъехался бы на первой же
+ *  правке палитры — и стал бы врать про то, какое окно чьё.
+ *
+ *  Двенадцать цветов — столько, сколько человек различит взглядом на панель
+ *  задач. Тринадцатый профиль повторит цвет первого, и это лучше, чем два почти
+ *  одинаковых оттенка. Хеш тот же FNV-1a, что и у имён каталогов: цвет обязан
+ *  держаться за имя, а не за порядок в списке.
+ *
+ *  Цвета заданы числами, а не токенами темы: значок в панели задач рисуется
+ *  один раз при запуске окна и темы приложения не знает вовсе. */
+const PROFILE_COLORS = [
+  "#4c8dff",
+  "#2eb872",
+  "#e87d2e",
+  "#d64b6a",
+  "#8b6fe8",
+  "#1fa8a8",
+  "#c4a42e",
+  "#6b8e3a",
+  "#d05cc0",
+  "#3a6ec4",
+  "#a85a2e",
+  "#5f7a8c",
+];
+
+export function profileColor(name: string): string {
+  let hash = 0x811c9dc5;
+  for (const char of name) {
+    hash = Math.imul(hash ^ (char.codePointAt(0) ?? 0), 0x01000193) >>> 0;
+  }
+  return PROFILE_COLORS[hash % PROFILE_COLORS.length] ?? PROFILE_COLORS[0];
+}
+
 export function Empty({ children }: { children: ReactNode }) {
   return <p className="py-6 text-center text-[13px] text-muted">{children}</p>;
 }

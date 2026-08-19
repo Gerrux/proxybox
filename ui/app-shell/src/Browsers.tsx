@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { forgetBrowser, type Act, type BrowserProfile, type Status } from "./platform";
 import { strings } from "./i18n";
-import { Button, ConfirmButton, Empty, FIELD, flag, Icon, Panel, type IconName } from "./ui";
+import { Button, ConfirmButton, Empty, FIELD, flag, Icon, Panel, profileColor, type IconName } from "./ui";
 
 /** `Accept-Language` по коду страны узла — это и есть «Авто». Список короткий
  *  намеренно: тут самые частые точки выхода, всем остальным достаётся
@@ -148,7 +148,7 @@ export function Browsers({
 }: {
   status: Status | null;
   act: Act;
-  browse: (profile: BrowserProfile) => void;
+  browse: (profile: BrowserProfile, color: string) => void;
   className?: string;
 }) {
   const s = strings(status?.lang);
@@ -354,6 +354,13 @@ export function Browsers({
                   key={item.name}
                   className="enter smooth flex items-center gap-2 rounded-md py-1.5 pl-3 pr-1 hover:bg-surface-2"
                 >
+                  {/* Точка того же цвета, что и значок окна в панели задач:
+                      по ней их и сопоставляют, когда окон открыто несколько. */}
+                  <span
+                    className="size-2.5 shrink-0 rounded-full"
+                    style={{ background: profileColor(item.name) }}
+                    aria-hidden
+                  />
                   <div className="min-w-0 flex-1 leading-tight">
                     <span className="block truncate text-[13px]" title={item.name}>
                       {item.name}
@@ -379,7 +386,7 @@ export function Browsers({
                     variant="quiet"
                     disabled={gone}
                     title={gone ? s.browserNodeGone : s.browserOpenHint(item.node)}
-                    onClick={() => browse({ ...item, lang: acceptLanguage(item.lang, code) })}
+                    onClick={() => browse({ ...item, lang: acceptLanguage(item.lang, code) }, profileColor(item.name))}
                   >
                     {s.browserOpen}
                   </Button>

@@ -160,7 +160,7 @@ export async function openUrl(url: string): Promise<void> {
  *  отдаёт порт, браузер запускает оболочка — фронтенд живёт в вебвью, процессов
  *  ему не завести. Она же дожидается закрытия окна и гасит сеанс, поэтому
  *  «закрыть» отсюда не вызывается вовсе. */
-export async function browse(profile: BrowserProfile): Promise<void> {
+export async function browse(profile: BrowserProfile, color: string): Promise<void> {
   const r = await call({ cmd: "browse", arg: { profile: profile.name } });
   if (r.reply !== "proxy") {
     throw new Error(r.reply === "error" ? r.data.message : "служба не вернула порт");
@@ -176,6 +176,8 @@ export async function browse(profile: BrowserProfile): Promise<void> {
     profile: profile.name,
     ua: profile.ua,
     lang: profile.lang,
+    // Цвет значка окна: считает его интерфейс, оболочка только красит.
+    color,
   });
 }
 
