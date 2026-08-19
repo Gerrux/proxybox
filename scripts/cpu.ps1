@@ -42,7 +42,11 @@ param(
     [int]$ApiPort = 48293,
     # Имя нашего TUN-адаптера — core_tunnel::TUN_NAME. Разъедется с ним, и
     # главный знаменатель (пакеты через TUN) молча пропадёт из вывода.
-    [string]$TunName = "Privacy Gateway"
+    [string]$TunName = "Privacy Gateway",
+    # Куда долбиться короткими соединениями. Отвечает быстро, рвётся сразу,
+    # байтов почти нет — нужны именно соединения, а не трафик.
+    [string]$ChurnTarget = "1.1.1.1",
+    [int]$ChurnPort = 443
 )
 
 $ErrorActionPreference = "Stop"
@@ -126,6 +130,37 @@ function Get-TunStats {
     } catch { $null }
 }
 
+function Get-ConnIds {
+    # Соединения, а не байты: правило process_path сверяется на соединение, и
+    # менять надо именно их число. Счёт по разнице множеств — оценка снизу,
+    # успевшее открыться и закрыться внутри окна сюда не попадёт; настоящее
+    # число генератор возвращает сам.
+    try {
+        $c = Invoke-RestMethod "http://127.0.0.1:$ApiPort/connections" -TimeoutSec 3
+        $h = @{}
+        foreach ($x in $c.connections) { if ($x.id) { $h[$x.id] = $true } }
+        $h
+    } catch { @{} }
+}
+
+# Нагрузка соединениями: много коротких TCP-подключений и почти ноль байт —
+# ровно наоборот к большой закачке. С auto_route они всё равно заходят в TUN,
+# и sing-box обязан выяснить процесс для каждого, даже если отправит напрямую.
+$churner = {
+    param($target, $port, $seconds)
+    $n = 0
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt $seconds) {
+        try {
+            $c = New-Object Net.Sockets.TcpClient
+            $c.Connect($target, [int]$port)
+            $c.Close()
+            $n++
+        } catch { Start-Sleep -Milliseconds 50 }
+    }
+    $n
+}
+
 $loader = {
     # Список приходит одной строкой через перевод: -ArgumentList разворачивает
     # массив в отдельные аргументы, и адреса разъехались бы по чужим параметрам.
@@ -168,7 +203,7 @@ $loader = {
 # печатается через Write-Host — голая строка в PowerShell уходит в
 # возвращаемое значение и смешалась бы с ним.
 function Measure-Window {
-    param([string]$Label, [string]$Proxy, [bool]$Load, [bool]$Prompt)
+    param([string]$Label, [string]$Proxy, [bool]$Load, [bool]$Prompt, [bool]$Churn)
 
     Write-Host ""
     Write-Host "== $Label ==" -ForegroundColor Cyan
@@ -182,8 +217,11 @@ function Measure-Window {
     $a = Get-Snapshot
     $b0 = Get-TrafficBytes
     $n0 = Get-TunStats
+    $c0 = Get-ConnIds
     $job = $null
-    if ($Load) {
+    if ($Churn) {
+        $job = Start-Job -ScriptBlock $churner -ArgumentList $ChurnTarget, $ChurnPort, $Seconds
+    } elseif ($Load) {
         # GetTempPath, а не $env:TEMP: переменная бывает пустой, а с
         # ErrorActionPreference=Stop пустой путь убил бы замер посреди окна.
         $tmp = Join-Path ([IO.Path]::GetTempPath()) "pg-cpu.bin"
@@ -194,14 +232,18 @@ function Measure-Window {
     $elapsed = $sw.Elapsed.TotalSeconds
     $b1 = Get-TrafficBytes
     $n1 = Get-TunStats
+    $c1 = Get-ConnIds
     $b = Get-Snapshot
     $t1 = Get-ThreadTimes $mainId
+    $made = 0
     if ($job) {
         Stop-Job $job -ErrorAction SilentlyContinue
-        $err = @(Receive-Job $job -ErrorAction SilentlyContinue) | Where-Object { $_ }
+        $got = @(Receive-Job $job -ErrorAction SilentlyContinue) | Where-Object { $_ }
         Remove-Job $job -Force -ErrorAction SilentlyContinue
-        if ($err) {
-            Write-Host ("  закачка не пошла: {0}" -f ($err -join '; ')) -ForegroundColor Yellow
+        if ($Churn) {
+            $made = [int](@($got)[-1])
+        } elseif ($got) {
+            Write-Host ("  закачка не пошла: {0}" -f ($got -join '; ')) -ForegroundColor Yellow
         }
     }
 
@@ -289,6 +331,19 @@ function Measure-Window {
         }
     }
 
+    # Новые соединения — знаменатель, которого мне и не хватало: правило
+    # process_path сверяется на соединение, а большая закачка это одно
+    # соединение и сто тысяч пакетов. Меняя байты, я не менял ничего.
+    $newConns = 0
+    foreach ($k in $c1.Keys) { if (-not $c0.ContainsKey($k)) { $newConns++ } }
+    if ($made -gt $newConns) { $newConns = $made }
+    if ($newConns -gt 0) {
+        Write-Host ("{0,-20} {1,7:N0}" -f "новых соединений:", $newConns)
+        if ($myCpu -gt 0) {
+            Write-Host ("{0,-20} {1,7:N0} мкс на соединение" -f "цена соединения:", (1e6 * $myCpu / $newConns))
+        }
+    }
+
     $perGb = 0.0
     if ($myCpu -gt 0 -and $gb -gt 0.01) { $perGb = $myCpu / $gb }
     [pscustomobject]@{
@@ -297,6 +352,7 @@ function Measure-Window {
         PerGb   = $perGb           # по счётчику туннеля; 0, если трафика не было
         TunGb   = $tunGb           # весь трафик через адаптер
         Packets = $packets
+        Conns   = $newConns        # новых соединений за окно
     }
 }
 
@@ -318,6 +374,10 @@ if ($rules.Count -gt $apps + 1) {
 $idle = Measure-Window -Label "проход 0: покой, нагрузки нет" -Proxy $null -Load $false -Prompt $false
 $without = Measure-Window -Label "проход 1: мимо TUN (через mixed-порт $MixedPort)" -Proxy "http://127.0.0.1:$MixedPort" -Load $true -Prompt $false
 $through = Measure-Window -Label "проход 2: через TUN" -Proxy $null -Load $all -Prompt (-not $all)
+# Проход 3 меняет ровно то, что меняли зря все предыдущие: число соединений.
+# Байтов тут почти нет, зато соединений сотни — если расход про process_path,
+# именно здесь он и подскочит.
+$churn = Measure-Window -Label "проход 3: много коротких соединений" -Proxy $null -Load $false -Prompt $false -Churn $true
 
 Write-Host ""
 Write-Host "== итог ==" -ForegroundColor Cyan
@@ -334,6 +394,24 @@ if ($idle.Cores -gt 0.25) {
     Write-Host "  а этот расход плоский. Плоский, в ядре, размазанный по потокам — подпись холостого цикла."
     Write-Host "  Проверка без остановки службы: откройте браузерный сеанс. Он поднимает второй sing-box"
     Write-Host "  БЕЗ TUN, и разбивка по pid выше покажет обоих — дешёвый там расход, дорогой тут."
+}
+
+# Соединения против покоя — сравнение, которого не хватало всё это время.
+$dConn = $churn.Conns - $idle.Conns
+$dCpuC = $churn.Cpu - $idle.Cpu
+if ($dConn -gt 50) {
+    Write-Host ("{0,-20} {1,7:N0} сверх покоя, ЦП на {2:N2} с" -f "соединений:", $dConn, $dCpuC)
+    if ($dCpuC -gt 0.5) {
+        Write-Host ("  {0:N0} мкс на соединение: расход идёт за соединениями, а не за байтами." -f (1e6 * $dCpuC / $dConn)) -ForegroundColor Yellow
+        if (-not $all) {
+            Write-Host "  Это подпись process_path — сверка пути процесса на каждом соединении, входящем в TUN."
+            Write-Host "  Проверка: охват «весь компьютер», там правила нет вовсе, и проход 3 обязан подешеветь."
+        }
+    } else {
+        Write-Host "  Соединения расход не двигают — process_path вне подозрений, ищите холостой цикл."
+    }
+} else {
+    Write-Host "  Проход 3 соединений не создал (цель недоступна?) — главное сравнение не состоялось." -ForegroundColor Yellow
 }
 
 # Предельная цена трафика: сколько ЦП добавил гигабайт СВЕРХ покоя. Считается
