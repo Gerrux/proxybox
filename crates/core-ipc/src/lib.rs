@@ -573,6 +573,35 @@ pub fn call(req: &Request) -> io::Result<Response> {
 mod tests {
     use super::*;
 
+    /// Имена команд и ответов — из самого перечисления, а не вторым списком
+    /// руками: второй список никто не заставит совпасть с первым.
+    fn tags(header: &str) -> Vec<String> {
+        let body = include_str!("lib.rs").split_once(header).expect(header).1;
+        body.split_once("\n}")
+            .unwrap()
+            .0
+            .lines()
+            .filter_map(|l| l.strip_prefix("    "))
+            .filter(|l| l.starts_with(|c: char| c.is_ascii_uppercase()))
+            .map(|l| {
+                let name = l.split(|c: char| !c.is_alphanumeric()).next().unwrap();
+                name.chars().enumerate().fold(String::new(), |mut s, (i, c)| {
+                    if c.is_ascii_uppercase() && i > 0 {
+                        s.push('-');
+                    }
+                    s.extend(c.to_lowercase());
+                    s
+                })
+            })
+            .collect()
+    }
+
+    /// Что нашлось в JSON под ключом: `{"cmd":"set-app",…}` → `set-app`.
+    fn tagged(text: &str, key: &str) -> Vec<String> {
+        text.split(key).skip(1).filter_map(|t| t.split('"').next()).map(str::to_owned).collect()
+    }
+
+
     #[test]
     fn roundtrip() {
         let reqs = [
@@ -613,9 +642,14 @@ mod tests {
                 },
             },
         ];
+        let mut seen = Vec::new();
         for r in reqs {
             let s = serde_json::to_string(&r).unwrap();
             assert_eq!(r, serde_json::from_str(&s).unwrap(), "запрос {s}");
+            seen.extend(tagged(&s, "\"cmd\":\""));
+        }
+        for tag in tags("pub enum Request {") {
+            assert!(seen.contains(&tag), "команду {tag} roundtrip не проверяет");
         }
 
         let resps = [
@@ -647,6 +681,7 @@ mod tests {
             Response::Icon(Some("data:image/png;base64,iVBOR".into())),
             Response::Icon(None),
             Response::Done,
+            Response::Proxy { port: 49312 },
             Response::Connections {
                 conns: vec![Conn {
                     process: r"C:\Program Files\Google\Chrome\chrome.exe".into(),
@@ -659,13 +694,17 @@ mod tests {
             },
             Response::Error { message: "нет".into() },
         ];
+        let mut seen = Vec::new();
         for r in resps {
             let s = serde_json::to_string(&r).unwrap();
             assert_eq!(r, serde_json::from_str(&s).unwrap(), "ответ {s}");
+            seen.extend(tagged(&s, "\"reply\":\""));
+        }
+        for tag in tags("pub enum Response {") {
+            assert!(seen.contains(&tag), "ответ {tag} roundtrip не проверяет");
         }
     }
 
-    /// Ответ обязан быть одной строкой: транспорт построчный.
     #[test]
     fn language_switches_strings() {
         set_lang(Lang::Ru);
@@ -697,9 +736,91 @@ mod tests {
         assert!(!name.contains(['/', ':', ' ']), "имя каталога, а не имя профиля: {name}");
     }
 
+    /// Ответ обязан быть одной строкой: транспорт построчный.
     #[test]
     fn single_line() {
         let s = serde_json::to_string(&Response::Error { message: "a\nb".into() }).unwrap();
         assert!(!s.contains('\n'), "{s}");
+    }
+
+    /// Фронтенд повторяет контракт руками, и разъезд молчит с обеих сторон:
+    /// TypeScript про Rust не знает, а служба на незнакомое имя отвечает
+    /// ошибкой только на живой машине. Имена берутся из перечислений, поэтому
+    /// сторож ловит и переименование, и новую команду.
+    #[test]
+    fn the_frontend_speaks_the_same_names() {
+        let ts = include_str!("../../../ui/app-shell/src/platform.ts");
+        let (cmds, replies) = (tagged(ts, "cmd: \""), tagged(ts, "reply: \""));
+        for tag in tags("pub enum Request {") {
+            assert!(cmds.contains(&tag), "команды {tag} нет в platform.ts");
+        }
+        for tag in tags("pub enum Response {") {
+            assert!(replies.contains(&tag), "ответа {tag} нет в platform.ts");
+        }
+        for tag in cmds {
+            assert!(tags("pub enum Request {").contains(&tag), "служба не знает команду {tag}");
+        }
+        for tag in replies {
+            assert!(tags("pub enum Response {").contains(&tag), "служба не шлёт ответ {tag}");
+        }
+    }
+
+    /// Мост дев-сервера ходит в службу по номеру порта, записанному второй раз.
+    #[test]
+    fn the_dev_bridge_knows_the_port() {
+        let port = ADDR.rsplit(':').next().unwrap();
+        let vite = include_str!("../../../ui/app-shell/vite.config.ts");
+        assert!(vite.contains(&format!("SERVICE_PORT = {port}")), "vite.config.ts смотрит не в {ADDR}");
+    }
+
+    /// Оболочка — такой же клиент канала, но живёт вне воркспейса: компилятор
+    /// её не видит вовсе, а `core_ipc::call` блокирующий. Синхронная команда
+    /// исполняется в цикле событий — окно перестаёт разбирать сообщения, пока
+    /// служба отвечает. Проверяем текстом: другого сторожа у неё нет.
+    #[test]
+    fn the_shell_never_calls_from_its_event_loop() {
+        let shell = include_str!("../../../src-tauri/src/main.rs");
+        for (n, line) in shell.lines().enumerate() {
+            let line = line.trim();
+            if line.starts_with("#[tauri::command") {
+                assert_eq!(line, "#[tauri::command(async)]", "src-tauri/src/main.rs:{}", n + 1);
+            }
+            // `emit` рассылает событие всем окнам, и плашка получила бы чужой
+            // крестик. Наружу оболочка шлёт только `emit_to`.
+            assert!(!line.contains(".emit(\""), "src-tauri/src/main.rs:{}: emit вместо emit_to", n + 1);
+        }
+    }
+
+    /// Привилегии живут в службе, и держится это структурой, а не обещанием.
+    /// Cargo запрещает циклы, но не запрещает клиенту потолстеть: разбор чужих
+    /// ссылок (`core-config`) или постановка правил (`core-filter`) в процессе
+    /// пользователя выглядят уместными в отдельном диффе, а значат они, что
+    /// приватным режимом управляет не одна привилегированная точка. Список —
+    /// храповик: новая зависимость роняет тест, и её либо объясняют строкой в
+    /// PR, либо переносят в службу. Сокращение принимается молча.
+    #[test]
+    fn the_clients_stay_thin() {
+        let clients: [(&str, &str, &[&str]); 2] = [
+            // core-tunnel и core-filter — ради `doctor`: где sing-box и нет ли
+            // рядом чужого туннеля, надо уметь ответить и при мёртвой службе.
+            ("pg-cli", include_str!("../../pg-cli/Cargo.toml"), &["core-ipc", "core-tunnel", "core-filter"]),
+            // core-apps — иконки и значок окна браузерного сеанса.
+            ("src-tauri", include_str!("../../../src-tauri/Cargo.toml"), &["core-ipc", "core-apps"]),
+        ];
+        for (name, manifest, allowed) in clients {
+            for line in manifest.lines() {
+                let dep = line.trim().split([' ', '.', '=']).next().unwrap_or("");
+                if dep.starts_with("core-") {
+                    assert!(allowed.contains(&dep), "{name} потолстел на {dep}");
+                }
+            }
+        }
+
+        // Читать про брандмауэр клиенту можно (`doctor` тем и живёт), ставить
+        // правила — нет: это привилегия, и она одна на всю систему.
+        let cli = [include_str!("../../pg-cli/src/main.rs"), include_str!("../../pg-cli/src/doctor.rs")];
+        for f in ["set_blocked", "set_killswitch", "sweep"] {
+            assert!(!cli.iter().any(|s| s.contains(f)), "правила брандмауэра ставит служба, а не CLI: {f}");
+        }
     }
 }
