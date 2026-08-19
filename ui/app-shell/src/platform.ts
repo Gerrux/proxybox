@@ -2,6 +2,8 @@
 // ponytail: типы контракта продублированы с Rust вручную. Генератор (ts-rs)
 // оправдан, когда типов станет заметно больше шести.
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export type Tunnel = "off" | "connecting" | "up" | "down";
 
@@ -199,6 +201,42 @@ export async function autostart(): Promise<boolean> {
 export async function setAutostart(enabled: boolean): Promise<boolean> {
   if (!isTauri()) throw new Error("autostart: Windows only");
   return invoke<boolean>("set_autostart", { enabled });
+}
+
+/** Плашка из трея — то же приложение во втором окне (`tray` в `src-tauri`).
+ *  Отличать её надо: рамки у неё нет и быть не должно, разворачивать некуда, а
+ *  «закрыть» для неё значит спрятаться. Метка окна, а не параметр адреса: окно
+ *  заводит оболочка, и метка у неё уже есть. */
+export const isFlyout = () => isTauri() && getCurrentWindow().label === "tray";
+
+/** Спрятать своё окно. Главное так уходит в трей, плашка — гаснет. */
+export async function hideWindow(): Promise<void> {
+  if (isTauri()) await getCurrentWindow().hide();
+}
+
+/** Выйти из окна совсем. Служба остаётся работать: закрывается окно, а не
+ *  продукт, — и диалог закрытия говорит об этом теми же словами. */
+export async function quitApp(): Promise<void> {
+  if (isTauri()) await invoke("quit_app");
+}
+
+/** Открыть главное окно из плашки. Через оболочку, а не из вебвью: поднять
+ *  чужое окно фронтенду нечем, а свёрнутое ещё и нужно развернуть. */
+export async function openMain(): Promise<void> {
+  if (isTauri()) await invoke("open_main");
+}
+
+/** События от оболочки: «нажали крестик» и «открой настройки» из меню значка.
+ *  Возвращает отписку — слушателей заводят в эффектах. */
+export function onShell(event: "close-requested" | "open-settings", run: () => void): () => void {
+  if (!isTauri()) return () => {};
+  let off: (() => void) | null = null;
+  let dead = false;
+  void listen(event, run).then((fn) => (dead ? fn() : (off = fn)));
+  return () => {
+    dead = true;
+    off?.();
+  };
 }
 
 export async function call(req: Request): Promise<Response> {

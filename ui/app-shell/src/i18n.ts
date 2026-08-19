@@ -129,6 +129,16 @@ const RU = {
   autostartWindowsOnly: "Только в Windows",
   envOverride: "Перебито переменной окружения — служба сказала об этом в журнале",
   exitUnknown: "Точка выхода известна, пока туннель поднят",
+  closeTitle: "Закрыть окно?",
+  closeHint:
+    "Служба держит туннель и правила брандмауэра без всякого окна: закрывается окно, а не продукт.",
+  closeWarn:
+    "Закроете совсем — в трее не останется значка, а туннель и правила останутся. Вернуть окно можно будет только ярлыком.",
+  closeToTray: "Свернуть в трей",
+  closeQuit: "Закрыть полностью",
+  closeRemember: "Больше не спрашивать",
+  openWindow: "Открыть окно",
+  hidePanel: "Скрыть плашку",
   settings: "Настройки",
   settingsHint: "Настройки: язык, обновления",
   done: "Готово",
@@ -272,6 +282,16 @@ const EN: typeof RU = {
   autostartWindowsOnly: "Windows only",
   envOverride: "Overridden by an environment variable — the service said so in the journal",
   exitUnknown: "The exit point is known while the tunnel is up",
+  closeTitle: "Close the window?",
+  closeHint:
+    "The service holds the tunnel and the firewall rules with no window at all: it is the window that closes, not the product.",
+  closeWarn:
+    "Close it for good and no tray icon is left, while the tunnel and the rules stay. The window then comes back only from its shortcut.",
+  closeToTray: "Hide to tray",
+  closeQuit: "Close for good",
+  closeRemember: "Do not ask again",
+  openWindow: "Open window",
+  hidePanel: "Hide the panel",
   settings: "Settings",
   settingsHint: "Settings: language, updates",
   done: "Done",
