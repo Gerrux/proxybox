@@ -118,29 +118,20 @@ export function TitleBar({
           {s.updateTo(update)}
         </Button>
       )}
-      <Button
-        variant={settingsOpen ? "ghost" : "quiet"}
-        aria-pressed={settingsOpen}
-        aria-label={s.settings}
-        title={s.settingsHint}
-        onClick={onSettings}
-        className="h-6 w-6 px-0"
-      >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 14 14"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.2"
-          strokeLinecap="round"
-          aria-hidden="true"
-        >
-          <path d="M2 4.5h10M2 9.5h10" />
-          <circle cx="5" cy="4.5" r="1.6" fill="var(--pg-surface)" />
-          <circle cx="9.5" cy="9.5" r="1.6" fill="var(--pg-surface)" />
-        </svg>
-      </Button>
+      {/* Настройки — такая же кнопка полосы, как «свернуть» и «закрыть»: одна
+          высота, одна ширина, одна подсветка под курсором. Своя, поменьше и без
+          подложки, рядом с ними читалась как пустое место. Открытые настройки
+          кнопка держит нажатой — иначе полоса не отличает «там сейчас» от «туда
+          можно».
+
+          Ползунки нарисованы сплошным `currentColor`, а не дыркой в цвет
+          поверхности: под курсором подложка меняется, и дырка показала бы
+          прошлый фон. */}
+      <WindowButton label={s.settings} title={s.settingsHint} onClick={onSettings} pressed={settingsOpen}>
+        <path d="M1.5 4h9M1.5 8h9" />
+        <circle cx="4" cy="4" r="1.4" fill="currentColor" />
+        <circle cx="8" cy="8" r="1.4" fill="currentColor" />
+      </WindowButton>
       {/* Плашка: вместо трёх кнопок — уйти в главное окно и спрятаться. */}
       {flyout && (
         <>
@@ -179,24 +170,29 @@ export function TitleBar({
 
 function WindowButton({
   label,
+  title,
   onClick,
   danger,
+  pressed,
   children,
 }: {
   label: string;
+  title?: string;
   onClick: () => void;
   danger?: boolean;
+  pressed?: boolean;
   children: ReactNode;
 }) {
   return (
     <button
       type="button"
       aria-label={label}
-      title={label}
+      aria-pressed={pressed}
+      title={title ?? label}
       onClick={onClick}
-      className={`grid h-8 w-11 shrink-0 place-items-center text-muted transition-colors ${
-        danger ? "hover:bg-fault hover:text-bg" : "hover:bg-surface-2 hover:text-ink"
-      }`}
+      className={`grid h-8 w-11 shrink-0 place-items-center transition-colors ${
+        pressed ? "bg-surface-2 text-ink" : "text-muted"
+      } ${danger ? "hover:bg-fault hover:text-bg" : "hover:bg-surface-2 hover:text-ink"}`}
     >
       <svg
         width="12"
