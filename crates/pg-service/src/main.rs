@@ -32,9 +32,18 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 /// Как часто служба сама сверяет подписки. Шесть часов — это про списки узлов,
 /// которые панели правят днями, а не минутами; чаще значило бы дёргать чужой
 /// сервер без повода.
-/// ponytail: срок прибит гвоздями и отсчитывается от старта службы — настройка
-/// появится тогда же, когда её будет где показать.
+/// ponytail: срок прибит гвоздями — настройка появится тогда же, когда её будет
+/// где показать.
 const REFRESH_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+/// Как часто поток сверки просыпается посмотреть на календарь. Срок считается
+/// от отметки на диске, а не от сна потока, — значит спать по шесть часов
+/// нельзя: проснувшись, он промахивался бы мимо срока ровно на столько же.
+const REFRESH_TICK: Duration = Duration::from_secs(5 * 60);
+
+/// Сколько соединений уезжает в окно. Список живёт секунды и читается глазами:
+/// сотня строк — уже больше, чем успевают просмотреть, а в охвате «весь
+/// компьютер» их бывают тысячи.
+const MAX_CONNS: usize = 100;
 
 /// Замок службы, переживающий панику в чужом потоке. Поток обслуживания клиента
 /// вправе упасть — вместе со своим соединением; надзор упасть не вправе. С
@@ -75,6 +84,10 @@ struct Saved {
     #[serde(default)]
     subscriptions: BTreeMap<String, Vec<String>>,
     profile: Option<String>,
+    /// Когда подписки последний раз пришли с панели. На диске, а не в аптайме
+    /// процесса: см. `refresh_due`.
+    #[serde(default)]
+    refreshed_at: Option<u64>,
     #[serde(default)]
     lang: core_ipc::Lang,
     /// Был ли включён приватный режим. Переживает перезапуск намеренно: иначе
@@ -171,6 +184,12 @@ impl Service {
     fn load() -> Self {
         let raw = std::fs::read_to_string(dir().join("state.json")).unwrap_or_default();
         let saved: Saved = serde_json::from_str(&raw).unwrap_or_default();
+        // Журнал лежит своим файлом, а не полем state.json: его переписывает
+        // каждая строка, а состояние с подпиской на сотню узлов — нет.
+        let log: Vec<LogLine> = std::fs::read_to_string(dir().join("journal.json"))
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default();
         // Язык поднимается до первой строки журнала — иначе стартовые сообщения
         // выходили бы не на том языке, который выбрал пользователь.
         core_ipc::set_lang(saved.lang);
@@ -184,6 +203,8 @@ impl Service {
                 subscriptions: saved.subscriptions.keys().cloned().collect(),
                 probes: saved.probes,
                 browser_profiles: saved.browser_profiles,
+                refreshed_at: saved.refreshed_at,
+                log,
                 ..Default::default()
             },
             settings: saved.settings,
@@ -253,6 +274,7 @@ impl Service {
             profiles: self.profiles.clone(),
             subscriptions: self.subscriptions.clone(),
             profile: self.status.profile.clone(),
+            refreshed_at: self.status.refreshed_at,
             lang: self.status.lang,
             private: self.private,
             all_traffic: self.status.all_traffic,
@@ -267,7 +289,17 @@ impl Service {
     }
 
     fn log(&mut self, line: impl Into<String>) {
-        let text = line.into();
+        self.write_log(line.into(), false);
+    }
+
+    /// То же, но про несделанное: отказ брандмауэра, упавший sing-box, узел,
+    /// которого больше нет. Отдельным именем, а не флагом на месте вызова, —
+    /// иначе `false` стоял бы двадцать раз ради пяти `true`.
+    fn warn(&mut self, line: impl Into<String>) {
+        self.write_log(line.into(), true);
+    }
+
+    fn write_log(&mut self, text: String, bad: bool) {
         // Повтор в цикле перезапуска не должен вытеснять из журнала всё остальное.
         // Время повтора при этом не обновляется намеренно: в журнале стоит,
         // когда это началось, а не когда служба сказала то же самое в сотый раз.
@@ -275,8 +307,21 @@ impl Service {
             return;
         }
         eprintln!("{text}");
-        self.status.log.insert(0, LogLine { at: now(), text });
+        self.status.log.insert(0, LogLine { at: now(), text, bad });
         self.status.log.truncate(30);
+        // Журнал переживает перезапуск службы, и это не удобство: под SCM у неё
+        // нет ни консоли, ни stderr, а перезапуск — это обновление, падение или
+        // загрузка машины, то есть ровно те три случая, ради которых журнал и
+        // открывают. Раньше он в них и пропадал.
+        //
+        // Файл переписывается целиком, а не дописывается: строк тридцать, и
+        // файл, который всегда в точности равен показанному, не нужно ни
+        // ротировать, ни читать с хвоста. Событий у службы десятки в день —
+        // цена этой лени три килобайта на запись.
+        let _ = std::fs::create_dir_all(dir());
+        if let Ok(raw) = serde_json::to_string(&self.status.log) {
+            let _ = std::fs::write(dir().join("journal.json"), raw);
+        }
     }
 
     /// Профиль уходит из списка — и из туннеля, если был активен. Держать
@@ -340,7 +385,7 @@ impl Service {
             Err(e) => {
                 // Неудачу не запоминаем: на следующей смене состояния попробуем снова.
                 self.applied = None;
-                self.log(t(&format!("правила брандмауэра не поставлены — {e}"), &format!("firewall rules not applied — {e}")));
+                self.warn(t(&format!("правила брандмауэра не поставлены — {e}"), &format!("firewall rules not applied — {e}")));
             }
         }
     }
@@ -390,7 +435,7 @@ impl Service {
                 let wait = self.retry_delay.as_secs();
                 self.retry_delay = (self.retry_delay * 2).min(RETRY_MAX);
                 let reason = explain(&e.to_string());
-                self.log(t(
+                self.warn(t(
                     &format!("sing-box не запустился: {reason}; следующая попытка через {wait} с"),
                     &format!("sing-box failed to start: {reason}; retrying in {wait} s"),
                 ));
@@ -657,7 +702,7 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Response {
             "в ответе подписки нет ни одного узла — проверьте адрес",
             "the subscription returned no nodes — check the address",
         );
-        s.log(message.clone());
+        s.warn(message.clone());
         return Response::Error { message };
     }
 
@@ -683,6 +728,10 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Response {
         &format!("подписка обновлена, узлов — {}", names.len()),
         &format!("subscription updated, nodes — {}", names.len()),
     ));
+    // Отметку двигает любая удачная сверка, а не только плановая: список пришёл
+    // с панели — значит он свежий, и ходить за ним снова через пять минут после
+    // того, как человек нажал «обновить» руками, незачем.
+    s.status.refreshed_at = Some(now());
     s.subscriptions.insert(url.to_string(), names);
     // Окна браузера могли висеть на узлах, которых в подписке больше нет:
     // держать их живыми не за что, ровно как и активный профиль.
@@ -714,7 +763,7 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Response {
             }
             Active::Stop => s.stop(),
             Active::Drop => {
-                s.log(t(
+                s.warn(t(
                     &format!("узел «{name}» пропал из подписки: приватный режим оставлен включённым, выбранные приложения без сети"),
                     &format!("node \"{name}\" is gone from the subscription: private mode left on, selected apps have no network"),
                 ));
@@ -753,13 +802,33 @@ fn after_refresh(before: Option<&Value>, after: Option<&Value>, private: bool, s
     }
 }
 
+/// Пора ли сверять подписки. Срок отсчитывается от последней удачной сверки, а
+/// не от старта службы: домашняя машина живёт часами и уходит в сон, шесть
+/// часов подряд на ней не набираются никогда — и плановая сверка при отсчёте от
+/// старта не случалась бы вообще ни разу.
+fn refresh_due(refreshed_at: Option<u64>, now: u64) -> bool {
+    match refreshed_at {
+        // Не сверялись ни разу: подписку завели до того, как служба научилась
+        // это помнить, — сверить один раз и запомнить.
+        None => true,
+        // saturating: часы могли перевести назад, и отрицательного возраста у
+        // отметки не бывает — «в будущем» значит «только что».
+        Some(at) => now.saturating_sub(at) >= REFRESH_EVERY.as_secs(),
+    }
+}
+
 /// Сверка подписок по расписанию. Отдельным потоком, а не тиком надзора:
 /// запрос к панели длится до двадцати секунд, и на это время присмотр за
 /// туннелем встал бы — окно утечки после падения sing-box выросло бы с трёх
 /// секунд до двадцати с лишним.
 fn refresh_loop(svc: Arc<Mutex<Service>>) {
+    // Неудачная попытка отметку на диске не двигает — и без этой памяти служба
+    // ходила бы к недоступной панели каждые пять минут до самого её возвращения.
+    // В памяти, а не на диске, намеренно: перезапуск службы — это как раз повод
+    // попробовать снова.
+    let mut tried: Option<Instant> = None;
     loop {
-        std::thread::sleep(REFRESH_EVERY);
+        std::thread::sleep(REFRESH_TICK);
         // Настройку спрашиваем каждый круг, а не при запуске потока: её
         // выключают в работающей службе, и молчать поток обязан с этого
         // момента, а не со следующего запуска.
@@ -768,8 +837,18 @@ fn refresh_loop(svc: Arc<Mutex<Service>>) {
             if !s.status.settings.refresh {
                 continue;
             }
+            if tried.is_some_and(|t| t.elapsed() < REFRESH_EVERY) {
+                continue;
+            }
+            if !refresh_due(s.status.refreshed_at, now()) {
+                continue;
+            }
             s.subscriptions.keys().cloned().collect()
         };
+        if urls.is_empty() {
+            continue;
+        }
+        tried = Some(Instant::now());
         for url in urls {
             // Ошибку сверки глотаем намеренно: панель бывает недоступна, и
             // существующие профили в этом случае остаются как есть.
@@ -975,6 +1054,30 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             s.save();
             Response::Done
         }
+        Request::Connections => {
+            // Порт снимается под замком, а список качается без него: ходить в
+            // сеть (пусть и по петле) под общим замком нельзя — на том конце
+            // sing-box, и его молчание стоило бы окну всего статуса.
+            let port = s.tunnel.as_ref().map(|t| t.api_port);
+            drop(s);
+            let Some(port) = port else {
+                // Туннеля нет — и соединений нет. Это не ошибка: ровно так
+                // выглядит выключенный приватный режим и fail-closed.
+                return Response::Connections { conns: Vec::new(), total: 0 };
+            };
+            match core_tunnel::connections(port) {
+                Ok(mut conns) => {
+                    let total = conns.len();
+                    // Обрезаем осознанно: в охвате «весь компьютер» соединений
+                    // бывают тысячи, а прочитать человек успевает десятки.
+                    // Сколько их было всего, едет рядом — молча обрезанный
+                    // список читался бы как полный.
+                    conns.truncate(MAX_CONNS);
+                    Response::Connections { conns, total }
+                }
+                Err(e) => Response::Error { message: e.to_string() },
+            }
+        }
         Request::TestProfiles => {
             // Список снимается под замком, а меряется без него: профиль тратит
             // до нескольких секунд, а под этим замком стоит весь GUI.
@@ -1067,7 +1170,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             // этом остаются заблокированными, и это не сбой, а ожидаемое
             // состояние: обещать в журнале перезапуск было бы неправдой.
             let Some(profile) = s.status.profile.clone() else { continue };
-            s.log(t(
+            s.warn(t(
                 "sing-box не работает: выбранные приложения без сети, перезапуск",
                 "sing-box is down: selected apps have no network, restarting",
             ));
@@ -1098,7 +1201,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
                     // подняться, но может забрать маршруты — и тогда «Защищено»
                     // окажется правдой только про нас, а не про приложения.
                     for name in core_filter::foreign_tunnels() {
-                        s.log(t(
+                        s.warn(t(
                             &format!("рядом поднят чужой туннель «{name}» — выберите один: маршруты уйдут к тому, кто выиграет"),
                             &format!("another tunnel \"{name}\" is up — keep one: routes go to whichever wins"),
                         ));
@@ -1118,7 +1221,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             }
             Err(e) => {
                 if s.status.tunnel != TunnelState::Down {
-                    s.log(t(
+                    s.warn(t(
                         &format!("туннель недоступен ({e}): выбранные приложения без сети"),
                         &format!("tunnel unavailable ({e}): selected apps have no network"),
                     ));
@@ -1161,7 +1264,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
                 // Страна — украшение статуса; не узнали, значит не показываем.
                 // На fail-closed это не влияет никак.
                 Err(e) => {
-                    s.log(t(&format!("страну выхода узнать не удалось ({e})"), &format!("could not determine the exit country ({e})")));
+                    s.warn(t(&format!("страну выхода узнать не удалось ({e})"), &format!("could not determine the exit country ({e})")));
                     s.status.country = None;
                 }
             }
@@ -1222,6 +1325,19 @@ mod tests {
         // подтверждения: цена опечатки — выбранные приложения без сети.
         assert_eq!(probe_target("ерунда", &vless), ("a.com".to_string(), 8443));
         assert_eq!(probe_target("a.com:70000", &vless), ("a.com".to_string(), 8443));
+    }
+
+    /// Срок сверки считается по календарю, а не по аптайму: домашняя машина
+    /// шести часов подряд не живёт, и при отсчёте от старта службы плановая
+    /// сверка не случалась бы вообще ни разу.
+    #[test]
+    fn the_refresh_clock_runs_on_the_calendar() {
+        let day = 24 * 60 * 60;
+        let period = REFRESH_EVERY.as_secs();
+        assert!(refresh_due(None, day), "не сверялись ни разу — пора");
+        assert!(!refresh_due(Some(day), day + 60), "сверялись минуту назад — рано");
+        assert!(refresh_due(Some(day), day + period), "срок вышел — пора, сколько бы служба ни жила");
+        assert!(!refresh_due(Some(day), 0), "часы перевели назад — это не повод идти на панель");
     }
 
     /// Фоновая сверка подписки не вправе выключить приватный режим: панель
@@ -1325,7 +1441,7 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
             &format!("service listening on {where_}; apps: {apps}, profiles: {profiles}"),
         ));
         if !elevated() {
-            s.log(t(
+            s.warn(t(
                 "ВНИМАНИЕ: служба запущена без прав администратора — TUN и правила брандмауэра работать не будут",
                 "WARNING: the service is running without administrator rights — TUN and firewall rules will not work",
             ));

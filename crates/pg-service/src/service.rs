@@ -10,8 +10,9 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 use windows_service::service::{
-    Service, ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode,
-    ServiceInfo, ServiceStartType, ServiceState, ServiceStatus, ServiceType,
+    Service, ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept,
+    ServiceErrorControl, ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod, ServiceInfo,
+    ServiceStartType, ServiceState, ServiceStatus, ServiceType,
 };
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
@@ -62,7 +63,19 @@ fn run_service() -> windows_service::Result<()> {
 
     handle.set_service_status(status(ServiceState::Running, ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN))?;
     let result = crate::run(Some(rx));
-    handle.set_service_status(status(ServiceState::Stopped, ServiceControlAccept::empty()))?;
+    // Код возврата — не украшение: по нему SCM отличает отказ от остановки, и
+    // только по отказу запускает failure actions. С нулём при любом исходе
+    // служба, не сумевшая занять канал, выглядела бы штатно остановленной —
+    // выбранные приложения остались бы в DROP, и поднимать туннель было бы
+    // некому до тех пор, пока человек не сходит в «Службы» руками.
+    let exit_code = match &result {
+        Ok(()) => ServiceExitCode::Win32(0),
+        Err(e) => ServiceExitCode::Win32(e.raw_os_error().unwrap_or(1) as u32),
+    };
+    handle.set_service_status(ServiceStatus {
+        exit_code,
+        ..status(ServiceState::Stopped, ServiceControlAccept::empty())
+    })?;
     result.map_err(|e| windows_service::Error::Winapi(e))
 }
 
@@ -121,6 +134,31 @@ pub fn install(exe: PathBuf) -> windows_service::Result<()> {
         Err(_) => manager.create_service(&info, access)?,
     };
     service.set_description(DESCRIPTION)?;
+    // Падение службы правила брандмауэра НЕ снимает — это осознанный fail-closed
+    // (см. обработчик Stop выше). Но поднять туннель обратно после падения
+    // некому, а SCM по умолчанию не перезапускает ничего: цена одной паники —
+    // запертая машина до тех пор, пока человек не заметит и не сходит в
+    // «Службы» руками. Три попытки с нарастающей паузой; счётчик сбрасывается
+    // сутками без отказов, иначе служба, падающая раз в месяц, после третьего
+    // раза за год перестала бы подниматься навсегда.
+    //
+    // Отказ самой настройки установку не валит: служба в SCM уже есть и
+    // работает, а `install` обязана оставаться идемпотентной — см. выше.
+    let restart = |delay| ServiceAction { action_type: ServiceActionType::Restart, delay };
+    let _ = service.update_failure_actions(ServiceFailureActions {
+        reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(24 * 60 * 60)),
+        reboot_msg: None,
+        command: None,
+        actions: Some(vec![
+            restart(Duration::from_secs(5)),
+            restart(Duration::from_secs(30)),
+            restart(Duration::from_secs(60)),
+        ]),
+    });
+    // Ненулевой код возврата — тоже отказ. Без этого флага SCM считает падением
+    // только смерть процесса, а служба, не сумевшая занять канал, завершается
+    // сама и «штатно» — то есть ровно тот отказ, который и надо перезапускать.
+    let _ = service.set_failure_actions_on_non_crash_failures(true);
     // Установщику нужна работающая служба сразу, а не после перезагрузки.
     match service.query_status()?.current_state {
         // Работающую не трогаем: перезапуск уронил бы живой туннель.

@@ -13,7 +13,7 @@ export type App = { path: string; name: string; enabled: boolean };
 
 /** Строка журнала со временем записи (unix-секунды): возраст словами считает
  *  окно — служба не знает ни часового пояса того, кто смотрит, ни его языка. */
-export type LogLine = { at: number; text: string };
+export type LogLine = { at: number; text: string; /** Сломалось, а не случилось. */ bad: boolean };
 
 /** Последнее известное про профиль: либо задержка, либо причина отказа, плюс
  *  точка выхода. Точку выхода спрашивают у ответивших — при `PG_GEO=0` её не
@@ -49,6 +49,26 @@ export type BrowserProfile = {
   lang: string;
 };
 
+/** Одно живое соединение туннеля. Смысл не в счётчиках, а в `tunneled`:
+ *  правило по `process_path` сверяет путь побайтово, и промах у него тихий —
+ *  приложение уходит мимо туннеля, не переставая считаться защищённым. Здесь
+ *  этот промах видно глазами.
+ *
+ *  Ничего не хранится ни в службе, ни здесь: список спрашивается, пока панель
+ *  открыта, и умирает вместе с ней. */
+export type Conn = {
+  /** Путь к процессу-владельцу целиком. Пусто — sing-box его не определил: так
+   *  выглядит трафик без процесса за ним (DNS, служба, драйвер). */
+  process: string;
+  /** Куда: домен, если известен, иначе адрес назначения, и порт рядом. */
+  host: string;
+  /** Идёт ли соединение в туннель — по цепочке маршрутов, а не по списку
+   *  приложений: список это намерение, цепочка — то, что вышло. */
+  tunneled: boolean;
+  rx: number;
+  tx: number;
+};
+
 export type Status = {
   tunnel: Tunnel;
   profile: string | null;
@@ -63,6 +83,8 @@ export type Status = {
   subscriptions: string[];
   lang: Lang;
   log: LogLine[];
+  /** Когда подписки последний раз пришли с панели, unix-секунды. */
+  refreshed_at: number | null;
   probes: Probe[];
   /** Профили, под которыми сейчас подняты прокси окон браузера. С `tunnel` не
    *  связаны: браузер ходит своим sing-box мимо общего режима, а сеансов бывает
@@ -127,7 +149,9 @@ export type Request =
   | { cmd: "remove-browser-profile"; arg: { name: string } }
   /** Настройки службы приходят набором целиком: команда на поле означала бы
    *  четыре ветки в службе ради экрана, который отдаёт их разом. */
-  | { cmd: "set-settings"; arg: { settings: Settings } };
+  | { cmd: "set-settings"; arg: { settings: Settings } }
+  /** Живые соединения туннеля. Спрашивается только пока панель открыта. */
+  | { cmd: "connections" };
 
 export type Response =
   | { reply: "status"; data: Status }
@@ -137,6 +161,9 @@ export type Response =
   | { reply: "done" }
   /** Порт локального прокси, поднятого под профиль. */
   | { reply: "proxy"; data: { port: number } }
+  /** Живые соединения; `total` — сколько их всего: в списке едут только самые
+   *  говорливые, и без этого числа обрезанный список читался бы как полный. */
+  | { reply: "connections"; data: { conns: Conn[]; total: number } }
   | { reply: "error"; data: { message: string } };
 
 /** Подставляется сборкой из src-tauri/tauri.conf.json (см. vite.config.ts). */
@@ -160,7 +187,7 @@ export async function openUrl(url: string): Promise<void> {
  *  отдаёт порт, браузер запускает оболочка — фронтенд живёт в вебвью, процессов
  *  ему не завести. Она же дожидается закрытия окна и гасит сеанс, поэтому
  *  «закрыть» отсюда не вызывается вовсе. */
-export async function browse(profile: BrowserProfile): Promise<void> {
+export async function browse(profile: BrowserProfile, color: string): Promise<void> {
   const r = await call({ cmd: "browse", arg: { profile: profile.name } });
   if (r.reply !== "proxy") {
     throw new Error(r.reply === "error" ? r.data.message : "служба не вернула порт");
@@ -176,6 +203,8 @@ export async function browse(profile: BrowserProfile): Promise<void> {
     profile: profile.name,
     ua: profile.ua,
     lang: profile.lang,
+    // Цвет значка окна: считает его интерфейс, оболочка только красит.
+    color,
   });
 }
 

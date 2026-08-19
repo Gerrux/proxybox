@@ -43,15 +43,39 @@ const RU = {
   browserNeedsNode: "Сначала заведите профиль узла — через него и пойдёт окно браузера.",
   browserEmpty:
     "Профилей браузера нет. Заведите первый: имя и узел обязательны, личность можно оставить как есть.",
-  browserName: "имя профиля",
-  browserNode: "узел",
+  browserName: "Имя",
+  browserNamePlaceholder: "работа, личное, магазин",
+  browserNameHint: "Им же назван каталог с куками и входами этого окна.",
+  browserNode: "Узел",
+  browserNodePick: "выберите узел",
+  browserNodeHint: "Через него пойдёт трафик окна. Общий режим не трогается.",
+  browserIdentity: "Личность",
+  browserPlatform: "Платформа",
+  browserPlatformReal: "Настоящая — не подменять",
+  browserPlatformCustom: "Своя строка",
+  browserVersion: "Версия Chrome",
+  browserRandom: "Случайно",
+  browserRandomHint: "Случайная версия Chrome на этой же платформе",
+  browserMismatch: (real: string) =>
+    `Sec-CH-UA всё равно скажет «${real}»: сайт, который смотрит client hints, увидит расхождение со строкой.`,
   browserUa: "user-agent — пусто, значит настоящий",
+  browserUaField: "Строка user-agent",
+  browserUaSet: "Эта строка уйдёт в --user-agent и в navigator.userAgent.",
+  browserUaRealNow: (platform: string, major: number) =>
+    `Строка не подставляется — браузер пойдёт со своей. Здесь это ${platform}, Chrome ${major}.`,
   browserUaHint:
-    "Меняет строку запроса и navigator.userAgent. Sec-CH-UA и navigator.userAgentData Chromium берёт из настоящей сборки, а canvas, шрифты, экран и GPU у профилей одной машины общие: это разделение аккаунтов, а не антидетект. Поэтому «Сгенерировать» держится Windows и версии Chrome рядом с настоящей.",
-  browserUaMake: "Сгенерировать",
+    "Меняет строку запроса и navigator.userAgent. Sec-CH-UA, часовой пояс, canvas, WebGL, экран и число ядер остаются настоящими и общими у всех профилей этой машины: это разделение аккаунтов, а не антидетект.",
   browserUaReal: "настоящий",
-  browserLang: "язык",
-  browserLangHint: "auto — по стране узла; пусто — системный; иначе список вида nl-NL,nl,en-US,en",
+  browserLang: "Язык",
+  browserLangHint: "Список вида nl-NL,nl,en-US,en — в том порядке, в каком его пришлёт браузер",
+  browserLangAuto: "Язык: по стране узла",
+  browserLangSystem: "Язык: системный",
+  browserLangCustom: "Язык: свой",
+  browserLangAutoNow: (country: string, value: string) => `Узел сейчас в стране «${country}» → ${value}`,
+  browserLangAutoUnknown: (value: string) =>
+    `Страна узла ещё не измерена — её узнает прогон профилей. До тех пор → ${value}`,
+  browserCancel: "Отмена",
+  browserSave: "Сохранить",
   browserCreate: "Создать",
   browserOpen: "Открыть",
   browserOpenHint: (node: string) =>
@@ -70,6 +94,8 @@ const RU = {
   measured: (ago: string) => `Измерено ${ago}`,
   logged: (ago: string) => `Записано ${ago}`,
   yesterday: "вчера",
+  synced: (ago: string) => `Сверено ${ago}`,
+  neverSynced: "не сверялись",
   agoNow: "только что",
   agoMin: (n: number) => `${n} мин назад`,
   agoHour: (n: number) => `${n} ч назад`,
@@ -97,6 +123,20 @@ const RU = {
   noMatches: "Ничего не подошло — попробуйте часть имени или папки.",
   journal: "Журнал",
   emptyJournal: "Пока ничего не происходило.",
+  tabConns: "Соединения",
+  conns: "Соединения",
+  connsNote: (shown: number, total: number) =>
+    shown < total ? `${shown} из ${total} — самые говорливые` : `${total}`,
+  connsHint:
+    "Что идёт через туннель прямо сейчас. Список спрашивается, пока эта панель открыта, и нигде не сохраняется: ни в журнале, ни на диске, ни тем более наружу.",
+  connsOff: "Туннеля нет — и соединений нет.",
+  connsEmpty: "Туннель поднят, но по нему пока никто не ходит.",
+  connsTunnel: "туннель",
+  connsDirect: "напрямую",
+  connsDirectHint:
+    "Это соединение идёт мимо туннеля. Для невыбранного приложения так и задумано; если приложение выбрано — правило по пути не совпало, и оно только считается защищённым.",
+  connsNoProcess: "без процесса",
+  connsNoProcessHint: "sing-box не определил владельца: так выглядит трафик службы, драйвера и DNS.",
   hideMessage: "Скрыть сообщение",
   minimizeWindow: "Свернуть окно",
   maximizeWindow: "Развернуть окно",
@@ -112,7 +152,7 @@ const RU = {
     "«Весь компьютер» — это не «выбрать все приложения»: под туннель попадает и трафик, за которым нет процесса, — служба, драйвер, DNS.",
   refreshSubs: "Сверка подписок",
   refreshSubsHint:
-    "Раз в сутки служба перечитывает подписки и заменяет узлы. Активный узел при этом не гаснет, а пропавший не выключает приватный режим.",
+    "Раз в шесть часов служба перечитывает подписки и заменяет узлы. Срок считается от последней сверки, а не от запуска службы. Активный узел при этом не гаснет, а пропавший не выключает приватный режим.",
   geoTitle: "Спрашивать страну",
   geoHint:
     "Единственный запрос службы наружу: страну узла спрашивают у стороннего сервиса — и только через туннель, с вашего настоящего адреса запрос не уходит. Выключите — страны в окне не будет.",
@@ -197,15 +237,38 @@ const EN: typeof RU = {
   browsers: "Browsers",
   browserNeedsNode: "Add a node profile first — the browser window goes through it.",
   browserEmpty: "No browser profiles yet. Add the first one: name and node are required, the identity can stay as is.",
-  browserName: "profile name",
-  browserNode: "node",
+  browserName: "Name",
+  browserNamePlaceholder: "work, personal, shop",
+  browserNameHint: "It also names the folder with this window's cookies and logins.",
+  browserNode: "Node",
+  browserNodePick: "pick a node",
+  browserNodeHint: "The window's traffic goes through it. The general mode is untouched.",
+  browserIdentity: "Identity",
+  browserPlatform: "Platform",
+  browserPlatformReal: "Real — do not spoof",
+  browserPlatformCustom: "Custom string",
+  browserVersion: "Chrome version",
+  browserRandom: "Random",
+  browserRandomHint: "A random Chrome version on the same platform",
+  browserMismatch: (real: string) =>
+    `Sec-CH-UA will still say "${real}": a site that reads client hints sees the mismatch with the string.`,
   browserUa: "user-agent — empty means the real one",
+  browserUaField: "User-agent string",
+  browserUaSet: "This string goes into --user-agent and navigator.userAgent.",
+  browserUaRealNow: (platform: string, major: number) =>
+    `Nothing is substituted — the browser goes with its own. Here that is ${platform}, Chrome ${major}.`,
   browserUaHint:
-    "Changes the request header and navigator.userAgent. Sec-CH-UA and navigator.userAgentData come from the real build, and canvas, fonts, screen and GPU are shared by every profile on this machine: this separates accounts, it is not an antidetect. That is why Generate keeps Windows and a Chrome version close to the real one.",
-  browserUaMake: "Generate",
+    "Changes the request header and navigator.userAgent. Sec-CH-UA, time zone, canvas, WebGL, screen and core count stay real and shared by every profile on this machine: this separates accounts, it is not an antidetect.",
   browserUaReal: "real",
-  browserLang: "language",
-  browserLangHint: "auto — by the node country; empty — system; otherwise a list like nl-NL,nl,en-US,en",
+  browserLang: "Language",
+  browserLangHint: "A list like nl-NL,nl,en-US,en — in the order the browser will send it",
+  browserLangAuto: "Language: by node country",
+  browserLangSystem: "Language: system",
+  browserLangCustom: "Language: custom",
+  browserLangAutoNow: (country: string, value: string) => `The node is in ${country} now → ${value}`,
+  browserLangAutoUnknown: (value: string) => `The node country is not measured yet — a test run finds it. Until then → ${value}`,
+  browserCancel: "Cancel",
+  browserSave: "Save",
   browserCreate: "Create",
   browserOpen: "Open",
   browserOpenHint: (node: string) =>
@@ -224,6 +287,8 @@ const EN: typeof RU = {
   measured: (ago: string) => `Measured ${ago}`,
   logged: (ago: string) => `Logged ${ago}`,
   yesterday: "yesterday",
+  synced: (ago: string) => `Synced ${ago}`,
+  neverSynced: "never synced",
   agoNow: "just now",
   agoMin: (n: number) => `${n} min ago`,
   agoHour: (n: number) => `${n} h ago`,
@@ -251,6 +316,20 @@ const EN: typeof RU = {
   noMatches: "Nothing matched — try part of the name or folder.",
   journal: "Journal",
   emptyJournal: "Nothing has happened yet.",
+  tabConns: "Connections",
+  conns: "Connections",
+  connsNote: (shown: number, total: number) =>
+    shown < total ? `${shown} of ${total} — the loudest` : `${total}`,
+  connsHint:
+    "What goes through the tunnel right now. The list is asked for while this panel is open and stored nowhere: not in the journal, not on disk, and certainly not outside.",
+  connsOff: "No tunnel — no connections.",
+  connsEmpty: "The tunnel is up, but nobody is using it yet.",
+  connsTunnel: "tunnel",
+  connsDirect: "direct",
+  connsDirectHint:
+    "This connection bypasses the tunnel. For an app you did not pick that is by design; if the app is picked, the path rule did not match and it is only considered protected.",
+  connsNoProcess: "no process",
+  connsNoProcessHint: "sing-box could not tell the owner: that is how service, driver and DNS traffic looks.",
   hideMessage: "Hide message",
   minimizeWindow: "Minimize window",
   maximizeWindow: "Maximize window",
@@ -266,7 +345,7 @@ const EN: typeof RU = {
     "\"Whole computer\" is not \"select every app\": traffic with no process behind it — the service, the driver, DNS — goes into the tunnel too.",
   refreshSubs: "Subscription refresh",
   refreshSubsHint:
-    "Once a day the service re-reads the subscriptions and replaces the nodes. The active node stays up, and a node that disappeared does not turn private mode off.",
+    "Every six hours the service re-reads the subscriptions and replaces the nodes. The clock runs from the last sync, not from the service start. The active node stays up, and a node that disappeared does not turn private mode off.",
   geoTitle: "Ask for the country",
   geoHint:
     "The only request the service makes outwards: the node country is asked from a third-party service — and only through the tunnel, never from your real address. Turn it off and the window shows no country.",
@@ -363,4 +442,12 @@ export function dayLabel(s: Strings, lang: Lang, at: number): string | undefined
     month: "long",
     ...(when.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
   });
+}
+
+/** Возраст списка узлов. Без него по строке подписки не отличить список,
+ *  пришедший час назад, от импортированного в прошлом месяце и с тех пор ни
+ *  разу не сверенного: адрес-то один и тот же. */
+export function syncedAgo(s: Strings, at: number | null): string {
+  const when = at ? ago(s, at) : undefined;
+  return when ? s.synced(when) : s.neverSynced;
 }

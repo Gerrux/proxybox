@@ -16,6 +16,7 @@ import {
 import { strings } from "./i18n";
 import { Apps } from "./Apps";
 import { Browsers } from "./Browsers";
+import { Conns } from "./Conns";
 import { Journal } from "./Journal";
 import { Profiles } from "./Profiles";
 import { Settings, useReleases } from "./Settings";
@@ -39,7 +40,13 @@ const POLL_BUSY_MS = 600;
  *  на четыре списка значит не показать ни одного. Шире 1100 px делить нечего,
  *  и первые три встают рядом (`.panes` в `index.css`); браузерные профили
  *  остаются вкладкой на любой ширине — четвёртой колонки нет. */
-type Tab = "profiles" | "apps" | "journal" | "browsers";
+type Tab = "profiles" | "apps" | "journal" | "browsers" | "conns";
+
+/** Вкладки, живущие во всю ширину: своей колонки в `.panes` у них нет, и на
+ *  широком экране они закрывают собой все три панели разом. Соединения сюда
+ *  попали не по размеру, а по смыслу: их читают, когда сомневаются в туннеле, —
+ *  и тогда списки профилей рядом только мешают. */
+const WIDE: Tab[] = ["browsers", "conns"];
 
 /** Показана ли панель. Классом, а не атрибутом: className есть у всех трёх
  *  панелей и так, а `data-*` пришлось бы протаскивать через каждую из них и
@@ -156,10 +163,10 @@ export function App() {
 
   // Браузер запускает оболочка, а не служба, поэтому это не обычная команда:
   // ответ со статусом сюда не приходит, и показать нечего, кроме отказа.
-  const browse = useCallback((profile: BrowserProfile) => {
+  const browse = useCallback((profile: BrowserProfile, color: string) => {
     setError(null);
     setBusy((n) => n + 1);
-    void openBrowser(profile)
+    void openBrowser(profile, color)
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setBusy((n) => n - 1));
   }, []);
@@ -236,14 +243,21 @@ export function App() {
                 label={s.journal} count={status?.log.length ?? 0} />
               {/* Шире 1100 px первые три стоят рядом, и выбирать между ними
                   нечего: остаётся развилка «списки или браузерные профили». */}
-              <TabButton className="tab-wide" active={tab !== "browsers"} onClick={() => setTab("profiles")}
+              <TabButton className="tab-wide" active={!WIDE.includes(tab)} onClick={() => setTab("profiles")}
                 label={s.tabMain} />
               <TabButton active={tab === "browsers"} onClick={() => setTab("browsers")}
                 label={s.tabBrowsers} count={status?.browser_profiles.length ?? 0} />
+              {/* Счётчика у соединений нет: сколько их, знает только сама
+                  панель, а спрашивать это ради подписи на закрытой вкладке
+                  значило бы опрашивать службу всегда — ровно то, чего эта
+                  панель и не делает. */}
+              <TabButton active={tab === "conns"} onClick={() => setTab("conns")} label={s.tabConns} />
             </nav>
 
             {tab === "browsers" ? (
               <Browsers status={status} act={act} browse={browse} className="min-h-0 flex-1" />
+            ) : tab === "conns" ? (
+              <Conns status={status} className="min-h-0 flex-1" />
             ) : (
               <div className="panes gap-2.5">
                 <Profiles className={pane(tab, "profiles")} status={status} act={act} busy={busy > 0} />

@@ -23,6 +23,7 @@ use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, Rect, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_notification::NotificationExt;
 
 /// `async` здесь не про параллелизм, а про то, чтобы окно оставалось живым:
 /// синхронную команду Tauri выполняет прямо в цикле событий главного потока, а
@@ -114,7 +115,7 @@ fn session_dir(profile: &str) -> std::path::PathBuf {
 ///
 /// `async` — по тому же правилу, что и у `ipc`.
 #[tauri::command(async)]
-fn open_browser(port: u16, profile: String, ua: String, lang: String) -> Result<(), String> {
+fn open_browser(port: u16, profile: String, ua: String, lang: String, color: String) -> Result<(), String> {
     let browser = core_apps::browser().ok_or_else(|| {
         core_ipc::t(
             "браузер на Chromium не найден: нужен Chrome, Edge, Brave или Яндекс",
@@ -138,6 +139,8 @@ fn open_browser(port: u16, profile: String, ua: String, lang: String) -> Result<
         command.arg(format!("--lang={first}"));
     }
     let mut child = command.spawn().map_err(|e| format!("{}: {e}", browser.path))?;
+    #[cfg(windows)]
+    paint_icon(child.id(), &data, &color);
     // Закрытие окна службе не видно: она видит живой sing-box, а тот переживает
     // браузер легко — и метка «браузер» врала бы, пока жив процесс. Ждёт тот,
     // кто окно и запустил.
@@ -185,6 +188,42 @@ fn set_accept_language(data: &std::path::Path, lang: &str) {
         return;
     }
     let _ = std::fs::write(&file, prefs.to_string());
+}
+
+/// Значок окна сеанса — тот, что видно в панели задач. Иконку самого Chromium
+/// подменить нечем: она в ресурсах `chrome.exe`. Зато окну можно послать свою,
+/// и делает это `core_apps::set_window_icon` — там же, где её и проверяет
+/// компилятор (`src-tauri` не собирается нигде, кроме Windows).
+///
+/// Ждём в своём потоке: окна в момент запуска ещё нет — Chrome распаковывает
+/// профиль, читает настройки и рисует окно спустя секунды, а на первом запуске
+/// нового профиля и дольше. Пятнадцать секунд с шагом в четверть — это про
+/// холодный старт на медленном диске, а не про красоту числа.
+#[cfg(windows)]
+fn paint_icon(pid: u32, data: &std::path::Path, color: &str) {
+    // Цвет приходит из окна строкой `#rrggbb` — той же, которой оно рисует точку
+    // в списке профилей. Разобрать не вышло — значка просто не будет: рисовать
+    // не тот цвет хуже, чем не рисовать вовсе.
+    let hex = color.strip_prefix('#').unwrap_or(color);
+    let byte = |at: usize| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok();
+    let (Some(r), Some(g), Some(b)) = (byte(0), byte(2), byte(4)) else {
+        return;
+    };
+    let icon = data.join("icon.ico");
+    if std::fs::create_dir_all(data).is_err() {
+        return;
+    }
+    if std::fs::write(&icon, core_apps::icon_bytes((r, g, b))).is_err() {
+        return;
+    }
+    std::thread::spawn(move || {
+        for _ in 0..60 {
+            if core_apps::set_window_icon(pid, &icon) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    });
 }
 
 /// Профили, за окнами которых уже кто-то ждёт. Своё состояние оболочке иметь не
@@ -533,6 +572,23 @@ fn signature(status: Option<&Status>) -> String {
     }
 }
 
+/// Видно ли окно. Спрятанное в трей и свёрнутое одинаково не видно, а
+/// уведомление нужно ровно тому, кто на окно сейчас не смотрит: на открытом
+/// окне то же самое написано в шапке крупными буквами.
+fn unseen(app: &tauri::AppHandle) -> bool {
+    match app.get_webview_window("main") {
+        Some(w) => !w.is_visible().unwrap_or(false) || w.is_minimized().unwrap_or(false),
+        None => true,
+    }
+}
+
+/// Сказать в системное уведомление. Отказ глотаем: на Windows тост требует
+/// ярлыка в меню «Пуск» (его ставит установщик) и разрешения в параметрах
+/// системы — без них показать нечего, но ронять из-за этого значок незачем.
+fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
+    let _ = app.notification().builder().title(title).body(body).show();
+}
+
 /// Команда службе из меню — всегда своим потоком. `call` блокирующий, а
 /// обработчик меню крутится в цикле событий: секунда на ответ службы (а `on`
 /// перезапускает sing-box) — это секунда, когда окно не разбирает очередь
@@ -668,6 +724,11 @@ fn tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle().clone();
     std::thread::spawn(move || {
         let mut shown = String::new();
+        // Что было в прошлый круг и говорили ли мы уже о падении. Уведомление
+        // рассказывает о переходе, а не о состоянии: «туннеля нет» каждые три
+        // секунды — это не уведомление, а сирена.
+        let mut was: Option<core_ipc::Tunnel> = None;
+        let mut warned = false;
         loop {
             let status = match call(&Request::Status) {
                 Ok(Response::Status(s)) => Some(s),
@@ -679,10 +740,42 @@ fn tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 core_ipc::set_lang(s.lang);
             }
             let now = signature(status.as_ref());
+            let (title, detail) = words(status.as_ref());
+            // Единственный однозначный переход — «подтверждён → упал»: выбранные
+            // приложения (а в охвате «весь компьютер» — вся машина) только что
+            // остались без сети, и сказать об этом больше нечему: окно спрятано,
+            // а значок в трее меняет цвет молча.
+            //
+            // Отказ старта (Connecting → Down) сюда не входит намеренно: его
+            // повторяет цикл перезапуска, и это был бы тост в минуту. Смерть
+            // самой службы — тоже: снаружи не отличить остановку командой, где
+            // правила сняты и сеть есть, от падения, где правила остались.
+            let tunnel = status.as_ref().map(|s| s.tunnel);
+            match (was, tunnel) {
+                (Some(core_ipc::Tunnel::Up), Some(core_ipc::Tunnel::Down)) => {
+                    // Отметку ставит сказанное, а не случившееся: падение при
+                    // открытом окне человек увидел сам, и «всё снова хорошо» в
+                    // ответ на непрозвучавшую плохую новость — тост ни о чём.
+                    if unseen(&handle) {
+                        notify(&handle, &title, &detail);
+                        warned = true;
+                    }
+                }
+                // О возвращении говорим только тому, кому сказали о падении:
+                // «Защищено» без предшествующей плохой новости — это просто
+                // рабочий продукт, и поздравлять с ним человека не с чем.
+                (Some(core_ipc::Tunnel::Down), Some(core_ipc::Tunnel::Up)) if warned => {
+                    warned = false;
+                    if unseen(&handle) {
+                        notify(&handle, &title, &detail);
+                    }
+                }
+                _ => {}
+            }
+            was = tunnel;
             if now != shown {
                 shown = now;
                 if let Some(tray) = handle.tray_by_id("pg") {
-                    let (title, detail) = words(status.as_ref());
                     let _ = tray.set_icon(Some(tray_icon(look(status.as_ref()))));
                     let _ = tray.set_tooltip(Some(format!("Privacy Gateway — {title}\n{detail}")));
                     if let Ok(menu) = build_menu(&handle, status.as_ref()) {
@@ -725,6 +818,9 @@ fn main() {
         // Без этого спрятанный в трей продукт открывался бы по ярлыку заново,
         // и окон становилось бы столько, сколько раз по нему нажали.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| raise(app)))
+        // Уведомления — единственное, чем оболочка говорит о том, чего человек
+        // не спрашивал: см. `notify`.
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             match tray(app) {
                 Ok(()) => {

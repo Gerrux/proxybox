@@ -29,15 +29,24 @@
 param(
     # Окно замера. Короче 10 с всплеск сборщика мусора перебивает сигнал.
     [int]$Seconds = 20,
-    # Что качать. По умолчанию — открытая мерилка Cloudflare без регистрации;
-    # свой сервер подставляется сюда же, больше скрипт наружу не ходит.
-    [string]$Url = "https://speed.cloudflare.com/__down?bytes=104857600",
+    # Что качать, по порядку до первого удачного. Список, а не один адрес:
+    # проход 1 идёт через туннель, сервер видит адрес VPN, и Cloudflare на такой
+    # отвечает 403 — двух прогонов это стоило. Свой сервер ставится первым.
+    [string[]]$Url = @(
+        "https://ash-speed.hetzner.com/100MB.bin",
+        "http://speedtest.tele2.net/100MB.zip",
+        "https://speed.cloudflare.com/__down?bytes=104857600"
+    ),
     # Порты службы: mixed (обход TUN) и Clash API (счётчики байт).
     [int]$MixedPort = 48292,
     [int]$ApiPort = 48293,
     # Имя нашего TUN-адаптера — core_tunnel::TUN_NAME. Разъедется с ним, и
     # главный знаменатель (пакеты через TUN) молча пропадёт из вывода.
-    [string]$TunName = "Privacy Gateway"
+    [string]$TunName = "Privacy Gateway",
+    # Куда долбиться короткими соединениями. Отвечает быстро, рвётся сразу,
+    # байтов почти нет — нужны именно соединения, а не трафик.
+    [string]$ChurnTarget = "1.1.1.1",
+    [int]$ChurnPort = 443
 )
 
 $ErrorActionPreference = "Stop"
@@ -102,7 +111,10 @@ function Get-TrafficBytes {
     # Счётчики Clash API — те же, что показывает окно. Отказ значит «байты не
     # посчитаны»: взять их больше неоткуда, TUN своего счётчика не даёт.
     try {
-        $c = Invoke-RestMethod "http://127.0.0.1:$ApiPort/connections" -TimeoutSec 3
+        # Тайм-аут щедрый намеренно: на живой машине в списке за тысячу
+        # соединений, это мегабайт JSON, и трёх секунд на разбор не хватало —
+        # снимок молча выходил пустым, а разность потом врала.
+        $c = Invoke-RestMethod "http://127.0.0.1:$ApiPort/connections" -TimeoutSec 15
         [int64]$c.downloadTotal + [int64]$c.uploadTotal
     } catch { -1 }
 }
@@ -121,35 +133,89 @@ function Get-TunStats {
     } catch { $null }
 }
 
-$loader = {
-    param($url, $proxy, $seconds, $tmp)
-    # Windows PowerShell 5.1 по умолчанию предлагает SSL3/TLS 1.0, современный
-    # сервер такое рвёт на рукопожатии — закачка не начиналась вовсе, а окно
-    # всё равно отсчитывалось, и замер выходил про покой под видом нагрузки.
-    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+function Get-ConnIds {
+    # Соединения, а не байты: правило process_path сверяется на соединение, и
+    # менять надо именно их число. Счёт по разнице множеств — оценка снизу,
+    # успевшее открыться и закрыться внутри окна сюда не попадёт; настоящее
+    # число генератор возвращает сам.
+    try {
+        # Тайм-аут щедрый намеренно: на живой машине в списке за тысячу
+        # соединений, это мегабайт JSON, и трёх секунд на разбор не хватало —
+        # снимок молча выходил пустым, а разность потом врала.
+        $c = Invoke-RestMethod "http://127.0.0.1:$ApiPort/connections" -TimeoutSec 15
+        $h = @{}
+        foreach ($x in $c.connections) { if ($x.id) { $h[$x.id] = $true } }
+        $h
+    } catch { @{} }
+}
+
+# Нагрузка соединениями: много коротких TCP-подключений и почти ноль байт —
+# ровно наоборот к большой закачке. С auto_route они всё равно заходят в TUN,
+# и sing-box обязан выяснить процесс для каждого, даже если отправит напрямую.
+$churner = {
+    param($target, $port, $seconds)
+    $n = 0
     $err = $null
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while ($sw.Elapsed.TotalSeconds -lt $seconds) {
         try {
-            $c = New-Object Net.WebClient
-            $c.Proxy = if ($proxy) { New-Object Net.WebProxy($proxy) } else { $null }
-            $c.DownloadFile($url, $tmp)
+            $c = New-Object Net.Sockets.TcpClient
+            $c.Connect($target, [int]$port)
+            $c.Close()
+            $n++
         } catch {
-            # Отказ обязан долететь наверх: молчаливый break и дал два прохода
-            # с нулём байт и бессмысленным «сравнивать нечего» в итоге.
-            $err = $_.Exception.Message
-            break
+            # Причина обязана долететь: молча глотая отказ, проход отчитывался
+            # «соединений не создал (цель недоступна?)» и оставлял гадать.
+            if (-not $err) { $err = $_.Exception.Message }
+            Start-Sleep -Milliseconds 100
         }
     }
+    [pscustomobject]@{ Made = $n; Error = $err }
+}
+
+$loader = {
+    # Список приходит одной строкой через перевод: -ArgumentList разворачивает
+    # массив в отдельные аргументы, и адреса разъехались бы по чужим параметрам.
+    param($urlList, $proxy, $seconds, $tmp)
+    $urls = $urlList -split "`n" | Where-Object { $_ }
+    # Windows PowerShell 5.1 по умолчанию предлагает SSL3/TLS 1.0, современный
+    # сервер такое рвёт на рукопожатии — закачка не начиналась вовсе, а окно
+    # всё равно отсчитывалось, и замер выходил про покой под видом нагрузки.
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+    $errors = @()
+    $good = $null
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt $seconds) {
+        # Пока рабочий адрес не найден — перебираем все; найденный держим.
+        $ok = $false
+        foreach ($u in $(if ($good) { @($good) } else { $urls })) {
+            try {
+                $c = New-Object Net.WebClient
+                # Голый WebClient не шлёт User-Agent вовсе, и часть зеркал
+                # отвечает на это отказом.
+                $c.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                $c.Proxy = if ($proxy) { New-Object Net.WebProxy($proxy) } else { $null }
+                $c.DownloadFile($u, $tmp)
+                $good = $u
+                $ok = $true
+                break
+            } catch {
+                # Отказ обязан долететь наверх: молчаливый break и дал проходы
+                # с нулём байт и «сравнивать нечего» в итоге, без причины.
+                $errors += "$u -> $($_.Exception.Message)"
+            }
+        }
+        if (-not $ok) { break }
+    }
     Remove-Item $tmp -ErrorAction SilentlyContinue
-    $err
+    if (-not $good) { $errors -join '; ' }
 }
 
 # Возвращает один объект: ЦП за окно и цену трафика в с/ГБ. Всё остальное
 # печатается через Write-Host — голая строка в PowerShell уходит в
 # возвращаемое значение и смешалась бы с ним.
 function Measure-Window {
-    param([string]$Label, [string]$Proxy, [bool]$Load, [bool]$Prompt)
+    param([string]$Label, [string]$Proxy, [bool]$Load, [bool]$Prompt, [bool]$Churn)
 
     Write-Host ""
     Write-Host "== $Label ==" -ForegroundColor Cyan
@@ -163,26 +229,37 @@ function Measure-Window {
     $a = Get-Snapshot
     $b0 = Get-TrafficBytes
     $n0 = Get-TunStats
+    $c0 = Get-ConnIds
     $job = $null
-    if ($Load) {
+    if ($Churn) {
+        $job = Start-Job -ScriptBlock $churner -ArgumentList $ChurnTarget, $ChurnPort, $Seconds
+    } elseif ($Load) {
         # GetTempPath, а не $env:TEMP: переменная бывает пустой, а с
         # ErrorActionPreference=Stop пустой путь убил бы замер посреди окна.
         $tmp = Join-Path ([IO.Path]::GetTempPath()) "pg-cpu.bin"
-        $job = Start-Job -ScriptBlock $loader -ArgumentList $Url, $Proxy, $Seconds, $tmp
+        $job = Start-Job -ScriptBlock $loader -ArgumentList ($Url -join "`n"), $Proxy, $Seconds, $tmp
     }
     $sw = [Diagnostics.Stopwatch]::StartNew()
     Start-Sleep -Seconds $Seconds
     $elapsed = $sw.Elapsed.TotalSeconds
     $b1 = Get-TrafficBytes
     $n1 = Get-TunStats
+    $c1 = Get-ConnIds
     $b = Get-Snapshot
     $t1 = Get-ThreadTimes $mainId
+    $made = 0
     if ($job) {
         Stop-Job $job -ErrorAction SilentlyContinue
-        $err = @(Receive-Job $job -ErrorAction SilentlyContinue) | Where-Object { $_ }
+        $got = @(Receive-Job $job -ErrorAction SilentlyContinue) | Where-Object { $_ }
         Remove-Job $job -Force -ErrorAction SilentlyContinue
-        if ($err) {
-            Write-Host ("  закачка не пошла: {0}" -f ($err -join '; ')) -ForegroundColor Yellow
+        if ($Churn) {
+            $r = @($got)[-1]
+            $made = [int]$r.Made
+            $why = ""
+            if ($r.Error) { $why = " (первая ошибка: $($r.Error))" }
+            Write-Host ("  сделано подключений: {0}{1}" -f $made, $why)
+        } elseif ($got) {
+            Write-Host ("  закачка не пошла: {0}" -f ($got -join '; ')) -ForegroundColor Yellow
         }
     }
 
@@ -191,6 +268,7 @@ function Measure-Window {
     $delta = foreach ($id in $b.Keys) {
         if (-not $a.ContainsKey($id)) { continue }
         [pscustomobject]@{
+            Pid  = $id
             Name = $b[$id].Name
             Cpu  = [math]::Max(0, $b[$id].Cpu - $a[$id].Cpu)
             Krn  = [math]::Max(0, $b[$id].Krn - $a[$id].Krn)
@@ -203,8 +281,20 @@ function Measure-Window {
     $gb = -1.0
     if ($b1 -ge 0 -and $b0 -ge 0) { $gb = ($b1 - $b0) / 1GB }
 
-    Write-Host ("{0,-20} {1,7:N1} с   {2,5:N0}% одного ядра, {3,3:N0}% машины" -f `
+    # Два знака после запятой не для красоты: в первых прогонах все значения
+    # вышли ровными целыми, чего у дельт процессорного времени не бывает, —
+    # по второму знаку видно, настоящая это гранулярность или округление.
+    Write-Host ("{0,-20} {1,7:N2} с   {2,5:N0}% одного ядра, {3,3:N0}% машины" -f `
         "sing-box, ЦП:", $myCpu, (100 * $myCpu / $elapsed), (100 * $myCpu / $elapsed / $cores))
+    # Разбивка по процессам — ради дарового опыта: сеанс браузера поднимает
+    # второй sing-box БЕЗ TUN (core_tunnel::sidecar), на той же машине, той же
+    # версии и том же сервере. Разница между ними и есть цена TUN, без остановки
+    # службы и без правки конфига.
+    if ($mine.Count -gt 1) {
+        foreach ($m in $mine | Sort-Object Cpu -Descending) {
+            Write-Host ("    pid {0,-8} {1,7:N2} с   в ядре {2,3:N0}%" -f $m.Pid, $m.Cpu, $(if ($m.Cpu -gt 0) { 100 * $m.Krn / $m.Cpu } else { 0 }))
+        }
+    }
     $krnShare = 0
     if ($myCpu -gt 0) { $krnShare = 100 * $myKrn / $myCpu }
     Write-Host ("{0,-20} {1,7:N0} %   много — работа в ядре: wintun, WFP, драйвер" -f "из них в ядре:", $krnShare)
@@ -257,6 +347,19 @@ function Measure-Window {
         }
     }
 
+    # Новые соединения — знаменатель, которого мне и не хватало: правило
+    # process_path сверяется на соединение, а большая закачка это одно
+    # соединение и сто тысяч пакетов. Меняя байты, я не менял ничего.
+    $newConns = 0
+    foreach ($k in $c1.Keys) { if (-not $c0.ContainsKey($k)) { $newConns++ } }
+    # Печатаются оба снимка, а не только разность: «новых 1030» в каждом проходе
+    # означало либо полную смену списка, либо пустой первый снимок, и по одному
+    # числу это неразличимо. «Было 0» теперь видно сразу.
+    Write-Host ("{0,-20} было {1:N0}, стало {2:N0}, новых {3:N0}" -f "соединений:", $c0.Count, $c1.Count, $newConns)
+    if ($newConns -gt 0 -and $myCpu -gt 0) {
+        Write-Host ("{0,-20} {1,7:N0} мкс на соединение" -f "цена соединения:", (1e6 * $myCpu / $newConns))
+    }
+
     $perGb = 0.0
     if ($myCpu -gt 0 -and $gb -gt 0.01) { $perGb = $myCpu / $gb }
     [pscustomobject]@{
@@ -265,6 +368,7 @@ function Measure-Window {
         PerGb   = $perGb           # по счётчику туннеля; 0, если трафика не было
         TunGb   = $tunGb           # весь трафик через адаптер
         Packets = $packets
+        Conns   = $newConns        # новых соединений за окно
     }
 }
 
@@ -286,6 +390,10 @@ if ($rules.Count -gt $apps + 1) {
 $idle = Measure-Window -Label "проход 0: покой, нагрузки нет" -Proxy $null -Load $false -Prompt $false
 $without = Measure-Window -Label "проход 1: мимо TUN (через mixed-порт $MixedPort)" -Proxy "http://127.0.0.1:$MixedPort" -Load $true -Prompt $false
 $through = Measure-Window -Label "проход 2: через TUN" -Proxy $null -Load $all -Prompt (-not $all)
+# Проход 3 меняет ровно то, что меняли зря все предыдущие: число соединений.
+# Байтов тут почти нет, зато соединений сотни — если расход про process_path,
+# именно здесь он и подскочит.
+$churn = Measure-Window -Label "проход 3: много коротких соединений" -Proxy $null -Load $false -Prompt $false -Churn $true
 
 Write-Host ""
 Write-Host "== итог ==" -ForegroundColor Cyan
@@ -298,19 +406,59 @@ if ($idle.Packets -gt 1000) {
 }
 if ($idle.Cores -gt 0.25) {
     Write-Host "  Столько ЦП без трафика — это уже не шифрование." -ForegroundColor Yellow
+    # Плоскость расхода долго читалась как «холостой цикл». Это была ошибка:
+    # байты я менял, а соединения — нет, и постоянная фоновая частота соединений
+    # даёт ровно такую же ровную линию. Отсюда и совет ниже.
+    Write-Host "  Плоский по байтам — ещё не холостой: фоновая частота соединений тоже постоянна,"
+    Write-Host "  а sing-box выясняет процесс на каждом соединении, входящем в TUN. Смотрите строку"
+    Write-Host "  «соединений» выше: если их тысячи, вот вам и расход, и время в ядре, и Defender рядом."
     if (-not $all) {
-        Write-Host "  Главный подозреваемый: с auto_route в TUN заходит трафик ВСЕЙ машины, и в охвате"
-        Write-Host "  «выбранные приложения» каждое соединение сверяется с process_path — а это перебор"
-        Write-Host "  системной таблицы соединений. Отсюда и время в ядре."
-        Write-Host "  Проверка: переключите охват на «весь компьютер» и сравните проход 0 — там правила нет вовсе."
+        Write-Host "  Решающая проверка — охват «весь компьютер»: там правила process_path нет вовсе."
+    }
+}
+
+# Соединения против покоя — сравнение, которого не хватало всё это время.
+$dConn = $churn.Conns - $idle.Conns
+$dCpuC = $churn.Cpu - $idle.Cpu
+if ($dConn -gt 50) {
+    Write-Host ("{0,-20} {1,7:N0} сверх покоя, ЦП на {2:N2} с" -f "соединений:", $dConn, $dCpuC)
+    if ($dCpuC -gt 0.5) {
+        Write-Host ("  {0:N0} мкс на соединение: расход идёт за соединениями, а не за байтами." -f (1e6 * $dCpuC / $dConn)) -ForegroundColor Yellow
+        if (-not $all) {
+            Write-Host "  Это подпись process_path — сверка пути процесса на каждом соединении, входящем в TUN."
+            Write-Host "  Проверка: охват «весь компьютер», там правила нет вовсе, и проход 3 обязан подешеветь."
+        }
     } else {
-        Write-Host "  process_path тут ни при чём (в этом охвате правила нет). Смотрите на долю в ядре:"
-        Write-Host "  высокая — wintun и WFP, и первым делом стоит проверить Defender над TUN-адаптером."
+        Write-Host "  Соединения расход не двигают — process_path вне подозрений, ищите холостой цикл."
+    }
+} else {
+    Write-Host "  Проход 3 соединений не создал (цель недоступна?) — главное сравнение не состоялось." -ForegroundColor Yellow
+}
+
+# Предельная цена трафика: сколько ЦП добавил гигабайт СВЕРХ покоя. Считается
+# по адаптеру и не ждёт удавшегося прохода 1 — а нулевая или отрицательная
+# прибавка и есть главный ответ: расход постоянный, к трафику отношения не имеет.
+$dGb = $through.TunGb - $idle.TunGb
+$dCpu = $through.Cpu - $idle.Cpu
+$dPk = $through.Packets - $idle.Packets
+if ($dPk -gt 1000) {
+    if ($dCpu -le 0.5) {
+        Write-Host ("  Трафик вырос на {0:N0} пакетов, а ЦП — на {1:N2} с. Расход постоянный: он не про трафик." -f $dPk, $dCpu) -ForegroundColor Yellow
+        Write-Host "  Ищите не цену пакета, а то, что крутится вхолостую: sing-box занят и когда делать нечего."
+        # Дальше идти нельзя: цена гигабайта считается делением на прибавку,
+        # а она здесь нулевая. Ровно так вывелось «цена TUN 0.00x, TUN почти
+        # бесплатен» — арифметика от нуля, поданная как вывод.
+        return
+    } else {
+        Write-Host ("{0,-20} {1,7:N1} мкс/пакет сверх покоя" -f "цена пакета:", (1e6 * $dCpu / $dPk))
+        if ($dGb -gt 0.005) {
+            Write-Host ("{0,-20} {1,7:N1} с/ГБ сверх покоя" -f "цена трафика:", ($dCpu / $dGb))
+        }
     }
 }
 
 if ($without.PerGb -le 0 -or $through.PerGb -le 0) {
-    Write-Host "  Проход без трафика — цену гигабайта сравнить не на чем (см. предупреждения выше)."
+    Write-Host "  Проход без трафика — цену гигабайта по счётчику туннеля сравнить не на чем."
     return
 }
 # Из цены гигабайта вычитается покой: иначе постоянный расход размазывается по

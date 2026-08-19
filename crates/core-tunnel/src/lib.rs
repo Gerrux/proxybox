@@ -11,7 +11,7 @@
 //! и отбирать некого. Это не «выбрать все приложения» списком: `process_path`
 //! сверяется с путём процесса, а под `final` попадает и то, у чего пути нет.
 
-use core_ipc::t;
+use core_ipc::{t, Conn};
 use serde_json::{json, Value};
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -42,11 +42,34 @@ pub struct Options {
     /// Это не «выбрать все»: маршрут по умолчанию просто становится `proxy`,
     /// и sing-box не сверяет ни одного `process_path`.
     pub all: bool,
+    /// Чем sing-box разбирает пакеты из TUN: `mixed` (системный TCP плюс
+    /// gVisor на UDP), `system` или `gvisor`. Перебивается `PG_STACK`.
+    ///
+    /// Ручка диагностическая, как `PG_TUN`, и в настройках её нет намеренно:
+    /// человеку выбирать тут нечего, а замер показал, за чем следить. sing-box
+    /// с поднятым TUN держит около полутора ядер вне зависимости от трафика —
+    /// 158 тысяч лишних пакетов не прибавили ни секунды, — и стек первый на
+    /// очереди из того, что мы вообще можем менять, не трогая сам sing-box.
+    ///
+    /// Значение уходит в конфиг как есть, без белого списка, и это осознанно:
+    /// `sing-box check` имя стека не проверяет вовсе (проверено на 1.13), а
+    /// подстановка `mixed` вместо непонятого значения означала бы замер,
+    /// который врёт — человек думает, что сравнил `system`, а сравнил `mixed`
+    /// сам с собой. Неверное имя ловит запуск: туннель не поднимается, отказ
+    /// уходит в журнал, приложения остаются без сети. Громко и правильно.
+    pub stack: String,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { socks_port: 48292, api_port: 48293, tun: true, apps: Vec::new(), all: false }
+        Self {
+            socks_port: 48292,
+            api_port: 48293,
+            tun: true,
+            apps: Vec::new(),
+            all: false,
+            stack: std::env::var("PG_STACK").unwrap_or_else(|_| "mixed".into()),
+        }
     }
 }
 
@@ -75,7 +98,7 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
             "address": ["172.27.234.1/30"],
             "auto_route": true,
             "strict_route": true,
-            "stack": "mixed",
+            "stack": opts.stack,
         }));
     }
 
@@ -292,7 +315,8 @@ fn free_port() -> io::Result<u16> {
 /// `geo` — спрашивать ли заодно точку выхода. Решает это служба (`PG_GEO`):
 /// адрес наружу один на весь проект, и распоряжаться им должно одно место.
 pub fn measure(node: &Value, dir: &Path, target: (&str, u16), geo: bool) -> io::Result<(u32, Option<Exit>)> {
-    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, apps: Vec::new(), all: false };
+    // Стек берётся из умолчания и роли не играет: без TUN его некому читать.
+    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, apps: Vec::new(), all: false, ..Default::default() };
     let mut proc = Tunnel::start(&build_config(node, &opts), dir)?;
     let result = probe(opts.socks_port, target);
     // Пока инстанс жив, страна стоит одного запроса; поднимать ядро второй раз
@@ -330,7 +354,8 @@ pub fn measure(node: &Value, dir: &Path, target: (&str, u16), geo: bool) -> io::
 pub fn sidecar(node: &Value, dir: &Path) -> io::Result<Tunnel> {
     // `all` тут бессмысленно: маршрута по умолчанию у инстанса без TUN нет,
     // в туннель идёт только тот, кто сам пришёл на его порт.
-    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, apps: Vec::new(), all: false };
+    // Стек берётся из умолчания и роли не играет: без TUN его некому читать.
+    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, apps: Vec::new(), all: false, ..Default::default() };
     Tunnel::start(&build_config(node, &opts), dir)
 }
 
@@ -407,8 +432,10 @@ fn parse_country(raw: &str) -> io::Result<Exit> {
     })
 }
 
-/// Счётчики трафика из Clash API sing-box: (принято, отправлено) байт за сеанс.
-pub fn traffic(api_port: u16) -> io::Result<(u64, u64)> {
+/// Ответ Clash API `/connections` целиком: и суммарные счётчики, и список живых
+/// соединений. Один запрос на обоих потребителей — надзор качал это тело каждые
+/// три секунды и всё, кроме двух чисел, выбрасывал.
+fn clash(api_port: u16) -> io::Result<Value> {
     let addr = SocketAddr::from(([127, 0, 0, 1], api_port));
     let mut s = TcpStream::connect_timeout(&addr, PROBE_TIMEOUT)?;
     s.set_read_timeout(Some(PROBE_TIMEOUT))?;
@@ -416,8 +443,56 @@ pub fn traffic(api_port: u16) -> io::Result<(u64, u64)> {
     let mut raw = String::new();
     s.read_to_string(&mut raw)?;
     let body = raw.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or_default();
-    let v: Value = serde_json::from_str(body).map_err(io::Error::other)?;
+    serde_json::from_str(body).map_err(io::Error::other)
+}
+
+/// Счётчики трафика из Clash API sing-box: (принято, отправлено) байт за сеанс.
+pub fn traffic(api_port: u16) -> io::Result<(u64, u64)> {
+    let v = clash(api_port)?;
     Ok((v["downloadTotal"].as_u64().unwrap_or(0), v["uploadTotal"].as_u64().unwrap_or(0)))
+}
+
+/// Живые соединения туннеля, самые говорливые первыми. Ничего не сохраняется:
+/// список собирается на запрос и умирает вместе с ответом.
+pub fn connections(api_port: u16) -> io::Result<Vec<Conn>> {
+    let v = clash(api_port)?;
+    let mut conns: Vec<Conn> = v["connections"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(|c| parse_conn(c))
+        .collect();
+    // Самые говорливые первыми: список живёт секунды, и первые строки — это
+    // единственное, что человек успевает прочитать.
+    conns.sort_by_key(|c| std::cmp::Reverse(c.rx + c.tx));
+    Ok(conns)
+}
+
+/// Разбор одного соединения. Цепочка маршрутов, а не список приложений: список
+/// — намерение, цепочка — то, что вышло на самом деле.
+fn parse_conn(c: &Value) -> Conn {
+    let meta = &c["metadata"];
+    let str_of = |v: &Value| v.as_str().unwrap_or_default().to_string();
+    // Домен известен не всегда: соединение по голому адресу так и остаётся
+    // адресом, и подменять его нечем — DNS у нас никто не подслушивает.
+    let host = match str_of(&meta["host"]) {
+        empty if empty.is_empty() => str_of(&meta["destinationIP"]),
+        host => host,
+    };
+    let port = str_of(&meta["destinationPort"]);
+    Conn {
+        process: str_of(&meta["processPath"]),
+        host: if port.is_empty() { host } else { format!("{host}:{port}") },
+        tunneled: c["chains"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .any(|tag| tag == TAG_PROXY),
+        rx: c["download"].as_u64().unwrap_or(0),
+        tx: c["upload"].as_u64().unwrap_or(0),
+    }
 }
 
 /// SOCKS5 CONNECT через локальный вход sing-box. Отдаёт установленный поток:
@@ -465,6 +540,37 @@ fn socks5_connect(port: u16, (host, target_port): (&str, u16)) -> io::Result<Tcp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Разбор соединения из Clash API. Проверяется главное: маршрут читается
+    /// из цепочки, а не из имени процесса, и голый адрес не подменяется
+    /// пустым доменом.
+    #[test]
+    fn conn_reads_its_route_from_the_chain() {
+        let tunneled = parse_conn(&json!({
+            "metadata": {
+                "host": "example.com",
+                "destinationIP": "93.184.216.34",
+                "destinationPort": "443",
+                "processPath": r"C:\Program Files\app.exe",
+            },
+            "chains": [TAG_PROXY],
+            "download": 2048,
+            "upload": 512,
+        }));
+        assert_eq!(tunneled.host, "example.com:443", "домен известен — показываем его");
+        assert!(tunneled.tunneled);
+        assert_eq!((tunneled.rx, tunneled.tx), (2048, 512));
+
+        // Тот же процесс мимо туннеля — тихий промах правила по process_path,
+        // ради которого весь список и заведён.
+        let direct = parse_conn(&json!({
+            "metadata": { "destinationIP": "1.1.1.1", "destinationPort": "53" },
+            "chains": ["direct"],
+        }));
+        assert_eq!(direct.host, "1.1.1.1:53", "домена нет — остаётся адрес");
+        assert!(!direct.tunneled);
+        assert!(direct.process.is_empty(), "процесса за DNS не бывает");
+    }
 
     #[test]
     fn country_from_reply() {
@@ -589,6 +695,16 @@ mod tests {
         assert_ne!(with["inbounds"][1]["address"][0], "172.19.0.1/30", "умолчание чужих клиентов");
         let without = build_config(&node(), &Options { tun: false, ..Default::default() });
         assert_eq!(without["inbounds"].as_array().unwrap().len(), 1);
+    }
+
+    /// Стек доезжает до конфига: без этого `PG_STACK` молча ничего не менял бы,
+    /// а замер сравнивал бы один и тот же `mixed` сам с собой.
+    #[test]
+    fn tun_stack_reaches_the_config() {
+        for stack in ["system", "gvisor", "mixed"] {
+            let cfg = build_config(&node(), &Options { stack: stack.into(), ..Default::default() });
+            assert_eq!(cfg["inbounds"][1]["stack"], stack);
+        }
     }
 
     #[test]
