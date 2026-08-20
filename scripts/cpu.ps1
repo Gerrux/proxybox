@@ -138,8 +138,13 @@ function Get-TunStats {
     # по `final: direct`. Работу sing-box меряет адаптер, а не Clash: иначе
     # выходит 27 секунд ЦП на «один мегабайт» и полная бессмыслица.
     try {
+        # Имя возвращается наружу не для красоты: смена охвата пересоздаёт
+        # адаптер, а Windows при столкновении имён даёт «Privacy Gateway 2».
+        # Маска со звёздочкой и `-First 1` могли выбрать мёртвого предшественника,
+        # через который, разумеется, не идёт ни пакета.
         $s = Get-NetAdapterStatistics -Name "$TunName*" -ErrorAction Stop | Select-Object -First 1
         [pscustomobject]@{
+            Name    = $s.Name
             Bytes   = [int64]$s.ReceivedBytes + [int64]$s.SentBytes
             Packets = [int64]$s.ReceivedUnicastPackets + [int64]$s.SentUnicastPackets
         }
@@ -288,6 +293,9 @@ function Measure-Window {
         }
     }
     $total = [double](($delta | Measure-Object Cpu -Sum).Sum)
+    # Проверяется после снимков, чтобы не попасть в само окно.
+    $reach = Test-Reach
+
     # Дельта берёт только процессы, дожившие от начала окна до конца. Если
     # sing-box за это время перезапустился, PID сменился, оба экземпляра выпали
     # из расчёта и ЦП вышел нулём — не «стало бесплатно», а «не посчитано».
@@ -297,7 +305,25 @@ function Measure-Window {
     $sbB = @($b.Keys | Where-Object { $b[$_].Name -eq "sing-box" })
     $appeared = @($sbB | Where-Object { $sbA -notcontains $_ }).Count
     $vanished = @($sbA | Where-Object { $sbB -notcontains $_ }).Count
-    $restarted = ($appeared -gt 0) -or ($vanished -gt 0)
+    # Печатается всегда, а не только при беде: молчащая проверка неотличима от
+    # отсутствующей, и по выводу нельзя понять, была ли она вообще — прошлый
+    # прогон именно из-за этого пришлось читать гаданием.
+    $net = if ($reach) { "есть" } else { "НЕТ — тишина не заслуга охвата" }
+    $pids = if ($sbB.Count) { $sbB -join ", " } else { "нет процесса" }
+    $adapter = if ($n1) { $n1.Name } else { "не найден" }
+    Write-Host ("{0,-20} сеть: {1}; sing-box pid: {2}; адаптер: {3}" -f "проверка окна:", $net, $pids, $adapter)
+    Write-Host ("{0,-20} {1}" -f "маршруты:", (Get-RouteInfo))
+
+    # Без явного $false переменная читалась бы из родительской области, и
+    # прошлый проход тянул бы свой вердикт в следующий.
+    $restarted = $false
+    # Ноль процессов в обоих снимках давал ноль ЦП без единого предупреждения:
+    # «расход исчез» и «мерить было нечего» выглядели одинаково.
+    if ($sbB.Count -eq 0) {
+        Write-Host "  sing-box в конце окна не найден вовсе — считать было нечего." -ForegroundColor Red
+        $restarted = $true
+    }
+    $restarted = $restarted -or ($appeared -gt 0) -or ($vanished -gt 0)
     if ($restarted) {
         Write-Host "  sing-box перезапускался внутри окна (PID сменился): его ЦП занижен или обнулён." -ForegroundColor Yellow
         Write-Host "  Так ведёт себя неподтверждённый туннель — сравнивать такой замер нельзя." -ForegroundColor Yellow
@@ -327,7 +353,10 @@ function Measure-Window {
     if ($myCpu -gt 0) {
         Write-Host ("{0,-20} {1,7:N0} %   много — работа в ядре: wintun, WFP, драйвер" -f "из них в ядре:", (100 * $myKrn / $myCpu))
     } else {
-        Write-Host "                       ЦП sing-box за окно не посчитан — см. предупреждение выше"
+        # Ноль бывает и настоящим: при 800 пакетах за окно расход честно меньше
+        # сотой доли секунды. Отсылать к предупреждению, которого может не быть,
+        # значит врать — состояние окна печатается строкой ниже, там и смотреть.
+        Write-Host "                       меньше 0.01 с — либо расхода нет, либо считать было нечего"
     }
     $myShare = 0
     if ($total -gt 0) { $myShare = 100 * $myCpu / $total }
@@ -370,6 +399,14 @@ function Measure-Window {
         Write-Host "  адаптер «$TunName» не найден — работа TUN не посчитана (TUN поднят?)"
     } else {
         Write-Host ("{0,-20} {1,7:N3} ГБ, {2:N0} пакетов" -f "через TUN всего:", $tunGb, $packets)
+        # Байт на пакет — самая говорящая величина из всех. Полезный трафик даёт
+        # 500–1500; около полусотни означает голые заголовки, то есть SYN, ACK и
+        # RST без данных: соединения, которые никуда не доходят.
+        if ($packets -gt 100) {
+            $perPkt = ($n1.Bytes - $n0.Bytes) / $packets
+            $verdict = if ($perPkt -lt 120) { "  <- заголовки без данных: соединения не доходят" } else { "" }
+            Write-Host ("{0,-20} {1,7:N0} байт{2}" -f "на пакет:", $perPkt, $verdict)
+        }
         if ($packets -gt 1000 -and $myCpu -gt 0) {
             # Микросекунды на пакет — та метрика, по которой TUN и судят:
             # единицы это норма, десятки означают, что на каждый пакет
@@ -401,6 +438,7 @@ function Measure-Window {
         Packets   = $packets
         Conns     = $newConns      # новых соединений за окно
         Restarted = $restarted     # sing-box сменил PID: числу верить нельзя
+        Reach     = $reach         # была ли у машины сеть в это окно
     }
 }
 
@@ -408,7 +446,11 @@ function Measure-Window {
 # регистра не различают. Строка затирала флаг, и скрипт всегда уходил в режим
 # сравнения охватов — поймано тестом, глазами не видно вовсе.
 $scopeName = if ($all) { "весь компьютер" } else { "выбранные приложения ($apps шт.)" }
-Write-Host "Ядер: $cores.  Охват: $scopeName"
+# Дата файла, а не номер версии: по ней сразу видно, подтянут ли git pull.
+# Прошлый прогон нельзя было прочесть именно потому, что новые проверки молчали,
+# и отличить «их нечему было сказать» от «их тут ещё нет» было невозможно.
+$stamp = try { (Get-Item $PSCommandPath).LastWriteTime.ToString("dd.MM HH:mm") } catch { "?" }
+Write-Host "Ядер: $cores.  Охват: $scopeName.  Скрипт от $stamp"
 
 # Правила брандмауэра — статья расхода, с трафиком через туннель не связанная:
 # осиротевшее правило WFP разбирает на каждом исходящем соединении в системе,
@@ -464,6 +506,38 @@ function Get-TunnelUp($cli) {
     try { $out = (& $cli status 2>&1 | Out-String) } catch { return $false }
     # Служба отвечает на языке, который ей выставили, — проверяем оба слова.
     ($out -match "поднят") -or ($out -match "\bup,")
+}
+
+function Get-RouteInfo {
+    # Кому достался маршрут по умолчанию — вопрос локальный, наружу ходить не
+    # надо. `auto_route` в sing-box кладёт 0.0.0.0/1 и 128.0.0.0/1 через TUN:
+    # они перебивают 0.0.0.0/0 более длинным префиксом, не трогая его самого.
+    # Нет их — значит в TUN ничего и не заходит, чей бы ни был охват.
+    try {
+        $r = @(Get-NetRoute -ErrorAction Stop |
+            Where-Object { $_.DestinationPrefix -in @("0.0.0.0/0", "0.0.0.0/1", "128.0.0.0/1") })
+        if (-not $r) { return "маршрутов по умолчанию нет" }
+        # Метрика решает, кто из двух маршрутов по умолчанию выигрывает, — без
+        # неё строка «0.0.0.0/0->Wi-Fi  0.0.0.0/0->Privacy Gateway» не говорит
+        # ничего. Windows складывает метрику маршрута с метрикой интерфейса.
+        ($r | Sort-Object DestinationPrefix | ForEach-Object {
+            $im = try { (Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction Stop | Select-Object -First 1).InterfaceMetric } catch { 0 }
+            "{0}->{1}({2})" -f $_.DestinationPrefix, $_.InterfaceAlias, ($_.RouteMetric + $im)
+        }) -join "  "
+    } catch { "маршруты не прочитаны" }
+}
+
+function Test-Reach {
+    # Была ли у машины сеть в это окно. Без этого «расход исчез» неотличимо от
+    # «всё замолчало, потому что сети не стало»: под неподтверждённым туннелем
+    # в охвате «весь компьютер» запрещён весь исходящий, и тихо становится
+    # везде сразу — включая Defender, который перестаёт что-либо проверять.
+    try {
+        $c = New-Object Net.Sockets.TcpClient
+        $ok = $c.ConnectAsync($ChurnTarget, $ChurnPort).Wait(3000)
+        $c.Close()
+        $ok
+    } catch { $false }
 }
 
 function Show-WhyNot($cli) {
@@ -555,6 +629,15 @@ if ($Scope) {
     }
     Write-Host ("{0,-22} {1,6:N2} ядра, {2:N0} соединений" -f "охват «$was»:", $first.Cores, $first.Conns)
     Write-Host ("{0,-22} {1,6:N2} ядра, {2:N0} соединений" -f "охват «$other»:", $second.Cores, $second.Conns)
+    if ($first.Reach -ne $second.Reach) {
+        # Сравнивать «машина в сети» с «машина без сети» нельзя: во втором
+        # случае замолкает всё сразу, и Defender в первую очередь.
+        $a = if ($first.Reach) { "была" } else { "не было" }
+        $b = if ($second.Reach) { "была" } else { "не было" }
+        Write-Host "  Вывода не будет: в «$was» сеть $a, в «$other» — $b." -ForegroundColor Red
+        Write-Host "  Это сравнение работающей машины с обесточенной, а не двух охватов." -ForegroundColor Red
+        exit 1
+    }
     if ($first.Restarted -or $second.Restarted) {
         Write-Host "  Вывода не будет: sing-box перезапускался внутри окна, и его ЦП там не посчитан." -ForegroundColor Red
         Write-Host "  Ноль ядер здесь означает «туннель не поднялся», а не «расход исчез»: под" -ForegroundColor Red
