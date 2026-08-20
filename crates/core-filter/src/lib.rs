@@ -31,6 +31,36 @@ pub enum Policy {
     Drop,
 }
 
+/// Что стоит в брандмауэре на выбранных приложениях. Одним перечислением, а не
+/// парой флагов: правила снимаются метлой целиком, и «запрет и пропуск разом» —
+/// состояние, которого не бывает.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fence {
+    /// Правил нет. Так живёт охват «выбранные приложения» при поднятом туннеле
+    /// и охват «весь компьютер» всегда: там за всех отвечает политика.
+    Off,
+    /// Запрет исходящего — окно, пока туннель не подтверждён.
+    Block,
+    /// Пропуск сквозь запрет всего исходящего. Только для белого списка:
+    /// политика там заперла машину целиком, и выбранным нужен именно пропуск,
+    /// иначе их пакеты не дойдут и до нашего же TUN.
+    Allow,
+}
+
+impl Fence {
+    fn action_or_none(self) -> Option<&'static str> {
+        match self {
+            Fence::Off => None,
+            Fence::Block => Some("block"),
+            Fence::Allow => Some("allow"),
+        }
+    }
+
+    fn action(self) -> &'static str {
+        self.action_or_none().unwrap_or("block")
+    }
+}
+
 /// Единственное место, где решается судьба выбранных приложений.
 pub fn policy(private_mode: bool, tunnel_up: bool) -> Policy {
     match (private_mode, tunnel_up) {
@@ -54,7 +84,7 @@ fn sweep_mask() -> String {
     format!("{RULE_PREFIX}*")
 }
 
-fn add_args(path: &str) -> Vec<String> {
+fn add_args(path: &str, fence: Fence) -> Vec<String> {
     vec![
         "advfirewall".into(),
         "firewall".into(),
@@ -62,7 +92,7 @@ fn add_args(path: &str) -> Vec<String> {
         "rule".into(),
         format!("name={}", rule_name(path)),
         "dir=out".into(),
-        "action=block".into(),
+        format!("action={}", fence.action()),
         format!("program={path}"),
         "enable=yes".into(),
     ]
@@ -80,16 +110,16 @@ fn delete_args(name: &str) -> Vec<String> {
 /// открытой сети при включённом приватном режиме. Наружу отдаётся первый отказ,
 /// и его достаточно: вызывающий всё равно не запоминает частичный успех и
 /// повторит всю операцию.
-pub fn set_blocked(paths: &[String], blocked: bool) -> io::Result<()> {
+pub fn set_fence(paths: &[String], fence: Fence) -> io::Result<()> {
     sweep();
-    if !blocked {
+    let Some(_) = fence.action_or_none() else {
         return Ok(());
-    }
+    };
     let mut failure = None;
     for path in paths {
         // В сообщение идёт приложение и причина, а не вся строка netsh: читать
         // её в журнале невозможно, а полезного в ней — хвост.
-        if let Err(e) = run(&add_args(path)).map_err(|e| io::Error::other(format!("{path}: {e}"))) {
+        if let Err(e) = run(&add_args(path, fence)).map_err(|e| io::Error::other(format!("{path}: {e}"))) {
             failure.get_or_insert(e);
         }
     }
@@ -113,7 +143,7 @@ pub fn set_blocked(paths: &[String], blocked: bool) -> io::Result<()> {
 ///
 /// Разрешение для sing-box метла обходит, хотя по маске подходит: у него своя
 /// жизнь — оно снимается вместе с политикой, а не вместе со списком. `guard()`
-/// зовёт `set_blocked` и в охвате «весь компьютер», перед `set_killswitch`;
+/// зовёт `set_fence` и в охвате «весь компьютер», перед `set_killswitch`;
 /// снеси метла это правило, sing-box остался бы без сети под ещё действующим
 /// `blockoutbound` — то есть туннель падал бы ровно на снятии блокировки.
 ///
@@ -308,10 +338,22 @@ mod tests {
 
     #[test]
     fn rules_are_per_app_and_blocking() {
-        let add = add_args(r"C:\Program Files\app.exe");
+        let add = add_args(r"C:\Program Files\app.exe", Fence::Block);
         assert!(add.contains(&"action=block".to_string()));
         assert!(add.contains(&"dir=out".to_string()));
         assert!(add.contains(&r"program=C:\Program Files\app.exe".to_string()));
+    }
+
+    /// Белый список ставит те же правила с обратным знаком: политика заперла
+    /// машину целиком, и выбранным нужен пропуск, а не запрет. Имя у правила то
+    /// же самое, значит метла снимает и его — иначе пропуск пережил бы охват.
+    #[test]
+    fn the_whitelist_puts_up_passes_not_blocks() {
+        let add = add_args(r"C:\Program Files\app.exe", Fence::Allow);
+        assert!(add.contains(&"action=allow".to_string()), "{add:?}");
+        let name = add.iter().find(|a| a.starts_with("name=")).unwrap().strip_prefix("name=").unwrap();
+        assert!(name.starts_with(sweep_mask().strip_suffix('*').unwrap()), "пропуск обязан сниматься метлой: {name}");
+        assert_eq!(Fence::Off.action_or_none(), None, "«ничего» правил не ставит вовсе");
     }
 
     /// Весь инвариант снятия: метла обязана покрывать имя, которым правило
@@ -323,14 +365,14 @@ mod tests {
         let mask = sweep_mask();
         let prefix = mask.strip_suffix('*').unwrap();
         for path in [r"C:\Program Files\app.exe", "C:/Program Files/app.exe", "app.exe", ""] {
-            let name = add_args(path).into_iter().find(|a| a.starts_with("name=")).unwrap();
+            let name = add_args(path, Fence::Block).into_iter().find(|a| a.starts_with("name=")).unwrap();
             let name = name.strip_prefix("name=").unwrap();
             assert!(name.starts_with(prefix), "правило «{name}» не попадает под маску «{prefix}*»");
         }
     }
 
     /// Разрешение для sing-box под маску подходит, но сноситься метлой не
-    /// должно: `guard()` зовёт `set_blocked` перед `set_killswitch` и в охвате
+    /// должно: `guard()` зовёт `set_fence` перед `set_killswitch` и в охвате
     /// «весь компьютер» — снесённое разрешение оставило бы sing-box без сети
     /// под ещё действующим запретом всего исходящего.
     #[test]

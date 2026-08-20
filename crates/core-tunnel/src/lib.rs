@@ -11,7 +11,7 @@
 //! и отбирать некого. Это не «выбрать все приложения» списком: `process_path`
 //! сверяется с путём процесса, а под `final` попадает и то, у чего пути нет.
 
-use core_ipc::{t, Conn};
+use core_ipc::{t, Conn, Scope};
 use serde_json::{json, Value};
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -46,12 +46,13 @@ pub struct Options {
     /// TUN поднимается только на Windows под службой; в разработке — без него.
     pub tun: bool,
     /// Полные пути к .exe, которым разрешён выход только через туннель.
-    /// В режиме `all` не участвуют: там перехватывать поимённо нечего.
+    /// В охвате `All` не участвуют: там перехватывать поимённо нечего.
     pub apps: Vec<String>,
-    /// Весь трафик машины в туннель — вместо перехвата по списку приложений.
-    /// Это не «выбрать все»: маршрут по умолчанию просто становится `proxy`,
-    /// и sing-box не сверяет ни одного `process_path`.
-    pub all: bool,
+    /// Кого касается туннель. `All` — весь трафик машины: это не «выбрать
+    /// все», а маршрут по умолчанию `proxy`, и ни одного `process_path`.
+    /// `Whitelist` — те же выбранные, что и в `Apps`, но всем остальным
+    /// вместо `direct` достаётся отказ.
+    pub scope: Scope,
     /// Чем sing-box разбирает пакеты из TUN: `mixed` (системный TCP плюс
     /// gVisor на UDP), `system` или `gvisor`. Перебивается `PG_STACK`.
     ///
@@ -88,7 +89,7 @@ impl Default for Options {
             api_port: 48293,
             tun: true,
             apps: Vec::new(),
-            all: false,
+            scope: Scope::Apps,
             stack: std::env::var("PG_STACK").unwrap_or_else(|_| "mixed".into()),
             pprof: pprof_value(&std::env::var("PG_PPROF").unwrap_or_default()),
         }
@@ -217,14 +218,32 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
     // TUN, и снимает её только свой WFP-фильтр — тот же потолок, что записан в
     // шапке `core-filter`. В охвате «весь компьютер» матчера нет ни одного, и
     // поиск не запускается ни разу; сторож — `all_traffic_takes_the_default_route`.
-    if !opts.all && !opts.apps.is_empty() {
+    if opts.scope != Scope::All && !opts.apps.is_empty() {
         rules.push(json!({ "process_path": opts.apps, "action": "route", "outbound": TAG_PROXY }));
+    }
+    // Белый список: всё, что не совпало с правилом выше, дальше не идёт.
+    //
+    // Правило ставится последним, и порядок здесь — не оформление. Впереди
+    // него стоят два: разбор имени и вход `local` в `proxy`. Накрой отказ вход
+    // `local`, и первой жертвой стала бы проба — она ходит через тот же
+    // локальный вход, туннель не подтверждался бы никогда, а не подтверждённый
+    // туннель в этом охвате означает машину вообще без сети. Сторож —
+    // `the_whitelist_never_rejects_the_probe`.
+    //
+    // Отказом, а не отсутствием маршрута: `final` обязан указывать на живой
+    // outbound, и «убрать direct» вместо этого правила означало бы конфиг,
+    // который sing-box не примет.
+    if opts.scope == Scope::Whitelist {
+        rules.push(json!({ "action": "reject" }));
     }
     // Весь компьютер в туннель — это один маршрут по умолчанию, а не список из
     // всех установленных .exe: правило по `process_path` сверяет каждое
     // соединение с путём процесса, а `final` не сверяет ничего. Заодно под
     // туннель попадает и то, у чего пути нет вовсе, — служба, драйвер, DNS.
-    let default_route = if opts.all { TAG_PROXY } else { "direct" };
+    // В белом списке до `final` не доходит никто: последним правилом стоит
+    // отказ. Оставлен `direct` он потому, что схема требует живого тега, а не
+    // потому, что кто-то им пользуется.
+    let default_route = if opts.scope == Scope::All { TAG_PROXY } else { "direct" };
 
     // Локальные имена разрешает роутер, а не сервер человека, и это следствие
     // перехвата: без него DNS через туннель не работал вовсе, а с ним **всё**
@@ -526,7 +545,7 @@ fn free_port() -> io::Result<u16> {
 /// адрес наружу один на весь проект, и распоряжаться им должно одно место.
 pub fn measure(node: &Value, dir: &Path, target: (&str, u16), geo: bool) -> io::Result<(u32, Option<Exit>)> {
     // Стек берётся из умолчания и роли не играет: без TUN его некому читать.
-    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, apps: Vec::new(), all: false, ..Default::default() };
+    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, apps: Vec::new(), scope: Scope::Apps, ..Default::default() };
     let mut proc = Tunnel::start(&build_config(node, &opts), dir)?;
     let result = probe(opts.socks_port, target);
     // Пока инстанс жив, страна стоит одного запроса; поднимать ядро второй раз
@@ -565,7 +584,7 @@ pub fn sidecar(node: &Value, dir: &Path) -> io::Result<Tunnel> {
     // `all` тут бессмысленно: маршрута по умолчанию у инстанса без TUN нет,
     // в туннель идёт только тот, кто сам пришёл на его порт.
     // Стек берётся из умолчания и роли не играет: без TUN его некому читать.
-    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, apps: Vec::new(), all: false, ..Default::default() };
+    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, apps: Vec::new(), scope: Scope::Apps, ..Default::default() };
     Tunnel::start(&build_config(node, &opts), dir)
 }
 
@@ -887,6 +906,45 @@ mod tests {
         assert_eq!(cfg["outbounds"][0]["tag"], TAG_PROXY);
     }
 
+    /// Белый список отказывает всем, кроме выбранных, — но никогда пробе.
+    ///
+    /// Проба ходит через локальный вход `local`, и он стоит в правилах раньше
+    /// отказа. Уедь отказ вперёд — туннель не подтверждался бы никогда, а
+    /// неподтверждённый туннель в этом охвате означает машину без сети вообще:
+    /// правила брандмауэра снимаются только по подтверждённой пробе.
+    #[test]
+    fn the_whitelist_never_rejects_the_probe() {
+        let cfg = build_config(
+            &node(),
+            &Options { scope: Scope::Whitelist, apps: vec![r"C:\app.exe".into()], ..Default::default() },
+        );
+        let rules = cfg["route"]["rules"].as_array().unwrap();
+        // Ищем именно догоняющий отказ — голый `{"action":"reject"}`. Рядом
+        // живёт отбой шлюзу TUN, он тоже reject, но с матчерами и `drop`.
+        let catch_all = |r: &&Value| r.as_object().is_some_and(|o| o.len() == 1 && o["action"] == "reject");
+        let reject = rules.iter().position(|r| catch_all(&r)).expect("отказ для всех прочих");
+        let local = rules
+            .iter()
+            .position(|r| r["inbound"].as_array().is_some_and(|i| i.iter().any(|t| t == "local")))
+            .expect("вход пробы");
+        let app = rules.iter().position(|r| r["process_path"].is_array()).expect("правило приложений");
+        assert!(local < reject, "проба обязана разбираться раньше отказа: {rules:#?}");
+        assert!(app < reject, "выбранные приложения обязаны разбираться раньше отказа");
+        assert_eq!(rules[reject..].len(), 1, "после отказа правил быть не может — они мертвы");
+        assert_eq!(cfg["route"]["final"], "direct", "тег обязан остаться живым, хотя до него не доходят");
+    }
+
+    /// Охват `Apps` отказа не ставит вовсе: чужой трафик мы не трогаем.
+    #[test]
+    fn only_the_whitelist_rejects_anyone() {
+        let cfg = build_config(&node(), &Options { apps: vec![r"C:\app.exe".into()], ..Default::default() });
+        let rules = cfg["route"]["rules"].as_array().unwrap();
+        assert!(
+            !rules.iter().any(|r| r.as_object().is_some_and(|o| o.len() == 1 && o["action"] == "reject")),
+            "в охвате «выбранные» догоняющего отказа нет: чужой трафик не наш",
+        );
+    }
+
     /// «Весь трафик» — не «выбрать все приложения»: правил по пути процесса
     /// нет вовсе, туннель забирает маршрут по умолчанию.
     ///
@@ -896,7 +954,7 @@ mod tests {
     /// и тихий охват станет таким же дорогим, как охват по списку.
     #[test]
     fn all_traffic_takes_the_default_route() {
-        let cfg = build_config(&node(), &Options { all: true, apps: vec![r"C:\app.exe".into()], ..Default::default() });
+        let cfg = build_config(&node(), &Options { scope: Scope::All, apps: vec![r"C:\app.exe".into()], ..Default::default() });
         assert_eq!(cfg["route"]["final"], TAG_PROXY);
         let rules = cfg["route"]["rules"].as_array().unwrap();
         assert!(

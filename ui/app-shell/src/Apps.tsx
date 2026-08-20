@@ -98,7 +98,7 @@ export function Apps({
   className?: string;
 }) {
   const s = strings(status?.lang);
-  const all = status?.all_traffic ?? false;
+  const all = status?.scope === "all";
   const apps = status?.apps ?? [];
   const on = apps.filter((a) => a.enabled).length;
   const icons = useIcons(apps);

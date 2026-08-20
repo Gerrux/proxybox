@@ -190,6 +190,23 @@ pub struct Conn {
     pub tx: u64,
 }
 
+/// Кого касается приватный режим. Три состояния взаимоисключающие, поэтому
+/// перечисление, а не пара флагов: «весь компьютер и одновременно белый список»
+/// — это состояние, которого не бывает, и в типе его быть не должно.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Scope {
+    /// Выбранные приложения — в туннель, остальные ходят напрямую.
+    #[default]
+    Apps,
+    /// Выбранные приложения — в туннель, у остальных сети нет вовсе. Разница с
+    /// `Apps` не в маршруте выбранных, а в судьбе всех прочих: `direct`
+    /// заменяется отказом в sing-box и запретом исходящего в брандмауэре.
+    Whitelist,
+    /// Весь трафик машины — в туннель. Список приложений не участвует.
+    All,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", content = "arg", rename_all = "kebab-case")]
 pub enum Request {
@@ -218,10 +235,9 @@ pub enum Request {
     Icon { path: String },
     SetApp { path: String, enabled: bool },
     RemoveApp { path: String },
-    /// Переключить охват: весь трафик машины через туннель либо только
-    /// выбранные приложения. Список приложений при этом не трогается — он
-    /// просто не участвует, пока охват «весь трафик».
-    SetAllTraffic { enabled: bool },
+    /// Переключить охват. Список приложений при этом не трогается — он просто
+    /// не участвует, пока охват «весь трафик».
+    SetScope { scope: Scope },
     /// Импорт профиля из share-link (vless://, vmess://, trojan://, ss://, hy2://,
     /// wg://) либо из JSON-конфига sing-box. `https://` — это подписка: служба
     /// скачает её и заведёт профиль на каждый узел. Повторный импорт того же
@@ -395,10 +411,11 @@ pub struct Status {
     #[serde(default)]
     pub traffic_at: u64,
     pub apps: Vec<App>,
-    /// Весь трафик машины идёт в туннель, а не только выбранные приложения.
-    /// Список `apps` в этом режиме не применяется, но и не теряется.
+    /// Кого касается приватный режим. В охвате `All` список `apps` не
+    /// применяется, но и не теряется; в `Whitelist` он же — единственный
+    /// пропуск в сеть.
     #[serde(default)]
-    pub all_traffic: bool,
+    pub scope: Scope,
     pub profiles: Vec<String>,
     /// Подписки вместе с их узлами: окно показывает список профилей группами,
     /// и без этой связи узел, пришедший с панели, ничем не отличался бы от
@@ -691,7 +708,7 @@ mod tests {
             Request::AddProfile { link: "vless://u@a.com:443".into() },
             Request::RemoveProfile { name: "myvpn".into() },
             Request::RemoveSubscription { url: "https://panel.example/sub?token=1".into() },
-            Request::SetAllTraffic { enabled: true },
+            Request::SetScope { scope: Scope::Whitelist },
             Request::SetLang { lang: Lang::En },
             Request::TestProfiles,
             Request::Browse { profile: "myvpn".into() },
@@ -729,7 +746,7 @@ mod tests {
             Response::Status(Status {
                 tunnel: Tunnel::Down,
                 profile: Some("myvpn".into()),
-                all_traffic: true,
+                scope: Scope::All,
                 country: Some("Нидерланды, Амстердам".into()),
                 apps: vec![App { path: r"C:\app.exe".into(), name: "app".into(), enabled: true }],
                 profiles: vec!["myvpn".into()],
@@ -934,7 +951,7 @@ mod tests {
         // Читать про брандмауэр клиенту можно (`doctor` тем и живёт), ставить
         // правила — нет: это привилегия, и она одна на всю систему.
         let cli = [include_str!("../../pg-cli/src/main.rs"), include_str!("../../pg-cli/src/doctor.rs")];
-        for f in ["set_blocked", "set_killswitch", "sweep"] {
+        for f in ["set_fence", "set_killswitch", "sweep"] {
             assert!(!cli.iter().any(|s| s.contains(f)), "правила брандмауэра ставит служба, а не CLI: {f}");
         }
     }

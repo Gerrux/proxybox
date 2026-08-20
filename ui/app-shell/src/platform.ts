@@ -9,6 +9,13 @@ export type Tunnel = "off" | "connecting" | "up" | "down";
 
 export type Lang = "ru" | "en";
 
+/** Кого касается приватный режим. Три состояния взаимоисключающие: «весь
+ *  компьютер и одновременно белый список» — состояние, которого не бывает.
+ *  - `apps` — выбранные в туннель, остальные напрямую;
+ *  - `whitelist` — выбранные в туннель, у остальных сети нет вовсе;
+ *  - `all` — вся машина в туннель, список не участвует. */
+export type Scope = "apps" | "whitelist" | "all";
+
 export type App = { path: string; name: string; enabled: boolean };
 
 /** Строка журнала со временем записи (unix-секунды): возраст словами считает
@@ -92,8 +99,9 @@ export type Status = {
    *  чем окно спрашивает статус: по разнице двух отметок и считается скорость. */
   traffic_at: number;
   apps: App[];
-  /** Весь трафик машины в туннеле: список `apps` тогда не применяется. */
-  all_traffic: boolean;
+  /** Кого касается приватный режим. В `all` список `apps` не применяется, в
+   *  `whitelist` он же — единственный пропуск в сеть. */
+  scope: Scope;
   profiles: string[];
   subscriptions: Subscription[];
   lang: Lang;
@@ -144,8 +152,8 @@ export type Request =
   | { cmd: "icon"; arg: { path: string } }
   | { cmd: "set-app"; arg: { path: string; enabled: boolean } }
   | { cmd: "remove-app"; arg: { path: string } }
-  /** Охват: весь трафик машины либо только выбранные приложения. */
-  | { cmd: "set-all-traffic"; arg: { enabled: boolean } }
+  /** Охват: кого касается приватный режим. */
+  | { cmd: "set-scope"; arg: { scope: Scope } }
   | { cmd: "set-lang"; arg: { lang: Lang } }
   | { cmd: "add-profile"; arg: { link: string } }
   | { cmd: "remove-profile"; arg: { name: string } }
