@@ -57,6 +57,21 @@ fn ipc(req: Request) -> Result<Response, String> {
     })
 }
 
+/// Процесс из окна запускается только так. Без `CREATE_NO_WINDOW` Windows
+/// заводит консольной программе собственное окно: `reg`, которым панель
+/// настроек читает автозапуск, мелькает чёрным прямоугольником поверх всего на
+/// каждое открытие. Флаг безвреден для программ с собственным окном (браузер),
+/// поэтому исключений нет: единственный запуск процесса в оболочке живёт здесь,
+/// и за этим следит `the_shell_never_calls_from_its_event_loop`.
+fn quiet(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    // 0x0800_0000 — CREATE_NO_WINDOW из winbase.h; зависимость ради одной
+    // константы оболочке не нужна.
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0800_0000);
+    command
+}
+
 /// Открыть ссылку в браузере пользователя. Нужна ровно одному месту — кнопке
 /// «Скачать» у релиза: установщик качает и запускает человек, окно только
 /// доводит до него.
@@ -73,7 +88,7 @@ fn open_url(url: String) -> Result<(), String> {
     if !url.starts_with("https://github.com/") {
         return Err(core_ipc::t(&format!("ссылка не с github.com: {url}"), &format!("link is not from github.com: {url}")));
     }
-    std::process::Command::new("rundll32")
+    quiet("rundll32")
         .args(["url.dll,FileProtocolHandler", &url])
         .spawn()
         .map(|_| ())
@@ -124,7 +139,7 @@ fn open_browser(port: u16, profile: String, ua: String, lang: String, color: Str
     })?;
     let data = session_dir(&profile);
     set_accept_language(&data, &lang);
-    let mut command = std::process::Command::new(&browser.path);
+    let mut command = quiet(&browser.path);
     command
         .arg(format!("--proxy-server=socks5://127.0.0.1:{port}"))
         .arg(format!("--user-data-dir={}", data.display()))
@@ -274,7 +289,7 @@ const RUN_NAME: &str = "Privacy Gateway";
 #[cfg(windows)]
 #[tauri::command(async)]
 fn autostart() -> bool {
-    std::process::Command::new("reg")
+    quiet("reg")
         .args(["query", RUN_KEY, "/v", RUN_NAME])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -292,7 +307,7 @@ fn set_autostart(enabled: bool) -> Result<bool, String> {
         true => vec!["add", RUN_KEY, "/v", RUN_NAME, "/t", "REG_SZ", "/d", &value, "/f"],
         false => vec!["delete", RUN_KEY, "/v", RUN_NAME, "/f"],
     };
-    let out = std::process::Command::new("reg")
+    let out = quiet("reg")
         .args(&args)
         .output()
         .map_err(|e| core_ipc::t(&format!("не удалось править реестр: {e}"), &format!("could not edit the registry: {e}")))?;
