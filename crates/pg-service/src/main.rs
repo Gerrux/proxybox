@@ -969,6 +969,27 @@ fn same_path(a: &str, b: &str) -> bool {
     a.to_lowercase() == b.to_lowercase()
 }
 
+/// Что из найденного и правда новое. Выключенными: найдено — не значит выбрано.
+///
+/// Сверяется и с уже принятым в этом же заходе, а не только со списком: `found`
+/// склеен из каталога, реестра, пакетов и живых процессов, и один exe приходит
+/// оттуда столько раз, сколько у него процессов. Дедуп внутри `discover()` эту
+/// пачку схлопывает, но снимок `status.apps` про принятое секунду назад в том
+/// же цикле не знает — стоит дедупу пропустить хоть один вид пути, и в список
+/// уезжает вся пачка разом, а не одна запись.
+///
+/// Сторож — `discovery_never_adds_one_exe_twice_in_a_single_pass`.
+fn newcomers(known: &[App], found: Vec<core_apps::Found>) -> Vec<App> {
+    let mut added: Vec<App> = Vec::new();
+    for f in found {
+        if knows(known, &f.path) || knows(&added, &f.path) {
+            continue;
+        }
+        added.push(App { path: f.path, name: f.name, enabled: false });
+    }
+    added
+}
+
 fn handle(svc: &Mutex<Service>, req: Request) -> Response {
     // Подписка ходит в сеть, поэтому разбирается до замка — остальные команды
     // работают с состоянием и берут его сразу.
@@ -990,13 +1011,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
         }
         Request::ListApps => Response::Apps(s.status.apps.clone()),
         Request::Discover { env } => {
-            let found = core_apps::discover(&env);
-            let added: Vec<App> = found
-                .into_iter()
-                .filter(|f| !knows(&s.status.apps, &f.path))
-                // Выключенными: найдено — не значит выбрано.
-                .map(|f| App { path: f.path, name: f.name, enabled: false })
-                .collect();
+            let added = newcomers(&s.status.apps, core_apps::discover(&env));
             s.log(match added.len() {
                 0 => t("автообнаружение: ничего нового не найдено", "discovery: nothing new found"),
                 n => t(&format!("автообнаружение: добавлено приложений — {n}"), &format!("discovery: {n} apps added")),
@@ -1643,6 +1658,30 @@ mod tests {
             !knows(&apps, r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\other.exe"),
             "другой файл обязан остаться новым"
         );
+    }
+
+    /// Автообнаружение складывает находки из каталога, реестра, пакетов и живых
+    /// процессов, и один exe приходит оттуда столько раз, сколько у него
+    /// процессов. Сверки со списком мало: он про принятое в этом же заходе не
+    /// знает, и пачка одинаковых находок уезжала в список целиком — по строке
+    /// на процесс.
+    #[test]
+    fn discovery_never_adds_one_exe_twice_in_a_single_pass() {
+        let store = r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\store.exe";
+        let f = |path: &str| core_apps::Found { name: "store".into(), path: path.into() };
+
+        let batch = vec![f(store), f(store), f(store), f(&store.replace("store.exe", "Store.exe"))];
+        let added = newcomers(&[], batch);
+        assert_eq!(added.len(), 1, "один exe — одна новая строка, сколько бы раз его ни нашли");
+        assert!(!added[0].enabled, "найденное не значит выбранное");
+
+        // Уже известное не заводится заново — ради этого сверка и стояла.
+        let known = vec![App { path: store.into(), name: "store".into(), enabled: true }];
+        assert!(newcomers(&known, vec![f(store)]).is_empty(), "известный путь новым не станет");
+
+        let mixed = newcomers(&known, vec![f(store), f(r"C:\other.exe"), f(r"C:\other.exe")]);
+        assert_eq!(mixed.len(), 1, "новое приходит по одной записи на файл");
+        assert_eq!(mixed[0].path, r"C:\other.exe");
     }
 
     /// Дубль в `state.json` переживал любое число перезапусков: `load()` брал
