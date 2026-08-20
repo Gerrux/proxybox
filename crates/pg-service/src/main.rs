@@ -10,7 +10,7 @@ mod service;
 
 use core_ipc::{
     dir_name, t, App, BrowserProfile, Conn, Endpoint, Listener, LogLine, Probe, Request, Response,
-    Settings, Status, Stream, Tunnel as TunnelState, ADDR,
+    Settings, Status, Stream, Subscription, Tunnel as TunnelState, ADDR,
 };
 use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
@@ -200,7 +200,7 @@ impl Service {
                 apps: saved.apps,
                 all_traffic: saved.all_traffic,
                 profiles: saved.profiles.keys().cloned().collect(),
-                subscriptions: saved.subscriptions.keys().cloned().collect(),
+                subscriptions: subscriptions_of(&saved.subscriptions, &saved.profiles),
                 probes: saved.probes,
                 browser_profiles: saved.browser_profiles,
                 refreshed_at: saved.refreshed_at,
@@ -264,7 +264,7 @@ impl Service {
 
     fn save(&mut self) {
         self.status.profiles = self.profiles.keys().cloned().collect();
-        self.status.subscriptions = self.subscriptions.keys().cloned().collect();
+        self.status.subscriptions = subscriptions_of(&self.subscriptions, &self.profiles);
         // Профиля больше нет — и мерить нечего: без этой прополки кэш измерений
         // рос бы вечно, а подписка на сотню узлов переписывает их именами раз в
         // сутки. Здесь, а не в каждом месте удаления: через save() проходят все.
@@ -687,6 +687,24 @@ fn get(url: &str, proxy: Option<&str>) -> Result<String, String> {
         .build()
         .into();
     agent.get(url).call().map_err(|e| fail(&e))?.body_mut().read_to_string().map_err(|e| fail(&e))
+}
+
+/// Карта «адрес → узлы» в том виде, в каком её ждёт окно. Порядок задаёт
+/// `BTreeMap`: список подписок не должен переставляться сам собой между
+/// опросами статуса.
+///
+/// Имя, которого больше нет в профилях, отсеивается: узел из подписки можно
+/// удалить по одному, и до следующей сверки он остался бы висеть в её списке —
+/// а окно рисует список профилей группами и показало бы строку без узла.
+/// Отсеиваем здесь, а не в `forget_profile`: на диске лишнее имя безвредно,
+/// сверка заменяет набор целиком.
+fn subscriptions_of(map: &BTreeMap<String, Vec<String>>, profiles: &BTreeMap<String, Value>) -> Vec<Subscription> {
+    map.iter()
+        .map(|(url, nodes)| Subscription {
+            url: url.clone(),
+            nodes: nodes.iter().filter(|n| profiles.contains_key(*n)).cloned().collect(),
+        })
+        .collect()
 }
 
 /// Занятое имя получает номер: в подписках узлы сплошь и рядом называются
@@ -1375,6 +1393,21 @@ mod tests {
         assert_eq!(probes[0].code.as_deref(), Some("NL"));
         assert_eq!(probes[0].latency_ms, None, "а вот задержка отказ пережить не может");
         assert_eq!(probes[0].error.as_deref(), Some("таймаут"));
+    }
+
+    /// Узел из подписки удаляют по одному, а её список службе правит только
+    /// сверка. Окно рисует профили группами по подпискам — и показало бы под
+    /// заголовком строку, за которой больше нет узла.
+    #[test]
+    fn a_subscription_does_not_carry_names_of_deleted_nodes() {
+        let mut subs = BTreeMap::new();
+        subs.insert("https://panel/sub".to_string(), vec!["NL-01".to_string(), "NL-02".to_string()]);
+        let mut profiles = BTreeMap::new();
+        profiles.insert("NL-02".to_string(), json!({"type": "vless"}));
+
+        let out = subscriptions_of(&subs, &profiles);
+        assert_eq!(out.len(), 1, "подписка остаётся, даже когда узлов не осталось вовсе");
+        assert_eq!(out[0].nodes, vec!["NL-02".to_string()], "удалённый узел ушёл из списка подписки");
     }
 
     #[test]
