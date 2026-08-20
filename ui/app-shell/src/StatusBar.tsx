@@ -162,9 +162,15 @@ function Spark({ rates, s }: { rates: Rate[]; s: Strings }) {
         />
       </svg>
       {/* Тот же порядок и те же стрелки, что в приборной линейке: ↓ принято,
-          ↑ отправлено. Цифры табличные — они меняются каждые две секунды. */}
+          ↑ отправлено. Цифры табличные, а ширина у каждого числа прибита: и то
+          и другое — про одно и то же. Строку канала числа делят с самим
+          каналом, он в ней тянущийся, и «340 KB/с» → «1.2 MB/с» укорачивало бы
+          его на два знака дважды в секунду — дёргалась бы вся картинка, а не
+          цифра. Ширины хватает на самое длинное, что выдаёт `bytes`
+          («1023 KB/с»); влезет — значит, ничего и не поедет. */}
       <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted">
-        ↓{bytes(last.rx)}{s.perSecond} ↑{bytes(last.tx)}{s.perSecond}
+        <span className="inline-block w-[4.75rem]">↓{bytes(last.rx)}{s.perSecond}</span>
+        <span className="inline-block w-[4.75rem]">↑{bytes(last.tx)}{s.perSecond}</span>
       </span>
     </div>
   );
