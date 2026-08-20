@@ -9,7 +9,10 @@ members = [
     "crates/pg-service",
     "crates/pg-cli",
 ]
-exclude = ["src-tauri"]
+# `core-wfp` — драйвер: собирается WDK, линкуется в ядро, на Linux недоступен
+# вовсе. В members ему нельзя, иначе `cargo test --workspace` краснеет там, где
+# кода никто не менял. Сторож — `the_driver_stays_out_of_the_workspace`.
+exclude = ["src-tauri", "crates/core-wfp"]
 
 [workspace.package]
 edition = "2021"

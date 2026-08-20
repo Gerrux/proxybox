@@ -1,0 +1,3 @@
+# Ядру не с чем динамически слинковать CRT: рантайм обязан быть статическим.
+[build]
+rustflags = ["-C", "target-feature=+crt-static"]
