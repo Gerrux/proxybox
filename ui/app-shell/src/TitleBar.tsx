@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { hideWindow, isFlyout, isTauri, openMain, VERSION, type Lang } from "./platform";
+import { isTauri, VERSION, type Lang } from "./platform";
 import { strings } from "./i18n";
 import { Button } from "./ui";
 
@@ -38,10 +38,10 @@ import { Button } from "./ui";
  * перетаскивания: рамку там рисует сам браузер, а настройки и обновления нужны
  * и в разработке.
  *
- * У плашки из трея своя полоса: сворачивать её некуда, разворачивать не во что,
- * а «закрыть» для неё значит спрятаться. Вместо трёх кнопок — «открыть окно» и
- * крестик, который прячет; перетаскивания нет вовсе, потому что плашка стоит у
- * значка, и сдвинутая оттуда перестаёт быть плашкой.
+ * У плашки из трея полосы нет вовсе (`App.tsx` её не рисует): сворачивать
+ * некуда, разворачивать не во что, двигать нельзя — плашка стоит у значка.
+ * Остальное у неё уже есть без полосы: «открыть окно» и «настройки» — в меню
+ * значка, а прячут её Esc, потеря фокуса и повторный клик по значку.
  *
  * ponytail: системного меню окна по правому клику нет. У безрамочного окна
  * полоса лежит в клиентской области, куда Windows своё меню не приносит; чтобы
@@ -67,12 +67,11 @@ export function TitleBar({
   onSettings: () => void;
 }) {
   const desktop = isTauri();
-  const flyout = isFlyout();
   const s = strings(lang);
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
-    if (!desktop || flyout) return;
+    if (!desktop) return;
     let disposed = false;
     let unlisten: (() => void) | null = null;
     const win = getCurrentWindow();
@@ -88,16 +87,16 @@ export function TitleBar({
       disposed = true;
       unlisten?.();
     };
-  }, [desktop, flyout]);
+  }, [desktop]);
 
   const run = (action: "minimize" | "toggleMaximize" | "close") => void getCurrentWindow()[action]();
 
   return (
     <header
-      data-tauri-drag-region={!flyout}
+      data-tauri-drag-region
       className="flex h-8 shrink-0 items-center gap-2 overflow-hidden border-b border-edge bg-surface pl-3"
     >
-      <span data-tauri-drag-region={!flyout} className="tb-name engraved min-w-0 truncate text-muted">
+      <span data-tauri-drag-region className="tb-name engraved min-w-0 truncate text-muted">
         {title}
       </span>
       {/* Версия — такое же показание прибора, как задержка и байты: число
@@ -105,7 +104,7 @@ export function TitleBar({
       <span className="tb-version shrink-0 font-mono text-[11px] tabular-nums text-muted" title={s.version}>
         {VERSION}
       </span>
-      <span data-tauri-drag-region={!flyout} className="min-w-0 flex-1" />
+      <span data-tauri-drag-region className="min-w-0 flex-1" />
       {/* Точка перед надписью: новость видно и краем глаза, не читая строку. */}
       {update != null && (
         <Button
@@ -132,19 +131,7 @@ export function TitleBar({
         <circle cx="4" cy="4" r="1.4" fill="currentColor" />
         <circle cx="8" cy="8" r="1.4" fill="currentColor" />
       </WindowButton>
-      {/* Плашка: вместо трёх кнопок — уйти в главное окно и спрятаться. */}
-      {flyout && (
-        <>
-          <WindowButton label={s.openWindow} onClick={() => void openMain()}>
-            <rect x="2" y="4" width="6" height="6" />
-            <path d="M4 4V2h6v6h-2" />
-          </WindowButton>
-          <WindowButton label={s.hidePanel} onClick={() => void hideWindow()}>
-            <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" />
-          </WindowButton>
-        </>
-      )}
-      {desktop && !flyout && (
+      {desktop && (
         <>
           <WindowButton label={s.minimizeWindow} onClick={() => run("minimize")}>
             <path d="M2 6h8" />

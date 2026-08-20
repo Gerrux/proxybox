@@ -191,14 +191,18 @@ export function App() {
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden">
-      <TitleBar
-        title="Privacy Gateway"
-        lang={status?.lang}
-        update={rel.latest && rel.fresh ? rel.latest.tag_name : null}
-        onUpdate={() => setSettings(true)}
-        settingsOpen={settings}
-        onSettings={() => setSettings((v) => !v)}
-      />
+      {/* У плашки полосы нет: кнопок окна ей не надо, а «открыть окно» и
+          «настройки» уже есть в меню значка. */}
+      {!flyout && (
+        <TitleBar
+          title="Privacy Gateway"
+          lang={status?.lang}
+          update={rel.latest && rel.fresh ? rel.latest.tag_name : null}
+          onUpdate={() => setSettings(true)}
+          settingsOpen={settings}
+          onSettings={() => setSettings((v) => !v)}
+        />
+      )}
       {/* Содержимое не растягивается на всю ширину монитора: строки метрик и
           списков читаются глазом, а не рулеткой. Но и 1024 px на 27" — окно в
           окне, поэтому широкому экрану даётся третья колонка.
