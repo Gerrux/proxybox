@@ -249,12 +249,6 @@ export async function quitApp(): Promise<void> {
   if (isTauri()) await invoke("quit_app");
 }
 
-/** Открыть главное окно из плашки. Через оболочку, а не из вебвью: поднять
- *  чужое окно фронтенду нечем, а свёрнутое ещё и нужно развернуть. */
-export async function openMain(): Promise<void> {
-  if (isTauri()) await invoke("open_main");
-}
-
 /** События от оболочки: «нажали крестик» и «открой настройки» из меню значка.
  *  Возвращает отписку — слушателей заводят в эффектах. */
 export function onShell(event: "close-requested" | "open-settings", run: () => void): () => void {
