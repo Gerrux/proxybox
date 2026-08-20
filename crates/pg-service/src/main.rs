@@ -190,6 +190,32 @@ struct Service {
 }
 
 impl Service {
+    /// Список приложений с диска — данные, которым нельзя верить на слово:
+    /// `state.json` переживает версии продукта и правится руками, а один и тот
+    /// же путь встречался в нём дважды. Окно рисовало приложение двумя
+    /// строками и ругалось на повторяющийся ключ React, а убрать лишнюю строку
+    /// было нечем: `RemoveApp` вычищает обе разом, и приложение исчезало
+    /// целиком.
+    ///
+    /// Чистим на входе, а не в каждой команде: `AddApp` и автообнаружение
+    /// (`knows`) своих дублей не пропускают, так что войти дубль может только
+    /// с диска. Через `load()` проходит всё сохранённое — как прополка
+    /// `probes` живёт в одном `save()` по той же причине.
+    ///
+    /// Выбранность складывается, а не берётся у первой записи: из двух строк
+    /// одного exe выключенная не должна отменять выбранную — это молча вынуло
+    /// бы приложение из туннеля. Сторож — `a_duplicate_app_never_survives_loading`.
+    fn dedup_apps(apps: Vec<App>) -> Vec<App> {
+        let mut out: Vec<App> = Vec::new();
+        for app in apps {
+            match out.iter_mut().find(|a| same_path(&a.path, &app.path)) {
+                Some(kept) => kept.enabled |= app.enabled,
+                None => out.push(app),
+            }
+        }
+        out
+    }
+
     fn load() -> Self {
         let raw = std::fs::read_to_string(dir().join("state.json")).unwrap_or_default();
         let saved: Saved = serde_json::from_str(&raw).unwrap_or_default();
@@ -206,7 +232,7 @@ impl Service {
             status: Status {
                 lang: saved.lang,
                 profile: saved.profile,
-                apps: saved.apps,
+                apps: Self::dedup_apps(saved.apps),
                 all_traffic: saved.all_traffic,
                 profiles: saved.profiles.keys().cloned().collect(),
                 subscriptions: subscriptions_of(&saved.subscriptions, &saved.profiles),
@@ -933,8 +959,14 @@ fn leaks_first(conns: &mut [Conn], picked: &BTreeSet<String>) {
 /// сравнение заводило второй экземпляр того же exe, и список показывал его
 /// дважды. Сторож — `discovery_knows_a_path_it_already_has`.
 fn knows(apps: &[App], path: &str) -> bool {
-    let path = path.to_lowercase();
-    apps.iter().any(|a| a.path.to_lowercase() == path)
+    apps.iter().any(|a| same_path(&a.path, path))
+}
+
+/// Один ли это файл. С точностью до регистра — как `leaks_first` выше и как
+/// сам `core_apps::discover()` со своими находками: на Windows регистр пути
+/// не различает и файловая система.
+fn same_path(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
 }
 
 fn handle(svc: &Mutex<Service>, req: Request) -> Response {
@@ -1610,6 +1642,40 @@ mod tests {
         assert!(
             !knows(&apps, r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\other.exe"),
             "другой файл обязан остаться новым"
+        );
+    }
+
+    /// Дубль в `state.json` переживал любое число перезапусков: `load()` брал
+    /// список как есть, а `save()` писал его обратно. Окно рисовало приложение
+    /// двумя строками, убрать лишнюю было нечем — `RemoveApp` вычищает обе, —
+    /// и React ругался на повторяющийся ключ.
+    #[test]
+    fn a_duplicate_app_never_survives_loading() {
+        let store = r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\store.exe";
+        let app = |path: &str, enabled: bool| App { path: path.into(), name: "store".into(), enabled };
+
+        let one = Service::dedup_apps(vec![app(store, false), app(store, false)]);
+        assert_eq!(one.len(), 1, "один и тот же путь — одна строка списка");
+
+        // Выключенная запись не должна отменять выбранную: это молча вынуло бы
+        // приложение из туннеля, оставив его в списке.
+        let kept = Service::dedup_apps(vec![app(store, false), app(store, true)]);
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].enabled, "выбранность обязана пережить склейку дублей");
+
+        let by_case = Service::dedup_apps(vec![app(store, true), app(&store.replace("store.exe", "Store.exe"), false)]);
+        assert_eq!(by_case.len(), 1, "регистр не делает из приложения второе");
+
+        let other = Service::dedup_apps(vec![app(store, true), app(r"C:\other.exe", false)]);
+        assert_eq!(other.len(), 2, "разные файлы обязаны остаться разными");
+
+        // Сама по себе склейка ничего не чинит: правило держится, только пока
+        // список с диска через неё и проходит. Иголка собирается на месте —
+        // написанная целиком, она нашла бы саму себя.
+        let needle = format!("Self::{}(saved.apps)", "dedup_apps");
+        assert!(
+            include_str!("main.rs").contains(&needle),
+            "load() обязана чистить список приложений, пришедший с диска"
         );
     }
 
