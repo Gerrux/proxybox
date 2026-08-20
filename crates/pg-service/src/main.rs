@@ -1200,7 +1200,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
                     // Проверяем именно здесь: чужой туннель не мешает нам
                     // подняться, но может забрать маршруты — и тогда «Защищено»
                     // окажется правдой только про нас, а не про приложения.
-                    for name in core_filter::foreign_tunnels() {
+                    for name in core_filter::foreign_tunnels(core_tunnel::TUN_NAME) {
                         s.warn(t(
                             &format!("рядом поднят чужой туннель «{name}» — выберите один: маршруты уйдут к тому, кто выиграет"),
                             &format!("another tunnel \"{name}\" is up — keep one: routes go to whichever wins"),

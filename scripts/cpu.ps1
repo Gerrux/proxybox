@@ -51,12 +51,19 @@ param(
     # `pg-cli scope apps`. Это единственный вопрос, на который замер сам ответить
     # не может, — правило process_path либо есть в конфиге, либо его нет.
     [switch]$Scope,
-    # Путь к pg-cli.exe. Пустой — ищем рядом со службой и в target/.
+    # Путь к клиенту. Пустой — ищем сами рядом с приложением и в target/.
+    # Файл зовётся privacy-gateway.exe: крейт pg-cli, а имя бинарника своё.
     [string]$Cli = ""
 )
 
 $ErrorActionPreference = "Stop"
 $cores = [int]$env:NUMBER_OF_PROCESSORS
+
+# Клиент и журнал службы пишут UTF-8, а PowerShell декодирует вывод дочернего
+# процесса кодировкой консоли (на русской Windows — 866). Без этой строки
+# `status` возвращался кракозябрами, проверка «поднят» не совпадала никогда, и
+# скрипт сорок секунд ждал туннель, который стоял поднятым с первой секунды.
+try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltinRole]::Administrator)) {
@@ -281,6 +288,20 @@ function Measure-Window {
         }
     }
     $total = [double](($delta | Measure-Object Cpu -Sum).Sum)
+    # Дельта берёт только процессы, дожившие от начала окна до конца. Если
+    # sing-box за это время перезапустился, PID сменился, оба экземпляра выпали
+    # из расчёта и ЦП вышел нулём — не «стало бесплатно», а «не посчитано».
+    # Именно так выглядит неподтверждённый туннель: надзор поднимает sing-box
+    # заново каждые три секунды, и ноль в отчёте выглядел победой.
+    $sbA = @($a.Keys | Where-Object { $a[$_].Name -eq "sing-box" })
+    $sbB = @($b.Keys | Where-Object { $b[$_].Name -eq "sing-box" })
+    $appeared = @($sbB | Where-Object { $sbA -notcontains $_ }).Count
+    $vanished = @($sbA | Where-Object { $sbB -notcontains $_ }).Count
+    $restarted = ($appeared -gt 0) -or ($vanished -gt 0)
+    if ($restarted) {
+        Write-Host "  sing-box перезапускался внутри окна (PID сменился): его ЦП занижен или обнулён." -ForegroundColor Yellow
+        Write-Host "  Так ведёт себя неподтверждённый туннель — сравнивать такой замер нельзя." -ForegroundColor Yellow
+    }
     $mine = @($delta | Where-Object { $_.Name -eq "sing-box" })
     $myCpu = [double](($mine | Measure-Object Cpu -Sum).Sum)
     $myKrn = [double](($mine | Measure-Object Krn -Sum).Sum)
@@ -301,9 +322,13 @@ function Measure-Window {
             Write-Host ("    pid {0,-8} {1,7:N2} с   в ядре {2,3:N0}%" -f $m.Pid, $m.Cpu, $(if ($m.Cpu -gt 0) { 100 * $m.Krn / $m.Cpu } else { 0 }))
         }
     }
-    $krnShare = 0
-    if ($myCpu -gt 0) { $krnShare = 100 * $myKrn / $myCpu }
-    Write-Host ("{0,-20} {1,7:N0} %   много — работа в ядре: wintun, WFP, драйвер" -f "из них в ядре:", $krnShare)
+    # При нулевом ЦП строка про долю ядра — «0 %, много работы в ядре» — читалась
+    # как вывод, хотя считать было нечего.
+    if ($myCpu -gt 0) {
+        Write-Host ("{0,-20} {1,7:N0} %   много — работа в ядре: wintun, WFP, драйвер" -f "из них в ядре:", (100 * $myKrn / $myCpu))
+    } else {
+        Write-Host "                       ЦП sing-box за окно не посчитан — см. предупреждение выше"
+    }
     $myShare = 0
     if ($total -gt 0) { $myShare = 100 * $myCpu / $total }
     Write-Host ("{0,-20} {1,7:N1} с   {2,3:N0}% машины, доля sing-box в этом — {3:N0}%" -f `
@@ -373,8 +398,9 @@ function Measure-Window {
         Cores   = $myCpu / $elapsed   # во сколько ядер это обошлось
         PerGb   = $perGb           # по счётчику туннеля; 0, если трафика не было
         TunGb   = $tunGb           # весь трафик через адаптер
-        Packets = $packets
-        Conns   = $newConns        # новых соединений за окно
+        Packets   = $packets
+        Conns     = $newConns      # новых соединений за окно
+        Restarted = $restarted     # sing-box сменил PID: числу верить нельзя
     }
 }
 
@@ -387,32 +413,96 @@ Write-Host "Ядер: $cores.  Охват: $scopeName"
 # Правила брандмауэра — статья расхода, с трафиком через туннель не связанная:
 # осиротевшее правило WFP разбирает на каждом исходящем соединении в системе,
 # своём и чужом, и переживает перезагрузку.
+# Второй живой TUN рядом делает бессмысленным весь замер: маршруты уходят к
+# тому, кто выиграл, и чей это ЦП — уже не разобрать. Показываем имя вместе с
+# описанием: имя задаёт клиент, описание ставит драйвер, и у sing-box оно
+# «sing-tun Tunnel» независимо от того, чей это sing-box.
+try {
+    $ups = @(Get-NetAdapter -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' } |
+        Where-Object { $_.InterfaceDescription -match 'tun|tap-|wireguard|vpn' })
+    if ($ups) {
+        Write-Host "Поднятые туннельные адаптеры:"
+        foreach ($a in $ups) {
+            $mine = if ($a.Name -eq $TunName) { "  <- наш" } else { "  <- ЧУЖОЙ, замер испорчен" }
+            Write-Host ("   {0,-24} {1}{2}" -f $a.Name, $a.InterfaceDescription, $mine)
+        }
+    }
+} catch { }
+
 $rules = @(Get-NetFirewallRule -DisplayName 'Privacy Gateway: *' -ErrorAction SilentlyContinue)
 Write-Host "Правил 'Privacy Gateway: *': $($rules.Count)"
 if ($rules.Count -gt $apps + 1) {
     Write-Host "  больше, чем включённых приложений — похоже на осиротевшие, снимает их sweep() при выключении" -ForegroundColor Yellow
 }
 
+# Крейт зовётся pg-cli, а бинарник — privacy-gateway: так задано в [[bin]] его
+# Cargo.toml, и под этим же именем его кладёт установщик (installer/sidecars.ps1
+# копирует в src-tauri/binaries). Файла pg-cli.exe не существует нигде, и
+# искать надо именно это имя. Рядом стоит «Privacy Gateway.exe» — это окно, а
+# не клиент; имена различаются пробелом против дефиса.
+$CLI_NAME = "privacy-gateway"
+
 function Find-Cli {
     if ($Cli) { return $Cli }
     # Пустая база пропускается: Join-Path с null бросает, а с ErrorAction=Stop
     # это убивает весь замер из-за необязательного кандидата.
     $bases = @(${env:ProgramFiles}, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
-    $paths = @($bases | ForEach-Object { Join-Path $_ "Privacy Gateway\pg-cli.exe" })
-    $paths += (Join-Path $PSScriptRoot "..\target\release\pg-cli.exe")
-    $paths += (Join-Path $PSScriptRoot "..\target\debug\pg-cli.exe")
+    $paths = @($bases | ForEach-Object { Join-Path $_ "Privacy Gateway\$CLI_NAME.exe" })
+    $paths += (Join-Path $PSScriptRoot "..\target\release\$CLI_NAME.exe")
+    $paths += (Join-Path $PSScriptRoot "..\target\debug\$CLI_NAME.exe")
     foreach ($c in $paths) {
         if (Test-Path $c) { return (Resolve-Path $c).Path }
     }
     $null
 }
 
-function Wait-Tunnel {
-    # Смена охвата перезапускает sing-box (`final` живёт в его конфиге), и
-    # мерить надо поднявшийся, а не поднимающийся. Ждём ответа Clash API —
-    # он и означает, что процесс жив, — и даём ещё три секунды устояться.
-    for ($i = 0; $i -lt 30; $i++) {
-        if ((Get-TrafficBytes) -ge 0) { Start-Sleep -Seconds 3; return $true }
+function Get-TunnelUp($cli) {
+    # Ответа Clash API мало: он приходит от живого процесса, а не от
+    # подтверждённого туннеля. Пока проба не прошла, служба держит блокировку
+    # и каждые три секунды поднимает sing-box заново — мерить там нечего.
+    # Состояние знает только служба, и спрашивать надо её.
+    try { $out = (& $cli status 2>&1 | Out-String) } catch { return $false }
+    # Служба отвечает на языке, который ей выставили, — проверяем оба слова.
+    ($out -match "поднят") -or ($out -match "\bup,")
+}
+
+function Show-WhyNot($cli) {
+    # «Не поднялся» без причины — это приглашение гадать, а причина уже записана:
+    # служба ведёт журнал, sing-box пишет свой лог, состояние знает status.
+    # Показываем всё три, вместо того чтобы спрашивать человека ещё раз.
+    Write-Host ""
+    Write-Host "-- состояние службы --" -ForegroundColor Yellow
+    try { & $cli status 2>&1 | ForEach-Object { Write-Host "   $_" } } catch { Write-Host "   status не ответил" }
+
+    $dir = Join-Path $env:ProgramData "privacy-gateway"
+    Write-Host "-- журнал службы (свежее сверху) --" -ForegroundColor Yellow
+    try {
+        # -Encoding UTF8 обязателен: служба пишет журнал в UTF-8, а PowerShell
+        # 5.1 без указания читает файл в кодировке системы и выдаёт кракозябры.
+        $j = Get-Content (Join-Path $dir "journal.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+        $j | Select-Object -First 12 | ForEach-Object {
+            $mark = if ($_.bad) { "!" } else { " " }
+            Write-Host "  $mark $($_.text)"
+        }
+    } catch { Write-Host "   журнал не прочитан: $($_.Exception.Message)" }
+
+    Write-Host "-- хвост singbox.log --" -ForegroundColor Yellow
+    try {
+        Get-Content (Join-Path $dir "singbox.log") -Tail 15 | ForEach-Object { Write-Host "   $_" }
+    } catch { Write-Host "   лог не прочитан: $($_.Exception.Message)" }
+
+    # Kill-switch в этом охвате — политика брандмауэра, а не правило, и если
+    # туннель не встал, машина сидит без сети именно из-за неё.
+    Write-Host "-- политика брандмауэра --" -ForegroundColor Yellow
+    try {
+        netsh advfirewall show allprofiles | Select-String -Pattern "Outbound|Исходящ" | ForEach-Object { Write-Host "   $_" }
+    } catch { Write-Host "   netsh не ответил" }
+}
+
+function Wait-Tunnel($cli) {
+    # Смена охвата перезапускает sing-box: `final` живёт в его конфиге.
+    for ($i = 0; $i -lt 40; $i++) {
+        if (Get-TunnelUp $cli) { Start-Sleep -Seconds 3; return $true }
         Start-Sleep -Seconds 1
     }
     $false
@@ -421,7 +511,16 @@ function Wait-Tunnel {
 if ($Scope) {
     $cli = Find-Cli
     if (-not $cli) {
-        Write-Host "pg-cli.exe не найден. Укажите путь: -Cli C:\путь\pg-cli.exe" -ForegroundColor Red
+        Write-Host "$CLI_NAME.exe не найден. Он ставится вместе с приложением; если нет — соберите:" -ForegroundColor Red
+        Write-Host "    cargo build -p pg-cli --release" -ForegroundColor Red
+        Write-Host "Бинарник ляжет в target\release\$CLI_NAME.exe (крейт pg-cli, имя из [[bin]])." -ForegroundColor Red
+        exit 1
+    }
+    if ([IO.Path]::GetFileNameWithoutExtension($cli) -ne $CLI_NAME) {
+        # Ровно та ошибка, которую легко сделать: подсунуть pg-service.exe.
+        # Служба команду `scope` не разбирает — она её слушает, а не шлёт.
+        Write-Host "«$cli» — это не клиент. Охват меняет $CLI_NAME.exe, а не служба и не окно." -ForegroundColor Red
+        Write-Host "Путь с пробелами обязателен в кавычках: -Cli `"C:\Program Files\Privacy Gateway\$CLI_NAME.exe`"" -ForegroundColor Red
         exit 1
     }
     $was = if ($all) { "all" } else { "apps" }
@@ -432,8 +531,9 @@ if ($Scope) {
         Write-Host ""
         Write-Host "переключаю охват на «$other»…"
         & $cli scope $other | Out-Null
-        if (-not (Wait-Tunnel)) {
+        if (-not (Wait-Tunnel $cli)) {
             Write-Host "  туннель не поднялся после смены охвата — замер отменён" -ForegroundColor Red
+            Show-WhyNot $cli
             $second = $null
         } else {
             $second = Measure-Window -Label "охват «$other»" -Proxy $null -Load $false -Prompt $false
@@ -444,7 +544,7 @@ if ($Scope) {
         Write-Host ""
         Write-Host "возвращаю охват «$was»…"
         & $cli scope $was | Out-Null
-        [void](Wait-Tunnel)
+        [void](Wait-Tunnel $cli)
     }
 
     Write-Host ""
@@ -455,6 +555,12 @@ if ($Scope) {
     }
     Write-Host ("{0,-22} {1,6:N2} ядра, {2:N0} соединений" -f "охват «$was»:", $first.Cores, $first.Conns)
     Write-Host ("{0,-22} {1,6:N2} ядра, {2:N0} соединений" -f "охват «$other»:", $second.Cores, $second.Conns)
+    if ($first.Restarted -or $second.Restarted) {
+        Write-Host "  Вывода не будет: sing-box перезапускался внутри окна, и его ЦП там не посчитан." -ForegroundColor Red
+        Write-Host "  Ноль ядер здесь означает «туннель не поднялся», а не «расход исчез»: под" -ForegroundColor Red
+        Write-Host "  неподтверждённым туннелем машина сидит без сети, оттого и всё остальное тихо." -ForegroundColor Red
+        exit 1
+    }
     $drop = $first.Cores - $second.Cores
     if ([math]::Abs($drop) -lt 0.15) {
         Write-Host "  Разницы нет. process_path ни при чём — расход не от сверки процессов." -ForegroundColor Yellow
