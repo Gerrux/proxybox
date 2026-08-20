@@ -923,6 +923,20 @@ fn leaks_first(conns: &mut [Conn], picked: &BTreeSet<String>) {
     conns.sort_by_key(|c| c.tunneled || !picked.contains(&c.process.to_lowercase()));
 }
 
+/// Есть ли уже это приложение в списке. С точностью до регистра — как и всё
+/// прочее сравнение путей у нас (`leaks_first` выше, охват в `supervise`):
+/// на Windows `…\store.exe` и `…\Store.exe` — один и тот же файл.
+///
+/// Спрашивает автообнаружение, и только оно: остальные команды получают путь
+/// из самого списка, где он совпадает побайтово по построению. А находка из
+/// реестра приходит в том регистре, в каком её записал установщик, — побайтовое
+/// сравнение заводило второй экземпляр того же exe, и список показывал его
+/// дважды. Сторож — `discovery_knows_a_path_it_already_has`.
+fn knows(apps: &[App], path: &str) -> bool {
+    let path = path.to_lowercase();
+    apps.iter().any(|a| a.path.to_lowercase() == path)
+}
+
 fn handle(svc: &Mutex<Service>, req: Request) -> Response {
     // Подписка ходит в сеть, поэтому разбирается до замка — остальные команды
     // работают с состоянием и берут его сразу.
@@ -947,7 +961,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             let found = core_apps::discover(&env);
             let added: Vec<App> = found
                 .into_iter()
-                .filter(|f| !s.status.apps.iter().any(|a| a.path == f.path))
+                .filter(|f| !knows(&s.status.apps, &f.path))
                 // Выключенными: найдено — не значит выбрано.
                 .map(|f| App { path: f.path, name: f.name, enabled: false })
                 .collect();
@@ -1574,6 +1588,29 @@ mod tests {
         let needle = format!(".{}()", "reapply");
         let calls = include_str!("main.rs").matches(&needle).count();
         assert_eq!(calls, 1, "перезапуск зовётся только из edit, а нашлось вызовов: {calls}");
+    }
+
+    /// Автообнаружение обязано узнавать путь, который у него уже есть, в любом
+    /// регистре: установщик пишет в реестр один вид, а `state.json` хранит тот,
+    /// что пришёл когда-то, и на Windows это один файл. Побайтовая сверка
+    /// заводила второй экземпляр — список показывал приложение дважды, а окно
+    /// падало на повторяющемся ключе React.
+    #[test]
+    fn discovery_knows_a_path_it_already_has() {
+        let apps = vec![App {
+            path: r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\store.exe".into(),
+            name: "store".into(),
+            enabled: false,
+        }];
+        assert!(knows(&apps, &apps[0].path), "тот же путь — точно знакомый");
+        assert!(
+            knows(&apps, r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\Store.exe"),
+            "регистр не делает из приложения второе"
+        );
+        assert!(
+            !knows(&apps, r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\other.exe"),
+            "другой файл обязан остаться новым"
+        );
     }
 
     /// Перезапуск не должен ни тихо возвращать выбранные приложения в открытую
