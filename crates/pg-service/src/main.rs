@@ -599,6 +599,12 @@ impl Service {
             }
         }
         if !moved.is_empty() {
+            // Переезд — единственное место, где путь меняется у уже принятой
+            // записи: все прочие проверки стоят на добавлении. Две записи
+            // разных версий одного пакета были законно разными путями, а после
+            // обновления читаются одной строкой — и список получал точный
+            // дубль, которого больше завести неоткуда.
+            self.status.apps = Self::dedup_apps(std::mem::take(&mut self.status.apps));
             let names = moved.join(", ");
             self.log(t(
                 &format!("приложения обновились, пути в списке освежены: {names}"),
@@ -1682,6 +1688,33 @@ mod tests {
         let mixed = newcomers(&known, vec![f(store), f(r"C:\other.exe"), f(r"C:\other.exe")]);
         assert_eq!(mixed.len(), 1, "новое приходит по одной записи на файл");
         assert_eq!(mixed[0].path, r"C:\other.exe");
+    }
+
+    /// Обновление пакета MSIX схлопывает пути: две записи разных версий одного
+    /// пакета были законно разными файлами, а после переезда читаются одной
+    /// строкой. Проверки на добавлении тут бессильны — путь меняется у уже
+    /// принятой записи, — и список получал точный дубль. Единственный способ
+    /// его завести: среди двух сотен приложений так задвоился ровно тот, что и
+    /// живёт в WindowsApps.
+    #[test]
+    fn an_updated_package_does_not_split_into_two_rows() {
+        // Ровно то, чем становятся две версии Store после переезда на 1401.3.0.
+        let now = r"C:\Program Files\WindowsApps\Microsoft.WindowsStore_22607.1401.3.0_x64__8wekyb3d8bbwe\store.exe";
+        let after = Service::dedup_apps(vec![
+            App { path: now.into(), name: "store".into(), enabled: false },
+            App { path: now.into(), name: "store".into(), enabled: true },
+        ]);
+        assert_eq!(after.len(), 1, "обновившийся пакет — одна строка, а не две");
+        assert!(after[0].enabled, "выбор человека обязан пережить переезд пакета");
+
+        // Склейка сама себя не позовёт: правило держится, только пока переезд
+        // через неё и проходит. Иголка собирается на месте — написанная
+        // целиком, она нашла бы саму себя.
+        let needle = format!("Self::{}(std::mem::take(&mut self.status.apps))", "dedup_apps");
+        assert!(
+            include_str!("main.rs").contains(&needle),
+            "rebind_packages обязана чистить список после переезда путей"
+        );
     }
 
     /// Дубль в `state.json` переживал любое число перезапусков: `load()` брал
