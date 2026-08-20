@@ -172,12 +172,6 @@ export function Conns({ status, className }: { status: Status | null; className?
     };
   }, [live]);
 
-  // Путь из sing-box и путь из списка — одна и та же строка с точностью до
-  // регистра: на Windows его не различает и сама файловая система.
-  const picked = new Set(
-    (status?.apps ?? []).filter((a) => a.enabled).map((a) => a.path.toLowerCase()),
-  );
-
   return (
     <Panel
       className={className}
@@ -202,7 +196,9 @@ export function Conns({ status, className }: { status: Status | null; className?
             // Выбранное приложение мимо туннеля — это тот самый тихий промах, а
             // не «так и задумано»: цвет у него поломочный, как у неподнявшихся
             // правил. Всё остальное прямое — чужой трафик, его мы не трогаем.
-            const leak = !c.tunneled && picked.has(c.process.toLowerCase());
+            // Считает это служба: путей у приложения бывает две формы, и здесь
+            // известна одна.
+            const leak = c.leak;
             const name = c.process.split(/[\\/]/).pop() ?? "";
             return (
               <li
