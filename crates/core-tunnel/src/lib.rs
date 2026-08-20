@@ -267,7 +267,16 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
                 // участник в приватном продукте заводится только когда без него
                 // никак. Узел, заданный адресом, сюда не ходит вовсе — путь
                 // только для узлов по имени.
-                { "type": "https", "tag": "local", "server": "8.8.8.8", "detour": "direct" },
+                //
+                // `detour` тут нет намеренно, и это не мелочь: `detour:
+                // "direct"` выглядит как «явно мимо туннеля», но наш `direct` —
+                // пустой outbound, и sing-box отвечает на это «detour to an
+                // empty direct outbound makes no sense» и **не стартует**.
+                // `sing-box check` такой конфиг пропускает: ошибка вылезает
+                // только при запуске. Без `detour` резолвер и так ходит мимо
+                // маршрутизации; запрещено ему ровно одно — идти через `proxy`,
+                // и это сторожит тест.
+                { "type": "https", "tag": "local", "server": "8.8.8.8" },
             ],
             "final": "remote",
         },
@@ -986,7 +995,11 @@ mod tests {
         assert_eq!(local["tag"], "local");
         assert_ne!(local["type"], "local", "системный резолвер после auto_route указывает на нас самих");
         assert!(local["server"].is_string(), "бутстрап обязан быть назван адресом: {local}");
-        assert_eq!(local["detour"], "direct", "иначе адрес сервера разрешается через сам сервер");
+        assert_ne!(local["detour"], TAG_PROXY, "иначе адрес сервера разрешается через сам сервер");
+        // И `detour: "direct"` тоже нельзя: наш `direct` — пустой outbound, а на
+        // такой `detour` sing-box отказывается стартовать вовсе. Проверкой
+        // конфига это не ловится, только запуском — см. `the_config_actually_starts`.
+        assert!(local["detour"].is_null(), "detour на пустой direct не даёт службе стартовать: {local}");
         // Шифрованным: открытый UDP показал бы имя сервера всей сети по пути, а
         // у человека DNS на адаптере уже зашифрован — понижать молча нельзя.
         assert_eq!(local["type"], "https", "бутстрап обязан идти по DoH: {local}");
@@ -1142,6 +1155,34 @@ mod tests {
 
     /// Конфиг с включённым TUN тоже должен проходить проверку sing-box:
     /// именно его увидит Windows, а остальные тесты гоняют вариант без TUN.
+    #[test]
+    /// Конфиг обязан не только разбираться, но и **запускаться**, и это разные
+    /// вещи. `sing-box check` проверяет разбор: `detour: "direct"` на нашем
+    /// пустом `direct`-outbound он пропускает молча, а служба на нём падает при
+    /// старте с «detour to an empty direct outbound makes no sense». Ровно так и
+    /// случилось — поймано запуском уже после того, как проверка конфига дала
+    /// зелёный свет.
+    ///
+    /// Без TUN и на свободных портах: прав на TUN у тестов нет, а постоянные
+    /// порты столкнулись бы с живой службой на машине разработчика.
+    #[test]
+    fn the_config_actually_starts() {
+        let Ok((socks_port, api_port)) = free_port().and_then(|a| Ok((a, free_port()?))) else {
+            return;
+        };
+        let node = core_config::parse("trojan://p@127.0.0.1:1").unwrap().node;
+        let opts = Options { tun: false, socks_port, api_port, ..Default::default() };
+        let dir = std::env::temp_dir().join("pg-start-check");
+        let _ = std::fs::remove_dir_all(&dir);
+        match Tunnel::start(&build_config(&node, &opts), &dir) {
+            Ok(mut live) => live.stop(),
+            // sing-box не установлен — проверять нечем; отличаем по тексту,
+            // потому что любой другой отказ здесь обязан валить тест.
+            Err(e) if e.to_string().contains("не запускается") || e.to_string().contains("cannot start") => {}
+            Err(e) => panic!("конфиг разбирается, но служба на нём не поднимается: {e}"),
+        }
+    }
+
     #[test]
     fn tun_config_passes_singbox_check() {
         let node = core_config::parse("trojan://p@a.com:443").unwrap().node;
