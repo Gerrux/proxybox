@@ -23,6 +23,16 @@ use std::time::{Duration, Instant};
 pub const TAG_PROXY: &str = "proxy";
 /// Имя нашего TUN-адаптера: по нему его видно в системе и не спутать с чужим.
 pub const TUN_NAME: &str = "Privacy Gateway";
+/// Наш адрес на TUN. 172.19.0.1/30 — умолчание sing-box, а значит и NekoBox,
+/// Hiddify, v2rayN: с любым из них адрес и имя адаптера столкнулись бы лоб в
+/// лоб. Берём свои, чтобы конфликт был виден как чужой туннель, а не как
+/// загадочный отказ TUN.
+const TUN_ADDR: &str = "172.27.234.1";
+/// Адрес шлюза на TUN. Своим его никто не назначает: `sing-tun` выводит его на
+/// Windows как «следующий за нашим» (`Inet4Address[0].Addr().Next()`), и
+/// отвечать по нему некому. Отсюда и правило отбоя в `build_config` — см. там.
+/// Сторож, связывающий эти две константы, — `the_gateway_is_next_to_our_address`.
+const TUN_GATEWAY: &str = "172.27.234.2";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Столько ждём, прежде чем поверить, что sing-box действительно поднялся.
 const STARTUP_GRACE: Duration = Duration::from_millis(400);
@@ -58,6 +68,17 @@ pub struct Options {
     /// сам с собой. Неверное имя ловит запуск: туннель не поднимается, отказ
     /// уходит в журнал, приложения остаются без сети. Громко и правильно.
     pub stack: String,
+    /// Адрес профилировщика sing-box (`PG_PPROF=127.0.0.1:48294`), пусто — нет.
+    ///
+    /// Заведён затем, что спорить о причинах расхода ЦП больше нечем: три
+    /// разбора по исходникам дали три разных механизма, и каждый выглядел
+    /// убедительно. Профиль называет функцию, а не гипотезу. Сборочных тегов не
+    /// требует — официальные сборки отдают его сразу.
+    ///
+    /// Ручка диагностическая, как `PG_STACK` и `PG_TUN`, и настройкой не
+    /// продублирована намеренно: включённый по недосмотру профилировщик — это
+    /// открытый порт в службе, которая ходит от LocalSystem.
+    pub pprof: Option<String>,
 }
 
 impl Default for Options {
@@ -69,6 +90,7 @@ impl Default for Options {
             apps: Vec::new(),
             all: false,
             stack: std::env::var("PG_STACK").unwrap_or_else(|_| "mixed".into()),
+            pprof: pprof_value(&std::env::var("PG_PPROF").unwrap_or_default()),
         }
     }
 }
@@ -90,12 +112,8 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
         inbounds.push(json!({
             "type": "tun",
             "tag": "tun-in",
-            // 172.19.0.1/30 — умолчание sing-box, а значит и NekoBox, Hiddify,
-            // v2rayN: с любым из них адрес и имя адаптера столкнулись бы лоб в
-            // лоб. Берём свои, чтобы конфликт был виден как чужой туннель, а не
-            // как загадочный отказ TUN.
             "interface_name": TUN_NAME,
-            "address": ["172.27.234.1/30"],
+            "address": [format!("{TUN_ADDR}/30")],
             "auto_route": true,
             "strict_route": true,
             "stack": opts.stack,
@@ -118,6 +136,51 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
     // даёт не это правило, а `dns` ниже.
     if opts.tun {
         rules.insert(0, json!({ "inbound": ["tun-in"], "action": "sniff" }));
+        // Отбой всему, что адресовано шлюзу TUN, и стоит он первым намеренно.
+        //
+        // По этому адресу не отвечает никто, а приложения его исправно
+        // опрашивают: NAT-PMP/PCP на 5351, SSDP/UPnP на 1900 — так они ищут
+        // домашний роутер. Без этого правила запрос уходит в маршрутизацию, и
+        // дальше всё зависит от того, куда он попадёт. На `direct` sing-box
+        // отбивает его сам и мгновенно (`isMyLoopbackAddress`: адрес внутри
+        // нашей же подсети), приложение повторяет тут же — и получается шторм,
+        // который упирает ядро в потолок при пустом трафике. На `proxy` тот же
+        // запрос уходит к серверу, отказ стоит целого RTT, и повторы идут на
+        // три порядка реже. Отсюда и разница в расходе между охватами, которую
+        // долго списывали на объём трафика.
+        //
+        // Ровно это описано в sing-box#4415 на нашей же конфигурации; у #4236 и
+        // mihomo#2382 та же болезнь и то же лекарство. Матчера по процессу
+        // правило не заводит, поэтому цены за собой не тянет.
+        //
+        // Молча, а не отказом, и это важнее, чем выглядит. Обычный `reject`
+        // отвечает ICMP unreachable — то есть тоже мгновенно, и шторм остаётся,
+        // просто дешевеет каждая его итерация; вдобавок он держит замок и
+        // перекладывает счётчик на каждый отказ, а после пятидесяти за полминуты
+        // sing-box всё равно молча переходит на drop. `drop` заставляет
+        // приложение ждать собственного таймаута, и частота повторов падает
+        // сама. Заодно это честная эмуляция: на живой сети по несуществующему
+        // адресу молчат, а не отвечают отказом.
+        //
+        // Порт 53 из-под отбоя выведен, и это не перестраховка. Под `auto_route`
+        // `sing-tun` прописывает адаптеру DNS-сервером `Inet4Address[0].Next()`,
+        // то есть ровно этот же адрес: безусловный отбой снёс бы разрешение имён
+        // всей машине. Кто именно обслуживает запрос, пришедший на этот адрес, на
+        // живой Windows не проверено — поэтому мы его и не трогаем. Сторож —
+        // `the_tun_gateway_is_rejected_first`.
+        rules.insert(
+            0,
+            json!({
+                "type": "logical",
+                "mode": "and",
+                "rules": [
+                    { "ip_cidr": [format!("{TUN_GATEWAY}/32")] },
+                    { "port": [53], "invert": true },
+                ],
+                "action": "reject",
+                "method": "drop",
+            }),
+        );
     }
     // Это правило стоит не одного сравнения строк, и цена берётся не с тех, за
     // кого оно поставлено. Одного матчера по процессу где угодно в наборе
@@ -180,7 +243,17 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
     if wireguard {
         cfg["endpoints"] = json!([node]);
     }
+    if let Some(listen) = &opts.pprof {
+        cfg["experimental"]["debug"] = json!({ "listen": listen });
+    }
     cfg
+}
+
+/// Разбор отдельно от переменной: тесты идут в одном процессе, и `set_var`
+/// из одного отравил бы соседние.
+fn pprof_value(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 /// Путь к sing-box из настроек службы. Глобальный на процесс по той же
@@ -743,6 +816,76 @@ mod tests {
         );
     }
 
+    /// Адрес шлюза обязан быть следующим за нашим: именно так его выводит
+    /// `sing-tun` на Windows, своим его никто не назначает. Разъедутся
+    /// константы — правило отбоя встанет на чужой адрес, шторм вернётся, и
+    /// заметить это будет нечем: конфиг останется валидным.
+    #[test]
+    fn the_gateway_is_next_to_our_address() {
+        let ours: std::net::Ipv4Addr = TUN_ADDR.parse().expect("наш адрес");
+        let gateway: std::net::Ipv4Addr = TUN_GATEWAY.parse().expect("адрес шлюза");
+        let next = std::net::Ipv4Addr::from(u32::from(ours) + 1);
+        assert_eq!(gateway, next, "шлюз — это адрес, следующий за нашим");
+        // И оба обязаны лежать в одной /30, иначе `isMyLoopbackAddress` не
+        // считает шлюз своим и вся затея теряет смысл.
+        assert_eq!(u32::from(ours) & !3, u32::from(gateway) & !3, "разные подсети");
+    }
+
+    /// Шлюз TUN отбивается, и правило стоит раньше всех прочих: на него светят
+    /// SSDP и NAT-PMP, отвечать по нему некому, а без отбоя мгновенный отказ на
+    /// `direct` превращается в шторм повторов (sing-box#4415).
+    ///
+    /// И главное: порт 53 обязан остаться снаружи. Под `auto_route` `sing-tun`
+    /// прописывает адаптеру DNS-сервером этот же адрес, так что безусловный
+    /// отбой снёс бы разрешение имён всей машине — тише, чем шторм, и куда
+    /// хуже.
+    #[test]
+    fn the_tun_gateway_is_rejected_first() {
+        let cfg = build_config(&node(), &Options::default());
+        let rules = cfg["route"]["rules"].as_array().unwrap();
+        let first = &rules[0];
+        assert_eq!(first["action"], "reject", "отбой обязан стоять первым: {rules:#?}");
+        // Молчание, а не отказ: отказ приходит так же мгновенно, как и отбой
+        // самого sing-box, и шторм повторов от него не прекращается.
+        assert_eq!(first["method"], "drop", "отбой обязан молчать, иначе повторы идут той же частотой");
+
+        let inner = first["rules"].as_array().expect("отбой обязан быть составным: {first:#?}");
+        assert_eq!(first["mode"], "and");
+        assert!(inner.iter().any(|r| r["ip_cidr"][0] == format!("{TUN_GATEWAY}/32")), "{first:#?}");
+        let dns = inner.iter().find(|r| r["port"][0] == 53).expect("порт 53 обязан быть назван: {first:#?}");
+        assert_eq!(dns["invert"], true, "53 обязан быть исключён, а не пойман: {first:#?}");
+
+        // Матчера по процессу правило не заводит — иначе лекарство стоило бы
+        // дороже болезни. Проверяем и вложенные: `needFindProcess` включается
+        // от любого правила в наборе, хоть трижды вложенного.
+        assert!(first["process_path"].is_null());
+        assert!(inner.iter().all(|r| r["process_path"].is_null()), "{first:#?}");
+
+        // Без TUN шлюза не существует, и отбивать нечего.
+        let bare = build_config(&node(), &Options { tun: false, ..Default::default() });
+        let bare = bare["route"]["rules"].as_array().unwrap();
+        assert!(bare.iter().all(|r| r["action"] != "reject"), "{bare:#?}");
+    }
+
+    /// Профилировщик появляется только по переменной и молчит без неё: открытый
+    /// порт в службе, которая ходит от LocalSystem, — не та цена за удобство
+    /// отладки. Пустая и пробельная строка — это «выключен», а не «слушать на
+    /// пустом адресе»: иначе `PG_PPROF=` в скрипте поднял бы порт молча.
+    #[test]
+    fn the_profiler_is_off_unless_asked() {
+        let off = build_config(&node(), &Options { pprof: None, ..Default::default() });
+        assert!(off["experimental"]["debug"].is_null(), "без PG_PPROF отладочного порта нет");
+        assert_eq!(pprof_value(""), None);
+        assert_eq!(pprof_value("  "), None);
+        assert_eq!(pprof_value(" 127.0.0.1:48294 "), Some("127.0.0.1:48294".to_string()));
+
+        let on = build_config(&node(), &Options { pprof: Some("127.0.0.1:48294".into()), ..Default::default() });
+        assert_eq!(on["experimental"]["debug"]["listen"], "127.0.0.1:48294");
+        // Счётчики Clash при этом остаются на месте: обе секции живут в
+        // `experimental`, и подстановка одной не должна затирать другую.
+        assert!(on["experimental"]["clash_api"]["external_controller"].is_string());
+    }
+
     #[test]
     fn tun_optional() {
         let with = build_config(&node(), &Options::default());
@@ -913,15 +1056,20 @@ mod tests {
     #[test]
     fn tun_config_passes_singbox_check() {
         let node = core_config::parse("trojan://p@a.com:443").unwrap().node;
-        let cfg = build_config(&node, &Options { apps: vec![r"C:\app.exe".into()], ..Default::default() });
         let dir = std::env::temp_dir().join("pg-tun-check");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("c.json");
-        std::fs::write(&path, serde_json::to_vec_pretty(&cfg).unwrap()).unwrap();
-        let Ok(out) = Command::new(binary()).arg("check").arg("-c").arg(&path).output() else {
-            return; // sing-box не установлен
-        };
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        // Обе ветки: без профилировщика и с ним. Имя секции и поля внутри
+        // компилятор не проверяет никак — ошибись в них, и служба узнает об
+        // этом только на живой машине, отказом запуска.
+        for pprof in [None, Some("127.0.0.1:48294".to_string())] {
+            let cfg = build_config(&node, &Options { apps: vec![r"C:\app.exe".into()], pprof, ..Default::default() });
+            std::fs::write(&path, serde_json::to_vec_pretty(&cfg).unwrap()).unwrap();
+            let Ok(out) = Command::new(binary()).arg("check").arg("-c").arg(&path).output() else {
+                return; // sing-box не установлен
+            };
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        }
     }
 
 }
