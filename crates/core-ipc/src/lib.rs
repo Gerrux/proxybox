@@ -857,4 +857,23 @@ mod tests {
             assert!(!cli.iter().any(|s| s.contains(f)), "правила брандмауэра ставит служба, а не CLI: {f}");
         }
     }
+
+    /// Драйвер обязан оставаться вне воркспейса: собирается он только WDK и
+    /// только на Windows, а член воркспейса означал бы `cargo test --workspace`,
+    /// красный на Linux у всех и всегда — включая тех, кто драйвера не касался.
+    ///
+    /// Сторожу тут достаётся ровно то, чего не ловит Cargo. Попытку записать
+    /// драйвер в `members`, не тронув больше ничего, он заворачивает сам
+    /// («multiple workspace roots»), и повторять это ассертом незачем. А вот
+    /// снять с драйвера его собственную `[workspace]` Cargo разрешит молча — и
+    /// тогда следующая же правка `members` пройдёт беспрепятственно.
+    #[test]
+    fn the_driver_stays_out_of_the_workspace() {
+        let exclude = include_str!("../../../Cargo.toml");
+        let exclude = exclude.split("exclude = [").nth(1).and_then(|s| s.split(']').next()).unwrap();
+        assert!(exclude.contains("crates/core-wfp"), "драйвер обязан быть в exclude");
+
+        let driver = include_str!("../../core-wfp/Cargo.toml");
+        assert!(driver.contains("\n[workspace]"), "драйверу нужен свой корень воркспейса, как у src-tauri");
+    }
 }
