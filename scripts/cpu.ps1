@@ -138,8 +138,13 @@ function Get-TunStats {
     # по `final: direct`. Работу sing-box меряет адаптер, а не Clash: иначе
     # выходит 27 секунд ЦП на «один мегабайт» и полная бессмыслица.
     try {
+        # Имя возвращается наружу не для красоты: смена охвата пересоздаёт
+        # адаптер, а Windows при столкновении имён даёт «Privacy Gateway 2».
+        # Маска со звёздочкой и `-First 1` могли выбрать мёртвого предшественника,
+        # через который, разумеется, не идёт ни пакета.
         $s = Get-NetAdapterStatistics -Name "$TunName*" -ErrorAction Stop | Select-Object -First 1
         [pscustomobject]@{
+            Name    = $s.Name
             Bytes   = [int64]$s.ReceivedBytes + [int64]$s.SentBytes
             Packets = [int64]$s.ReceivedUnicastPackets + [int64]$s.SentUnicastPackets
         }
@@ -305,7 +310,9 @@ function Measure-Window {
     # прогон именно из-за этого пришлось читать гаданием.
     $net = if ($reach) { "есть" } else { "НЕТ — тишина не заслуга охвата" }
     $pids = if ($sbB.Count) { $sbB -join ", " } else { "нет процесса" }
-    Write-Host ("{0,-20} сеть: {1}; sing-box pid: {2}" -f "проверка окна:", $net, $pids)
+    $adapter = if ($n1) { $n1.Name } else { "не найден" }
+    Write-Host ("{0,-20} сеть: {1}; sing-box pid: {2}; адаптер: {3}" -f "проверка окна:", $net, $pids, $adapter)
+    Write-Host ("{0,-20} {1}" -f "маршруты:", (Get-RouteInfo))
 
     # Без явного $false переменная читалась бы из родительской области, и
     # прошлый проход тянул бы свой вердикт в следующий.
@@ -491,6 +498,21 @@ function Get-TunnelUp($cli) {
     try { $out = (& $cli status 2>&1 | Out-String) } catch { return $false }
     # Служба отвечает на языке, который ей выставили, — проверяем оба слова.
     ($out -match "поднят") -or ($out -match "\bup,")
+}
+
+function Get-RouteInfo {
+    # Кому достался маршрут по умолчанию — вопрос локальный, наружу ходить не
+    # надо. `auto_route` в sing-box кладёт 0.0.0.0/1 и 128.0.0.0/1 через TUN:
+    # они перебивают 0.0.0.0/0 более длинным префиксом, не трогая его самого.
+    # Нет их — значит в TUN ничего и не заходит, чей бы ни был охват.
+    try {
+        $r = @(Get-NetRoute -ErrorAction Stop |
+            Where-Object { $_.DestinationPrefix -in @("0.0.0.0/0", "0.0.0.0/1", "128.0.0.0/1") })
+        if (-not $r) { return "маршрутов по умолчанию нет" }
+        ($r | Sort-Object DestinationPrefix | ForEach-Object {
+            "{0}->{1}" -f $_.DestinationPrefix, $_.InterfaceAlias
+        }) -join "  "
+    } catch { "маршруты не прочитаны" }
 }
 
 function Test-Reach {
