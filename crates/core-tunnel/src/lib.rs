@@ -23,6 +23,16 @@ use std::time::{Duration, Instant};
 pub const TAG_PROXY: &str = "proxy";
 /// Имя нашего TUN-адаптера: по нему его видно в системе и не спутать с чужим.
 pub const TUN_NAME: &str = "Privacy Gateway";
+/// Наш адрес на TUN. 172.19.0.1/30 — умолчание sing-box, а значит и NekoBox,
+/// Hiddify, v2rayN: с любым из них адрес и имя адаптера столкнулись бы лоб в
+/// лоб. Берём свои, чтобы конфликт был виден как чужой туннель, а не как
+/// загадочный отказ TUN.
+const TUN_ADDR: &str = "172.27.234.1";
+/// Адрес шлюза на TUN. Своим его никто не назначает: `sing-tun` выводит его на
+/// Windows как «следующий за нашим» (`Inet4Address[0].Addr().Next()`), и
+/// отвечать по нему некому. Отсюда и правило отбоя в `build_config` — см. там.
+/// Сторож, связывающий эти две константы, — `the_gateway_is_next_to_our_address`.
+const TUN_GATEWAY: &str = "172.27.234.2";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Столько ждём, прежде чем поверить, что sing-box действительно поднялся.
 const STARTUP_GRACE: Duration = Duration::from_millis(400);
@@ -58,6 +68,17 @@ pub struct Options {
     /// сам с собой. Неверное имя ловит запуск: туннель не поднимается, отказ
     /// уходит в журнал, приложения остаются без сети. Громко и правильно.
     pub stack: String,
+    /// Адрес профилировщика sing-box (`PG_PPROF=127.0.0.1:48294`), пусто — нет.
+    ///
+    /// Заведён затем, что спорить о причинах расхода ЦП больше нечем: три
+    /// разбора по исходникам дали три разных механизма, и каждый выглядел
+    /// убедительно. Профиль называет функцию, а не гипотезу. Сборочных тегов не
+    /// требует — официальные сборки отдают его сразу.
+    ///
+    /// Ручка диагностическая, как `PG_STACK` и `PG_TUN`, и настройкой не
+    /// продублирована намеренно: включённый по недосмотру профилировщик — это
+    /// открытый порт в службе, которая ходит от LocalSystem.
+    pub pprof: Option<String>,
 }
 
 impl Default for Options {
@@ -69,6 +90,7 @@ impl Default for Options {
             apps: Vec::new(),
             all: false,
             stack: std::env::var("PG_STACK").unwrap_or_else(|_| "mixed".into()),
+            pprof: pprof_value(&std::env::var("PG_PPROF").unwrap_or_default()),
         }
     }
 }
@@ -90,12 +112,8 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
         inbounds.push(json!({
             "type": "tun",
             "tag": "tun-in",
-            // 172.19.0.1/30 — умолчание sing-box, а значит и NekoBox, Hiddify,
-            // v2rayN: с любым из них адрес и имя адаптера столкнулись бы лоб в
-            // лоб. Берём свои, чтобы конфликт был виден как чужой туннель, а не
-            // как загадочный отказ TUN.
             "interface_name": TUN_NAME,
-            "address": ["172.27.234.1/30"],
+            "address": [format!("{TUN_ADDR}/30")],
             "auto_route": true,
             "strict_route": true,
             "stack": opts.stack,
@@ -118,6 +136,71 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
     // даёт не это правило, а `dns` ниже.
     if opts.tun {
         rules.insert(0, json!({ "inbound": ["tun-in"], "action": "sniff" }));
+        // Отбой всему, что адресовано шлюзу TUN, и стоит он первым намеренно.
+        //
+        // По этому адресу не отвечает никто, а приложения его исправно
+        // опрашивают: NAT-PMP/PCP на 5351, SSDP/UPnP на 1900 — так они ищут
+        // домашний роутер. Без этого правила запрос уходит в маршрутизацию, и
+        // дальше всё зависит от того, куда он попадёт. На `direct` sing-box
+        // отбивает его сам и мгновенно (`isMyLoopbackAddress`: адрес внутри
+        // нашей же подсети), приложение повторяет тут же — и получается шторм,
+        // который упирает ядро в потолок при пустом трафике. На `proxy` тот же
+        // запрос уходит к серверу, отказ стоит целого RTT, и повторы идут на
+        // три порядка реже. Отсюда и разница в расходе между охватами, которую
+        // долго списывали на объём трафика.
+        //
+        // Ровно это описано в sing-box#4415 на нашей же конфигурации; у #4236 и
+        // mihomo#2382 та же болезнь и то же лекарство. Матчера по процессу
+        // правило не заводит, поэтому цены за собой не тянет.
+        //
+        // Молча, а не отказом, и это важнее, чем выглядит. Обычный `reject`
+        // отвечает ICMP unreachable — то есть тоже мгновенно, и шторм остаётся,
+        // просто дешевеет каждая его итерация; вдобавок он держит замок и
+        // перекладывает счётчик на каждый отказ, а после пятидесяти за полминуты
+        // sing-box всё равно молча переходит на drop. `drop` заставляет
+        // приложение ждать собственного таймаута, и частота повторов падает
+        // сама. Заодно это честная эмуляция: на живой сети по несуществующему
+        // адресу молчат, а не отвечают отказом.
+        //
+        // Порт 53 из-под отбоя выведен, и это не перестраховка: по нему идёт
+        // весь DNS машины, и забирает его правило перехвата ниже. Сторож —
+        // `the_tun_gateway_is_rejected_first`.
+        //
+        // Честно о размере пользы: на живой машине этот отбой ловил считаные
+        // проценты шторма — остальное было DNS. Он страхует от того, что
+        // описано в upstream (#4415, #4236, mihomo#2382), а не чинит замеренное.
+        rules.insert(
+            0,
+            json!({
+                "type": "logical",
+                "mode": "and",
+                "rules": [
+                    { "ip_cidr": [format!("{TUN_GATEWAY}/32")] },
+                    { "port": [53], "invert": true },
+                ],
+                "action": "reject",
+                "method": "drop",
+            }),
+        );
+        // Перехват DNS, и он первый, потому что чинит самое дорогое.
+        //
+        // Под `auto_route` `sing-tun` прописывает адаптеру DNS-сервером адрес
+        // шлюза (`Inet4Address[0].Next()`), и Windows послушно шлёт запросы
+        // туда. Обработать их без этого правила некому: запрос становится
+        // обычным соединением, уходит в `final`, а на `direct` sing-box отбивает
+        // его мгновенно как петлю в свою же подсеть — и `dnscache` повторяет
+        // тут же. Замерено на живой машине: 1025 одновременных соединений на
+        // `172.27.234.2:53` из 1047 всего, при нулевом сетевом трафике и 85% ЦП.
+        // Это и есть та петля, что стоила полутора ядер и описана в CLAUDE.md;
+        // тогда её починили наполовину — секцию `dns` завели, а перехват нет.
+        //
+        // С перехватом запрос уходит в DNS-модуль вместо маршрутизации, и
+        // `dns.final: remote` наконец делает то, что про него написано: имена
+        // разрешает сервер. Повторы съедает встроенный кэш.
+        //
+        // Только для TUN и только 53: вход `local` — это путь пробы, и трогать
+        // его нельзя по той же причине, по какой его не сниффят.
+        rules.insert(0, json!({ "inbound": ["tun-in"], "port": [53], "action": "hijack-dns" }));
     }
     // Это правило стоит не одного сравнения строк, и цена берётся не с тех, за
     // кого оно поставлено. Одного матчера по процессу где угодно в наборе
@@ -161,9 +244,39 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
         "dns": {
             "servers": [
                 { "type": "udp", "tag": "remote", "server": "1.1.1.1", "detour": TAG_PROXY },
-                // Системный резолвер нужен ровно для одного: разрешить адрес
-                // самого сервера. Через `remote` это была бы курица с яйцом.
-                { "type": "local", "tag": "local" },
+                // Второй резолвер нужен ровно для одного: разрешить адрес самого
+                // сервера. Через `remote` это была бы курица с яйцом.
+                //
+                // Он обязан быть назван явно и ходить `direct`. Стоял `type:
+                // local`, то есть резолвер операционной системы, — а после
+                // `auto_route` резолвер системы это адрес нашего же шлюза TUN.
+                // Ссылка на себя: тем, чем разрешаем адрес своего сервера,
+                // оказываемся мы сами. Без перехвата DNS это давало мгновенный
+                // отказ и повтор, с перехватом стало бы замкнутым циклом.
+                // Сторож — `names_are_resolved_by_the_server_but_the_server_is_not`.
+                //
+                // По адресу, а не по имени, и по DoH, а не открытым UDP. Имя тут
+                // разрешать нечем по определению — это и есть бутстрап; а
+                // открытый UDP показал бы имя вашего сервера всей сети по пути,
+                // причём у человека на адаптере DNS уже зашифрован, и мы бы
+                // молча понизили ему уровень. Сертификат Google покрывает
+                // 8.8.8.8 как адрес, поэтому TLS сходится без имени.
+                //
+                // Восьмёрки, а не Cloudflare, ровно по одной причине: это тот же
+                // резолвер, что уже стоит у человека на адаптере. Новый третий
+                // участник в приватном продукте заводится только когда без него
+                // никак. Узел, заданный адресом, сюда не ходит вовсе — путь
+                // только для узлов по имени.
+                //
+                // `detour` тут нет намеренно, и это не мелочь: `detour:
+                // "direct"` выглядит как «явно мимо туннеля», но наш `direct` —
+                // пустой outbound, и sing-box отвечает на это «detour to an
+                // empty direct outbound makes no sense» и **не стартует**.
+                // `sing-box check` такой конфиг пропускает: ошибка вылезает
+                // только при запуске. Без `detour` резолвер и так ходит мимо
+                // маршрутизации; запрещено ему ровно одно — идти через `proxy`,
+                // и это сторожит тест.
+                { "type": "https", "tag": "local", "server": "8.8.8.8" },
             ],
             "final": "remote",
         },
@@ -180,7 +293,17 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
     if wireguard {
         cfg["endpoints"] = json!([node]);
     }
+    if let Some(listen) = &opts.pprof {
+        cfg["experimental"]["debug"] = json!({ "listen": listen });
+    }
     cfg
+}
+
+/// Разбор отдельно от переменной: тесты идут в одном процессе, и `set_var`
+/// из одного отравил бы соседние.
+fn pprof_value(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 /// Путь к sing-box из настроек службы. Глобальный на процесс по той же
@@ -746,6 +869,82 @@ mod tests {
         );
     }
 
+    /// Адрес шлюза обязан быть следующим за нашим: именно так его выводит
+    /// `sing-tun` на Windows, своим его никто не назначает. Разъедутся
+    /// константы — правило отбоя встанет на чужой адрес, шторм вернётся, и
+    /// заметить это будет нечем: конфиг останется валидным.
+    #[test]
+    fn the_gateway_is_next_to_our_address() {
+        let ours: std::net::Ipv4Addr = TUN_ADDR.parse().expect("наш адрес");
+        let gateway: std::net::Ipv4Addr = TUN_GATEWAY.parse().expect("адрес шлюза");
+        let next = std::net::Ipv4Addr::from(u32::from(ours) + 1);
+        assert_eq!(gateway, next, "шлюз — это адрес, следующий за нашим");
+        // И оба обязаны лежать в одной /30, иначе `isMyLoopbackAddress` не
+        // считает шлюз своим и вся затея теряет смысл.
+        assert_eq!(u32::from(ours) & !3, u32::from(gateway) & !3, "разные подсети");
+    }
+
+    /// Шлюз TUN отбивается, и правило стоит раньше всех прочих: на него светят
+    /// SSDP и NAT-PMP, отвечать по нему некому, а без отбоя мгновенный отказ на
+    /// `direct` превращается в шторм повторов (sing-box#4415).
+    ///
+    /// И главное: порт 53 обязан остаться снаружи. Под `auto_route` `sing-tun`
+    /// прописывает адаптеру DNS-сервером этот же адрес, так что безусловный
+    /// отбой снёс бы разрешение имён всей машине — тише, чем шторм, и куда
+    /// хуже.
+    #[test]
+    fn the_tun_gateway_is_rejected_first() {
+        let cfg = build_config(&node(), &Options::default());
+        let rules = cfg["route"]["rules"].as_array().unwrap();
+        let at = |action: &str| rules.iter().position(|r| r["action"] == action);
+        let reject = at("reject").unwrap_or_else(|| panic!("отбоя нет вовсе: {rules:#?}"));
+        // Впереди отбоя стоит только перехват DNS — он забирает 53-й порт себе,
+        // и отбой до него не должен дотянуться. Всё остальное — после.
+        assert_eq!(at("hijack-dns"), Some(0), "перехват DNS обязан быть первым: {rules:#?}");
+        assert_eq!(reject, 1, "отбой обязан идти сразу за перехватом: {rules:#?}");
+        assert!(reject < at("sniff").unwrap(), "отбой обязан опережать разбор имени: {rules:#?}");
+        let first = &rules[reject];
+        // Молчание, а не отказ: отказ приходит так же мгновенно, как и отбой
+        // самого sing-box, и шторм повторов от него не прекращается.
+        assert_eq!(first["method"], "drop", "отбой обязан молчать, иначе повторы идут той же частотой");
+
+        let inner = first["rules"].as_array().expect("отбой обязан быть составным: {first:#?}");
+        assert_eq!(first["mode"], "and");
+        assert!(inner.iter().any(|r| r["ip_cidr"][0] == format!("{TUN_GATEWAY}/32")), "{first:#?}");
+        let dns = inner.iter().find(|r| r["port"][0] == 53).expect("порт 53 обязан быть назван: {first:#?}");
+        assert_eq!(dns["invert"], true, "53 обязан быть исключён, а не пойман: {first:#?}");
+
+        // Матчера по процессу правило не заводит — иначе лекарство стоило бы
+        // дороже болезни. Проверяем и вложенные: `needFindProcess` включается
+        // от любого правила в наборе, хоть трижды вложенного.
+        assert!(first["process_path"].is_null());
+        assert!(inner.iter().all(|r| r["process_path"].is_null()), "{first:#?}");
+
+        // Без TUN шлюза не существует, и отбивать нечего.
+        let bare = build_config(&node(), &Options { tun: false, ..Default::default() });
+        let bare = bare["route"]["rules"].as_array().unwrap();
+        assert!(bare.iter().all(|r| r["action"] != "reject"), "{bare:#?}");
+    }
+
+    /// Профилировщик появляется только по переменной и молчит без неё: открытый
+    /// порт в службе, которая ходит от LocalSystem, — не та цена за удобство
+    /// отладки. Пустая и пробельная строка — это «выключен», а не «слушать на
+    /// пустом адресе»: иначе `PG_PPROF=` в скрипте поднял бы порт молча.
+    #[test]
+    fn the_profiler_is_off_unless_asked() {
+        let off = build_config(&node(), &Options { pprof: None, ..Default::default() });
+        assert!(off["experimental"]["debug"].is_null(), "без PG_PPROF отладочного порта нет");
+        assert_eq!(pprof_value(""), None);
+        assert_eq!(pprof_value("  "), None);
+        assert_eq!(pprof_value(" 127.0.0.1:48294 "), Some("127.0.0.1:48294".to_string()));
+
+        let on = build_config(&node(), &Options { pprof: Some("127.0.0.1:48294".into()), ..Default::default() });
+        assert_eq!(on["experimental"]["debug"]["listen"], "127.0.0.1:48294");
+        // Счётчики Clash при этом остаются на месте: обе секции живут в
+        // `experimental`, и подстановка одной не должна затирать другую.
+        assert!(on["experimental"]["clash_api"]["external_controller"].is_string());
+    }
+
     #[test]
     fn tun_optional() {
         let with = build_config(&node(), &Options::default());
@@ -790,6 +989,52 @@ mod tests {
         assert_eq!(remote["tag"], "remote");
         assert_eq!(remote["detour"], TAG_PROXY, "иначе имена утекают мимо туннеля");
         assert_eq!(cfg["route"]["default_domain_resolver"]["server"], "local");
+
+        // Бутстрап обязан быть назван явно и ходить мимо туннеля. `type: local`
+        // здесь — это резолвер системы, а после `auto_route` резолвер системы
+        // это адрес нашего же шлюза TUN: ссылка на себя, которая с перехватом
+        // DNS становится замкнутым циклом.
+        let local = &cfg["dns"]["servers"][1];
+        assert_eq!(local["tag"], "local");
+        assert_ne!(local["type"], "local", "системный резолвер после auto_route указывает на нас самих");
+        assert!(local["server"].is_string(), "бутстрап обязан быть назван адресом: {local}");
+        assert_ne!(local["detour"], TAG_PROXY, "иначе адрес сервера разрешается через сам сервер");
+        // И `detour: "direct"` тоже нельзя: наш `direct` — пустой outbound, а на
+        // такой `detour` sing-box отказывается стартовать вовсе. Проверкой
+        // конфига это не ловится, только запуском — см. `the_config_actually_starts`.
+        assert!(local["detour"].is_null(), "detour на пустой direct не даёт службе стартовать: {local}");
+        // Шифрованным: открытый UDP показал бы имя сервера всей сети по пути, а
+        // у человека DNS на адаптере уже зашифрован — понижать молча нельзя.
+        assert_eq!(local["type"], "https", "бутстрап обязан идти по DoH: {local}");
+        assert!(
+            local["server"].as_str().unwrap().parse::<std::net::IpAddr>().is_ok(),
+            "бутстрап обязан быть адресом, а не именем: разрешать его нечем — {local}",
+        );
+    }
+
+    /// DNS машины обязан перехватываться, иначе он утыкается в адрес, который
+    /// `sing-tun` сам же и прописал адаптеру, — и там его никто не ждёт. Замер
+    /// на живой машине: 1025 соединений из 1047 висели на `172.27.234.2:53` при
+    /// нулевом сетевом трафике и 85% ЦП.
+    ///
+    /// Перехват обязан быть только на TUN: вход `local` — путь пробы, и трогать
+    /// его нельзя по той же причине, по которой его не сниффят.
+    #[test]
+    fn the_machine_dns_is_hijacked_on_the_tun_only() {
+        let cfg = build_config(&node(), &Options::default());
+        let rules = cfg["route"]["rules"].as_array().unwrap();
+        let hijack = rules
+            .iter()
+            .find(|r| r["action"] == "hijack-dns")
+            .unwrap_or_else(|| panic!("перехвата DNS нет — вернётся шторм: {rules:#?}"));
+        assert_eq!(hijack["inbound"][0], "tun-in", "перехват обязан быть только на TUN: {hijack}");
+        assert_eq!(hijack["port"][0], 53);
+        assert!(hijack["process_path"].is_null(), "матчера по процессу правило заводить не должно");
+
+        // Без TUN перехватывать нечего, и путь пробы обязан остаться чистым.
+        let bare = build_config(&node(), &Options { tun: false, ..Default::default() });
+        let bare = bare["route"]["rules"].as_array().unwrap();
+        assert!(bare.iter().all(|r| r["action"] != "hijack-dns"), "{bare:#?}");
     }
 
     /// Стек доезжает до конфига: без этого `PG_STACK` молча ничего не менял бы,
@@ -914,17 +1159,50 @@ mod tests {
     /// Конфиг с включённым TUN тоже должен проходить проверку sing-box:
     /// именно его увидит Windows, а остальные тесты гоняют вариант без TUN.
     #[test]
+    /// Конфиг обязан не только разбираться, но и **запускаться**, и это разные
+    /// вещи. `sing-box check` проверяет разбор: `detour: "direct"` на нашем
+    /// пустом `direct`-outbound он пропускает молча, а служба на нём падает при
+    /// старте с «detour to an empty direct outbound makes no sense». Ровно так и
+    /// случилось — поймано запуском уже после того, как проверка конфига дала
+    /// зелёный свет.
+    ///
+    /// Без TUN и на свободных портах: прав на TUN у тестов нет, а постоянные
+    /// порты столкнулись бы с живой службой на машине разработчика.
+    #[test]
+    fn the_config_actually_starts() {
+        let Ok((socks_port, api_port)) = free_port().and_then(|a| Ok((a, free_port()?))) else {
+            return;
+        };
+        let node = core_config::parse("trojan://p@127.0.0.1:1").unwrap().node;
+        let opts = Options { tun: false, socks_port, api_port, ..Default::default() };
+        let dir = std::env::temp_dir().join("pg-start-check");
+        let _ = std::fs::remove_dir_all(&dir);
+        match Tunnel::start(&build_config(&node, &opts), &dir) {
+            Ok(mut live) => live.stop(),
+            // sing-box не установлен — проверять нечем; отличаем по тексту,
+            // потому что любой другой отказ здесь обязан валить тест.
+            Err(e) if e.to_string().contains("не запускается") || e.to_string().contains("cannot start") => {}
+            Err(e) => panic!("конфиг разбирается, но служба на нём не поднимается: {e}"),
+        }
+    }
+
+    #[test]
     fn tun_config_passes_singbox_check() {
         let node = core_config::parse("trojan://p@a.com:443").unwrap().node;
-        let cfg = build_config(&node, &Options { apps: vec![r"C:\app.exe".into()], ..Default::default() });
         let dir = std::env::temp_dir().join("pg-tun-check");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("c.json");
-        std::fs::write(&path, serde_json::to_vec_pretty(&cfg).unwrap()).unwrap();
-        let Ok(out) = Command::new(binary()).arg("check").arg("-c").arg(&path).output() else {
-            return; // sing-box не установлен
-        };
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        // Обе ветки: без профилировщика и с ним. Имя секции и поля внутри
+        // компилятор не проверяет никак — ошибись в них, и служба узнает об
+        // этом только на живой машине, отказом запуска.
+        for pprof in [None, Some("127.0.0.1:48294".to_string())] {
+            let cfg = build_config(&node, &Options { apps: vec![r"C:\app.exe".into()], pprof, ..Default::default() });
+            std::fs::write(&path, serde_json::to_vec_pretty(&cfg).unwrap()).unwrap();
+            let Ok(out) = Command::new(binary()).arg("check").arg("-c").arg(&path).output() else {
+                return; // sing-box не установлен
+            };
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        }
     }
 
 }

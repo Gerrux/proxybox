@@ -33,6 +33,20 @@ const PROBE_EVERY: Duration = Duration::from_secs(3);
 /// окно сделало бы `WaitForSingleObject` на дублированном хэндле (на Unix —
 /// pidfd), но это платформенный unsafe в обмен на последние 200 мс.
 const DEATH_EVERY: Duration = Duration::from_millis(200);
+/// Счётчики трафика забираются не каждый круг, а раз в столько кругов, и это
+/// не экономия на спичках. Clash API отдаёт итоги только в теле `/connections`,
+/// вместе со всем списком живых соединений и после него — оборвать разбор на
+/// полпути нельзя. Замерено на 1.13.19: около 357 байт на соединение (500
+/// соединений — 178 КБ). Под `final: direct` через туннель проходит вся машина,
+/// поэтому в патологии — а её и ловят, когда смотрят на ЦП, — это десятки
+/// мегабайт на опрос: sing-box их сериализует, служба разбирает в дерево, и всё
+/// выбрасывается ради двух чисел. Надзор превращался бы в усилитель того самого
+/// симптома, который меряют.
+///
+/// Живость туннеля это не трогает вовсе — она на `Process::alive` и идёт своим
+/// чередом. Счётчики в окне сессионные, им частота ни к чему.
+/// Сторож — `the_counters_are_not_polled_every_round`.
+const TRAFFIC_EVERY: u32 = 5;
 /// Пауза перед повторной попыткой поднять туннель: удваивается до максимума.
 /// Без неё отказ, который сам не пройдёт (нет прав, занят порт), превращается
 /// в бесконечный поток одинаковых ошибок в журнале.
@@ -133,6 +147,13 @@ fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
+/// То же в миллисекундах — для отметки снятия счётчиков: по разнице двух
+/// отметок окно считает байты в секунду, и секундная точность на промежутке в
+/// полтора десятка секунд врала бы на проценты.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
 /// Запомнить измерение профиля. Страна остаётся от прошлого раза, если в этот
 /// узнать её не вышло: узел из страны в страну не переезжает, а не ответить он
 /// может по дороге — и терять из-за этого уже известное незачем.
@@ -190,6 +211,32 @@ struct Service {
 }
 
 impl Service {
+    /// Список приложений с диска — данные, которым нельзя верить на слово:
+    /// `state.json` переживает версии продукта и правится руками, а один и тот
+    /// же путь встречался в нём дважды. Окно рисовало приложение двумя
+    /// строками и ругалось на повторяющийся ключ React, а убрать лишнюю строку
+    /// было нечем: `RemoveApp` вычищает обе разом, и приложение исчезало
+    /// целиком.
+    ///
+    /// Чистим на входе, а не в каждой команде: `AddApp` и автообнаружение
+    /// (`knows`) своих дублей не пропускают, так что войти дубль может только
+    /// с диска. Через `load()` проходит всё сохранённое — как прополка
+    /// `probes` живёт в одном `save()` по той же причине.
+    ///
+    /// Выбранность складывается, а не берётся у первой записи: из двух строк
+    /// одного exe выключенная не должна отменять выбранную — это молча вынуло
+    /// бы приложение из туннеля. Сторож — `a_duplicate_app_never_survives_loading`.
+    fn dedup_apps(apps: Vec<App>) -> Vec<App> {
+        let mut out: Vec<App> = Vec::new();
+        for app in apps {
+            match out.iter_mut().find(|a| same_path(&a.path, &app.path)) {
+                Some(kept) => kept.enabled |= app.enabled,
+                None => out.push(app),
+            }
+        }
+        out
+    }
+
     fn load() -> Self {
         let raw = std::fs::read_to_string(dir().join("state.json")).unwrap_or_default();
         let saved: Saved = serde_json::from_str(&raw).unwrap_or_default();
@@ -206,7 +253,7 @@ impl Service {
             status: Status {
                 lang: saved.lang,
                 profile: saved.profile,
-                apps: saved.apps,
+                apps: Self::dedup_apps(saved.apps),
                 all_traffic: saved.all_traffic,
                 profiles: saved.profiles.keys().cloned().collect(),
                 subscriptions: subscriptions_of(&saved.subscriptions, &saved.profiles),
@@ -575,6 +622,12 @@ impl Service {
             }
         }
         if !moved.is_empty() {
+            // Переезд — единственное место, где путь меняется у уже принятой
+            // записи: все прочие проверки стоят на добавлении. Две записи
+            // разных версий одного пакета были законно разными путями, а после
+            // обновления читаются одной строкой — и список получал точный
+            // дубль, которого больше завести неоткуда.
+            self.status.apps = Self::dedup_apps(std::mem::take(&mut self.status.apps));
             let names = moved.join(", ");
             self.log(t(
                 &format!("приложения обновились, пути в списке освежены: {names}"),
@@ -933,6 +986,47 @@ fn leaks_first(conns: &mut [Conn], picked: &BTreeSet<String>) {
     conns.sort_by_key(|c| !c.leak);
 }
 
+/// Есть ли уже это приложение в списке. С точностью до регистра — как и всё
+/// прочее сравнение путей у нас (`leaks_first` выше, охват в `supervise`):
+/// на Windows `…\store.exe` и `…\Store.exe` — один и тот же файл.
+///
+/// Спрашивает автообнаружение, и только оно: остальные команды получают путь
+/// из самого списка, где он совпадает побайтово по построению. А находка из
+/// реестра приходит в том регистре, в каком её записал установщик, — побайтовое
+/// сравнение заводило второй экземпляр того же exe, и список показывал его
+/// дважды. Сторож — `discovery_knows_a_path_it_already_has`.
+fn knows(apps: &[App], path: &str) -> bool {
+    apps.iter().any(|a| same_path(&a.path, path))
+}
+
+/// Один ли это файл. С точностью до регистра — как `leaks_first` выше и как
+/// сам `core_apps::discover()` со своими находками: на Windows регистр пути
+/// не различает и файловая система.
+fn same_path(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
+}
+
+/// Что из найденного и правда новое. Выключенными: найдено — не значит выбрано.
+///
+/// Сверяется и с уже принятым в этом же заходе, а не только со списком: `found`
+/// склеен из каталога, реестра, пакетов и живых процессов, и один exe приходит
+/// оттуда столько раз, сколько у него процессов. Дедуп внутри `discover()` эту
+/// пачку схлопывает, но снимок `status.apps` про принятое секунду назад в том
+/// же цикле не знает — стоит дедупу пропустить хоть один вид пути, и в список
+/// уезжает вся пачка разом, а не одна запись.
+///
+/// Сторож — `discovery_never_adds_one_exe_twice_in_a_single_pass`.
+fn newcomers(known: &[App], found: Vec<core_apps::Found>) -> Vec<App> {
+    let mut added: Vec<App> = Vec::new();
+    for f in found {
+        if knows(known, &f.path) || knows(&added, &f.path) {
+            continue;
+        }
+        added.push(App { path: f.path, name: f.name, enabled: false });
+    }
+    added
+}
+
 fn handle(svc: &Mutex<Service>, req: Request) -> Response {
     // Подписка ходит в сеть, поэтому разбирается до замка — остальные команды
     // работают с состоянием и берут его сразу.
@@ -954,13 +1048,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
         }
         Request::ListApps => Response::Apps(s.status.apps.clone()),
         Request::Discover { env } => {
-            let found = core_apps::discover(&env);
-            let added: Vec<App> = found
-                .into_iter()
-                .filter(|f| !s.status.apps.iter().any(|a| a.path == f.path))
-                // Выключенными: найдено — не значит выбрано.
-                .map(|f| App { path: f.path, name: f.name, enabled: false })
-                .collect();
+            let added = newcomers(&s.status.apps, core_apps::discover(&env));
             s.log(match added.len() {
                 0 => t("автообнаружение: ничего нового не найдено", "discovery: nothing new found"),
                 n => t(&format!("автообнаружение: добавлено приложений — {n}"), &format!("discovery: {n} apps added")),
@@ -1261,6 +1349,10 @@ fn watch_for_death(svc: &Arc<Mutex<Service>>) {
 /// Присмотр за туннелем: живость, проба, счётчики. Замок на время пробы не
 /// держим — иначе статус в GUI замирал бы на секунды.
 fn supervise(svc: &Arc<Mutex<Service>>) {
+    // Круг считается здесь, а не в состоянии службы: он никому больше не нужен и
+    // на диск не просится. Ноль на первом круге — чтобы счётчики появились сразу
+    // после подъёма туннеля, а не через четверть минуты пустых нулей в окне.
+    let mut round: u32 = 0;
     loop {
         watch_for_death(svc);
         let probe = {
@@ -1308,7 +1400,12 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
         };
 
         let result = core_tunnel::probe(socks_port, (&host, port));
-        let traffic = core_tunnel::traffic(api_port).ok();
+        // Пропущенный круг оставляет прошлые числа на месте: `None` ниже
+        // разбирается тем же путём, что и отказ Clash API, — счётчики не
+        // обнуляются, а просто не двигаются.
+        let due = round % TRAFFIC_EVERY == 0;
+        round = round.wrapping_add(1);
+        let traffic = due.then(|| core_tunnel::traffic(api_port).ok()).flatten();
 
         let mut s = lock(svc);
         if !s.private {
@@ -1363,6 +1460,10 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
         }
         if let Some((rx, tx)) = traffic {
             (s.status.rx, s.status.tx) = (rx, tx);
+            // Отметка двигается на каждом удачном снятии, даже когда числа те
+            // же: «по каналу молчат» и «счётчики ещё не обновляли» — разные
+            // вещи, и различить их из окна больше нечем.
+            s.status.traffic_at = now_ms();
         }
         // Настройку снимаем под тем же замком: ниже он уже отпущен, а брать его
         // второй раз ради одного бита незачем.
@@ -1550,6 +1651,32 @@ mod tests {
         assert_eq!(after_refresh(Some(&old), None, true, false), Active::Stop, "нажатие человека — он видит, что узла нет");
     }
 
+    /// Счётчики трафика обязаны забираться реже круга надзора: Clash API отдаёт
+    /// их только вместе со всем списком живых соединений, и в патологии это
+    /// десятки мегабайт на опрос. Вернут сюда каждый круг — надзор станет
+    /// усилителем того самого расхода, который им же и меряют.
+    ///
+    /// Живость при этом обязана остаться на своём периоде: она стоит одного
+    /// `try_wait` и к Clash API не ходит вовсе.
+    #[test]
+    fn the_counters_are_not_polled_every_round() {
+        assert!(TRAFFIC_EVERY > 1, "иначе отвязывать было не от чего");
+        assert!(PROBE_EVERY * TRAFFIC_EVERY >= Duration::from_secs(10), "слишком часто, чтобы окупиться");
+
+        let src = include_str!("main.rs");
+        let body = src
+            .split("fn supervise(")
+            .nth(1)
+            .and_then(|s| s.split("\nfn ").next())
+            .expect("надзор на месте");
+        // Единственный поход за счётчиками, и он под условием круга.
+        assert_eq!(body.matches("core_tunnel::traffic(").count(), 1, "поход за счётчиками обязан быть один");
+        assert!(body.contains("due.then("), "счётчики обязаны забираться по условию круга: {body}");
+        assert!(body.contains("% TRAFFIC_EVERY"), "условие обязано считать круги");
+        // А живость — вне этого условия и на своём периоде.
+        assert!(body.contains("watch_for_death(svc)"), "живость идёт своим чередом");
+    }
+
     /// Сторож окна утечки. Проверка живости обязана быть заметно чаще пробы и
     /// укладываться в неё целое число раз — иначе «пауза» между пробами
     /// растянется, и окно, ради которого всё это заведено, вырастет обратно.
@@ -1608,6 +1735,114 @@ mod tests {
         let needle = format!(".{}()", "reapply");
         let calls = include_str!("main.rs").matches(&needle).count();
         assert_eq!(calls, 1, "перезапуск зовётся только из edit, а нашлось вызовов: {calls}");
+    }
+
+    /// Автообнаружение обязано узнавать путь, который у него уже есть, в любом
+    /// регистре: установщик пишет в реестр один вид, а `state.json` хранит тот,
+    /// что пришёл когда-то, и на Windows это один файл. Побайтовая сверка
+    /// заводила второй экземпляр — список показывал приложение дважды, а окно
+    /// падало на повторяющемся ключе React.
+    #[test]
+    fn discovery_knows_a_path_it_already_has() {
+        let apps = vec![App {
+            path: r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\store.exe".into(),
+            name: "store".into(),
+            enabled: false,
+        }];
+        assert!(knows(&apps, &apps[0].path), "тот же путь — точно знакомый");
+        assert!(
+            knows(&apps, r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\Store.exe"),
+            "регистр не делает из приложения второе"
+        );
+        assert!(
+            !knows(&apps, r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\other.exe"),
+            "другой файл обязан остаться новым"
+        );
+    }
+
+    /// Автообнаружение складывает находки из каталога, реестра, пакетов и живых
+    /// процессов, и один exe приходит оттуда столько раз, сколько у него
+    /// процессов. Сверки со списком мало: он про принятое в этом же заходе не
+    /// знает, и пачка одинаковых находок уезжала в список целиком — по строке
+    /// на процесс.
+    #[test]
+    fn discovery_never_adds_one_exe_twice_in_a_single_pass() {
+        let store = r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\store.exe";
+        let f = |path: &str| core_apps::Found { name: "store".into(), path: path.into() };
+
+        let batch = vec![f(store), f(store), f(store), f(&store.replace("store.exe", "Store.exe"))];
+        let added = newcomers(&[], batch);
+        assert_eq!(added.len(), 1, "один exe — одна новая строка, сколько бы раз его ни нашли");
+        assert!(!added[0].enabled, "найденное не значит выбранное");
+
+        // Уже известное не заводится заново — ради этого сверка и стояла.
+        let known = vec![App { path: store.into(), name: "store".into(), enabled: true }];
+        assert!(newcomers(&known, vec![f(store)]).is_empty(), "известный путь новым не станет");
+
+        let mixed = newcomers(&known, vec![f(store), f(r"C:\other.exe"), f(r"C:\other.exe")]);
+        assert_eq!(mixed.len(), 1, "новое приходит по одной записи на файл");
+        assert_eq!(mixed[0].path, r"C:\other.exe");
+    }
+
+    /// Обновление пакета MSIX схлопывает пути: две записи разных версий одного
+    /// пакета были законно разными файлами, а после переезда читаются одной
+    /// строкой. Проверки на добавлении тут бессильны — путь меняется у уже
+    /// принятой записи, — и список получал точный дубль. Единственный способ
+    /// его завести: среди двух сотен приложений так задвоился ровно тот, что и
+    /// живёт в WindowsApps.
+    #[test]
+    fn an_updated_package_does_not_split_into_two_rows() {
+        // Ровно то, чем становятся две версии Store после переезда на 1401.3.0.
+        let now = r"C:\Program Files\WindowsApps\Microsoft.WindowsStore_22607.1401.3.0_x64__8wekyb3d8bbwe\store.exe";
+        let after = Service::dedup_apps(vec![
+            App { path: now.into(), name: "store".into(), enabled: false },
+            App { path: now.into(), name: "store".into(), enabled: true },
+        ]);
+        assert_eq!(after.len(), 1, "обновившийся пакет — одна строка, а не две");
+        assert!(after[0].enabled, "выбор человека обязан пережить переезд пакета");
+
+        // Склейка сама себя не позовёт: правило держится, только пока переезд
+        // через неё и проходит. Иголка собирается на месте — написанная
+        // целиком, она нашла бы саму себя.
+        let needle = format!("Self::{}(std::mem::take(&mut self.status.apps))", "dedup_apps");
+        assert!(
+            include_str!("main.rs").contains(&needle),
+            "rebind_packages обязана чистить список после переезда путей"
+        );
+    }
+
+    /// Дубль в `state.json` переживал любое число перезапусков: `load()` брал
+    /// список как есть, а `save()` писал его обратно. Окно рисовало приложение
+    /// двумя строками, убрать лишнюю было нечем — `RemoveApp` вычищает обе, —
+    /// и React ругался на повторяющийся ключ.
+    #[test]
+    fn a_duplicate_app_never_survives_loading() {
+        let store = r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\store.exe";
+        let app = |path: &str, enabled: bool| App { path: path.into(), name: "store".into(), enabled };
+
+        let one = Service::dedup_apps(vec![app(store, false), app(store, false)]);
+        assert_eq!(one.len(), 1, "один и тот же путь — одна строка списка");
+
+        // Выключенная запись не должна отменять выбранную: это молча вынуло бы
+        // приложение из туннеля, оставив его в списке.
+        let kept = Service::dedup_apps(vec![app(store, false), app(store, true)]);
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].enabled, "выбранность обязана пережить склейку дублей");
+
+        let by_case = Service::dedup_apps(vec![app(store, true), app(&store.replace("store.exe", "Store.exe"), false)]);
+        assert_eq!(by_case.len(), 1, "регистр не делает из приложения второе");
+
+        let other = Service::dedup_apps(vec![app(store, true), app(r"C:\other.exe", false)]);
+        assert_eq!(other.len(), 2, "разные файлы обязаны остаться разными");
+
+        // Сама по себе склейка ничего не чинит: правило держится, только пока
+        // список с диска через неё и проходит. Иголка собирается на месте —
+        // написанная целиком, она нашла бы саму себя.
+        let needle = format!("Self::{}(saved.apps)", "dedup_apps");
+        assert!(
+            include_str!("main.rs").contains(&needle),
+            "load() обязана чистить список приложений, пришедший с диска"
+        );
     }
 
     /// Перезапуск не должен ни тихо возвращать выбранные приложения в открытую

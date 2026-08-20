@@ -131,6 +131,9 @@ const ICONS = {
   speech: "M1.5 2.5h9v5.5h-5L2.5 10.5V8H1.5z",
   dice: "M2 2h8v8H2zM4.2 4.2h.01M7.8 7.8h.01M6 6h.01",
   warn: "M6 1.5 11 10.5H1zM6 4.5v2.5M6 9h.01",
+  lines: "M1.5 2.5h9M1.5 5h9M1.5 7.5h6",
+  browser: "M1.5 2.5h9v7h-9zM1.5 4.5h9M3.2 3.5h.01M4.9 3.5h.01",
+  swap: "M1.5 3.5h7L6.5 1.5M10.5 8.5h-7L5.5 10.5",
 } as const;
 
 export type IconName = keyof typeof ICONS;

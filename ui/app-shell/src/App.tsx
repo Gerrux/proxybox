@@ -22,7 +22,7 @@ import { Profiles } from "./Profiles";
 import { Settings, useReleases } from "./Settings";
 import { StatusBar } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
-import { Button } from "./ui";
+import { Button, Icon, type IconName } from "./ui";
 
 /** Что делать с крестиком, если человек попросил больше не спрашивать. Живёт в
  *  localStorage окна, а не в настройках службы: это привычка к окну, а не
@@ -244,23 +244,23 @@ export function App() {
                 полоса и широкая «Главная» — одна навигация в двух видах, кто из
                 них показан, решает `index.css` по ширине окна. */}
             <nav className="tabs flex shrink-0 gap-0.5 rounded-md border border-edge bg-surface-2 p-0.5">
-              <TabButton className="tab-narrow" active={tab === "profiles"} onClick={() => setTab("profiles")}
+              <TabButton className="tab-narrow" icon="node" active={tab === "profiles"} onClick={() => setTab("profiles")}
                 label={s.profiles} count={status?.profiles.length ?? 0} />
-              <TabButton className="tab-narrow" active={tab === "apps"} onClick={() => setTab("apps")}
+              <TabButton className="tab-narrow" icon="screen" active={tab === "apps"} onClick={() => setTab("apps")}
                 label={s.apps} count={status?.all_traffic ? "—" : `${inTunnel}/${status?.apps.length ?? 0}`} />
-              <TabButton className="tab-narrow" active={tab === "journal"} onClick={() => setTab("journal")}
+              <TabButton className="tab-narrow" icon="lines" active={tab === "journal"} onClick={() => setTab("journal")}
                 label={s.journal} count={status?.log.length ?? 0} />
               {/* Шире 1100 px первые три стоят рядом, и выбирать между ними
                   нечего: остаётся развилка «списки или браузерные профили». */}
-              <TabButton className="tab-wide" active={!WIDE.includes(tab)} onClick={() => setTab("profiles")}
+              <TabButton className="tab-wide" icon="node" active={!WIDE.includes(tab)} onClick={() => setTab("profiles")}
                 label={s.tabMain} />
-              <TabButton active={tab === "browsers"} onClick={() => setTab("browsers")}
+              <TabButton icon="browser" active={tab === "browsers"} onClick={() => setTab("browsers")}
                 label={s.tabBrowsers} count={status?.browser_profiles.length ?? 0} />
               {/* Счётчика у соединений нет: сколько их, знает только сама
                   панель, а спрашивать это ради подписи на закрытой вкладке
                   значило бы опрашивать службу всегда — ровно то, чего эта
                   панель и не делает. */}
-              <TabButton active={tab === "conns"} onClick={() => setTab("conns")} label={s.tabConns} />
+              <TabButton icon="swap" active={tab === "conns"} onClick={() => setTab("conns")} label={s.tabConns} />
             </nav>
 
             {tab === "browsers" ? (
@@ -357,30 +357,42 @@ function CloseDialog({
 }
 
 /** Кнопка таба: подпись и счётчик строк за ней. Счётчик — не украшение: он
- *  единственное, что говорит о закрытой панели хоть что-то. */
+ *  единственное, что говорит о закрытой панели хоть что-то.
+ *
+ *  В плашке из трея подписи нет: 380 px на пять табов — это «Соединения»,
+ *  обрезанные до «Сое…», то есть подпись, которая уже ничего не подписывает.
+ *  Значок в ту же ширину помещается целиком, а имя таба остаётся в
+ *  `aria-label` и всплывающей подсказке. */
 function TabButton({
   label,
+  icon,
   count,
   active,
   onClick,
   className = "",
 }: {
   label: string;
+  icon: IconName;
   count?: number | string;
   active: boolean;
   onClick: () => void;
   className?: string;
 }) {
+  const bare = isFlyout();
   return (
     <button
       type="button"
       aria-pressed={active}
+      aria-label={bare ? label : undefined}
+      title={bare ? label : undefined}
       onClick={onClick}
-      className={`smooth inline-flex min-w-0 flex-1 items-baseline justify-center gap-1.5 rounded-[3px] px-1.5 py-1.5 ${
+      className={`smooth inline-flex min-w-0 flex-1 justify-center gap-1.5 rounded-[3px] px-1.5 py-1.5 ${
+        bare ? "items-center" : "items-baseline"
+      } ${
         active ? "bg-surface text-ink" : "text-muted hover:text-ink"
       } ${className}`}
     >
-      <span className="engraved truncate">{label}</span>
+      {bare ? <Icon name={icon} /> : <span className="engraved truncate">{label}</span>}
       {count != null && <span className="shrink-0 text-[11px] text-muted">{count}</span>}
     </button>
   );
