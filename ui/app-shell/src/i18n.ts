@@ -137,7 +137,7 @@ const RU = {
   connsNoProcess: "без процесса",
   connsNoProcessHint: "sing-box не определил владельца: так выглядит трафик службы, драйвера и DNS.",
   rateHint: (peak: string) =>
-    `Скорость канала за последние полторы минуты: ↓ принято, ↑ отправлено. Шкала плавающая, пик окна — ${peak}. Считается по счётчикам туннеля прямо в окне и нигде не сохраняется.`,
+    `Скорость канала: ↓ принято, ↑ отправлено. Шкала плавающая, пик окна — ${peak}. Считается по счётчикам туннеля прямо в окне и нигде не сохраняется; служба снимает их своим тактом, поэтому и график едет её шагом, а не шагом опроса.`,
   perSecond: "/с",
   hideMessage: "Скрыть сообщение",
   minimizeWindow: "Свернуть окно",
@@ -330,7 +330,7 @@ const EN: typeof RU = {
   connsNoProcess: "no process",
   connsNoProcessHint: "sing-box could not tell the owner: that is how service, driver and DNS traffic looks.",
   rateHint: (peak: string) =>
-    `Link speed over the last minute and a half: ↓ received, ↑ sent. The scale floats with the window, peaking at ${peak}. Counted from the tunnel counters right here in the window and stored nowhere.`,
+    `Link speed: ↓ received, ↑ sent. The scale floats with the window, peaking at ${peak}. Counted from the tunnel counters right here in the window and stored nowhere; the service samples them at its own pace, so the graph advances at that pace, not at the polling one.`,
   perSecond: "/s",
   hideMessage: "Hide message",
   minimizeWindow: "Minimize window",
