@@ -152,11 +152,18 @@ export function Profiles({
                 <details
                   key={url ?? ""}
                   open={!collapsed.includes(url ?? "")}
-                  onToggle={(e) =>
+                  onToggle={(e) => {
+                    // Состояние снимаем здесь, а не внутри апдейтера: апдейтер
+                    // React зовёт лениво, уже на фазе рендера, а к тому времени
+                    // синтетическое событие обнулено — `currentTarget` там null.
+                    // Прочитанное изнутри роняло `<Profiles>` целиком, и окно
+                    // открывалось пустым: границы ошибок над панелями нет, и
+                    // React вычищает контейнер.
+                    const { open } = e.currentTarget;
                     setCollapsed((was) =>
-                      e.currentTarget.open ? was.filter((u) => u !== (url ?? "")) : [...was, url ?? ""],
-                    )
-                  }
+                      open ? was.filter((u) => u !== (url ?? "")) : [...was, url ?? ""],
+                    );
+                  }}
                   className="group/sub"
                 >
                   <summary className="engraved flex cursor-pointer list-none items-center gap-2 rounded-md px-2.5 py-1.5 text-muted hover:bg-surface-2 [&::-webkit-details-marker]:hidden">
