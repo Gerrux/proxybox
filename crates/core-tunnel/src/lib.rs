@@ -700,6 +700,9 @@ fn parse_conn(c: &Value) -> Conn {
             .unwrap_or_default()
             .iter()
             .any(|tag| tag == TAG_PROXY),
+        // Утечка — это уже сверка со списком выбранных, а списка здесь нет:
+        // проставляет её служба (`leaks_first`), она же и сортирует.
+        leak: false,
         rx: c["download"].as_u64().unwrap_or(0),
         tx: c["upload"].as_u64().unwrap_or(0),
     }
