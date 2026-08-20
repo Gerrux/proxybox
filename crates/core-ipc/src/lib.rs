@@ -773,6 +773,25 @@ mod tests {
         assert!(vite.contains(&format!("SERVICE_PORT = {port}")), "vite.config.ts смотрит не в {ADDR}");
     }
 
+    /// Приборная линейка обязана стоять одной строкой везде, где её колонки не
+    /// встают в ряд: перенос уносил счётчики трафика на второй ряд, а его — за
+    /// нижний край окна, и человек их просто не видел. Порог у сжатия и у
+    /// пятиколоночной сетки один (768 px), промежуточных сеток нет.
+    #[test]
+    fn the_instrument_row_never_wraps() {
+        let css = include_str!("../../../ui/app-shell/src/index.css");
+        let narrow = css
+            .split("@media (max-width: 767px) {")
+            .nth(1)
+            .expect("сжатие линейки в строку живёт под своим порогом");
+        assert!(narrow.contains("flex-wrap: nowrap;"), "линейка переносится: счётчики уедут на второй ряд");
+
+        let bar = include_str!("../../../ui/app-shell/src/StatusBar.tsx");
+        let row = bar.lines().find(|l| l.contains("st-metrics")).expect("линейка размечена классом st-metrics");
+        assert!(row.contains("grid-cols-5"), "сетка линейки не пятиколоночная");
+        assert!(!row.contains(":grid-cols"), "промежуточная сетка складывает линейку в два-три ряда");
+    }
+
     /// Оболочка — такой же клиент канала, но живёт вне воркспейса: компилятор
     /// её не видит вовсе, а `core_ipc::call` блокирующий. Синхронная команда
     /// исполняется в цикле событий — окно перестаёт разбирать сообщения, пока
