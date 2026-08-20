@@ -245,6 +245,32 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
     // потому, что кто-то им пользуется.
     let default_route = if opts.scope == Scope::All { TAG_PROXY } else { "direct" };
 
+    // Локальные имена разрешает роутер, а не сервер человека, и это следствие
+    // перехвата: без него DNS через туннель не работал вовсе, а с ним **всё**
+    // уходит на `remote` — включая `nas.lan` и голые односложные имена, которые
+    // раздаёт домашний роутер. Там они не разрешатся, зато уедут наружу.
+    //
+    // Резолвер берётся из аренды DHCP, потому что назвать адрес роутера в
+    // конфиге нечем: он у каждого свой. Отказ DHCP не страшен — проверено на
+    // 1.13.19: sing-box пишет ошибку в журнал, стартует как обычно, а запрос
+    // возвращает NXDOMAIN за десятки миллисекунд, не вися и не штормя. То есть
+    // худший исход этого правила — ровно то, что было бы без него, только имя
+    // при этом наружу не ушло. Строго не хуже ни по одной оси.
+    //
+    // Односложные имена отдельным правилом: `domain_suffix` их не ловит, а
+    // именно так чаще всего и зовут NAS или принтер. Публичных имён без точки
+    // не бывает, так что перехватить чужое этим нельзя.
+    //
+    // Всё это только при TUN: без него перехвата нет, и локальные имена до нас
+    // не доходят. Сторож — `local_names_are_resolved_by_the_router`.
+    let dns_rules = match opts.tun {
+        false => json!([]),
+        true => json!([
+            { "domain_suffix": ["lan", "local", "home", "home.arpa", "internal"], "server": "lan" },
+            { "domain_regex": ["^[^.]+$"], "server": "lan" },
+        ]),
+    };
+
     let mut cfg = json!({
         "log": { "level": "warn" },
         "experimental": { "clash_api": { "external_controller": format!("127.0.0.1:{}", opts.api_port) } },
@@ -297,6 +323,7 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
                 // и это сторожит тест.
                 { "type": "https", "tag": "local", "server": "8.8.8.8" },
             ],
+            "rules": dns_rules,
             "final": "remote",
         },
         "route": {
@@ -309,6 +336,15 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
             "default_domain_resolver": { "server": "local" },
         },
     });
+    if opts.tun {
+        // Заводится тем же условием, что и правила выше: ссылка на тег,
+        // которого нет, — отказ разбора, а тег без ссылок — мусор в конфиге.
+        // Их всегда двое или ни одного.
+        cfg["dns"]["servers"]
+            .as_array_mut()
+            .expect("список резолверов")
+            .push(json!({ "type": "dhcp", "tag": "lan", "interface": "auto" }));
+    }
     if wireguard {
         cfg["endpoints"] = json!([node]);
     }
@@ -683,6 +719,9 @@ fn parse_conn(c: &Value) -> Conn {
             .unwrap_or_default()
             .iter()
             .any(|tag| tag == TAG_PROXY),
+        // Утечка — это уже сверка со списком выбранных, а списка здесь нет:
+        // проставляет её служба (`leaks_first`), она же и сортирует.
+        leak: false,
         rx: c["download"].as_u64().unwrap_or(0),
         tx: c["upload"].as_u64().unwrap_or(0),
     }
@@ -1214,6 +1253,39 @@ mod tests {
     /// Конфиг с включённым TUN тоже должен проходить проверку sing-box:
     /// именно его увидит Windows, а остальные тесты гоняют вариант без TUN.
     #[test]
+    /// Локальные имена обязан разрешать роутер, а не сервер человека. После
+    /// перехвата DNS весь запрос машины уходит на `remote`, и `nas.lan` вместе
+    /// с ним: там он не разрешится, зато уедет наружу.
+    ///
+    /// Резолвер и правила заводятся всегда вместе: ссылка на несуществующий тег
+    /// — отказ разбора, тег без ссылок — мусор. Без TUN нет ни того, ни другого:
+    /// перехвата там нет, и локальные имена до нас не доходят.
+    #[test]
+    fn local_names_are_resolved_by_the_router() {
+        let cfg = build_config(&node(), &Options::default());
+        let servers = cfg["dns"]["servers"].as_array().unwrap();
+        let lan = servers
+            .iter()
+            .find(|s| s["tag"] == "lan")
+            .unwrap_or_else(|| panic!("резолвера локальных имён нет: {servers:#?}"));
+        assert_eq!(lan["type"], "dhcp", "адрес роутера в конфиге не назвать — он у каждого свой");
+
+        let rules = cfg["dns"]["rules"].as_array().unwrap();
+        assert!(!rules.is_empty(), "резолвер есть, а правил к нему нет — мусор в конфиге");
+        for rule in rules {
+            assert_eq!(rule["server"], "lan", "правила DNS заведены только под локальные имена: {rule}");
+        }
+        let suffixes = rules.iter().find_map(|r| r["domain_suffix"].as_array()).expect("суффиксы");
+        assert!(suffixes.iter().any(|s| s == "lan"));
+        // Односложные имена `domain_suffix` не ловит, а зовут так чаще всего.
+        assert!(rules.iter().any(|r| r["domain_regex"][0] == "^[^.]+$"), "{rules:#?}");
+
+        // Без TUN — ни резолвера, ни правил, и это одно условие на двоих.
+        let bare = build_config(&node(), &Options { tun: false, ..Default::default() });
+        assert!(bare["dns"]["servers"].as_array().unwrap().iter().all(|s| s["tag"] != "lan"));
+        assert!(bare["dns"]["rules"].as_array().unwrap().is_empty(), "{}", bare["dns"]["rules"]);
+    }
+
     /// Конфиг обязан не только разбираться, но и **запускаться**, и это разные
     /// вещи. `sing-box check` проверяет разбор: `detour: "direct"` на нашем
     /// пустом `direct`-outbound он пропускает молча, а служба на нём падает при
@@ -1225,19 +1297,29 @@ mod tests {
     /// порты столкнулись бы с живой службой на машине разработчика.
     #[test]
     fn the_config_actually_starts() {
-        let Ok((socks_port, api_port)) = free_port().and_then(|a| Ok((a, free_port()?))) else {
-            return;
-        };
         let node = core_config::parse("trojan://p@127.0.0.1:1").unwrap().node;
-        let opts = Options { tun: false, socks_port, api_port, ..Default::default() };
-        let dir = std::env::temp_dir().join("pg-start-check");
-        let _ = std::fs::remove_dir_all(&dir);
-        match Tunnel::start(&build_config(&node, &opts), &dir) {
-            Ok(mut live) => live.stop(),
-            // sing-box не установлен — проверять нечем; отличаем по тексту,
-            // потому что любой другой отказ здесь обязан валить тест.
-            Err(e) if e.to_string().contains("не запускается") || e.to_string().contains("cannot start") => {}
-            Err(e) => panic!("конфиг разбирается, но служба на нём не поднимается: {e}"),
+        for tun in [false, true] {
+            let Ok((socks_port, api_port)) = free_port().and_then(|a| Ok((a, free_port()?))) else {
+                return;
+            };
+            let mut cfg = build_config(&node, &Options { tun, socks_port, api_port, ..Default::default() });
+            if tun {
+                // Сам TUN тесту не поднять — прав нет. Но секция `dns` при TUN
+                // другая (появляется резолвер из DHCP), и её старт проверить
+                // надо: снимаем инбаунд и правила, которые на него ссылаются, —
+                // остальное поднимается как обычно.
+                cfg["inbounds"].as_array_mut().unwrap().retain(|i| i["type"] != "tun");
+                cfg["route"]["rules"].as_array_mut().unwrap().retain(|r| r["inbound"][0] != "tun-in");
+            }
+            let dir = std::env::temp_dir().join(format!("pg-start-check-{tun}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            match Tunnel::start(&cfg, &dir) {
+                Ok(mut live) => live.stop(),
+                // sing-box не установлен — проверять нечем; отличаем по тексту,
+                // потому что любой другой отказ здесь обязан валить тест.
+                Err(e) if e.to_string().contains("не запускается") || e.to_string().contains("cannot start") => return,
+                Err(e) => panic!("конфиг (tun={tun}) разбирается, но служба на нём не поднимается: {e}"),
+            }
         }
     }
 
