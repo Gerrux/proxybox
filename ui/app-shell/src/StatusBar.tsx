@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { Status } from "./platform";
+import type { Scope, Status } from "./platform";
 import { strings, type Strings } from "./i18n";
 import { Button, Segmented, flag } from "./ui";
 
@@ -210,10 +210,16 @@ export function StatusBar({
   onToggle: () => void;
   /** Смена охвата. Идёт наверх, а не в службу отсюда: команда перезапускает
    *  туннель, и её ошибка обязана попасть туда же, куда ошибка «включить». */
-  onScope: (all: boolean) => void;
+  onScope: (scope: Scope) => void;
 }) {
   const s = strings(status?.lang);
-  const all = status?.all_traffic ?? false;
+  const scope = status?.scope ?? "apps";
+  const all = scope === "all";
+  // Подсказка говорит не про туннель, а про то, кого он касается, — значит
+  // выбирается охватом. Тернаром в каждой из четырёх строк это читалось бы
+  // как четыре разных правила вместо одного.
+  const byScope = <T,>(apps: T, whitelist: T, whole: T): T =>
+    scope === "all" ? whole : scope === "whitelist" ? whitelist : apps;
   const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
   const latency = useCounted(status?.latency_ms ?? null);
   const rates = useRates(status);
@@ -237,15 +243,30 @@ export function StatusBar({
         off: {
           state: "off" as const,
           title: s.off,
-          hint: status.profiles.length === 0 ? s.offNoProfiles : all ? s.offHintAll : s.offHint,
+          hint:
+            status.profiles.length === 0
+              ? s.offNoProfiles
+              : byScope(s.offHint, s.offHintWhitelist, s.offHintAll),
         },
-        connecting: { state: "connecting" as const, title: s.connecting, hint: all ? s.connectingHintAll : s.connectingHint },
+        connecting: {
+          state: "connecting" as const,
+          title: s.connecting,
+          hint: byScope(s.connectingHint, s.connectingHintWhitelist, s.connectingHintAll),
+        },
         up: {
           state: "up" as const,
           title: s.up,
-          hint: all ? s.upHintAll : inTunnel > 0 ? s.upHint(inTunnel) : s.upNoApps,
+          hint: all
+            ? s.upHintAll
+            : inTunnel > 0
+              ? byScope(s.upHint, s.upHintWhitelist, s.upHint)(inTunnel)
+              : s.upNoApps,
         },
-        down: { state: "down" as const, title: s.down, hint: all ? s.downHintAll : s.downHint },
+        down: {
+          state: "down" as const,
+          title: s.down,
+          hint: byScope(s.downHint, s.downHintWhitelist, s.downHintAll),
+        },
       }[status.tunnel];
 
   const on = status != null && status.tunnel !== "off";
@@ -296,11 +317,12 @@ export function StatusBar({
           label={s.scope}
           options={[
             ["apps", s.scopeApps, s.scopeHint],
+            ["whitelist", s.scopeWhitelist, s.scopeHintWhitelist],
             ["all", s.scopeAll, s.scopeHint],
           ]}
-          value={all ? "all" : "apps"}
+          value={scope}
           disabled={!status || busy}
-          onPick={(v) => onScope(v === "all")}
+          onPick={(v) => onScope(v as Scope)}
         />
         <span className="conduit-lamp smooth" />
         <span className="conduit-line smooth" />

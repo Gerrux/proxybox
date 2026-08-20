@@ -10,7 +10,7 @@ mod service;
 
 use core_ipc::{
     dir_name, t, App, BrowserProfile, Conn, Endpoint, Listener, LogLine, Probe, Request, Response,
-    Settings, Status, Stream, Subscription, Tunnel as TunnelState, ADDR,
+    Scope, Settings, Status, Stream, Subscription, Tunnel as TunnelState, ADDR,
 };
 use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
@@ -118,10 +118,16 @@ struct Saved {
     /// сети напрямую — ровно то, чего продукт обещает не допускать.
     #[serde(default)]
     private: bool,
-    /// Охват: весь трафик машины вместо списка приложений. Переживает
-    /// перезапуск по той же причине, что и `private`: молча сузить охват после
-    /// перезагрузки значило бы выпустить наружу то, что пользователь закрыл.
+    /// Охват. Переживает перезапуск по той же причине, что и `private`: молча
+    /// сузить охват после перезагрузки значило бы выпустить наружу то, что
+    /// пользователь закрыл.
     #[serde(default)]
+    scope: Scope,
+    /// Как охват записывался до появления белого списка. Читается только ради
+    /// переноса: у обновившегося `state.json` поля `scope` нет, и без этой
+    /// строки «весь компьютер» молча превратился бы в «выбранные» — то есть
+    /// машина, запертая человеком, вышла бы в сеть после обновления.
+    #[serde(default, skip_serializing)]
     all_traffic: bool,
     /// Последнее известное про каждый профиль: страна, код, задержка, когда
     /// измерено. Переживает перезапуск намеренно — в отличие от всего
@@ -186,10 +192,13 @@ struct Service {
     probe_target: (String, u16),
     retry_at: Option<Instant>,
     retry_delay: Duration,
-    /// Что уже применено к брандмауэру: (блокировать, охват «весь трафик»,
-    /// список приложений). Без этой памяти надзор дёргал бы netsh каждые три
-    /// секунды и засыпал журнал одинаковыми отказами.
-    applied: Option<(bool, bool, Vec<String>)>,
+    /// Что уже применено к брандмауэру: (правила на приложениях, запрет всего
+    /// исходящего, список приложений). Помним применённое, а не то, из чего оно
+    /// выведено: по нему же решается, наша ли сейчас политика брандмауэра, и
+    /// выведи мы её второй раз — второй вывод разошёлся бы с первым. Без этой
+    /// памяти надзор дёргал бы netsh каждые три секунды и засыпал журнал
+    /// одинаковыми отказами.
+    applied: Option<(core_filter::Fence, bool, Vec<String>)>,
     /// Инстансы под окна браузера: профиль → его процесс, по одному на профиль.
     /// Сеансы независимы — портов у каждого свои (`free_port`), каталог свой
     /// (`browser/<dir_name>`), и общий режим не трогает ни один.
@@ -254,7 +263,10 @@ impl Service {
                 lang: saved.lang,
                 profile: saved.profile,
                 apps: Self::dedup_apps(saved.apps),
-                all_traffic: saved.all_traffic,
+                scope: match (saved.scope, saved.all_traffic) {
+                    (Scope::Apps, true) => Scope::All,
+                    (scope, _) => scope,
+                },
                 profiles: saved.profiles.keys().cloned().collect(),
                 subscriptions: subscriptions_of(&saved.subscriptions, &saved.profiles),
                 probes: saved.probes,
@@ -333,7 +345,8 @@ impl Service {
             refreshed_at: self.status.refreshed_at,
             lang: self.status.lang,
             private: self.private,
-            all_traffic: self.status.all_traffic,
+            scope: self.status.scope,
+            all_traffic: false,
             probes: self.status.probes.clone(),
             browser_profiles: self.status.browser_profiles.clone(),
             settings: self.settings.clone(),
@@ -417,8 +430,8 @@ impl Service {
     /// Всё, что попадёт в конфиг sing-box и в правила брандмауэра: маршрут по
     /// умолчанию и поимённый список путей. Отсюда же выводится и надобность
     /// перезапуска — см. `edit`.
-    fn seen(status: &Status) -> (bool, Vec<String>) {
-        (status.all_traffic, Self::selected(status))
+    fn seen(status: &Status) -> (Scope, Vec<String>) {
+        (status.scope, Self::selected(status))
     }
 
     /// Правка списка приложений или охвата. Туннель перезапускается ровно
@@ -444,8 +457,9 @@ impl Service {
     /// иначе оставила бы правила прошлого режима висеть — а это либо
     /// заблокированные навсегда приложения, либо машина без сети.
     fn guard(&mut self, blocked: bool) {
-        let (all, apps) = Self::seen(&self.status);
-        let want = (blocked, all, apps);
+        let (scope, apps) = Self::seen(&self.status);
+        let (fence, killswitch) = fencing(scope, blocked, self.private);
+        let want = (fence, killswitch, apps);
         if self.applied.as_ref() == Some(&want) {
             return;
         }
@@ -453,11 +467,11 @@ impl Service {
         // охвате «выбранные приложения» настройка машины нас не касается, и
         // возвращать её в умолчание Windows значило бы стереть чужую. Условие
         // держится на том, что охват сохраняется на диск: служба, упавшая с
-        // запретом всего исходящего, на следующем старте видит `all_traffic` и
+        // запретом всего исходящего, на следующем старте видит охват и
         // снимает его — сразу, если приватный режим был выключен.
-        let ours = want.1 || self.applied.as_ref().is_some_and(|(blocked, all, _)| *blocked && *all);
-        let outcome = core_filter::set_blocked(&want.2, blocked && !want.1).and_then(|()| match ours {
-            true => core_filter::set_killswitch(blocked && want.1, &core_tunnel::binary()),
+        let ours = scope != Scope::Apps || self.applied.as_ref().is_some_and(|(_, was, _)| *was);
+        let outcome = core_filter::set_fence(&want.2, fence).and_then(|()| match ours {
+            true => core_filter::set_killswitch(killswitch, &core_tunnel::binary()),
             false => Ok(()),
         });
         match outcome {
@@ -489,8 +503,8 @@ impl Service {
         self.tunnel = None; // старый процесс убивается Drop'ом до запуска нового
         self.generation += 1; // всё, что проба знала о прошлом процессе, устарело
 
-        let (all, apps) = Self::seen(&self.status);
-        let opts = Options { tun: tun_enabled(), apps, all, ..Default::default() };
+        let (scope, apps) = Self::seen(&self.status);
+        let opts = Options { tun: tun_enabled(), apps, scope, ..Default::default() };
         let config = build_config(&node, &opts);
         self.probe_target = probe_target(&self.status.settings.probe, &node);
         match Process::start(&config, &dir()) {
@@ -499,10 +513,16 @@ impl Service {
                 self.status.tunnel = TunnelState::Connecting;
                 self.retry_at = None;
                 self.retry_delay = RETRY_BASE;
-                let count = opts.apps.len();
-                let scope = match opts.all {
-                    true => t("весь трафик компьютера", "all computer traffic"),
-                    false => t(&format!("приложений в туннеле: {count}"), &format!("apps in the tunnel: {count}")),
+                // Приложений, а не путей: в конфиг на каждое уходит до двух форм
+                // пути, и `opts.apps.len()` показал бы человеку удвоенное число.
+                let count = self.status.apps.iter().filter(|a| a.enabled).count();
+                let scope = match opts.scope {
+                    Scope::All => t("весь трафик компьютера", "all computer traffic"),
+                    Scope::Whitelist => t(
+                        &format!("приложений в туннеле: {count}, у остальных сети нет"),
+                        &format!("apps in the tunnel: {count}, everyone else is offline"),
+                    ),
+                    Scope::Apps => t(&format!("приложений в туннеле: {count}"), &format!("apps in the tunnel: {count}")),
                 };
                 self.log(t(
                     &format!("профиль «{profile}»: sing-box запущен, {scope}"),
@@ -962,6 +982,33 @@ fn refresh_loop(svc: Arc<Mutex<Service>>) {
     }
 }
 
+/// Что ставить в брандмауэр: правила на выбранных приложениях и запрет всего
+/// исходящего. Выводится, а не вспоминается ветками, — по той же причине, что и
+/// надобность перезапуска в `edit()`: забывают именно ветки.
+///
+/// `blocked` здесь означает «туннель не подтверждён», а `private` — что человек
+/// включил приватный режим. Три охвата разводятся так:
+///
+/// - `Apps`: политика машины не наша, трогать её нельзя; выбранные запираются
+///   поимённо на то время, пока туннеля нет.
+/// - `All`: запирать поимённо некого — под запрет уходит вся машина, и только
+///   пока туннель не подтверждён.
+/// - `Whitelist`: запрет держится всё время, пока включён приватный режим, — он
+///   и есть «у остальных сети нет». Выбранным при живом туннеле выдаётся
+///   пропуск, а на время падения пропуск снимается, и они запираются тем же
+///   запретом. Сторож — `the_whitelist_locks_the_door_and_hands_out_passes`.
+fn fencing(scope: Scope, blocked: bool, private: bool) -> (core_filter::Fence, bool) {
+    use core_filter::Fence;
+    match scope {
+        Scope::Apps => (if blocked { Fence::Block } else { Fence::Off }, false),
+        Scope::All => (Fence::Off, blocked),
+        // Пропуск выдаётся только при подтверждённом туннеле: выдай мы его
+        // раньше, выбранное приложение вышло бы в открытую сеть ровно в то
+        // окно, ради которого весь этот замок и заведён.
+        Scope::Whitelist => (if private && !blocked { Fence::Allow } else { Fence::Off }, private),
+    }
+}
+
 /// Утечки вперёд всего остального. Список приходит по громкости и режется
 /// сотней, а утечка — это выбранное приложение, ушедшее напрямую, и громкой она
 /// не бывает: пара килобайт на неудачное соединение. Без этого подъёма
@@ -1067,15 +1114,19 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             }
             Response::Done
         }
-        Request::SetAllTraffic { enabled } => {
-            if s.status.all_traffic != enabled {
+        Request::SetScope { scope } => {
+            if s.status.scope != scope {
                 // Правила прошлого охвата снимет ближайший цикл надзора — при
                 // выключенном приватном режиме блокировать всё равно нечего.
                 s.edit(|s| {
-                    s.status.all_traffic = enabled;
-                    s.log(match enabled {
-                        true => t("охват: весь трафик компьютера", "scope: all computer traffic"),
-                        false => t("охват: только выбранные приложения", "scope: selected apps only"),
+                    s.status.scope = scope;
+                    s.log(match scope {
+                        Scope::All => t("охват: весь трафик компьютера", "scope: all computer traffic"),
+                        Scope::Whitelist => t(
+                            "охват: только выбранные приложения, остальным сеть закрыта",
+                            "scope: selected apps only, everyone else is cut off",
+                        ),
+                        Scope::Apps => t("охват: только выбранные приложения", "scope: selected apps only"),
                     });
                     s.save();
                 });
@@ -1495,6 +1546,46 @@ mod tests {
         Conn { process: process.into(), host: "example.org:443".into(), tunneled, rx: bytes, tx: 0 }
     }
 
+    /// Белый список запирает дверь и раздаёт пропуска, а не наоборот.
+    ///
+    /// Три вещи, каждая из которых по отдельности означает дыру: запрет обязан
+    /// стоять всё время, пока включён приватный режим (иначе «у остальных сети
+    /// нет» держится только при живом туннеле); пропуск выбранным обязан
+    /// выдаваться только по подтверждённой пробе (иначе они выходят в открытую
+    /// сеть в то самое окно, ради которого замок и заведён); а охват
+    /// «выбранные» обязан не трогать политику машины вовсе — она не наша.
+    #[test]
+    fn the_whitelist_locks_the_door_and_hands_out_passes() {
+        use core_filter::Fence;
+        // Приватный режим включён, туннель не подтверждён.
+        assert_eq!(fencing(Scope::Whitelist, true, true), (Fence::Off, true), "замок стоит, пропусков нет");
+        // Проба прошла.
+        assert_eq!(fencing(Scope::Whitelist, false, true), (Fence::Allow, true), "замок стоит, выбранным пропуск");
+        // Приватный режим выключен — замок обязан сняться, иначе машина без сети.
+        assert_eq!(fencing(Scope::Whitelist, false, false), (Fence::Off, false), "выключили — сняли всё");
+
+        assert_eq!(fencing(Scope::Apps, true, true), (Fence::Block, false), "чужую политику не трогаем");
+        assert_eq!(fencing(Scope::Apps, false, true), (Fence::Off, false));
+        assert_eq!(fencing(Scope::All, true, true), (Fence::Off, true), "запирать поимённо некого");
+        assert_eq!(fencing(Scope::All, false, true), (Fence::Off, false));
+    }
+
+    /// Старый `state.json` знал только флаг «весь трафик». Прочитать его обязаны:
+    /// иначе первое же обновление выпустило бы в сеть машину, которую человек
+    /// запер, — молча и до первого взгляда на окно.
+    #[test]
+    fn the_old_scope_flag_still_means_the_whole_computer() {
+        let saved: Saved =
+            serde_json::from_str(r#"{"apps": [], "profiles": {}, "all_traffic": true}"#).unwrap();
+        assert_eq!(saved.scope, Scope::Apps, "нового поля в старом файле нет");
+        assert!(saved.all_traffic, "зато есть старое");
+        let migrated = match (saved.scope, saved.all_traffic) {
+            (Scope::Apps, true) => Scope::All,
+            (scope, _) => scope,
+        };
+        assert_eq!(migrated, Scope::All);
+    }
+
     /// Тихая утечка обязана попасть в окно даже тогда, когда громких соединений
     /// больше, чем влезает: пара килобайт мимо туннеля — это ровно то, ради чего
     /// панель и открывают, а сотня самых говорливых её бы и не заметила.
@@ -1692,8 +1783,11 @@ mod tests {
         let moved = Service::seen(&st);
         assert_ne!(moved, one, "переехавший пакет — та же смена списка");
 
-        st.all_traffic = true;
+        st.scope = Scope::All;
         assert_ne!(Service::seen(&st), moved, "охват живёт в конфиге, а не только в статусе");
+        let all = Service::seen(&st);
+        st.scope = Scope::Whitelist;
+        assert_ne!(Service::seen(&st), all, "белый список — третий охват, а не оттенок первых двух");
 
         // Решение принимает один `edit`, а не всякая ветка своей памятью:
         // прямой вызов возвращает правило человеку, у которого оно и терялось.
@@ -1826,12 +1920,16 @@ mod tests {
         s.profiles.insert("p".into(), json!({ "type": "trojan", "server": "a.com", "server_port": 443 }));
         s.status.profile = Some("p".into());
         s.private = true;
-        s.status.all_traffic = true;
+        s.status.scope = Scope::Whitelist;
         s.save();
 
         let restored = Service::load();
         assert!(restored.private, "приватный режим обязан пережить перезапуск");
-        assert!(restored.status.all_traffic, "охват тоже: сузить его молча значило бы выпустить трафик наружу");
+        assert_eq!(
+            restored.status.scope,
+            Scope::Whitelist,
+            "охват тоже: сузить его молча значило бы выпустить трафик наружу",
+        );
         assert_eq!(restored.status.profile.as_deref(), Some("p"));
         assert_eq!(restored.status.apps.len(), 1);
         assert_eq!(restored.status.tunnel, TunnelState::Off, "туннель после старта ещё не поднят");
