@@ -299,6 +299,15 @@ pub struct Probe {
     pub at: u64,
 }
 
+/// Подписка: адрес и имена профилей, которые с него пришли. Имена — ключи из
+/// `Status::profiles`, а не отдельные записи: узел живёт в одном месте, и
+/// второй его копии здесь быть не должно.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Subscription {
+    pub url: String,
+    pub nodes: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct App {
     pub path: String,
@@ -374,10 +383,11 @@ pub struct Status {
     #[serde(default)]
     pub all_traffic: bool,
     pub profiles: Vec<String>,
-    /// Адреса подписок. Какие профили с какой пришли, знает только служба —
-    /// окну хватает списка, чтобы дать обновить и отписаться.
+    /// Подписки вместе с их узлами: окно показывает список профилей группами,
+    /// и без этой связи узел, пришедший с панели, ничем не отличался бы от
+    /// заведённого руками.
     #[serde(default)]
-    pub subscriptions: Vec<String>,
+    pub subscriptions: Vec<Subscription>,
     #[serde(default)]
     pub lang: Lang,
     /// Последние события службы, новое сверху. Не переживает перезапуск.
