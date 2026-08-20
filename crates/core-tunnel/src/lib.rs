@@ -103,6 +103,15 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
     }
 
     let mut rules = vec![json!({ "inbound": ["local"], "action": "route", "outbound": TAG_PROXY })];
+    // Разбор имени из первых пакетов — только для TUN, и это не вкусовщина.
+    // Со `sniff` sing-box отвечает входящему до того, как дозвонится наружу: он
+    // ждёт первых байтов, чтобы прочитать имя. Проба же считает успехом именно
+    // ответ на SOCKS-запрос — и мёртвый узел стал бы подтверждённым туннелем, а
+    // `guard(false)` снял бы блокировку с выбранных приложений. Сторож —
+    // `the_probe_path_is_never_sniffed`, он же ловит возврат правила на все входы.
+    if opts.tun {
+        rules.insert(0, json!({ "inbound": ["tun-in"], "action": "sniff" }));
+    }
     if !opts.all && !opts.apps.is_empty() {
         rules.push(json!({ "process_path": opts.apps, "action": "route", "outbound": TAG_PROXY }));
     }
@@ -118,12 +127,32 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
         "inbounds": inbounds,
         "outbounds": if wireguard { json!([{ "type": "direct", "tag": "direct" }]) }
                      else { json!([node, { "type": "direct", "tag": "direct" }]) },
+        // Имена разрешает сервер на том конце, а не машина здесь. Секции не было
+        // вовсе, и это стоило дороже всего: с `auto_route` запрос уходил
+        // системному резолверу, попадал под маршрут по умолчанию, возвращался в
+        // тот же TUN — и крутился там. Пятьдесят байт на пакет и полсотни
+        // «соединений» в секунду при пустом трафике были именно этим.
+        //
+        // Заодно уходит и утечка имён мимо туннеля, и разъезд с CDN: раньше имя
+        // разрешалось здесь, и сеть отдавала адрес узла рядом с человеком, а шёл
+        // он туда из страны сервера — через полмира и обратно на каждый запрос.
+        "dns": {
+            "servers": [
+                { "type": "udp", "tag": "remote", "server": "1.1.1.1", "detour": TAG_PROXY },
+                // Системный резолвер нужен ровно для одного: разрешить адрес
+                // самого сервера. Через `remote` это была бы курица с яйцом.
+                { "type": "local", "tag": "local" },
+            ],
+            "final": "remote",
+        },
         "route": {
             "rules": rules,
             // Всё, что не выбрано, идёт напрямую: чужой трафик мы не трогаем.
             // В режиме «весь трафик» невыбранных не бывает.
             "final": default_route,
             "auto_detect_interface": true,
+            // Адрес сервера разрешается системой, иначе поднять туннель нечем.
+            "default_domain_resolver": { "server": "local" },
         },
     });
     if wireguard {
@@ -695,6 +724,42 @@ mod tests {
         assert_ne!(with["inbounds"][1]["address"][0], "172.19.0.1/30", "умолчание чужих клиентов");
         let without = build_config(&node(), &Options { tun: false, ..Default::default() });
         assert_eq!(without["inbounds"].as_array().unwrap().len(), 1);
+    }
+
+    /// Проба подтверждает туннель ответом на SOCKS-запрос, а `sniff` заставляет
+    /// sing-box отвечать раньше, чем он дозвонится наружу: он ждёт первых байтов,
+    /// чтобы прочитать имя. Накрой сниффинг вход `local` — и мёртвый узел станет
+    /// подтверждённым туннелем, а `guard(false)` снимет блокировку с выбранных
+    /// приложений. Поймано тестом `measure_fails_on_a_dead_node`, когда правило
+    /// стояло без указания входа.
+    #[test]
+    fn the_probe_path_is_never_sniffed() {
+        for opts in [Options::default(), Options { tun: false, ..Default::default() }] {
+            let cfg = build_config(&node(), &opts);
+            for rule in cfg["route"]["rules"].as_array().unwrap() {
+                if rule["action"] == "sniff" {
+                    let on = rule["inbound"].as_array().expect("у sniff обязан быть явный вход");
+                    assert_eq!(on, &vec![json!("tun-in")], "сниффинг накрыл пробу: {rule}");
+                }
+            }
+        }
+        // Без TUN сниффить нечего, и правила быть не должно вовсе.
+        let bare = build_config(&node(), &Options { tun: false, ..Default::default() });
+        assert!(bare["route"]["rules"].as_array().unwrap().iter().all(|r| r["action"] != "sniff"));
+    }
+
+    /// Имена разрешает сервер: секции `dns` не было вовсе, и запрос уходил
+    /// системному резолверу, попадал под маршрут по умолчанию и возвращался в
+    /// тот же TUN. Адрес самого сервера обязан идти мимо — иначе поднять туннель
+    /// нечем: чтобы спросить `remote`, нужен уже поднятый `proxy`.
+    #[test]
+    fn names_are_resolved_by_the_server_but_the_server_is_not() {
+        let cfg = build_config(&node(), &Options::default());
+        assert_eq!(cfg["dns"]["final"], "remote");
+        let remote = &cfg["dns"]["servers"][0];
+        assert_eq!(remote["tag"], "remote");
+        assert_eq!(remote["detour"], TAG_PROXY, "иначе имена утекают мимо туннеля");
+        assert_eq!(cfg["route"]["default_domain_resolver"]["server"], "local");
     }
 
     /// Стек доезжает до конфига: без этого `PG_STACK` молча ничего не менял бы,
