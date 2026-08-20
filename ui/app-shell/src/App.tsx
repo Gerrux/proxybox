@@ -215,7 +215,7 @@ export function App() {
           status={status}
           busy={busy > 0}
           onToggle={toggle}
-          onScope={(all) => void act({ cmd: "set-all-traffic", arg: { enabled: all } })}
+          onScope={(scope) => void act({ cmd: "set-scope", arg: { scope } })}
         />
 
         {error && (
@@ -247,7 +247,7 @@ export function App() {
               <TabButton className="tab-narrow" icon="node" active={tab === "profiles"} onClick={() => setTab("profiles")}
                 label={s.profiles} count={status?.profiles.length ?? 0} />
               <TabButton className="tab-narrow" icon="screen" active={tab === "apps"} onClick={() => setTab("apps")}
-                label={s.apps} count={status?.all_traffic ? "—" : `${inTunnel}/${status?.apps.length ?? 0}`} />
+                label={s.apps} count={status?.scope === "all" ? "—" : `${inTunnel}/${status?.apps.length ?? 0}`} />
               <TabButton className="tab-narrow" icon="lines" active={tab === "journal"} onClick={() => setTab("journal")}
                 label={s.journal} count={status?.log.length ?? 0} />
               {/* Шире 1100 px первые три стоят рядом, и выбирать между ними

@@ -478,8 +478,12 @@ fn words(status: Option<&Status>) -> (String, String) {
     }
     // Охват называем всегда: «весь компьютер» меняет не состояние, а того, о
     // ком оно, и молчать об этом в трее нельзя — окна может не быть вовсе.
-    if s.all_traffic {
-        detail.push(core_ipc::t("весь компьютер", "the whole computer"));
+    match s.scope {
+        core_ipc::Scope::All => detail.push(core_ipc::t("весь компьютер", "the whole computer")),
+        core_ipc::Scope::Whitelist => {
+            detail.push(core_ipc::t("остальным сеть закрыта", "everyone else cut off"))
+        }
+        core_ipc::Scope::Apps => {}
     }
     (title, detail.join(" · "))
 }
@@ -519,12 +523,20 @@ fn build_menu(app: &tauri::AppHandle, status: Option<&Status>) -> tauri::Result<
             menu.append(&Submenu::with_items(app, core_ipc::t("Профиль", "Profile"), true, &refs)?)?;
         }
         let on = s.tunnel != core_ipc::Tunnel::Off;
-        let label = match (on, s.all_traffic) {
-            (true, true) => core_ipc::t(
+        let label = match (on, s.scope) {
+            (true, core_ipc::Scope::All) => core_ipc::t(
                 "Выключить — компьютер пойдёт в сеть напрямую",
                 "Turn off — the computer goes online directly",
             ),
-            (true, false) => core_ipc::t(
+            // В белом списке выключение не только выпускает выбранных мимо
+            // туннеля, но и открывает сеть всем остальным. Пункт обязан
+            // говорить, что случится, — иначе цена клика тут вдвое больше
+            // написанного.
+            (true, core_ipc::Scope::Whitelist) => core_ipc::t(
+                "Выключить — сеть откроется всем",
+                "Turn off — everyone goes online",
+            ),
+            (true, core_ipc::Scope::Apps) => core_ipc::t(
                 "Выключить — выбранные приложения пойдут напрямую",
                 "Turn off — selected apps go online directly",
             ),
@@ -568,7 +580,7 @@ fn signature(status: Option<&Status>) -> String {
             s.country.clone().unwrap_or_default(),
             s.latency_ms.unwrap_or(0),
             s.lang,
-            s.all_traffic,
+            format!("{:?}", s.scope),
             s.profiles.join(",")
         ),
     }

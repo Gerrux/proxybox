@@ -5,7 +5,7 @@
 #[cfg_attr(not(windows), allow(dead_code))]
 mod doctor;
 
-use core_ipc::{call, t, Request, Response};
+use core_ipc::{call, t, Request, Response, Scope};
 
 const USAGE_RU: &str = "privacy-gateway <команда>
 
@@ -18,7 +18,9 @@ const USAGE_RU: &str = "privacy-gateway <команда>
   add-app --path <exe>   добавить приложение по пути к .exe
   enable --path <exe>    пустить приложение в туннель
   disable --path <exe>   убрать приложение из-под управления
-  scope apps|all         охват: только выбранные приложения либо весь трафик
+  scope apps|whitelist|all
+                         охват: выбранные приложения; они же, но остальным
+                         сеть закрыта; весь трафик машины
   add-profile --link <l> импортировать share-link (vless/vmess/trojan/ss/hy2/wg),
                          JSON-конфиг sing-box или подписку по https-адресу;
                          тот же адрес повторно — обновить подписку
@@ -54,7 +56,9 @@ const USAGE_EN: &str = "privacy-gateway <command>
   add-app --path <exe>   add an app by path to its .exe
   enable --path <exe>    let the app into the tunnel
   disable --path <exe>   take the app out of control
-  scope apps|all         scope: selected apps only or all machine traffic
+  scope apps|whitelist|all
+                         scope: selected apps; the same but everyone else is
+                         cut off; all machine traffic
   add-profile --link <l> import a share-link (vless/vmess/trojan/ss/hy2/wg),
                          a sing-box JSON config or a subscription https URL;
                          the same URL again refreshes the subscription
@@ -172,9 +176,10 @@ fn parse(args: &[String]) -> Result<Request, String> {
             .map(|link| Request::AddProfile { link })
             .ok_or_else(|| t("нужен --link <share-link>", "needs --link <share-link>")),
         Some("scope") => match args.get(1).map(String::as_str) {
-            Some("all") => Ok(Request::SetAllTraffic { enabled: true }),
-            Some("apps") => Ok(Request::SetAllTraffic { enabled: false }),
-            _ => Err(t("нужен охват: apps или all", "pick a scope: apps or all")),
+            Some("all") => Ok(Request::SetScope { scope: Scope::All }),
+            Some("apps") => Ok(Request::SetScope { scope: Scope::Apps }),
+            Some("whitelist") => Ok(Request::SetScope { scope: Scope::Whitelist }),
+            _ => Err(t("нужен охват: apps, whitelist или all", "pick a scope: apps, whitelist or all")),
         },
         Some("profiles") => Ok(Request::Status),
         Some("settings") => Ok(Request::Status),
@@ -374,9 +379,10 @@ fn main() -> std::process::ExitCode {
             println!(
                 "{:<11} {}",
                 t("охват:", "scope:"),
-                match s.all_traffic {
-                    true => t("весь трафик компьютера", "all computer traffic"),
-                    false => t("выбранные приложения", "selected apps"),
+                match s.scope {
+                    Scope::All => t("весь трафик компьютера", "all computer traffic"),
+                    Scope::Whitelist => t("только выбранные приложения, остальным сеть закрыта", "selected apps only, everyone else cut off"),
+                    Scope::Apps => t("выбранные приложения", "selected apps"),
                 }
             );
             println!("{:<11} {}", t("профиль:", "profile:"), s.profile.unwrap_or_else(|| "—".into()));
