@@ -288,6 +288,12 @@ function Measure-Window {
         }
     }
     $total = [double](($delta | Measure-Object Cpu -Sum).Sum)
+    # Проверяется после снимков, чтобы не попасть в само окно.
+    $reach = Test-Reach
+    if (-not $reach) {
+        Write-Host "  сети в это окно не было (проверка соединением не прошла) — тишина не заслуга охвата." -ForegroundColor Red
+    }
+
     # Дельта берёт только процессы, дожившие от начала окна до конца. Если
     # sing-box за это время перезапустился, PID сменился, оба экземпляра выпали
     # из расчёта и ЦП вышел нулём — не «стало бесплатно», а «не посчитано».
@@ -297,7 +303,16 @@ function Measure-Window {
     $sbB = @($b.Keys | Where-Object { $b[$_].Name -eq "sing-box" })
     $appeared = @($sbB | Where-Object { $sbA -notcontains $_ }).Count
     $vanished = @($sbA | Where-Object { $sbB -notcontains $_ }).Count
-    $restarted = ($appeared -gt 0) -or ($vanished -gt 0)
+    # Без явного $false переменная читалась бы из родительской области, и
+    # прошлый проход тянул бы свой вердикт в следующий.
+    $restarted = $false
+    # Ноль процессов в обоих снимках давал ноль ЦП без единого предупреждения:
+    # «расход исчез» и «мерить было нечего» выглядели одинаково.
+    if ($sbB.Count -eq 0) {
+        Write-Host "  sing-box в конце окна не найден вовсе — считать было нечего." -ForegroundColor Red
+        $restarted = $true
+    }
+    $restarted = $restarted -or ($appeared -gt 0) -or ($vanished -gt 0)
     if ($restarted) {
         Write-Host "  sing-box перезапускался внутри окна (PID сменился): его ЦП занижен или обнулён." -ForegroundColor Yellow
         Write-Host "  Так ведёт себя неподтверждённый туннель — сравнивать такой замер нельзя." -ForegroundColor Yellow
@@ -401,6 +416,7 @@ function Measure-Window {
         Packets   = $packets
         Conns     = $newConns      # новых соединений за окно
         Restarted = $restarted     # sing-box сменил PID: числу верить нельзя
+        Reach     = $reach         # была ли у машины сеть в это окно
     }
 }
 
@@ -464,6 +480,19 @@ function Get-TunnelUp($cli) {
     try { $out = (& $cli status 2>&1 | Out-String) } catch { return $false }
     # Служба отвечает на языке, который ей выставили, — проверяем оба слова.
     ($out -match "поднят") -or ($out -match "\bup,")
+}
+
+function Test-Reach {
+    # Была ли у машины сеть в это окно. Без этого «расход исчез» неотличимо от
+    # «всё замолчало, потому что сети не стало»: под неподтверждённым туннелем
+    # в охвате «весь компьютер» запрещён весь исходящий, и тихо становится
+    # везде сразу — включая Defender, который перестаёт что-либо проверять.
+    try {
+        $c = New-Object Net.Sockets.TcpClient
+        $ok = $c.ConnectAsync($ChurnTarget, $ChurnPort).Wait(3000)
+        $c.Close()
+        $ok
+    } catch { $false }
 }
 
 function Show-WhyNot($cli) {
@@ -555,6 +584,15 @@ if ($Scope) {
     }
     Write-Host ("{0,-22} {1,6:N2} ядра, {2:N0} соединений" -f "охват «$was»:", $first.Cores, $first.Conns)
     Write-Host ("{0,-22} {1,6:N2} ядра, {2:N0} соединений" -f "охват «$other»:", $second.Cores, $second.Conns)
+    if ($first.Reach -ne $second.Reach) {
+        # Сравнивать «машина в сети» с «машина без сети» нельзя: во втором
+        # случае замолкает всё сразу, и Defender в первую очередь.
+        $a = if ($first.Reach) { "была" } else { "не было" }
+        $b = if ($second.Reach) { "была" } else { "не было" }
+        Write-Host "  Вывода не будет: в «$was» сеть $a, в «$other» — $b." -ForegroundColor Red
+        Write-Host "  Это сравнение работающей машины с обесточенной, а не двух охватов." -ForegroundColor Red
+        exit 1
+    }
     if ($first.Restarted -or $second.Restarted) {
         Write-Host "  Вывода не будет: sing-box перезапускался внутри окна, и его ЦП там не посчитан." -ForegroundColor Red
         Write-Host "  Ноль ядер здесь означает «туннель не поднялся», а не «расход исчез»: под" -ForegroundColor Red
