@@ -136,7 +136,7 @@ const RU = {
     "Это соединение идёт мимо туннеля. Для невыбранного приложения так и задумано; если приложение выбрано — правило по пути не совпало, и оно только считается защищённым.",
   connsNoProcess: "без процесса",
   connsNoProcessHint: "sing-box не определил владельца: так выглядит трафик службы, драйвера и DNS.",
-  connsRateHint: (peak: string) =>
+  rateHint: (peak: string) =>
     `Скорость канала за последние полторы минуты: ↓ принято, ↑ отправлено. Шкала плавающая, пик окна — ${peak}. Считается по счётчикам туннеля прямо в окне и нигде не сохраняется.`,
   perSecond: "/с",
   hideMessage: "Скрыть сообщение",
@@ -329,7 +329,7 @@ const EN: typeof RU = {
     "This connection bypasses the tunnel. For an app you did not pick that is by design; if the app is picked, the path rule did not match and it is only considered protected.",
   connsNoProcess: "no process",
   connsNoProcessHint: "sing-box could not tell the owner: that is how service, driver and DNS traffic looks.",
-  connsRateHint: (peak: string) =>
+  rateHint: (peak: string) =>
     `Link speed over the last minute and a half: ↓ received, ↑ sent. The scale floats with the window, peaking at ${peak}. Counted from the tunnel counters right here in the window and stored nowhere.`,
   perSecond: "/s",
   hideMessage: "Hide message",
