@@ -41,6 +41,7 @@ const RU = {
   browserNeedsNode: "Сначала заведите профиль узла — через него и пойдёт окно браузера.",
   browserEmpty:
     "Профилей браузера нет. Заведите первый: имя и узел обязательны, личность можно оставить как есть.",
+  browserNew: "Новый профиль",
   browserName: "Имя",
   browserNamePlaceholder: "работа, личное, магазин",
   browserNameHint: "Им же назван каталог с куками и входами этого окна.",
@@ -231,6 +232,7 @@ const EN: typeof RU = {
   browsers: "Browsers",
   browserNeedsNode: "Add a node profile first — the browser window goes through it.",
   browserEmpty: "No browser profiles yet. Add the first one: name and node are required, the identity can stay as is.",
+  browserNew: "New profile",
   browserName: "Name",
   browserNamePlaceholder: "work, personal, shop",
   browserNameHint: "It also names the folder with this window's cookies and logins.",
