@@ -177,7 +177,10 @@ export function StatusBar({
         <span className="engraved shrink-0 text-muted">{s.conduitTo}</span>
       </div>
 
-      <dl className="st-metrics mt-4 grid grid-cols-2 gap-y-3 border-t border-edge pt-3 sm:grid-cols-3 md:grid-cols-5">
+      {/* Пять колонок или ни одной: промежуточные сетки из двух и трёх колонок
+          уносили счётчики трафика на второй-третий ряд, а его — за нижний край
+          окна. Ниже 768 px линейка целиком уходит в строку (`index.css`). */}
+      <dl className="st-metrics mt-4 grid grid-cols-5 gap-y-3 border-t border-edge pt-3">
         <Metric name={s.profile} value={status?.profile ?? s.noProfile} />
         {/* Флаг перед названием: точка выхода — единственная метрика, которую
             читают глазом, а не цифрой, и в узкой ячейке название всё равно
@@ -229,7 +232,7 @@ export function StatusBar({
  *  Цифры табличные — статус приходит каждые две секунды, и прыгать по ширине
  *  им нельзя.
  *
- *  В плашке из трея (`@media (max-width: 470px)` в `index.css`) подписи уходят
+ *  В узком окне (`@media (max-width: 767px)` в `index.css`) подписи уходят
  *  с глаз, и всё, что ячейка о себе рассказывает, остаётся в подсказке — она
  *  поэтому и собирается из имени, значения и пояснения разом, а не из одного
  *  значения. */

@@ -69,6 +69,13 @@ export type Conn = {
   tx: number;
 };
 
+/** Подписка вместе с узлами, которые с неё пришли. Имена — те же, что в
+ *  `Status.profiles`: список профилей рисуется группами по подпискам. */
+export type Subscription = {
+  url: string;
+  nodes: string[];
+};
+
 export type Status = {
   tunnel: Tunnel;
   profile: string | null;
@@ -80,7 +87,7 @@ export type Status = {
   /** Весь трафик машины в туннеле: список `apps` тогда не применяется. */
   all_traffic: boolean;
   profiles: string[];
-  subscriptions: string[];
+  subscriptions: Subscription[];
   lang: Lang;
   log: LogLine[];
   /** Когда подписки последний раз пришли с панели, unix-секунды. */

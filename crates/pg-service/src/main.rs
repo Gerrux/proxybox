@@ -9,13 +9,13 @@
 mod service;
 
 use core_ipc::{
-    dir_name, t, App, BrowserProfile, Endpoint, Listener, LogLine, Probe, Request, Response, Settings,
-    Status, Stream, Tunnel as TunnelState, ADDR,
+    dir_name, t, App, BrowserProfile, Conn, Endpoint, Listener, LogLine, Probe, Request, Response,
+    Settings, Status, Stream, Subscription, Tunnel as TunnelState, ADDR,
 };
 use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
@@ -204,6 +204,32 @@ struct Service {
 }
 
 impl Service {
+    /// Список приложений с диска — данные, которым нельзя верить на слово:
+    /// `state.json` переживает версии продукта и правится руками, а один и тот
+    /// же путь встречался в нём дважды. Окно рисовало приложение двумя
+    /// строками и ругалось на повторяющийся ключ React, а убрать лишнюю строку
+    /// было нечем: `RemoveApp` вычищает обе разом, и приложение исчезало
+    /// целиком.
+    ///
+    /// Чистим на входе, а не в каждой команде: `AddApp` и автообнаружение
+    /// (`knows`) своих дублей не пропускают, так что войти дубль может только
+    /// с диска. Через `load()` проходит всё сохранённое — как прополка
+    /// `probes` живёт в одном `save()` по той же причине.
+    ///
+    /// Выбранность складывается, а не берётся у первой записи: из двух строк
+    /// одного exe выключенная не должна отменять выбранную — это молча вынуло
+    /// бы приложение из туннеля. Сторож — `a_duplicate_app_never_survives_loading`.
+    fn dedup_apps(apps: Vec<App>) -> Vec<App> {
+        let mut out: Vec<App> = Vec::new();
+        for app in apps {
+            match out.iter_mut().find(|a| same_path(&a.path, &app.path)) {
+                Some(kept) => kept.enabled |= app.enabled,
+                None => out.push(app),
+            }
+        }
+        out
+    }
+
     fn load() -> Self {
         let raw = std::fs::read_to_string(dir().join("state.json")).unwrap_or_default();
         let saved: Saved = serde_json::from_str(&raw).unwrap_or_default();
@@ -220,10 +246,10 @@ impl Service {
             status: Status {
                 lang: saved.lang,
                 profile: saved.profile,
-                apps: saved.apps,
+                apps: Self::dedup_apps(saved.apps),
                 all_traffic: saved.all_traffic,
                 profiles: saved.profiles.keys().cloned().collect(),
-                subscriptions: saved.subscriptions.keys().cloned().collect(),
+                subscriptions: subscriptions_of(&saved.subscriptions, &saved.profiles),
                 probes: saved.probes,
                 browser_profiles: saved.browser_profiles,
                 refreshed_at: saved.refreshed_at,
@@ -287,7 +313,7 @@ impl Service {
 
     fn save(&mut self) {
         self.status.profiles = self.profiles.keys().cloned().collect();
-        self.status.subscriptions = self.subscriptions.keys().cloned().collect();
+        self.status.subscriptions = subscriptions_of(&self.subscriptions, &self.profiles);
         // Профиля больше нет — и мерить нечего: без этой прополки кэш измерений
         // рос бы вечно, а подписка на сотню узлов переписывает их именами раз в
         // сутки. Здесь, а не в каждом месте удаления: через save() проходят все.
@@ -587,6 +613,12 @@ impl Service {
             }
         }
         if !moved.is_empty() {
+            // Переезд — единственное место, где путь меняется у уже принятой
+            // записи: все прочие проверки стоят на добавлении. Две записи
+            // разных версий одного пакета были законно разными путями, а после
+            // обновления читаются одной строкой — и список получал точный
+            // дубль, которого больше завести неоткуда.
+            self.status.apps = Self::dedup_apps(std::mem::take(&mut self.status.apps));
             let names = moved.join(", ");
             self.log(t(
                 &format!("приложения обновились, пути в списке освежены: {names}"),
@@ -710,6 +742,24 @@ fn get(url: &str, proxy: Option<&str>) -> Result<String, String> {
         .build()
         .into();
     agent.get(url).call().map_err(|e| fail(&e))?.body_mut().read_to_string().map_err(|e| fail(&e))
+}
+
+/// Карта «адрес → узлы» в том виде, в каком её ждёт окно. Порядок задаёт
+/// `BTreeMap`: список подписок не должен переставляться сам собой между
+/// опросами статуса.
+///
+/// Имя, которого больше нет в профилях, отсеивается: узел из подписки можно
+/// удалить по одному, и до следующей сверки он остался бы висеть в её списке —
+/// а окно рисует список профилей группами и показало бы строку без узла.
+/// Отсеиваем здесь, а не в `forget_profile`: на диске лишнее имя безвредно,
+/// сверка заменяет набор целиком.
+fn subscriptions_of(map: &BTreeMap<String, Vec<String>>, profiles: &BTreeMap<String, Value>) -> Vec<Subscription> {
+    map.iter()
+        .map(|(url, nodes)| Subscription {
+            url: url.clone(),
+            nodes: nodes.iter().filter(|n| profiles.contains_key(*n)).cloned().collect(),
+        })
+        .collect()
 }
 
 /// Занятое имя получает номер: в подписках узлы сплошь и рядом называются
@@ -905,6 +955,61 @@ fn refresh_loop(svc: Arc<Mutex<Service>>) {
     }
 }
 
+/// Утечки вперёд всего остального. Список приходит по громкости и режется
+/// сотней, а утечка — это выбранное приложение, ушедшее напрямую, и громкой она
+/// не бывает: пара килобайт на неудачное соединение. Без этого подъёма
+/// единственное, ради чего панель открывают, тонуло бы под торрентом соседа —
+/// в охвате «весь компьютер» соединений тысячи.
+///
+/// Сортировка устойчива, поэтому внутри обеих групп порядок по громкости
+/// остаётся тем, каким пришёл. Сторож — `a_leak_is_never_truncated_away`.
+fn leaks_first(conns: &mut [Conn], picked: &BTreeSet<String>) {
+    // Путь из sing-box и путь из списка — одна строка с точностью до регистра:
+    // на Windows их не различает и сама файловая система.
+    conns.sort_by_key(|c| c.tunneled || !picked.contains(&c.process.to_lowercase()));
+}
+
+/// Есть ли уже это приложение в списке. С точностью до регистра — как и всё
+/// прочее сравнение путей у нас (`leaks_first` выше, охват в `supervise`):
+/// на Windows `…\store.exe` и `…\Store.exe` — один и тот же файл.
+///
+/// Спрашивает автообнаружение, и только оно: остальные команды получают путь
+/// из самого списка, где он совпадает побайтово по построению. А находка из
+/// реестра приходит в том регистре, в каком её записал установщик, — побайтовое
+/// сравнение заводило второй экземпляр того же exe, и список показывал его
+/// дважды. Сторож — `discovery_knows_a_path_it_already_has`.
+fn knows(apps: &[App], path: &str) -> bool {
+    apps.iter().any(|a| same_path(&a.path, path))
+}
+
+/// Один ли это файл. С точностью до регистра — как `leaks_first` выше и как
+/// сам `core_apps::discover()` со своими находками: на Windows регистр пути
+/// не различает и файловая система.
+fn same_path(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
+}
+
+/// Что из найденного и правда новое. Выключенными: найдено — не значит выбрано.
+///
+/// Сверяется и с уже принятым в этом же заходе, а не только со списком: `found`
+/// склеен из каталога, реестра, пакетов и живых процессов, и один exe приходит
+/// оттуда столько раз, сколько у него процессов. Дедуп внутри `discover()` эту
+/// пачку схлопывает, но снимок `status.apps` про принятое секунду назад в том
+/// же цикле не знает — стоит дедупу пропустить хоть один вид пути, и в список
+/// уезжает вся пачка разом, а не одна запись.
+///
+/// Сторож — `discovery_never_adds_one_exe_twice_in_a_single_pass`.
+fn newcomers(known: &[App], found: Vec<core_apps::Found>) -> Vec<App> {
+    let mut added: Vec<App> = Vec::new();
+    for f in found {
+        if knows(known, &f.path) || knows(&added, &f.path) {
+            continue;
+        }
+        added.push(App { path: f.path, name: f.name, enabled: false });
+    }
+    added
+}
+
 fn handle(svc: &Mutex<Service>, req: Request) -> Response {
     // Подписка ходит в сеть, поэтому разбирается до замка — остальные команды
     // работают с состоянием и берут его сразу.
@@ -926,13 +1031,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
         }
         Request::ListApps => Response::Apps(s.status.apps.clone()),
         Request::Discover { env } => {
-            let found = core_apps::discover(&env);
-            let added: Vec<App> = found
-                .into_iter()
-                .filter(|f| !s.status.apps.iter().any(|a| a.path == f.path))
-                // Выключенными: найдено — не значит выбрано.
-                .map(|f| App { path: f.path, name: f.name, enabled: false })
-                .collect();
+            let added = newcomers(&s.status.apps, core_apps::discover(&env));
             s.log(match added.len() {
                 0 => t("автообнаружение: ничего нового не найдено", "discovery: nothing new found"),
                 n => t(&format!("автообнаружение: добавлено приложений — {n}"), &format!("discovery: {n} apps added")),
@@ -1112,6 +1211,10 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             // сеть (пусть и по петле) под общим замком нельзя — на том конце
             // sing-box, и его молчание стоило бы окну всего статуса.
             let port = s.tunnel.as_ref().map(|t| t.api_port);
+            // Выбранные приложения снимаются тем же движением: сотня самых
+            // говорливых прячет тихую утечку, а ради неё панель и открывают.
+            let picked: BTreeSet<String> =
+                s.status.apps.iter().filter(|a| a.enabled).map(|a| a.path.to_lowercase()).collect();
             drop(s);
             let Some(port) = port else {
                 // Туннеля нет — и соединений нет. Это не ошибка: ровно так
@@ -1125,6 +1228,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                     // бывают тысячи, а прочитать человек успевает десятки.
                     // Сколько их было всего, едет рядом — молча обрезанный
                     // список читался бы как полный.
+                    leaks_first(&mut conns, &picked);
                     conns.truncate(MAX_CONNS);
                     Response::Connections { conns, total }
                 }
@@ -1376,6 +1480,40 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn conn(process: &str, tunneled: bool, bytes: u64) -> Conn {
+        Conn { process: process.into(), host: "example.org:443".into(), tunneled, rx: bytes, tx: 0 }
+    }
+
+    /// Тихая утечка обязана попасть в окно даже тогда, когда громких соединений
+    /// больше, чем влезает: пара килобайт мимо туннеля — это ровно то, ради чего
+    /// панель и открывают, а сотня самых говорливых её бы и не заметила.
+    #[test]
+    fn a_leak_is_never_truncated_away() {
+        let picked: BTreeSet<String> = ["c:\\apps\\browser.exe".into()].into_iter().collect();
+        let mut conns: Vec<Conn> = (0..MAX_CONNS as u64)
+            .map(|i| conn("c:\\apps\\torrent.exe", true, 1_000_000 - i))
+            .collect();
+        // Регистр другой — на Windows это тот же файл, и утечка остаётся утечкой.
+        conns.push(conn("C:\\Apps\\Browser.exe", false, 2_048));
+
+        leaks_first(&mut conns, &picked);
+        conns.truncate(MAX_CONNS);
+
+        assert_eq!(conns[0].process, "C:\\Apps\\Browser.exe", "утечка идёт первой строкой");
+        assert_eq!(conns[1].rx, 1_000_000, "внутри групп порядок по громкости не тронут");
+    }
+
+    /// Прямое соединение невыбранного приложения — не утечка, а задуманный путь,
+    /// и наверх его поднимать не за что.
+    #[test]
+    fn someone_elses_direct_traffic_stays_where_it_was() {
+        let picked: BTreeSet<String> = ["c:\\apps\\browser.exe".into()].into_iter().collect();
+        let mut conns =
+            vec![conn("c:\\apps\\browser.exe", true, 9), conn("c:\\apps\\mail.exe", false, 1)];
+        leaks_first(&mut conns, &picked);
+        assert_eq!(conns[0].process, "c:\\apps\\browser.exe");
+    }
+
     /// Прогон, в котором узел не ответил, стирает задержку, но не страну: узел
     /// стоит там же, где стоял, и потерять её значит показать пустую строку
     /// вместо известного ответа.
@@ -1391,6 +1529,21 @@ mod tests {
         assert_eq!(probes[0].code.as_deref(), Some("NL"));
         assert_eq!(probes[0].latency_ms, None, "а вот задержка отказ пережить не может");
         assert_eq!(probes[0].error.as_deref(), Some("таймаут"));
+    }
+
+    /// Узел из подписки удаляют по одному, а её список службе правит только
+    /// сверка. Окно рисует профили группами по подпискам — и показало бы под
+    /// заголовком строку, за которой больше нет узла.
+    #[test]
+    fn a_subscription_does_not_carry_names_of_deleted_nodes() {
+        let mut subs = BTreeMap::new();
+        subs.insert("https://panel/sub".to_string(), vec!["NL-01".to_string(), "NL-02".to_string()]);
+        let mut profiles = BTreeMap::new();
+        profiles.insert("NL-02".to_string(), json!({"type": "vless"}));
+
+        let out = subscriptions_of(&subs, &profiles);
+        assert_eq!(out.len(), 1, "подписка остаётся, даже когда узлов не осталось вовсе");
+        assert_eq!(out[0].nodes, vec!["NL-02".to_string()], "удалённый узел ушёл из списка подписки");
     }
 
     #[test]
@@ -1537,6 +1690,114 @@ mod tests {
         let needle = format!(".{}()", "reapply");
         let calls = include_str!("main.rs").matches(&needle).count();
         assert_eq!(calls, 1, "перезапуск зовётся только из edit, а нашлось вызовов: {calls}");
+    }
+
+    /// Автообнаружение обязано узнавать путь, который у него уже есть, в любом
+    /// регистре: установщик пишет в реестр один вид, а `state.json` хранит тот,
+    /// что пришёл когда-то, и на Windows это один файл. Побайтовая сверка
+    /// заводила второй экземпляр — список показывал приложение дважды, а окно
+    /// падало на повторяющемся ключе React.
+    #[test]
+    fn discovery_knows_a_path_it_already_has() {
+        let apps = vec![App {
+            path: r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\store.exe".into(),
+            name: "store".into(),
+            enabled: false,
+        }];
+        assert!(knows(&apps, &apps[0].path), "тот же путь — точно знакомый");
+        assert!(
+            knows(&apps, r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\Store.exe"),
+            "регистр не делает из приложения второе"
+        );
+        assert!(
+            !knows(&apps, r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\other.exe"),
+            "другой файл обязан остаться новым"
+        );
+    }
+
+    /// Автообнаружение складывает находки из каталога, реестра, пакетов и живых
+    /// процессов, и один exe приходит оттуда столько раз, сколько у него
+    /// процессов. Сверки со списком мало: он про принятое в этом же заходе не
+    /// знает, и пачка одинаковых находок уезжала в список целиком — по строке
+    /// на процесс.
+    #[test]
+    fn discovery_never_adds_one_exe_twice_in_a_single_pass() {
+        let store = r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\store.exe";
+        let f = |path: &str| core_apps::Found { name: "store".into(), path: path.into() };
+
+        let batch = vec![f(store), f(store), f(store), f(&store.replace("store.exe", "Store.exe"))];
+        let added = newcomers(&[], batch);
+        assert_eq!(added.len(), 1, "один exe — одна новая строка, сколько бы раз его ни нашли");
+        assert!(!added[0].enabled, "найденное не значит выбранное");
+
+        // Уже известное не заводится заново — ради этого сверка и стояла.
+        let known = vec![App { path: store.into(), name: "store".into(), enabled: true }];
+        assert!(newcomers(&known, vec![f(store)]).is_empty(), "известный путь новым не станет");
+
+        let mixed = newcomers(&known, vec![f(store), f(r"C:\other.exe"), f(r"C:\other.exe")]);
+        assert_eq!(mixed.len(), 1, "новое приходит по одной записи на файл");
+        assert_eq!(mixed[0].path, r"C:\other.exe");
+    }
+
+    /// Обновление пакета MSIX схлопывает пути: две записи разных версий одного
+    /// пакета были законно разными файлами, а после переезда читаются одной
+    /// строкой. Проверки на добавлении тут бессильны — путь меняется у уже
+    /// принятой записи, — и список получал точный дубль. Единственный способ
+    /// его завести: среди двух сотен приложений так задвоился ровно тот, что и
+    /// живёт в WindowsApps.
+    #[test]
+    fn an_updated_package_does_not_split_into_two_rows() {
+        // Ровно то, чем становятся две версии Store после переезда на 1401.3.0.
+        let now = r"C:\Program Files\WindowsApps\Microsoft.WindowsStore_22607.1401.3.0_x64__8wekyb3d8bbwe\store.exe";
+        let after = Service::dedup_apps(vec![
+            App { path: now.into(), name: "store".into(), enabled: false },
+            App { path: now.into(), name: "store".into(), enabled: true },
+        ]);
+        assert_eq!(after.len(), 1, "обновившийся пакет — одна строка, а не две");
+        assert!(after[0].enabled, "выбор человека обязан пережить переезд пакета");
+
+        // Склейка сама себя не позовёт: правило держится, только пока переезд
+        // через неё и проходит. Иголка собирается на месте — написанная
+        // целиком, она нашла бы саму себя.
+        let needle = format!("Self::{}(std::mem::take(&mut self.status.apps))", "dedup_apps");
+        assert!(
+            include_str!("main.rs").contains(&needle),
+            "rebind_packages обязана чистить список после переезда путей"
+        );
+    }
+
+    /// Дубль в `state.json` переживал любое число перезапусков: `load()` брал
+    /// список как есть, а `save()` писал его обратно. Окно рисовало приложение
+    /// двумя строками, убрать лишнюю было нечем — `RemoveApp` вычищает обе, —
+    /// и React ругался на повторяющийся ключ.
+    #[test]
+    fn a_duplicate_app_never_survives_loading() {
+        let store = r"C:\Program Files\WindowsApps\Microsoft.WindowsStore\store.exe";
+        let app = |path: &str, enabled: bool| App { path: path.into(), name: "store".into(), enabled };
+
+        let one = Service::dedup_apps(vec![app(store, false), app(store, false)]);
+        assert_eq!(one.len(), 1, "один и тот же путь — одна строка списка");
+
+        // Выключенная запись не должна отменять выбранную: это молча вынуло бы
+        // приложение из туннеля, оставив его в списке.
+        let kept = Service::dedup_apps(vec![app(store, false), app(store, true)]);
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].enabled, "выбранность обязана пережить склейку дублей");
+
+        let by_case = Service::dedup_apps(vec![app(store, true), app(&store.replace("store.exe", "Store.exe"), false)]);
+        assert_eq!(by_case.len(), 1, "регистр не делает из приложения второе");
+
+        let other = Service::dedup_apps(vec![app(store, true), app(r"C:\other.exe", false)]);
+        assert_eq!(other.len(), 2, "разные файлы обязаны остаться разными");
+
+        // Сама по себе склейка ничего не чинит: правило держится, только пока
+        // список с диска через неё и проходит. Иголка собирается на месте —
+        // написанная целиком, она нашла бы саму себя.
+        let needle = format!("Self::{}(saved.apps)", "dedup_apps");
+        assert!(
+            include_str!("main.rs").contains(&needle),
+            "load() обязана чистить список приложений, пришедший с диска"
+        );
     }
 
     /// Перезапуск не должен ни тихо возвращать выбранные приложения в открытую
