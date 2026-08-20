@@ -399,6 +399,14 @@ function Measure-Window {
         Write-Host "  адаптер «$TunName» не найден — работа TUN не посчитана (TUN поднят?)"
     } else {
         Write-Host ("{0,-20} {1,7:N3} ГБ, {2:N0} пакетов" -f "через TUN всего:", $tunGb, $packets)
+        # Байт на пакет — самая говорящая величина из всех. Полезный трафик даёт
+        # 500–1500; около полусотни означает голые заголовки, то есть SYN, ACK и
+        # RST без данных: соединения, которые никуда не доходят.
+        if ($packets -gt 100) {
+            $perPkt = ($n1.Bytes - $n0.Bytes) / $packets
+            $verdict = if ($perPkt -lt 120) { "  <- заголовки без данных: соединения не доходят" } else { "" }
+            Write-Host ("{0,-20} {1,7:N0} байт{2}" -f "на пакет:", $perPkt, $verdict)
+        }
         if ($packets -gt 1000 -and $myCpu -gt 0) {
             # Микросекунды на пакет — та метрика, по которой TUN и судят:
             # единицы это норма, десятки означают, что на каждый пакет
@@ -509,8 +517,12 @@ function Get-RouteInfo {
         $r = @(Get-NetRoute -ErrorAction Stop |
             Where-Object { $_.DestinationPrefix -in @("0.0.0.0/0", "0.0.0.0/1", "128.0.0.0/1") })
         if (-not $r) { return "маршрутов по умолчанию нет" }
+        # Метрика решает, кто из двух маршрутов по умолчанию выигрывает, — без
+        # неё строка «0.0.0.0/0->Wi-Fi  0.0.0.0/0->Privacy Gateway» не говорит
+        # ничего. Windows складывает метрику маршрута с метрикой интерфейса.
         ($r | Sort-Object DestinationPrefix | ForEach-Object {
-            "{0}->{1}" -f $_.DestinationPrefix, $_.InterfaceAlias
+            $im = try { (Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction Stop | Select-Object -First 1).InterfaceMetric } catch { 0 }
+            "{0}->{1}({2})" -f $_.DestinationPrefix, $_.InterfaceAlias, ($_.RouteMetric + $im)
         }) -join "  "
     } catch { "маршруты не прочитаны" }
 }
