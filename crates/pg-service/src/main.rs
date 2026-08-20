@@ -9,13 +9,13 @@
 mod service;
 
 use core_ipc::{
-    dir_name, t, App, BrowserProfile, Endpoint, Listener, LogLine, Probe, Request, Response, Settings,
-    Status, Stream, Tunnel as TunnelState, ADDR,
+    dir_name, t, App, BrowserProfile, Conn, Endpoint, Listener, LogLine, Probe, Request, Response,
+    Settings, Status, Stream, Tunnel as TunnelState, ADDR,
 };
 use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
@@ -882,6 +882,20 @@ fn refresh_loop(svc: Arc<Mutex<Service>>) {
     }
 }
 
+/// Утечки вперёд всего остального. Список приходит по громкости и режется
+/// сотней, а утечка — это выбранное приложение, ушедшее напрямую, и громкой она
+/// не бывает: пара килобайт на неудачное соединение. Без этого подъёма
+/// единственное, ради чего панель открывают, тонуло бы под торрентом соседа —
+/// в охвате «весь компьютер» соединений тысячи.
+///
+/// Сортировка устойчива, поэтому внутри обеих групп порядок по громкости
+/// остаётся тем, каким пришёл. Сторож — `a_leak_is_never_truncated_away`.
+fn leaks_first(conns: &mut [Conn], picked: &BTreeSet<String>) {
+    // Путь из sing-box и путь из списка — одна строка с точностью до регистра:
+    // на Windows их не различает и сама файловая система.
+    conns.sort_by_key(|c| c.tunneled || !picked.contains(&c.process.to_lowercase()));
+}
+
 fn handle(svc: &Mutex<Service>, req: Request) -> Response {
     // Подписка ходит в сеть, поэтому разбирается до замка — остальные команды
     // работают с состоянием и берут его сразу.
@@ -1089,6 +1103,10 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             // сеть (пусть и по петле) под общим замком нельзя — на том конце
             // sing-box, и его молчание стоило бы окну всего статуса.
             let port = s.tunnel.as_ref().map(|t| t.api_port);
+            // Выбранные приложения снимаются тем же движением: сотня самых
+            // говорливых прячет тихую утечку, а ради неё панель и открывают.
+            let picked: BTreeSet<String> =
+                s.status.apps.iter().filter(|a| a.enabled).map(|a| a.path.to_lowercase()).collect();
             drop(s);
             let Some(port) = port else {
                 // Туннеля нет — и соединений нет. Это не ошибка: ровно так
@@ -1102,6 +1120,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                     // бывают тысячи, а прочитать человек успевает десятки.
                     // Сколько их было всего, едет рядом — молча обрезанный
                     // список читался бы как полный.
+                    leaks_first(&mut conns, &picked);
                     conns.truncate(MAX_CONNS);
                     Response::Connections { conns, total }
                 }
@@ -1306,6 +1325,40 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn conn(process: &str, tunneled: bool, bytes: u64) -> Conn {
+        Conn { process: process.into(), host: "example.org:443".into(), tunneled, rx: bytes, tx: 0 }
+    }
+
+    /// Тихая утечка обязана попасть в окно даже тогда, когда громких соединений
+    /// больше, чем влезает: пара килобайт мимо туннеля — это ровно то, ради чего
+    /// панель и открывают, а сотня самых говорливых её бы и не заметила.
+    #[test]
+    fn a_leak_is_never_truncated_away() {
+        let picked: BTreeSet<String> = ["c:\\apps\\browser.exe".into()].into_iter().collect();
+        let mut conns: Vec<Conn> = (0..MAX_CONNS as u64)
+            .map(|i| conn("c:\\apps\\torrent.exe", true, 1_000_000 - i))
+            .collect();
+        // Регистр другой — на Windows это тот же файл, и утечка остаётся утечкой.
+        conns.push(conn("C:\\Apps\\Browser.exe", false, 2_048));
+
+        leaks_first(&mut conns, &picked);
+        conns.truncate(MAX_CONNS);
+
+        assert_eq!(conns[0].process, "C:\\Apps\\Browser.exe", "утечка идёт первой строкой");
+        assert_eq!(conns[1].rx, 1_000_000, "внутри групп порядок по громкости не тронут");
+    }
+
+    /// Прямое соединение невыбранного приложения — не утечка, а задуманный путь,
+    /// и наверх его поднимать не за что.
+    #[test]
+    fn someone_elses_direct_traffic_stays_where_it_was() {
+        let picked: BTreeSet<String> = ["c:\\apps\\browser.exe".into()].into_iter().collect();
+        let mut conns =
+            vec![conn("c:\\apps\\browser.exe", true, 9), conn("c:\\apps\\mail.exe", false, 1)];
+        leaks_first(&mut conns, &picked);
+        assert_eq!(conns[0].process, "c:\\apps\\browser.exe");
+    }
 
     /// Прогон, в котором узел не ответил, стирает задержку, но не страну: узел
     /// стоит там же, где стоял, и потерять её значит показать пустую строку
