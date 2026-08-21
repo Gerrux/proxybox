@@ -156,6 +156,11 @@ export function Apps({
           <Empty>{s.scopeAllNote}</Empty>
         ) : (
           <>
+            {/* Галочка здесь значит не то, что значила в split-tunnel, и разница
+                опасная: тогда снятая возвращала приложение в открытую сеть, а
+                теперь оставляет его без интернета вовсе. Молчащая панель дала бы
+                человеку снять галочку с той же лёгкостью, что и раньше. */}
+            <p className="text-[13px] leading-snug text-muted">{s.whitelistNote}</p>
             {adding && (
               <AddField
                 placeholder={s.appPlaceholder}
