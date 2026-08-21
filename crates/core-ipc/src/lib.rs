@@ -158,6 +158,15 @@ pub struct BrowserProfile {
     /// виден любому сайту.
     #[serde(default)]
     pub lang: String,
+    /// Зерно аватарки — короткая строка, которую окно перекатывает по нажатию
+    /// на картинку. Служба в неё не смотрит вовсе: рисует окно, а сюда зерно
+    /// кладётся, чтобы картинка пережила перезапуск.
+    ///
+    /// Пусто — зерном служит имя, и так же ведут себя профили, заведённые до
+    /// появления поля. Отсюда и польза непустого: переименование профиля больше
+    /// не меняет его картинку, если человек её выбрал сам.
+    #[serde(default)]
+    pub icon: String,
 }
 
 /// Одно живое соединение sing-box, как его видит Clash API, — и кто его завёл.
@@ -741,6 +750,7 @@ mod tests {
                     node: "myvpn".into(),
                     ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)".into(),
                     lang: "nl-NL,nl,en-US,en".into(),
+                    icon: "k3f9qa".into(),
                 },
             },
             Request::RemoveBrowserProfile { name: "работа".into() },
@@ -891,6 +901,26 @@ mod tests {
             assert!(line.contains(&name), "охвата {name} нет в platform.ts: {line}");
         }
         assert_eq!(line.matches('"').count() / 2, 2, "охватов ровно два, и оба обязаны быть живыми: {line}");
+    }
+
+    /// Аватарка браузерного профиля и цвет значка его окна в панели задач
+    /// обязаны расти из одного зерна. Зерно — это `BrowserProfile::icon`, а имя
+    /// только запасной вариант, когда поле пусто; вернуть сюда `item.name`
+    /// значит вернуть картинку, которая меняется от переименования, и цвет в
+    /// панели задач, который перестал ей соответствовать. Компилятора у окна
+    /// нет — сверяем текстом, как команды и порт.
+    #[test]
+    fn the_profile_picture_grows_from_one_seed() {
+        let tsx = include_str!("../../../ui/app-shell/src/Browsers.tsx");
+        assert!(tsx.contains("function seed(profile: BrowserProfile)"), "зерно аватарки считает не одна функция");
+        for (call, what) in [("profileColor(", "цвет значка окна"), ("<Avatar seed={", "картинка")] {
+            let uses: Vec<&str> =
+                tsx.match_indices(call).map(|(i, _)| &tsx[i + call.len()..][..12.min(tsx.len() - i - call.len())]).collect();
+            assert!(!uses.is_empty(), "{what} в Browsers.tsx больше не считается");
+            for tail in uses {
+                assert!(tail.starts_with("seed("), "{what} берёт не зерно, а «{tail}…»");
+            }
+        }
     }
 
     /// Мост дев-сервера ходит в службу по номеру порта, записанному второй раз.
