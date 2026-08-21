@@ -31,35 +31,20 @@ function matching(apps: App[], query: string): App[] {
   });
 }
 
-/** Цвет рельса строки — та же развилка, что и `core_filter::policy()`: приватный
- *  режим выключен — приложение идёт напрямую, туннель поднят — в туннель, всё
- *  остальное — без сети. Это единственное место в окне, где видна судьба
- *  конкретного приложения, и разойтись со службой ему нельзя. */
-function railTone(tunnel: Tunnel | undefined): string {
+/** Судьба приложения словами — та же развилка, что и `core_filter::policy()`:
+ *  приватный режим выключен — приложение идёт напрямую, туннель поднят — в
+ *  туннель, всё остальное — без сети. Цветной полоски у строки больше нет: она
+ *  повторяла галочку той же строки, а фазу туннеля — шапку окна. */
+function fateHint(s: ReturnType<typeof strings>, enabled: boolean, tunnel: Tunnel | undefined): string {
+  if (!enabled) return s.fateDirect;
   switch (tunnel) {
     case "up":
-      return "bg-open";
+      return s.fateUp;
     case "connecting":
     case "down":
-      return "bg-closed";
-    // Выключено или службы нет: приложение ходит само, и хвастаться нечем.
+      return s.fateClosed;
     default:
-      return "bg-muted";
-  }
-}
-
-/** То же самое словами. Три цвета рельса нигде не расшифрованы, и догадаться,
- *  что янтарь — это «так и задумано», а не поломка, по одной полоске нельзя. */
-function railHint(s: ReturnType<typeof strings>, enabled: boolean, tunnel: Tunnel | undefined): string {
-  if (!enabled) return s.railDirect;
-  switch (tunnel) {
-    case "up":
-      return s.railUp;
-    case "connecting":
-    case "down":
-      return s.railClosed;
-    default:
-      return s.railDirect;
+      return s.fateDirect;
   }
 }
 
@@ -106,6 +91,9 @@ export function Apps({
   // Поле пути показывается по «+»: путь к .exe вписывают руками раз в жизни, а
   // строку у списка оно отнимало бы всегда. Пустому списку поле нужно сразу.
   const [importOpen, setImportOpen] = useState(false);
+  // Абзац про галочку прячется под «?»: читают его один раз, а строку у списка
+  // он отнимал всегда. Судьба конкретной строки остаётся в её подсказке.
+  const [noteOpen, setNoteOpen] = useState(false);
   const adding = importOpen || apps.length === 0;
   const shown = matching(ordered(apps), query);
   // Поле не прячем, пока в нём что-то есть: иначе фильтр остался бы включённым
@@ -133,6 +121,15 @@ export function Apps({
               {s.discover}
             </Button>
             <Button
+              aria-pressed={noteOpen}
+              aria-expanded={noteOpen}
+              aria-label={s.whatIsCheck}
+              onClick={() => setNoteOpen((v) => !v)}
+              className="w-8 px-0 text-[15px] leading-none"
+            >
+              ?
+            </Button>
+            <Button
               aria-pressed={adding}
               aria-label={s.addApp}
               title={s.appPlaceholder}
@@ -158,17 +155,23 @@ export function Apps({
           <>
             {/* Галочка здесь значит не то, что значила в split-tunnel, и разница
                 опасная: тогда снятая возвращала приложение в открытую сеть, а
-                теперь оставляет его без интернета вовсе. Молчащая панель дала бы
-                человеку снять галочку с той же лёгкостью, что и раньше. */}
-            <p className="text-[13px] leading-snug text-muted">{s.whitelistNote}</p>
-            {adding && (
-              <AddField
-                placeholder={s.appPlaceholder}
-                label={s.addApp}
-                onSubmit={(path) => act({ cmd: "add-app", arg: { path } })}
-              />
+                теперь оставляет его без интернета вовсе. */}
+            {noteOpen && <p className="enter text-[13px] leading-snug text-muted">{s.whitelistNote}</p>}
+            {/* Поле пути и поиск стоят в одной строке, а в узкой панели
+                переносятся: два поля по полширины — это два обрубка. */}
+            {(adding || searchable) && (
+              <div className="flex flex-wrap gap-2">
+                {adding && (
+                  <AddField
+                    className="min-w-[16rem] flex-1"
+                    placeholder={s.appPlaceholder}
+                    label={s.addApp}
+                    onSubmit={(path) => act({ cmd: "add-app", arg: { path } })}
+                  />
+                )}
+                {searchable && <SearchField value={query} onChange={setQuery} placeholder={s.searchApps} />}
+              </div>
             )}
-            {searchable && <SearchField value={query} onChange={setQuery} placeholder={s.searchApps} />}
             {apps.length === 0 ? (
               <Empty>{s.noApps}</Empty>
             ) : shown.length === 0 ? (
@@ -178,24 +181,18 @@ export function Apps({
                 {shown.map((app) => (
                   <li
                     key={app.path}
-                    title={railHint(s, app.enabled, status?.tunnel)}
-                    className="enter smooth relative flex items-center gap-3 rounded-md py-1.5 pl-3 pr-1 hover:bg-surface-2"
+                    title={fateHint(s, app.enabled, status?.tunnel)}
+                    className="enter smooth flex items-center gap-3 rounded-md px-1 py-1.5 hover:bg-surface-2"
                   >
-                    {/* Рельс слева: что происходит с приложением прямо сейчас,
-                        видно по строке целиком, а не по состоянию мелкой галочки. */}
-                    <span
-                      className={`smooth absolute inset-y-1 left-0 w-[3px] rounded-full ${
-                        app.enabled ? railTone(status?.tunnel) : "bg-transparent"
-                      }`}
-                    />
                     <input
                       id={fieldId(app.path)}
                       type="checkbox"
                       checked={app.enabled}
                       onChange={(e) => void act({ cmd: "set-app", arg: { path: app.path, enabled: e.target.checked } })}
                       // Галочка — действие оператора, а не состояние канала:
-                      // цвета состояний ей не положены, иначе зелёная галочка
-                      // спорила бы с янтарным рельсом той же строки.
+                      // цвета состояний ей не положены. Состояние читается на
+                      // шапке, и красить им ещё и галочку — обещать состояние
+                      // там, где нажимают.
                       className="size-4 shrink-0 accent-[var(--pg-accent)]"
                     />
                     {/* Место под иконку держится всегда: без него строки без иконки
