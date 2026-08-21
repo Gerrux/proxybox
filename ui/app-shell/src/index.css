@@ -87,6 +87,58 @@ body {
   user-select: text;
 }
 
+/* Полоса прокрутки проявляется под указателем и уходит, когда он ушёл. Окно
+   узкое, и панели в нём стоят вплотную: постоянная полоса съедает у списка
+   десять пикселей ширины на каждой из них — там, где и так режется путь до
+   .exe. Пропасть насовсем она не может: `:focus-within` возвращает её тому,
+   кто ходит с клавиатуры, а он полосу не наводит и иначе не узнал бы, что
+   список вообще прокручивается.
+
+   Правил два набора, и это не дублирование: Firefox (то есть `pnpm dev` в
+   браузере) понимает только `scrollbar-*`, Chromium — только `::-webkit-*`,
+   когда они заданы, а в продукте у нас WebView2, то есть Chromium. Ползунок
+   там нарисован фоном внутри прозрачной рамки (`background-clip: content-box`):
+   иначе он лёг бы вплотную к краю списка, а не висел в нём накладкой. */
+.scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 0.2s ease;
+}
+
+.scroll:hover,
+.scroll:focus-within {
+  scrollbar-color: color-mix(in oklch, var(--pg-muted) 45%, transparent) transparent;
+}
+
+.scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  background-clip: content-box;
+  border: 3px solid transparent;
+  border-radius: 9999px;
+  transition: background-color 0.2s ease;
+}
+
+.scroll:hover::-webkit-scrollbar-thumb,
+.scroll:focus-within::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--pg-muted) 42%, transparent);
+  background-clip: content-box;
+}
+
+/* Наведение на сам ползунок — он под рукой, и его видно отчётливее. */
+.scroll:hover::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklch, var(--pg-muted) 70%, transparent);
+  background-clip: content-box;
+}
+
 /* Клавиатура — полноправный способ управления окном, и видно её должно быть
    всегда. Мышь рамку не показывает: :focus-visible включается только там,
    где браузер считает подсказку уместной. */
@@ -185,6 +237,35 @@ body {
   opacity: 0.55;
 }
 
+/* Блик — один пакет в пути. Штрихи говорят «канал жив», блик — «по нему прямо
+   сейчас что-то идёт»: у штрихов период 1.5 с и они неразличимо одинаковы, а
+   блик один, и по нему видно и направление, и то, что путь пройден до конца.
+   Он же задаёт ритм лампе и приёмнику — все трое едут на одном периоде 2.6 с,
+   поэтому вспышка отправки, проезд и вспышка прибытия читаются как одно
+   событие, а не как три независимо мигающие детали.
+
+   Ширина в процентах от канала, а не в пикселях: канал тянущийся, и блик в
+   узком окне обязан оставаться бликом, а не закрашивать его целиком. */
+.conduit-glow {
+  position: absolute;
+  top: 50%;
+  left: -24%;
+  width: 22%;
+  height: 2px;
+  translate: 0 -50%;
+  background: linear-gradient(90deg, transparent, currentColor 62%, transparent);
+  /* Гасим у всех состояний разом: в перерубленном канале лететь нечему, а
+     погашенный блик не надо прятать отдельным правилом на каждое из них. */
+  opacity: 0;
+  filter: blur(0.3px);
+  pointer-events: none;
+}
+
+[data-state="up"] .conduit-glow,
+[data-state="connecting"] .conduit-glow {
+  opacity: 0.9;
+}
+
 /* Разрыв. Рельс упирается в пустоту с двух сторон, и ничто её не пересекает:
    это и есть fail-closed, нарисованный как он есть. */
 [data-state="down"] .conduit-line::before,
@@ -269,11 +350,11 @@ body {
   /* Штрихи идут вправо — от приложений к сети. Медленно: это не индикатор
      загрузки, а признак того, что канал жив. */
   [data-state="up"] .conduit-line::after {
-    animation: conduit 1.8s linear infinite;
+    animation: conduit 1.5s linear infinite;
   }
 
   [data-state="connecting"] .conduit-line::after {
-    animation: conduit 3s linear infinite;
+    animation: conduit 3.2s linear infinite;
   }
 
   /* Сдвиг, а не background-position: положение фона не композитится, и слой
@@ -282,6 +363,121 @@ body {
   @keyframes conduit {
     to {
       translate: 26px -50%;
+    }
+  }
+
+  /* Отправка → путь → прибытие. Один период на троих: разъедутся — и вместо
+     одного события выйдут три независимо мигающие детали. */
+  [data-state="up"] .conduit-glow {
+    animation: pg-run 2.6s cubic-bezier(0.42, 0, 0.58, 1) infinite;
+  }
+
+  [data-state="up"] .conduit-lamp {
+    animation: pg-send 2.6s ease-out infinite;
+  }
+
+  [data-state="up"] .conduit-end {
+    animation: pg-recv 2.6s ease-out infinite;
+  }
+
+  /* Тот же сдвиг вместо left по той же причине, что у штрихов: блик едет
+     непрерывно, пока туннель поднят, а left каждый кадр стоит ещё и раскладки.
+     Проценты у translate считаются от самого блика (22% канала), поэтому
+     проезд от -24% до 102% канала — это 126/22 ≈ 572.7% его собственной ширины.
+     Приезжает он к 70% периода: остаток — пауза до следующего пакета, без неё
+     блик читался бы как непрерывная бегущая строка, а не как отдельные посылки.
+     Выезд и въезд прячет маска канала — та же, что растворяет края штрихов. */
+  @keyframes pg-run {
+    0% {
+      translate: 0 -50%;
+    }
+    70%,
+    100% {
+      translate: 572.7% -50%;
+    }
+  }
+
+  /* Лампа вспыхивает в начале периода — в момент отправки. */
+  @keyframes pg-send {
+    0% {
+      box-shadow: 0 0 9px 1px currentColor;
+      scale: 1.18;
+    }
+    18%,
+    100% {
+      box-shadow: 0 0 0 0 transparent;
+      scale: 1;
+    }
+  }
+
+  /* Приёмник — на 72%, сразу за приездом блика. Он чужой, поэтому и в покое
+     приглушён: вспышка тут значит «дошло», а не «работает». */
+  @keyframes pg-recv {
+    0%,
+    62% {
+      opacity: 0.5;
+      scale: 1;
+    }
+    72% {
+      opacity: 1;
+      scale: 1.22;
+      box-shadow: 0 0 9px 0 currentColor;
+    }
+    88%,
+    100% {
+      opacity: 0.55;
+      scale: 1;
+      box-shadow: 0 0 0 0 transparent;
+    }
+  }
+
+  /* Подключение: концы дышат по очереди, но ничего не долетает — путь ещё не
+     подтверждён, и вспышки прибытия тут были бы враньём. */
+  [data-state="connecting"] .conduit-lamp {
+    animation: pg-breathe 1.6s ease-in-out infinite;
+  }
+
+  [data-state="connecting"] .conduit-end {
+    animation: pg-breathe 1.6s ease-in-out infinite 0.8s;
+  }
+
+  @keyframes pg-breathe {
+    0%,
+    100% {
+      opacity: 0.35;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  /* Перерублено: искрят обрубленные концы и лампа, приёмник молчит. Редкая
+     двойная осечка, а не ровное мигание: ровное читается как индикатор
+     ожидания, то есть как «сейчас починится», а чинить тут нечего — это
+     штатное состояние продукта. */
+  [data-state="down"] .conduit-line::after,
+  [data-state="fault"] .conduit-line::after,
+  [data-state="down"] .conduit-lamp,
+  [data-state="fault"] .conduit-lamp {
+    animation: pg-break 2.4s steps(1, end) infinite;
+  }
+
+  @keyframes pg-break {
+    0%,
+    74% {
+      opacity: 1;
+    }
+    80% {
+      opacity: 0.4;
+    }
+    86% {
+      opacity: 1;
+    }
+    92% {
+      opacity: 0.4;
+    }
+    100% {
+      opacity: 1;
     }
   }
 

@@ -318,7 +318,11 @@ export function StatusBar({
           onPick={(v) => onScope(v as Scope)}
         />
         <span className="conduit-lamp smooth" />
-        <span className="conduit-line smooth" />
+        <span className="conduit-line smooth">
+          {/* Блик живёт внутри канала: маска, растворяющая края штрихов, обязана
+              съедать и его выезд с въездом — иначе он выныривал бы за лампой. */}
+          <span className="conduit-glow" />
+        </span>
         <span className="conduit-end smooth" />
         <span className="engraved shrink-0 text-muted">{s.conduitTo}</span>
         {/* Скорость стоит на конце канала, а не во вкладке соединений: она про
