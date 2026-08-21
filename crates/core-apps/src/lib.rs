@@ -301,34 +301,13 @@ fn from_processes() -> Vec<Found> {
 
 #[cfg(windows)]
 fn from_processes() -> Vec<Found> {
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-
     // Служба видит все процессы машины, включая начинку Windows: её отсекаем
     // по каталогу. Предлагать человеку выбрать svchost — это не «полный
     // список», это ловушка: под правило попадут и службы, и обновления.
     let system = expand("%SystemRoot%", &[]).unwrap_or_default().to_lowercase();
     let mut out = Vec::new();
     for pid in pids() {
-        // Ограниченный доступ хватает для имени и не требует прав на сам
-        // процесс: защищённые процессы иначе отвечали бы отказом.
-        let Ok(handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else { continue };
-        let mut buffer = [0u16; 260 * 2];
-        let mut len = buffer.len() as u32;
-        // SAFETY: буфер и длина — наши, дескриптор жив до CloseHandle ниже.
-        let path = unsafe {
-            let ok = QueryFullProcessImageNameW(
-                handle,
-                PROCESS_NAME_WIN32,
-                windows::core::PWSTR(buffer.as_mut_ptr()),
-                &mut len,
-            );
-            let _ = CloseHandle(handle);
-            ok.is_ok().then(|| String::from_utf16_lossy(&buffer[..len as usize]))
-        };
-        let Some(path) = path else { continue };
+        let Some(path) = image_path(pid) else { continue };
         if !is_own_process(&path, &system) {
             continue;
         }
@@ -336,6 +315,34 @@ fn from_processes() -> Vec<Found> {
         out.push(Found { name, path });
     }
     out
+}
+
+/// Путь к образу процесса по его номеру. Одна на два источника — список
+/// установленного (`from_processes`) и владельца порта (`port_owners`): оба
+/// спрашивают Windows об одном и том же, и разъехаться им незачем.
+#[cfg(windows)]
+fn image_path(pid: u32) -> Option<String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // Ограниченный доступ хватает для имени и не требует прав на сам
+    // процесс: защищённые процессы иначе отвечали бы отказом.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    let mut buffer = [0u16; 260 * 2];
+    let mut len = buffer.len() as u32;
+    // SAFETY: буфер и длина — наши, дескриптор жив до CloseHandle ниже.
+    unsafe {
+        let ok = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(buffer.as_mut_ptr()),
+            &mut len,
+        );
+        let _ = CloseHandle(handle);
+        ok.is_ok().then(|| String::from_utf16_lossy(&buffer[..len as usize]))
+    }
 }
 
 /// Процесс человека, а не начинка Windows. Начинку отсекаем по каталогу:
@@ -361,6 +368,167 @@ fn pids() -> Vec<u32> {
         return Vec::new();
     }
     pids[..filled as usize / std::mem::size_of::<u32>()].to_vec()
+}
+
+/// Кто владеет локальным портом: `(протокол, порт)` → путь к его exe.
+///
+/// Заведено ради панели соединений. Имя процесса раньше приходило от sing-box
+/// в `metadata.processPath`, но он заполняет это поле, только если поиск
+/// процесса кому-то нужен, — то есть если в маршрутизации стоит правило по
+/// `process_path`. Такого правила у нас нет ни одного и не будет: один матчер
+/// где угодно в наборе заставлял sing-box выяснять процесс **каждому**
+/// соединению машины (снимок таблицы TCP/UDP плюс открытие чужого процесса на
+/// каждый `connect`), и это ровно тот расход, из-за которого весь слой
+/// переделывали. Поле молча опустело, и панель писала «без процесса» всем
+/// подряд.
+///
+/// Спрашиваем то же самое сами и на других условиях: один снимок таблицы на
+/// запрос вместо снимка на соединение, и только пока панель открыта. Отбора
+/// приложений это не касается вовсе — он держится на брандмауэре, и пустая
+/// карта его не меняет.
+///
+/// Только IPv4: адреса v6 у нашего TUN нет, и v6-сокет в туннель не заходит.
+#[cfg(not(windows))]
+pub fn port_owners() -> BTreeMap<(&'static str, u16), String> {
+    BTreeMap::new()
+}
+
+#[cfg(windows)]
+pub fn port_owners() -> BTreeMap<(&'static str, u16), String> {
+    // Один процесс держит десятки сокетов: путь по номеру спрашиваем раз.
+    let mut paths: BTreeMap<u32, Option<String>> = BTreeMap::new();
+    let rows: Vec<((&'static str, u16), u32)> = tcp_rows().into_iter().chain(udp_rows()).collect();
+    fold_owners(rows.into_iter().filter_map(|(key, pid)| {
+        paths.entry(pid).or_insert_with(|| image_path(pid)).clone().map(|path| (key, path))
+    }))
+}
+
+/// Сворачивание снимка в карту. Отдельно от Win32 потому, что здесь и живёт
+/// единственное решение, которое можно принять неверно, — что делать со
+/// столкновением.
+///
+/// Один и тот же порт на двух локальных адресах держат разные процессы, и
+/// назвать соединение чужим именем в средстве приватности хуже, чем не назвать
+/// никак: панель открывают, чтобы узнать, кто ходит, а получают уверенный
+/// неправильный ответ. Столкнувшийся ключ выбрасывается целиком. Сторож —
+/// `a_clashing_port_has_no_owner`.
+///
+/// ponytail: ключ без локального адреса. Потолок — два сокета на одном порту с
+/// разных адресов теряют имя оба; апгрейд — добавить адрес в ключ и сверять с
+/// `metadata.sourceIP` из Clash API.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn fold_owners(
+    rows: impl Iterator<Item = ((&'static str, u16), String)>,
+) -> BTreeMap<(&'static str, u16), String> {
+    let mut out: BTreeMap<(&'static str, u16), String> = BTreeMap::new();
+    let mut clashed: std::collections::BTreeSet<(&'static str, u16)> = Default::default();
+    for (key, path) in rows {
+        match out.get(&key) {
+            // Тот же процесс на том же порту — обычное дело: строка про
+            // прослушивание и строка про установленное соединение.
+            Some(known) if known.eq_ignore_ascii_case(&path) => {}
+            Some(_) => {
+                clashed.insert(key);
+            }
+            None => {
+                out.insert(key, path);
+            }
+        }
+    }
+    out.retain(|key, _| !clashed.contains(key));
+    out
+}
+
+/// Строки таблицы TCP: `(("tcp", локальный порт), номер процесса)`.
+///
+/// `CONNECTIONS`, а не `ALL`: слушающие сокеты нам не нужны вовсе, а мешают —
+/// слушатель на порту и чужое исходящее с того же номера столкнулись бы, и
+/// имени лишились бы оба.
+#[cfg(windows)]
+fn tcp_rows() -> Vec<((&'static str, u16), u32)> {
+    use windows::Win32::NetworkManagement::IpHelper::{
+        GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_CONNECTIONS,
+    };
+
+    let Some(buf) = table(|ptr, size| unsafe {
+        GetExtendedTcpTable(ptr, size, false, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0)
+    }) else {
+        return Vec::new();
+    };
+    // SAFETY: буфер заполнен самой Windows по этой же форме и выровнен на u32.
+    // Смещаемся от адреса поля, а не от ссылки на него: в объявлении массив
+    // длиной в одну строку, и ссылка обещала бы ровно одну.
+    unsafe {
+        let table = buf.as_ptr() as *const MIB_TCPTABLE_OWNER_PID;
+        let rows = std::ptr::addr_of!((*table).table) as *const MIB_TCPROW_OWNER_PID;
+        (0..(*table).dwNumEntries as usize)
+            .map(|i| {
+                let row = &*rows.add(i);
+                (("tcp", host_port(row.dwLocalPort)), row.dwOwningPid)
+            })
+            .collect()
+    }
+}
+
+/// То же для UDP. Удалённого адреса у строки нет вовсе, но он и не нужен:
+/// сверяемся по локальному порту.
+#[cfg(windows)]
+fn udp_rows() -> Vec<((&'static str, u16), u32)> {
+    use windows::Win32::NetworkManagement::IpHelper::{
+        GetExtendedUdpTable, MIB_UDPROW_OWNER_PID, MIB_UDPTABLE_OWNER_PID, UDP_TABLE_OWNER_PID,
+    };
+
+    let Some(buf) = table(|ptr, size| unsafe {
+        GetExtendedUdpTable(ptr, size, false, AF_INET, UDP_TABLE_OWNER_PID, 0)
+    }) else {
+        return Vec::new();
+    };
+    // SAFETY: та же форма, тот же источник.
+    unsafe {
+        let table = buf.as_ptr() as *const MIB_UDPTABLE_OWNER_PID;
+        let rows = std::ptr::addr_of!((*table).table) as *const MIB_UDPROW_OWNER_PID;
+        (0..(*table).dwNumEntries as usize)
+            .map(|i| {
+                let row = &*rows.add(i);
+                (("udp", host_port(row.dwLocalPort)), row.dwOwningPid)
+            })
+            .collect()
+    }
+}
+
+#[cfg(windows)]
+const AF_INET: u32 = 2;
+
+/// Порт в строке таблицы лежит в сетевом порядке байт в младшем слове DWORD.
+#[cfg(windows)]
+fn host_port(raw: u32) -> u16 {
+    u16::from_be(raw as u16)
+}
+
+/// Двухзаходный вызов `GetExtended*Table`: сначала спрашиваем размер, потом
+/// читаем. Буфер держим в `Vec<u32>` — так он выровнен под структуру, которую
+/// Windows в него пишет, а `Vec<u8>` выравнивания не обещает.
+///
+/// Между заходами таблица растёт, поэтому размер перечитывается: отказ по
+/// нехватке места — не ошибка, а обычный ответ первого захода. Кругов четыре, а
+/// не «пока не выйдет»: таблица сокетов меняется всегда, и цикл без потолка тут
+/// значит зависшую службу.
+#[cfg(windows)]
+fn table(mut call: impl FnMut(Option<*mut std::ffi::c_void>, *mut u32) -> u32) -> Option<Vec<u32>> {
+    const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
+    let mut size = 0u32;
+    let mut buf: Vec<u32> = Vec::new();
+    for _ in 0..4 {
+        let code = call((!buf.is_empty()).then(|| buf.as_mut_ptr() as *mut std::ffi::c_void), &mut size);
+        if code == 0 && !buf.is_empty() {
+            return Some(buf);
+        }
+        if code != 0 && code != ERROR_INSUFFICIENT_BUFFER {
+            return None;
+        }
+        buf = vec![0u32; (size as usize).div_ceil(4).max(1)];
+    }
+    None
 }
 
 /// Путь в том виде, в каком его увидит sing-box.
@@ -1189,5 +1357,30 @@ mod tests {
         let before = paths.len();
         paths.dedup();
         assert_eq!(before, paths.len(), "один и тот же exe попал в список дважды");
+    }
+
+    /// Столкнувшийся порт остаётся без имени. Назвать соединение чужим
+    /// процессом хуже, чем не назвать никак: панель для того и открыта, чтобы
+    /// узнать, кто ходит, а уверенный неправильный ответ этот вопрос закрывает
+    /// ложно. Повтор того же процесса столкновением не считается: одну и ту же
+    /// пару Windows отдаёт и строкой про прослушивание, и строкой про
+    /// установленное соединение.
+    #[test]
+    fn a_clashing_port_has_no_owner() {
+        let owners = fold_owners(
+            [
+                (("tcp", 49152u16), r"C:\apps\zen.exe".to_string()),
+                (("tcp", 49152u16), r"C:\apps\ZEN.EXE".to_string()),
+                (("udp", 49152u16), r"C:\apps\other.exe".to_string()),
+                (("tcp", 49153u16), r"C:\apps\a.exe".to_string()),
+                (("tcp", 49153u16), r"C:\apps\b.exe".to_string()),
+            ]
+            .into_iter(),
+        );
+        assert_eq!(owners.get(&("tcp", 49152)).map(String::as_str), Some(r"C:\apps\zen.exe"));
+        // Протокол — часть ключа: тот же номер порта у TCP и UDP берут разные
+        // процессы, и складывать их в один ключ значило бы врать про обоих.
+        assert_eq!(owners.get(&("udp", 49152)).map(String::as_str), Some(r"C:\apps\other.exe"));
+        assert_eq!(owners.get(&("tcp", 49153)), None, "два процесса на порту — имени нет");
     }
 }

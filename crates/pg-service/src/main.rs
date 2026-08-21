@@ -1397,7 +1397,14 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 // выглядит выключенный приватный режим и fail-closed.
                 return Response::Connections { conns: Vec::new(), total: 0 };
             };
-            match core_tunnel::connections(port) {
+            // Кто держит порт — снимок машины, а не туннеля, и снимается он
+            // без замка по той же причине, что и сам список: обход таблицы
+            // сокетов плюс открытие процессов стоит миллисекунд, а замок один
+            // на состояние и на обработку команды. Раз на запрос, и только
+            // пока панель открыта, — sing-box за то же платил снимком на
+            // каждое соединение машины.
+            let owners = core_apps::port_owners();
+            match core_tunnel::connections(port, &owners) {
                 Ok(mut conns) => {
                     let total = conns.len();
                     // Обрезаем осознанно: в охвате «весь компьютер» соединений

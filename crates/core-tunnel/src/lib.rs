@@ -23,6 +23,7 @@
 
 use core_ipc::{t, Conn};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -657,14 +658,24 @@ pub fn traffic(api_port: u16) -> io::Result<(u64, u64)> {
 
 /// Живые соединения туннеля, самые говорливые первыми. Ничего не сохраняется:
 /// список собирается на запрос и умирает вместе с ответом.
-pub fn connections(api_port: u16) -> io::Result<Vec<Conn>> {
+///
+/// `owners` — кто держит локальный порт (`core_apps::port_owners`). Имя
+/// процесса приходит оттуда, а не от sing-box: своё поле `processPath` он
+/// заполняет, только когда в маршрутизации стоит правило по `process_path`, а
+/// такого правила у нас нет ни одного — и не будет, оно стоило поиска процесса
+/// на каждое соединение машины. Кто именно наполняет карту, здесь не знают:
+/// решает это служба, она же единственная, кому есть чем.
+pub fn connections(
+    api_port: u16,
+    owners: &BTreeMap<(&'static str, u16), String>,
+) -> io::Result<Vec<Conn>> {
     let v = clash(api_port)?;
     let mut conns: Vec<Conn> = v["connections"]
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or_default()
         .iter()
-        .map(|c| parse_conn(c))
+        .map(|c| parse_conn(c, owners))
         .collect();
     // Самые говорливые первыми: список живёт секунды, и первые строки — это
     // единственное, что человек успевает прочитать.
@@ -674,7 +685,7 @@ pub fn connections(api_port: u16) -> io::Result<Vec<Conn>> {
 
 /// Разбор одного соединения. Цепочка маршрутов, а не список приложений: список
 /// — намерение, цепочка — то, что вышло на самом деле.
-fn parse_conn(c: &Value) -> Conn {
+fn parse_conn(c: &Value, owners: &BTreeMap<(&'static str, u16), String>) -> Conn {
     let meta = &c["metadata"];
     let str_of = |v: &Value| v.as_str().unwrap_or_default().to_string();
     // Домен известен не всегда: соединение по голому адресу так и остаётся
@@ -684,8 +695,22 @@ fn parse_conn(c: &Value) -> Conn {
         host => host,
     };
     let port = str_of(&meta["destinationPort"]);
+    // Кто это — узнаётся по локальному порту соединения. Порты Clash API отдаёт
+    // строками (как и `destinationPort` выше); число тоже принимаем — молча
+    // опустевшая колонка обошлась бы дороже одной строки.
+    let source_port = meta["sourcePort"]
+        .as_str()
+        .and_then(|p| p.parse::<u16>().ok())
+        .or_else(|| meta["sourcePort"].as_u64().map(|p| p as u16));
+    let proto: &'static str = match meta["network"].as_str() {
+        Some("udp") => "udp",
+        _ => "tcp",
+    };
     Conn {
-        process: str_of(&meta["processPath"]),
+        process: source_port
+            .and_then(|port| owners.get(&(proto, port)))
+            .cloned()
+            .unwrap_or_default(),
         host: if port.is_empty() { host } else { format!("{host}:{port}") },
         tunneled: c["chains"]
             .as_array()
@@ -752,30 +777,66 @@ mod tests {
     /// пустым доменом.
     #[test]
     fn conn_reads_its_route_from_the_chain() {
-        let tunneled = parse_conn(&json!({
-            "metadata": {
-                "host": "example.com",
-                "destinationIP": "93.184.216.34",
-                "destinationPort": "443",
-                "processPath": r"C:\Program Files\app.exe",
-            },
-            "chains": [TAG_PROXY],
-            "download": 2048,
-            "upload": 512,
-        }));
+        let tunneled = parse_conn(
+            &json!({
+                "metadata": {
+                    "host": "example.com",
+                    "destinationIP": "93.184.216.34",
+                    "destinationPort": "443",
+                },
+                "chains": [TAG_PROXY],
+                "download": 2048,
+                "upload": 512,
+            }),
+            &BTreeMap::new(),
+        );
         assert_eq!(tunneled.host, "example.com:443", "домен известен — показываем его");
         assert!(tunneled.tunneled);
         assert_eq!((tunneled.rx, tunneled.tx), (2048, 512));
 
-        // Тот же процесс мимо туннеля — тихий промах правила по process_path,
-        // ради которого весь список и заведён.
-        let direct = parse_conn(&json!({
-            "metadata": { "destinationIP": "1.1.1.1", "destinationPort": "53" },
-            "chains": ["direct"],
-        }));
+        let direct = parse_conn(
+            &json!({
+                "metadata": { "destinationIP": "1.1.1.1", "destinationPort": "53" },
+                "chains": ["direct"],
+            }),
+            &BTreeMap::new(),
+        );
         assert_eq!(direct.host, "1.1.1.1:53", "домена нет — остаётся адрес");
         assert!(!direct.tunneled);
-        assert!(direct.process.is_empty(), "процесса за DNS не бывает");
+    }
+
+    /// Имя процесса берётся по локальному порту, а не из ответа sing-box.
+    ///
+    /// Своё поле `processPath` он заполняет, только когда в маршрутизации стоит
+    /// правило по `process_path`, — а у нас его нет ни одного, и три сторожа
+    /// следят, чтобы не появилось (`nothing_can_go_direct` и соседи). Поле
+    /// приходит пустым всегда, и панель писала «без процесса» каждой строке.
+    /// Сорвётся эта сверка — вернётся ровно то же, причём молча.
+    ///
+    /// Протокол — часть ключа: тот же номер порта у TCP и UDP держат разные
+    /// процессы. Не узнали владельца — колонка пустая: соединение без процесса
+    /// за ним (DNS машины, служба, драйвер) бывает и в норме, а имя наугад в
+    /// средстве приватности хуже пустоты.
+    #[test]
+    fn the_process_is_found_by_the_local_port() {
+        let owners = BTreeMap::from([
+            (("tcp", 49152u16), r"C:\apps\zen.exe".to_string()),
+            (("udp", 49152u16), r"C:\apps\other.exe".to_string()),
+        ]);
+        let conn = |meta| parse_conn(&json!({ "metadata": meta, "chains": [TAG_PROXY] }), &owners);
+
+        assert_eq!(conn(json!({ "sourcePort": "49152", "network": "tcp" })).process, r"C:\apps\zen.exe");
+        assert_eq!(conn(json!({ "sourcePort": "49152", "network": "udp" })).process, r"C:\apps\other.exe");
+        // Число вместо строки: Clash API отдаёт порты строками, но ответ чужой,
+        // и терять на нём всю колонку не за что.
+        assert_eq!(conn(json!({ "sourcePort": 49152, "network": "tcp" })).process, r"C:\apps\zen.exe");
+        // Тот же порт, но никем не занятый, и порт, которого нет вовсе.
+        assert!(conn(json!({ "sourcePort": "49999", "network": "tcp" })).process.is_empty());
+        assert!(conn(json!({ "destinationPort": "53" })).process.is_empty());
+        // Собственное поле sing-box игнорируется намеренно: пока оно приходит
+        // пустым, читать его нечего, а начнёт приходить — значит, кто-то завёл
+        // правило по процессу, и это ловят другие сторожа.
+        assert!(conn(json!({ "processPath": r"C:\apps\ghost.exe" })).process.is_empty());
     }
 
     #[test]
