@@ -196,6 +196,9 @@ fn parse(args: &[String]) -> Result<Request, String> {
                     node,
                     ua: flag(args, "--ua").unwrap_or_default(),
                     lang: flag(args, "--lang").unwrap_or_default(),
+                    // Зерно аватарки в консоли не спрашиваем: перекатывают её
+                    // мышью, а пустое означает «по имени».
+                    icon: String::new(),
                 },
             }),
             _ => Err(t("нужны --name <имя> и --node <профиль>", "needs --name <name> and --node <profile>")),

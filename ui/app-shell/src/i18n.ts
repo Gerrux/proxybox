@@ -55,6 +55,8 @@ const RU = {
   browserVersion: "Версия Chrome",
   browserRandom: "Случайно",
   browserRandomHint: "Случайная версия Chrome на этой же платформе",
+  browserIcon: "Картинка профиля",
+  browserIconHint: "Нажмите, чтобы перекатить картинку",
   browserMismatch: (real: string) =>
     `Sec-CH-UA всё равно скажет «${real}»: сайт, который смотрит client hints, увидит расхождение со строкой.`,
   browserUa: "user-agent — пусто, значит настоящий",
@@ -251,6 +253,8 @@ const EN: typeof RU = {
   browserVersion: "Chrome version",
   browserRandom: "Random",
   browserRandomHint: "A random Chrome version on the same platform",
+  browserIcon: "Profile picture",
+  browserIconHint: "Click to roll a new picture",
   browserMismatch: (real: string) =>
     `Sec-CH-UA will still say "${real}": a site that reads client hints sees the mismatch with the string.`,
   browserUa: "user-agent — empty means the real one",

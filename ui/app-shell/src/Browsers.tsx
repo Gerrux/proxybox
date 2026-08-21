@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { forgetBrowser, type Act, type BrowserProfile, type Status } from "./platform";
 import { strings } from "./i18n";
-import { Button, ConfirmButton, Empty, FIELD, flag, Icon, Panel, profileColor, type IconName } from "./ui";
+import { Avatar, Button, ConfirmButton, Empty, FIELD, flag, Icon, Panel, profileColor, type IconName } from "./ui";
 
 /** `Accept-Language` по коду страны узла — это и есть «Авто». Список короткий
  *  намеренно: тут самые частые точки выхода, всем остальным достаётся
@@ -105,7 +105,20 @@ function versions(current: number): number[] {
   return current > 0 && !list.includes(current) ? [current, ...list] : list;
 }
 
-const EMPTY: BrowserProfile = { name: "", node: "", ua: "", lang: AUTO };
+const EMPTY: BrowserProfile = { name: "", node: "", ua: "", lang: AUTO, icon: "" };
+
+/** Зерно аватарки: своё, если человек её перекатывал, иначе имя. Пустым оно
+ *  приходит и от профилей, заведённых до появления поля, — тогда картинка
+ *  держится за имя, как держался за него цвет до неё. */
+function seed(profile: BrowserProfile): string {
+  return profile.icon || profile.name;
+}
+
+/** Новое зерно. Годится любая строка, которой раньше не было: смысла в ней нет
+ *  никакого, весь смысл — в её хеше. */
+function roll(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
 
 /** Поле формы: значок, подпись, само поле и описание под ним. Подпись обнимает
  *  поле `<label>`'ом — тогда по ней можно нажать, и читалке с экрана не нужно
@@ -208,16 +221,38 @@ function Editor({
             );
           }}
         >
-          <Field icon="tag" label={s.browserName} hint={s.browserNameHint}>
-            <input
-              autoFocus
-              value={draft.name}
-              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-              placeholder={s.browserNamePlaceholder}
-              spellCheck={false}
-              className={FIELD}
-            />
-          </Field>
+          <div className="flex items-center gap-3">
+            {/* Картинка стоит у имени, потому что от имени и зависит: буква на
+                ней — первая буква того, что набирают рядом. Нажатие
+                перекатывает зерно; кнопка тут настоящая, а не картинка с
+                обработчиком, — иначе до неё не добраться с клавиатуры. */}
+            <button
+              type="button"
+              onClick={() => setDraft({ ...draft, icon: roll() })}
+              title={s.browserIconHint}
+              aria-label={s.browserIconHint}
+              className="group relative shrink-0 rounded-full transition duration-200 active:scale-95"
+            >
+              <Avatar seed={seed(draft)} name={draft.name} size={56} />
+              {/* Под значком размыта сама аватарка (`backdrop-filter` мутит то,
+                  что позади) и притемнена: белый значок читается тогда на любом
+                  рисунке пятен, и подбирать ему цвет под каждую аватарку не
+                  надо. */}
+              <span className="absolute inset-0 grid place-items-center rounded-full bg-black/30 text-white opacity-0 backdrop-blur-[3px] transition-opacity duration-200 group-hover:opacity-100 group-focus-visible:opacity-100">
+                <Icon name="repeat" className="size-5" />
+              </span>
+            </button>
+            <Field icon="tag" label={s.browserName} hint={s.browserNameHint} className="flex-1">
+              <input
+                autoFocus
+                value={draft.name}
+                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                placeholder={s.browserNamePlaceholder}
+                spellCheck={false}
+                className={FIELD}
+              />
+            </Field>
+          </div>
           <Field icon="node" label={s.browserNode} hint={s.browserNodeHint}>
             {/* Родной select, а не свой список: узлов бывает под сотню, и
                 системный уже умеет и поиск с клавиатуры, и прокрутку. */}
@@ -412,13 +447,10 @@ export function Browsers({
                   key={item.name}
                   className="enter smooth flex items-center gap-2 rounded-md py-1.5 pl-3 pr-1 hover:bg-surface-2"
                 >
-                  {/* Точка того же цвета, что и значок окна в панели задач:
-                      по ней их и сопоставляют, когда окон открыто несколько. */}
-                  <span
-                    className="size-2.5 shrink-0 rounded-full"
-                    style={{ background: profileColor(item.name) }}
-                    aria-hidden
-                  />
+                  {/* Та же картинка, что человек выбрал в форме: по ней профиль
+                      и находят в списке, а её цвет — цвет значка окна в панели
+                      задач, по которому окна сопоставляют между собой. */}
+                  <Avatar seed={seed(item)} name={item.name} size={26} />
                   <div className="min-w-0 flex-1 leading-tight">
                     <span className="block truncate text-[13px]" title={item.name}>
                       {item.name}
@@ -444,7 +476,7 @@ export function Browsers({
                     variant="quiet"
                     disabled={gone}
                     title={gone ? s.browserNodeGone : s.browserOpenHint(item.node)}
-                    onClick={() => browse({ ...item, lang: acceptLanguage(item.lang, code) }, profileColor(item.name))}
+                    onClick={() => browse({ ...item, lang: acceptLanguage(item.lang, code) }, profileColor(seed(item)))}
                   >
                     {s.browserOpen}
                   </Button>
