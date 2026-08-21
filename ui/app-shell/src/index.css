@@ -87,6 +87,58 @@ body {
   user-select: text;
 }
 
+/* Полоса прокрутки проявляется под указателем и уходит, когда он ушёл. Окно
+   узкое, и панели в нём стоят вплотную: постоянная полоса съедает у списка
+   десять пикселей ширины на каждой из них — там, где и так режется путь до
+   .exe. Пропасть насовсем она не может: `:focus-within` возвращает её тому,
+   кто ходит с клавиатуры, а он полосу не наводит и иначе не узнал бы, что
+   список вообще прокручивается.
+
+   Правил два набора, и это не дублирование: Firefox (то есть `pnpm dev` в
+   браузере) понимает только `scrollbar-*`, Chromium — только `::-webkit-*`,
+   когда они заданы, а в продукте у нас WebView2, то есть Chromium. Ползунок
+   там нарисован фоном внутри прозрачной рамки (`background-clip: content-box`):
+   иначе он лёг бы вплотную к краю списка, а не висел в нём накладкой. */
+.scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 0.2s ease;
+}
+
+.scroll:hover,
+.scroll:focus-within {
+  scrollbar-color: color-mix(in oklch, var(--pg-muted) 45%, transparent) transparent;
+}
+
+.scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  background-clip: content-box;
+  border: 3px solid transparent;
+  border-radius: 9999px;
+  transition: background-color 0.2s ease;
+}
+
+.scroll:hover::-webkit-scrollbar-thumb,
+.scroll:focus-within::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--pg-muted) 42%, transparent);
+  background-clip: content-box;
+}
+
+/* Наведение на сам ползунок — он под рукой, и его видно отчётливее. */
+.scroll:hover::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklch, var(--pg-muted) 70%, transparent);
+  background-clip: content-box;
+}
+
 /* Клавиатура — полноправный способ управления окном, и видно её должно быть
    всегда. Мышь рамку не показывает: :focus-visible включается только там,
    где браузер считает подсказку уместной. */

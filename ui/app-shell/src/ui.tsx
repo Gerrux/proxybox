@@ -35,7 +35,7 @@ export function Panel({
         </h2>
         {action}
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto p-3.5">{children}</div>
+      <div className="scroll min-h-0 flex-1 overflow-y-auto p-3.5">{children}</div>
     </section>
   );
 }

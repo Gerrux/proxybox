@@ -219,7 +219,7 @@ export function Settings({
         </Row>
 
         {expanded && releases != null && (
-          <ul className="enter max-h-40 overflow-y-auto border-t border-edge pt-2 text-[13px]">
+          <ul className="scroll enter max-h-40 overflow-y-auto border-t border-edge pt-2 text-[13px]">
             {releases.map((r) => (
               <li key={r.tag_name} className="flex items-center gap-3 py-1">
                 <span
