@@ -208,18 +208,14 @@ export function StatusBar({
   status: Status | null;
   busy: boolean;
   onToggle: () => void;
-  /** Смена охвата. Идёт наверх, а не в службу отсюда: команда перезапускает
-   *  туннель, и её ошибка обязана попасть туда же, куда ошибка «включить». */
+  /** Смена охвата. Идёт наверх, а не в службу отсюда: ошибка команды обязана
+   *  попасть туда же, куда ошибка «включить». Туннель она не перезапускает —
+   *  конфиг у обоих охватов один, — так что живые соединения её переживают. */
   onScope: (scope: Scope) => void;
 }) {
   const s = strings(status?.lang);
-  const scope = status?.scope ?? "apps";
+  const scope = status?.scope ?? "all";
   const all = scope === "all";
-  // Подсказка говорит не про туннель, а про то, кого он касается, — значит
-  // выбирается охватом. Тернаром в каждой из четырёх строк это читалось бы
-  // как четыре разных правила вместо одного.
-  const byScope = <T,>(apps: T, whitelist: T, whole: T): T =>
-    scope === "all" ? whole : scope === "whitelist" ? whitelist : apps;
   const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
   const latency = useCounted(status?.latency_ms ?? null);
   const rates = useRates(status);
@@ -246,26 +242,24 @@ export function StatusBar({
           hint:
             status.profiles.length === 0
               ? s.offNoProfiles
-              : byScope(s.offHint, s.offHintWhitelist, s.offHintAll),
+              : all
+                ? s.offHintAll
+                : s.offHintWhitelist,
         },
         connecting: {
           state: "connecting" as const,
           title: s.connecting,
-          hint: byScope(s.connectingHint, s.connectingHintWhitelist, s.connectingHintAll),
+          hint: all ? s.connectingHintAll : s.connectingHintWhitelist,
         },
         up: {
           state: "up" as const,
           title: s.up,
-          hint: all
-            ? s.upHintAll
-            : inTunnel > 0
-              ? byScope(s.upHint, s.upHintWhitelist, s.upHint)(inTunnel)
-              : s.upNoApps,
+          hint: all ? s.upHintAll : inTunnel > 0 ? s.upHintWhitelist(inTunnel) : s.upNoApps,
         },
         down: {
           state: "down" as const,
           title: s.down,
-          hint: byScope(s.downHint, s.downHintWhitelist, s.downHintAll),
+          hint: all ? s.downHintAll : s.downHintWhitelist,
         },
       }[status.tunnel];
 
@@ -316,7 +310,6 @@ export function StatusBar({
         <Segmented
           label={s.scope}
           options={[
-            ["apps", s.scopeApps, s.scopeHint],
             ["whitelist", s.scopeWhitelist, s.scopeHintWhitelist],
             ["all", s.scopeAll, s.scopeHint],
           ]}

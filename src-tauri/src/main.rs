@@ -483,7 +483,6 @@ fn words(status: Option<&Status>) -> (String, String) {
         core_ipc::Scope::Whitelist => {
             detail.push(core_ipc::t("остальным сеть закрыта", "everyone else cut off"))
         }
-        core_ipc::Scope::Apps => {}
     }
     (title, detail.join(" · "))
 }
@@ -535,10 +534,6 @@ fn build_menu(app: &tauri::AppHandle, status: Option<&Status>) -> tauri::Result<
             (true, core_ipc::Scope::Whitelist) => core_ipc::t(
                 "Выключить — сеть откроется всем",
                 "Turn off — everyone goes online",
-            ),
-            (true, core_ipc::Scope::Apps) => core_ipc::t(
-                "Выключить — выбранные приложения пойдут напрямую",
-                "Turn off — selected apps go online directly",
             ),
             (false, _) => core_ipc::t("Включить приватный режим", "Turn private mode on"),
         };

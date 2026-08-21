@@ -2,16 +2,26 @@
 //!
 //! Своей реализации VLESS/VMESS/Trojan/SS/Hysteria2/WireGuard мы не пишем: этим
 //! занимается sing-box, как в NekoBox, — мы генерируем ему конфиг и следим за
-//! процессом. Перехват per-process тоже конфиг, а не драйвер: TUN + правила
-//! маршрутизации по `process_path`. Приложения не из списка уходят в `direct`,
-//! выбранные — только в `proxy`, без запасного маршрута. Это и есть fail-closed:
-//! упал сервер — соединения выбранных приложений просто не устанавливаются.
+//! процессом.
 //!
-//! Второй охват — `Options::all`: маршрут по умолчанию сам становится `proxy`,
-//! и отбирать некого. Это не «выбрать все приложения» списком: `process_path`
-//! сверяется с путём процесса, а под `final` попадает и то, у чего пути нет.
+//! Конфиг один на оба охвата, и это его главное свойство: `final: proxy`, ни
+//! одного правила по `process_path`, тега `direct` нет вовсе. Ни список
+//! приложений, ни охват в конфиг не входят — их держит брандмауэр
+//! (`core-filter`). Отсюда два следствия, ради которых так и сделано.
+//! Переключение охвата и правка списка конфига не меняют, значит не требуют
+//! перезапуска: живые соединения их переживают. И «уйти напрямую» перестаёт
+//! быть тем, что мы запрещаем правилом, — маршрута с таким тегом просто нет, а
+//! вместе с матчером по процессу исчезает и его тихий промах, из-за которого
+//! приложение уходило мимо туннеля, не переставая считаться защищённым.
+//!
+//! Дорог был именно `direct`. Замер (`docs/wfp.md`, «Замер: причина оказалась
+//! не та») показал сеть 0 Мбит/с при 85% ЦП в охвате, где в `direct` уходило
+//! всё: на `proxy` sing-box держит одно соединение к серверу и мультиплексирует
+//! в него, а на `direct` открывает соединение к каждому адресу, с которым
+//! говорит машина. Конфиг без `direct` дешевле конфига с ним. Сторож —
+//! `nothing_can_go_direct`.
 
-use core_ipc::{t, Conn, Scope};
+use core_ipc::{t, Conn};
 use serde_json::{json, Value};
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -23,11 +33,14 @@ use std::time::{Duration, Instant};
 pub const TAG_PROXY: &str = "proxy";
 /// Имя нашего TUN-адаптера: по нему его видно в системе и не спутать с чужим.
 pub const TUN_NAME: &str = "Privacy Gateway";
-/// Наш адрес на TUN. 172.19.0.1/30 — умолчание sing-box, а значит и NekoBox,
+/// Наш адрес на TUN — он же источник пакетов, вышедших из туннеля, и по нему
+/// брандмауэр отличает их от прямых (`core_filter::set_fence`). Оттого и `pub`.
+///
+/// 172.19.0.1/30 — умолчание sing-box, а значит и NekoBox,
 /// Hiddify, v2rayN: с любым из них адрес и имя адаптера столкнулись бы лоб в
 /// лоб. Берём свои, чтобы конфликт был виден как чужой туннель, а не как
 /// загадочный отказ TUN.
-const TUN_ADDR: &str = "172.27.234.1";
+pub const TUN_ADDR: &str = "172.27.234.1";
 /// Адрес шлюза на TUN. Своим его никто не назначает: `sing-tun` выводит его на
 /// Windows как «следующий за нашим» (`Inet4Address[0].Addr().Next()`), и
 /// отвечать по нему некому. Отсюда и правило отбоя в `build_config` — см. там.
@@ -45,14 +58,6 @@ pub struct Options {
     pub api_port: u16,
     /// TUN поднимается только на Windows под службой; в разработке — без него.
     pub tun: bool,
-    /// Полные пути к .exe, которым разрешён выход только через туннель.
-    /// В охвате `All` не участвуют: там перехватывать поимённо нечего.
-    pub apps: Vec<String>,
-    /// Кого касается туннель. `All` — весь трафик машины: это не «выбрать
-    /// все», а маршрут по умолчанию `proxy`, и ни одного `process_path`.
-    /// `Whitelist` — те же выбранные, что и в `Apps`, но всем остальным
-    /// вместо `direct` достаётся отказ.
-    pub scope: Scope,
     /// Чем sing-box разбирает пакеты из TUN: `mixed` (системный TCP плюс
     /// gVisor на UDP), `system` или `gvisor`. Перебивается `PG_STACK`.
     ///
@@ -88,8 +93,6 @@ impl Default for Options {
             socks_port: 48292,
             api_port: 48293,
             tun: true,
-            apps: Vec::new(),
-            scope: Scope::Apps,
             stack: std::env::var("PG_STACK").unwrap_or_else(|_| "mixed".into()),
             pprof: pprof_value(&std::env::var("PG_PPROF").unwrap_or_default()),
         }
@@ -203,48 +206,6 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
         // его нельзя по той же причине, по какой его не сниффят.
         rules.insert(0, json!({ "inbound": ["tun-in"], "port": [53], "action": "hijack-dns" }));
     }
-    // Это правило стоит не одного сравнения строк, и цена берётся не с тех, за
-    // кого оно поставлено. Одного матчера по процессу где угодно в наборе
-    // хватает, чтобы sing-box выяснял процесс для **каждого** соединения, и
-    // делает он это до разбора правил: порядком, ранним совпадением и
-    // `ip_cidr` впереди список не сократить (проверено на 1.13.19 — при
-    // совпавшем нулевом правиле `found process path` в журнале всё равно
-    // стоит, и стоит раньше `match[0]`). На Windows один такой поиск — снимок
-    // всей системной таблицы TCP/UDP плюс открытие чужого процесса; в TUN под
-    // `auto_route` заходит вся машина, значит платит за перехват по списку вся
-    // машина, а не выбранные приложения.
-    //
-    // Дешевле в конфиге не делается: это и есть цена перехвата по списку через
-    // TUN, и снимает её только свой WFP-фильтр — тот же потолок, что записан в
-    // шапке `core-filter`. В охвате «весь компьютер» матчера нет ни одного, и
-    // поиск не запускается ни разу; сторож — `all_traffic_takes_the_default_route`.
-    if opts.scope != Scope::All && !opts.apps.is_empty() {
-        rules.push(json!({ "process_path": opts.apps, "action": "route", "outbound": TAG_PROXY }));
-    }
-    // Белый список: всё, что не совпало с правилом выше, дальше не идёт.
-    //
-    // Правило ставится последним, и порядок здесь — не оформление. Впереди
-    // него стоят два: разбор имени и вход `local` в `proxy`. Накрой отказ вход
-    // `local`, и первой жертвой стала бы проба — она ходит через тот же
-    // локальный вход, туннель не подтверждался бы никогда, а не подтверждённый
-    // туннель в этом охвате означает машину вообще без сети. Сторож —
-    // `the_whitelist_never_rejects_the_probe`.
-    //
-    // Отказом, а не отсутствием маршрута: `final` обязан указывать на живой
-    // outbound, и «убрать direct» вместо этого правила означало бы конфиг,
-    // который sing-box не примет.
-    if opts.scope == Scope::Whitelist {
-        rules.push(json!({ "action": "reject" }));
-    }
-    // Весь компьютер в туннель — это один маршрут по умолчанию, а не список из
-    // всех установленных .exe: правило по `process_path` сверяет каждое
-    // соединение с путём процесса, а `final` не сверяет ничего. Заодно под
-    // туннель попадает и то, у чего пути нет вовсе, — служба, драйвер, DNS.
-    // В белом списке до `final` не доходит никто: последним правилом стоит
-    // отказ. Оставлен `direct` он потому, что схема требует живого тега, а не
-    // потому, что кто-то им пользуется.
-    let default_route = if opts.scope == Scope::All { TAG_PROXY } else { "direct" };
-
     // Локальные имена разрешает роутер, а не сервер человека, и это следствие
     // перехвата: без него DNS через туннель не работал вовсе, а с ним **всё**
     // уходит на `remote` — включая `nas.lan` и голые односложные имена, которые
@@ -275,8 +236,14 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
         "log": { "level": "warn" },
         "experimental": { "clash_api": { "external_controller": format!("127.0.0.1:{}", opts.api_port) } },
         "inbounds": inbounds,
-        "outbounds": if wireguard { json!([{ "type": "direct", "tag": "direct" }]) }
-                     else { json!([node, { "type": "direct", "tag": "direct" }]) },
+        // Тега `direct` тут нет, и это не «он не используется», а «его нет».
+        // Пока он лежал в списке живым, промах правила по `process_path`
+        // означал приложение в открытой сети под надписью «Защищено»; теперь
+        // такому соединению просто некуда деться. У WireGuard узел живёт в
+        // `endpoints`, и `outbounds` остаётся пустым — 1.13.19 это принимает и
+        // стартует (проверено), а `route.final` спокойно смотрит на тег
+        // endpoint'а. Сторож — `nothing_can_go_direct`.
+        "outbounds": if wireguard { json!([]) } else { json!([node]) },
         // Имена разрешает сервер на том конце, а не машина здесь. Секции не было
         // вовсе, и это стоило дороже всего: с `auto_route` запрос уходил
         // системному резолверу, попадал под маршрут по умолчанию, возвращался в
@@ -328,9 +295,11 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
         },
         "route": {
             "rules": rules,
-            // Всё, что не выбрано, идёт напрямую: чужой трафик мы не трогаем.
-            // В режиме «весь трафик» невыбранных не бывает.
-            "final": default_route,
+            // Один маршрут по умолчанию на оба охвата — и никаких правил
+            // впереди, кроме служебных. Под него попадает и то, у чего процесса
+            // за спиной нет вовсе: служба, драйвер, DNS. Кому в туннель не
+            // положено, того отсекает брандмауэр на `connect`, до всякого TUN.
+            "final": TAG_PROXY,
             "auto_detect_interface": true,
             // Адрес сервера разрешается системой, иначе поднять туннель нечем.
             "default_domain_resolver": { "server": "local" },
@@ -538,14 +507,17 @@ fn free_port() -> io::Result<u16> {
 /// убивает как раз тот туннель, который проверяет.
 ///
 /// Трафик этого инстанса при поднятом основном туннеле уходит через TUN и
-/// попадает под `final: direct` — цепочки из двух туннелей не выходит, и
-/// задержка меряется настоящая.
+/// попадает под `final: proxy` — то есть цепочкой сквозь основной туннель, и к
+/// измеренной задержке добавлен его RTT. Так было и раньше в охвате «весь
+/// компьютер»; теперь так всегда, потому что маршрута мимо туннеля в конфиге
+/// не осталось ни одного. Разводило их правило по `process_path`, а оно и есть
+/// то, за что платила вся машина, — размен записан в README.
 ///
 /// `geo` — спрашивать ли заодно точку выхода. Решает это служба (`PG_GEO`):
 /// адрес наружу один на весь проект, и распоряжаться им должно одно место.
 pub fn measure(node: &Value, dir: &Path, target: (&str, u16), geo: bool) -> io::Result<(u32, Option<Exit>)> {
     // Стек берётся из умолчания и роли не играет: без TUN его некому читать.
-    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, apps: Vec::new(), scope: Scope::Apps, ..Default::default() };
+    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, ..Default::default() };
     let mut proc = Tunnel::start(&build_config(node, &opts), dir)?;
     let result = probe(opts.socks_port, target);
     // Пока инстанс жив, страна стоит одного запроса; поднимать ядро второй раз
@@ -577,14 +549,16 @@ pub fn measure(node: &Value, dir: &Path, target: (&str, u16), geo: bool) -> io::
 /// машины этот инстанс не касается вообще, а умрёт — браузер просто останется
 /// без сети: прокси откажет, и мимо туннеля не уйдёт ничего.
 ///
+/// При поднятом общем туннеле сеанс идёт сквозь него цепочкой: своего маршрута
+/// мимо TUN у него нет, как и у всех. Сайт по-прежнему видит адрес узла этого
+/// профиля — меняется только путь до него и задержка.
+///
 /// Каталог свой по той же причине, что у прогона: `Tunnel::start` добивает
 /// процесс из `singbox.pid`, и общий каталог означал бы, что окно браузера
 /// гасит основной туннель.
 pub fn sidecar(node: &Value, dir: &Path) -> io::Result<Tunnel> {
-    // `all` тут бессмысленно: маршрута по умолчанию у инстанса без TUN нет,
-    // в туннель идёт только тот, кто сам пришёл на его порт.
     // Стек берётся из умолчания и роли не играет: без TUN его некому читать.
-    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, apps: Vec::new(), scope: Scope::Apps, ..Default::default() };
+    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, ..Default::default() };
     Tunnel::start(&build_config(node, &opts), dir)
 }
 
@@ -887,80 +861,82 @@ mod tests {
         json!({ "type": "trojan", "server": "a.com", "server_port": 443, "password": "p" })
     }
 
-    #[test]
-    fn selected_apps_have_no_fallback() {
-        let cfg = build_config(
-            &node(),
-            &Options { apps: vec![r"C:\app.exe".into()], ..Default::default() },
-        );
-        let rules = cfg["route"]["rules"].as_array().unwrap();
-        let app_rule = rules.iter().find(|r| r["process_path"].is_array()).expect("правило для приложений");
-        assert_eq!(app_rule["outbound"], TAG_PROXY);
-        assert_eq!(app_rule["process_path"][0], r"C:\app.exe");
-        assert_eq!(cfg["route"]["final"], "direct", "чужой трафик идёт мимо туннеля");
-        // Единственный маршрут выбранного приложения — proxy: запасного нет.
-        assert!(
-            !rules.iter().any(|r| r["process_path"].is_array() && r["outbound"] != TAG_PROXY),
-            "у выбранных приложений не должно быть маршрута мимо туннеля",
-        );
-        assert_eq!(cfg["outbounds"][0]["tag"], TAG_PROXY);
+    fn wg_node() -> Value {
+        core_config::parse(
+            "wg://QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNk@a.com:51820\
+?publickey=QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNk&address=10.0.0.2/32",
+        )
+        .expect("узел WireGuard")
+        .node
     }
 
-    /// Белый список отказывает всем, кроме выбранных, — но никогда пробе.
+    /// Уйти напрямую нельзя, потому что некуда: тега `direct` в конфиге нет
+    /// вовсе, `final` — сам туннель, а правил по `process_path` не осталось ни
+    /// одного.
     ///
-    /// Проба ходит через локальный вход `local`, и он стоит в правилах раньше
-    /// отказа. Уедь отказ вперёд — туннель не подтверждался бы никогда, а
-    /// неподтверждённый туннель в этом охвате означает машину без сети вообще:
-    /// правила брандмауэра снимаются только по подтверждённой пробе.
-    #[test]
-    fn the_whitelist_never_rejects_the_probe() {
-        let cfg = build_config(
-            &node(),
-            &Options { scope: Scope::Whitelist, apps: vec![r"C:\app.exe".into()], ..Default::default() },
-        );
-        let rules = cfg["route"]["rules"].as_array().unwrap();
-        // Ищем именно догоняющий отказ — голый `{"action":"reject"}`. Рядом
-        // живёт отбой шлюзу TUN, он тоже reject, но с матчерами и `drop`.
-        let catch_all = |r: &&Value| r.as_object().is_some_and(|o| o.len() == 1 && o["action"] == "reject");
-        let reject = rules.iter().position(|r| catch_all(&r)).expect("отказ для всех прочих");
-        let local = rules
-            .iter()
-            .position(|r| r["inbound"].as_array().is_some_and(|i| i.iter().any(|t| t == "local")))
-            .expect("вход пробы");
-        let app = rules.iter().position(|r| r["process_path"].is_array()).expect("правило приложений");
-        assert!(local < reject, "проба обязана разбираться раньше отказа: {rules:#?}");
-        assert!(app < reject, "выбранные приложения обязаны разбираться раньше отказа");
-        assert_eq!(rules[reject..].len(), 1, "после отказа правил быть не может — они мертвы");
-        assert_eq!(cfg["route"]["final"], "direct", "тег обязан остаться живым, хотя до него не доходят");
-    }
-
-    /// Охват `Apps` отказа не ставит вовсе: чужой трафик мы не трогаем.
-    #[test]
-    fn only_the_whitelist_rejects_anyone() {
-        let cfg = build_config(&node(), &Options { apps: vec![r"C:\app.exe".into()], ..Default::default() });
-        let rules = cfg["route"]["rules"].as_array().unwrap();
-        assert!(
-            !rules.iter().any(|r| r.as_object().is_some_and(|o| o.len() == 1 && o["action"] == "reject")),
-            "в охвате «выбранные» догоняющего отказа нет: чужой трафик не наш",
-        );
-    }
-
-    /// «Весь трафик» — не «выбрать все приложения»: правил по пути процесса
-    /// нет вовсе, туннель забирает маршрут по умолчанию.
+    /// Одно свойство закрывает три разные вещи. Приватность: тихий промах
+    /// матчера по пути — приложение мимо туннеля под надписью «Защищено» — не
+    /// починен, а перестал существовать как класс, вместе с самим матчером.
+    /// Расход: замер из `docs/wfp.md` показал, что платится за путь `direct`
+    /// через TUN, а не за матчер, и конфиг без `direct` дешевле любого с ним.
+    /// Живучесть соединений: раз конфиг не знает ни охвата, ни списка, ни то ни
+    /// другое его не меняет — значит переключение охвата и правка галочек не
+    /// перезапускают туннель, и открытая SSH-сессия их переживает.
     ///
-    /// Это же и вся разница в расходе между охватами. Один матчер по процессу —
-    /// и sing-box выясняет процесс для каждого соединения всей машины, до
-    /// разбора правил; вернётся сюда список приложений «заодно, для порядка» —
-    /// и тихий охват станет таким же дорогим, как охват по списку.
+    /// Заменил собой `selected_apps_have_no_fallback`,
+    /// `only_the_whitelist_rejects_anyone`, `all_traffic_takes_the_default_route`
+    /// и `the_whitelist_never_rejects_the_probe`: охвата, о котором говорили
+    /// первые три, в продукте больше нет, а догоняющий отказ, которого боялся
+    /// четвёртый, из конфига ушёл — отсекает брандмауэр, до всякого TUN.
     #[test]
-    fn all_traffic_takes_the_default_route() {
-        let cfg = build_config(&node(), &Options { scope: Scope::All, apps: vec![r"C:\app.exe".into()], ..Default::default() });
-        assert_eq!(cfg["route"]["final"], TAG_PROXY);
-        let rules = cfg["route"]["rules"].as_array().unwrap();
-        assert!(
-            !rules.iter().any(|r| r["process_path"].is_array()),
-            "в режиме «весь трафик» список приложений не попадает в конфиг",
-        );
+    fn nothing_can_go_direct() {
+        // Ни списка, ни охвата на входе — отсюда и равенство конфигов у двух
+        // охватов: их нечем различить. Сверяем текстом, потому что «поля нет»
+        // компилятор проверить не может.
+        let fields = include_str!("lib.rs")
+            .split("pub struct Options {")
+            .nth(1)
+            .and_then(|s| s.split("\n}").next())
+            .expect("настройки конфига");
+        assert!(!fields.contains("apps"), "список приложений в конфиг не входит: {fields}");
+        assert!(!fields.contains("scope"), "охват в конфиг не входит: {fields}");
+
+        for node in [node(), wg_node()] {
+            for tun in [true, false] {
+                let cfg = build_config(&node, &Options { tun, ..Default::default() });
+                assert_eq!(cfg["route"]["final"], TAG_PROXY, "маршрут по умолчанию — туннель: {cfg}");
+                let rules = cfg["route"]["rules"].as_array().unwrap();
+                assert!(
+                    !rules.iter().any(|r| !r["process_path"].is_null()),
+                    "матчера по процессу быть не должно: {rules:#?}",
+                );
+                assert!(
+                    !rules.iter().any(|r| r.as_object().is_some_and(|o| o.len() == 1 && o["action"] == "reject")),
+                    "догоняющий отказ ушёл в брандмауэр: {rules:#?}",
+                );
+                // Тег ищем и в outbounds, и в endpoints: у WireGuard узел живёт
+                // во вторых, и `outbounds` там пустой — sing-box 1.13.19 это
+                // принимает и стартует (`the_config_actually_starts`).
+                let tags: Vec<&Value> = cfg["outbounds"]
+                    .as_array()
+                    .into_iter()
+                    .chain(cfg["endpoints"].as_array())
+                    .flatten()
+                    .map(|o| &o["tag"])
+                    .collect();
+                assert!(!tags.iter().any(|t| **t == json!("direct")), "тега direct быть не должно: {tags:?}");
+                assert!(tags.iter().any(|t| **t == json!(TAG_PROXY)), "туннель обязан быть живым тегом: {tags:?}");
+                // Путь пробы обязан вести в тот же туннель: подтверждает его
+                // именно она, а без подтверждения выбранные приложения заперты.
+                assert!(
+                    rules.iter().any(|r| {
+                        r["inbound"].as_array().is_some_and(|i| i.iter().any(|t| t == "local"))
+                            && r["outbound"] == TAG_PROXY
+                    }),
+                    "вход пробы обязан уходить в туннель: {rules:#?}",
+                );
+            }
+        }
     }
 
     /// Адрес шлюза обязан быть следующим за нашим: именно так его выводит
@@ -1093,10 +1069,13 @@ mod tests {
         assert_ne!(local["type"], "local", "системный резолвер после auto_route указывает на нас самих");
         assert!(local["server"].is_string(), "бутстрап обязан быть назван адресом: {local}");
         assert_ne!(local["detour"], TAG_PROXY, "иначе адрес сервера разрешается через сам сервер");
-        // И `detour: "direct"` тоже нельзя: наш `direct` — пустой outbound, а на
-        // такой `detour` sing-box отказывается стартовать вовсе. Проверкой
-        // конфига это не ловится, только запуском — см. `the_config_actually_starts`.
-        assert!(local["detour"].is_null(), "detour на пустой direct не даёт службе стартовать: {local}");
+        // И `detour` на что угодно тоже нельзя: тега `direct` в конфиге больше
+        // нет, а ссылка на несуществующий — отказ разбора. Пока он там лежал
+        // пустым, sing-box отказывался стартовать с «detour to an empty direct
+        // outbound makes no sense», причём проверка конфига это пропускала —
+        // ловилось только запуском (`the_config_actually_starts`). Без `detour`
+        // резолвер и так ходит мимо маршрутизации.
+        assert!(local["detour"].is_null(), "бутстрапу detour не нужен и не на что: {local}");
         // Шифрованным: открытый UDP показал бы имя сервера всей сети по пути, а
         // у человека DNS на адаптере уже зашифрован — понижать молча нельзя.
         assert_eq!(local["type"], "https", "бутстрап обязан идти по DoH: {local}");
@@ -1240,7 +1219,7 @@ mod tests {
             "wg://QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNk@a.com:51820?publickey=QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNk&address=10.0.0.2/32",
         ] {
             let node = core_config::parse(link).expect(link).node;
-            let cfg = build_config(&node, &Options { tun: false, apps: vec!["/bin/true".into()], ..Default::default() });
+            let cfg = build_config(&node, &Options { tun: false, ..Default::default() });
             std::fs::write(&path, serde_json::to_vec_pretty(&cfg).unwrap()).unwrap();
             let out = match Command::new(binary()).arg("check").arg("-c").arg(&path).output() {
                 Ok(o) => o,
@@ -1250,9 +1229,6 @@ mod tests {
         }
     }
 
-    /// Конфиг с включённым TUN тоже должен проходить проверку sing-box:
-    /// именно его увидит Windows, а остальные тесты гоняют вариант без TUN.
-    #[test]
     /// Локальные имена обязан разрешать роутер, а не сервер человека. После
     /// перехвата DNS весь запрос машины уходит на `remote`, и `nas.lan` вместе
     /// с ним: там он не разрешится, зато уедет наружу.
@@ -1287,11 +1263,15 @@ mod tests {
     }
 
     /// Конфиг обязан не только разбираться, но и **запускаться**, и это разные
-    /// вещи. `sing-box check` проверяет разбор: `detour: "direct"` на нашем
-    /// пустом `direct`-outbound он пропускает молча, а служба на нём падает при
-    /// старте с «detour to an empty direct outbound makes no sense». Ровно так и
-    /// случилось — поймано запуском уже после того, как проверка конфига дала
-    /// зелёный свет.
+    /// вещи. `sing-box check` проверяет разбор: `detour: "direct"` на пустом
+    /// тогда ещё `direct`-outbound он пропускал молча, а служба на нём падала
+    /// при старте с «detour to an empty direct outbound makes no sense». Ровно
+    /// так и случилось — поймано запуском уже после того, как проверка конфига
+    /// дала зелёный свет.
+    ///
+    /// Он же отвечает на второй вопрос того же рода: примет ли sing-box пустой
+    /// `outbounds` у WireGuard, где узел живёт в `endpoints`. 1.13.19
+    /// принимает и стартует.
     ///
     /// Без TUN и на свободных портах: прав на TUN у тестов нет, а постоянные
     /// порты столкнулись бы с живой службой на машине разработчика.
@@ -1323,6 +1303,8 @@ mod tests {
         }
     }
 
+    /// Конфиг с включённым TUN тоже должен проходить проверку sing-box:
+    /// именно его увидит Windows, а остальные тесты гоняют вариант без TUN.
     #[test]
     fn tun_config_passes_singbox_check() {
         let node = core_config::parse("trojan://p@a.com:443").unwrap().node;
@@ -1333,7 +1315,7 @@ mod tests {
         // компилятор не проверяет никак — ошибись в них, и служба узнает об
         // этом только на живой машине, отказом запуска.
         for pprof in [None, Some("127.0.0.1:48294".to_string())] {
-            let cfg = build_config(&node, &Options { apps: vec![r"C:\app.exe".into()], pprof, ..Default::default() });
+            let cfg = build_config(&node, &Options { pprof, ..Default::default() });
             std::fs::write(&path, serde_json::to_vec_pretty(&cfg).unwrap()).unwrap();
             let Ok(out) = Command::new(binary()).arg("check").arg("-c").arg(&path).output() else {
                 return; // sing-box не установлен

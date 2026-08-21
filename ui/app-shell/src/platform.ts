@@ -14,7 +14,7 @@ export type Lang = "ru" | "en";
  *  - `apps` — выбранные в туннель, остальные напрямую;
  *  - `whitelist` — выбранные в туннель, у остальных сети нет вовсе;
  *  - `all` — вся машина в туннель, список не участвует. */
-export type Scope = "apps" | "whitelist" | "all";
+export type Scope = "whitelist" | "all";
 
 export type App = { path: string; name: string; enabled: boolean };
 

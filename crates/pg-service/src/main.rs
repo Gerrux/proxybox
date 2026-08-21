@@ -18,7 +18,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Как часто служба проверяет связь через туннель.
@@ -37,7 +37,7 @@ const DEATH_EVERY: Duration = Duration::from_millis(200);
 /// не экономия на спичках. Clash API отдаёт итоги только в теле `/connections`,
 /// вместе со всем списком живых соединений и после него — оборвать разбор на
 /// полпути нельзя. Замерено на 1.13.19: около 357 байт на соединение (500
-/// соединений — 178 КБ). Под `final: direct` через туннель проходит вся машина,
+/// соединений — 178 КБ). Через туннель проходит вся машина в обоих охватах,
 /// поэтому в патологии — а её и ловят, когда смотрят на ЦП, — это десятки
 /// мегабайт на опрос: sing-box их сериализует, служба разбирает в дерево, и всё
 /// выбрасывается ради двух чисел. Надзор превращался бы в усилитель того самого
@@ -118,11 +118,19 @@ struct Saved {
     /// сети напрямую — ровно то, чего продукт обещает не допускать.
     #[serde(default)]
     private: bool,
-    /// Охват. Переживает перезапуск по той же причине, что и `private`: молча
-    /// сузить охват после перезагрузки значило бы выпустить наружу то, что
+    /// Охват — как есть, а не перечислением, и это не небрежность.
+    ///
+    /// Охватов было три, и `state.json` у людей помнит третий: `"scope":
+    /// "apps"` — split-tunnel, где невыбранные ходили напрямую. Перечисление
+    /// такого значения не примет, а отказ разбора здесь стоит всего файла:
+    /// `unwrap_or_default()` в `load()` стёр бы разом профили, подписки и
+    /// список приложений. Разбирает сохранённое `migrate_scope`.
+    ///
+    /// Переживает перезапуск по той же причине, что и `private`: молча сузить
+    /// охват после перезагрузки значило бы выпустить наружу то, что
     /// пользователь закрыл.
     #[serde(default)]
-    scope: Scope,
+    scope: Value,
     /// Как охват записывался до появления белого списка. Читается только ради
     /// переноса: у обновившегося `state.json` поля `scope` нет, и без этой
     /// строки «весь компьютер» молча превратился бы в «выбранные» — то есть
@@ -181,6 +189,17 @@ fn remember(probes: &mut Vec<Probe>, name: &str, latency_ms: Option<u32>, exit: 
     }
 }
 
+/// Слепок применённого к брандмауэру. Структурой, а не кортежем: полей четыре,
+/// два из них булевы, и перепутанные местами они означают ровно противоположное
+/// тому, что задумано.
+#[derive(PartialEq)]
+struct Applied {
+    fence: core_filter::Fence,
+    killswitch: bool,
+    apps: Vec<String>,
+    browser: Option<String>,
+}
+
 struct Service {
     status: Status,
     profiles: BTreeMap<String, Value>,
@@ -199,13 +218,11 @@ struct Service {
     /// живом туннеле. Ждать там было нечего — `Process::start` к этому моменту
     /// уже выждал `STARTUP_GRACE` и убедился, что процесс не умер сразу.
     probe_now: bool,
-    /// Что уже применено к брандмауэру: (правила на приложениях, запрет всего
-    /// исходящего, список приложений). Помним применённое, а не то, из чего оно
-    /// выведено: по нему же решается, наша ли сейчас политика брандмауэра, и
-    /// выведи мы её второй раз — второй вывод разошёлся бы с первым. Без этой
-    /// памяти надзор дёргал бы netsh каждые три секунды и засыпал журнал
-    /// одинаковыми отказами.
-    applied: Option<(core_filter::Fence, bool, Vec<String>)>,
+    /// Что уже применено к брандмауэру. Помним применённое, а не то, из чего
+    /// оно выведено: без этой памяти надзор дёргал бы netsh каждые три секунды
+    /// и засыпал бы журнал одинаковыми отказами. Неудачу не запоминаем
+    /// намеренно — на следующей смене состояния попробуем снова.
+    applied: Option<Applied>,
     /// Инстансы под окна браузера: профиль → его процесс, по одному на профиль.
     /// Сеансы независимы — портов у каждого свои (`free_port`), каталог свой
     /// (`browser/<dir_name>`), и общий режим не трогает ни один.
@@ -256,6 +273,7 @@ impl Service {
     fn load() -> Self {
         let raw = std::fs::read_to_string(dir().join("state.json")).unwrap_or_default();
         let saved: Saved = serde_json::from_str(&raw).unwrap_or_default();
+        let (scope, migrated) = migrate_scope(&saved.scope, saved.all_traffic);
         // Журнал лежит своим файлом, а не полем state.json: его переписывает
         // каждая строка, а состояние с подпиской на сотню узлов — нет.
         let log: Vec<LogLine> = std::fs::read_to_string(dir().join("journal.json"))
@@ -270,10 +288,7 @@ impl Service {
                 lang: saved.lang,
                 profile: saved.profile,
                 apps: Self::dedup_apps(saved.apps),
-                scope: match (saved.scope, saved.all_traffic) {
-                    (Scope::Apps, true) => Scope::All,
-                    (scope, _) => scope,
-                },
+                scope,
                 profiles: saved.profiles.keys().cloned().collect(),
                 subscriptions: subscriptions_of(&saved.subscriptions, &saved.profiles),
                 probes: saved.probes,
@@ -296,6 +311,16 @@ impl Service {
             generation: 0,
         };
         me.apply_settings();
+        if migrated {
+            // Молчать тут нельзя: человек выбирал одно, а работать будет
+            // другое. Строка объясняет и что сменилось, и почему именно так.
+            me.log(t(
+                "охват «выбранные приложения» убран из продукта: он выпускал остальных в открытую сеть. \
+                 Поставлен «весь компьютер» — он ничего не отключает; белый список включается вручную",
+                "the \"selected apps\" scope is gone: it let everyone else out in the open. \
+                 Switched to \"whole computer\" — it cuts nothing off; the whitelist is a manual choice",
+            ));
+        }
         me
     }
 
@@ -353,7 +378,10 @@ impl Service {
             refreshed_at: self.status.refreshed_at,
             lang: self.status.lang,
             private: self.private,
-            scope: self.status.scope,
+            // Обратно тем же именем, каким читаем: перечисление знает своё имя
+            // само, и дублировать его строкой значило бы разъехаться на первом
+            // же переименовании.
+            scope: serde_json::to_value(self.status.scope).unwrap_or_default(),
             all_traffic: false,
             probes: self.status.probes.clone(),
             browser_profiles: self.status.browser_profiles.clone(),
@@ -435,53 +463,83 @@ impl Service {
         out
     }
 
-    /// Всё, что попадёт в конфиг sing-box и в правила брандмауэра: маршрут по
-    /// умолчанию и поимённый список путей. Отсюда же выводится и надобность
-    /// перезапуска — см. `edit`.
-    fn seen(status: &Status) -> (Scope, Vec<String>) {
-        (status.scope, Self::selected(status))
+    /// Заперты ли сейчас выбранные приложения: приватный режим включён, а
+    /// туннель не подтверждён. Отдельной функцией, потому что перепутанный знак
+    /// здесь — это либо машина без сети при выключенном режиме, либо открытая
+    /// сеть при включённом.
+    fn blocked(&self) -> bool {
+        self.private && self.status.tunnel != TunnelState::Up
     }
 
-    /// Правка списка приложений или охвата. Туннель перезапускается ровно
-    /// тогда, когда изменилось видимое sing-box: конфиг перечисляет
-    /// `process_path` поимённо и `final` держит охват, поэтому без перезапуска
-    /// добавленное приложение продолжит ходить напрямую под надписью
-    /// «Защищено». Решение выводится, а не вспоминается в каждой ветке: именно
-    /// его и забывают. Найденное автообнаружением выключенным ключа не меняет —
-    /// и туннеля не трогает, а перезапуск ради него значил бы выбранные
-    /// приложения без сети на ровном месте.
-    fn edit(&mut self, change: impl FnOnce(&mut Self)) {
-        let before = Self::seen(&self.status);
-        change(self);
-        if Self::seen(&self.status) != before {
-            self.reapply();
-        }
+    /// Переставить правила брандмауэра под нынешнее состояние. Идемпотентна:
+    /// `guard` сам помнит применённое и молчит, когда менять нечего.
+    fn refence(&mut self) {
+        let blocked = self.blocked();
+        self.guard(blocked);
     }
 
-    /// Блокировка на всё время, пока туннель не подтверждён: выбранных
-    /// приложений — правилами по путям, всей машины — политикой брандмауэра.
+    /// Правка списка приложений или охвата — и туннель при этом не
+    /// перезапускается. Это главное, что даёт один конфиг на оба охвата: список
+    /// и охват в него не входят вовсе (`final: proxy`, ни одного правила по
+    /// процессу), поэтому sing-box о правке не узнаёт и узнавать ему нечего.
+    /// Меняются только правила брандмауэра, а живые соединения — та же открытая
+    /// SSH-сессия — правку переживают.
     ///
-    /// Режимы взаимоисключающие, и снимаются оба сразу: смена охвата на ходу
-    /// иначе оставила бы правила прошлого режима висеть — а это либо
-    /// заблокированные навсегда приложения, либо машина без сети.
+    /// Раньше здесь стоял перезапуск, и он был обязателен: конфиг перечислял
+    /// `process_path` поимённо, и без перезапуска добавленное приложение
+    /// продолжало ходить напрямую под надписью «Защищено». Вместе с матчером
+    /// ушла и эта цена. Сторож — `editing_the_list_never_restarts_the_tunnel`.
+    fn edit(&mut self, change: impl FnOnce(&mut Self)) {
+        change(self);
+        self.refence();
+    }
+
+    /// Путь к браузеру, которым оболочка открывает окна профилей, — но только
+    /// пока открыт хоть один сеанс: пропуск живёт ровно столько же.
+    ///
+    /// Ищется один раз на жизнь службы: поиск — это обход реестра и меню
+    /// «Пуск», а `guard` зовётся с каждого круга надзора при выключенном
+    /// приватном режиме. Браузер за время работы службы не меняется.
+    fn browser_pass(&self) -> Option<String> {
+        if self.browsers.is_empty() {
+            return None;
+        }
+        static PATH: OnceLock<Option<String>> = OnceLock::new();
+        PATH.get_or_init(|| core_apps::browser().map(|b| b.path)).clone()
+    }
+
+    /// Всё, что стоит в брандмауэре: замок политикой и пропуска сквозь него.
+    ///
+    /// `blocked` — «приватный режим включён, а туннель не подтверждён», то есть
+    /// то самое окно, в котором выбранные приложения обязаны быть без сети.
+    /// Ставится и снимается всё разом: смена охвата на ходу иначе оставила бы
+    /// правила прошлого режима висеть — а это либо приложения без сети
+    /// навсегда, либо машина без замка.
+    ///
+    /// Политика теперь всегда наша: охвата, в котором мы её не трогали, больше
+    /// нет. Служба, упавшая с запертым исходящим, на следующем старте видит
+    /// сохранённый охват и снимает замок — сразу, если приватный режим был
+    /// выключен.
     fn guard(&mut self, blocked: bool) {
-        let (scope, apps) = Self::seen(&self.status);
-        let (fence, killswitch) = fencing(scope, blocked, self.private);
-        let want = (fence, killswitch, apps);
+        let (fence, killswitch) = fencing(self.status.scope, blocked, self.private);
+        let want = Applied {
+            fence,
+            killswitch,
+            // Пути берутся отсюда напрямую, а не из ключа перезапуска: конфигу
+            // список безразличен, а брандмауэру он нужен в любом охвате.
+            apps: Self::selected(&self.status),
+            browser: self.browser_pass(),
+        };
         if self.applied.as_ref() == Some(&want) {
             return;
         }
-        // Политику брандмауэра трогаем, только пока она может быть нашей: в
-        // охвате «выбранные приложения» настройка машины нас не касается, и
-        // возвращать её в умолчание Windows значило бы стереть чужую. Условие
-        // держится на том, что охват сохраняется на диск: служба, упавшая с
-        // запретом всего исходящего, на следующем старте видит охват и
-        // снимает его — сразу, если приватный режим был выключен.
-        let ours = scope != Scope::Apps || self.applied.as_ref().is_some_and(|(_, was, _)| *was);
-        let outcome = core_filter::set_fence(&want.2, fence).and_then(|()| match ours {
-            true => core_filter::set_killswitch(killswitch, &core_tunnel::binary()),
-            false => Ok(()),
-        });
+        let touch = touch_policy(killswitch, self.applied.as_ref().map(|a| a.killswitch), core_filter::locked_by_us);
+        let outcome =
+            core_filter::set_fence(fence, core_tunnel::TUN_ADDR, &want.apps, want.browser.as_deref())
+                .and_then(|()| match touch {
+                    true => core_filter::set_killswitch(killswitch, &core_tunnel::binary()),
+                    false => Ok(()),
+                });
         match outcome {
             Ok(()) => self.applied = Some(want),
             Err(e) => {
@@ -511,8 +569,9 @@ impl Service {
         self.tunnel = None; // старый процесс убивается Drop'ом до запуска нового
         self.generation += 1; // всё, что проба знала о прошлом процессе, устарело
 
-        let (scope, apps) = Self::seen(&self.status);
-        let opts = Options { tun: tun_enabled(), apps, scope, ..Default::default() };
+        // Ни списка, ни охвата: конфиг у обоих охватов один и тот же, и
+        // держит их брандмауэр. Отсюда и то, что галочка туннель не трогает.
+        let opts = Options { tun: tun_enabled(), ..Default::default() };
         let config = build_config(&node, &opts);
         self.probe_target = probe_target(&self.status.settings.probe, &node);
         match Process::start(&config, &dir()) {
@@ -528,13 +587,12 @@ impl Service {
                 // Приложений, а не путей: в конфиг на каждое уходит до двух форм
                 // пути, и `opts.apps.len()` показывал бы человеку удвоенное число.
                 let count = self.status.apps.iter().filter(|a| a.enabled).count();
-                let scope = match opts.scope {
+                let scope = match self.status.scope {
                     Scope::All => t("весь трафик компьютера", "all computer traffic"),
                     Scope::Whitelist => t(
-                        &format!("приложений в туннеле: {count}, у остальных сети нет"),
-                        &format!("apps in the tunnel: {count}, everyone else is offline"),
+                        &format!("приложений с сетью: {count}, у остальных её нет"),
+                        &format!("apps with network: {count}, everyone else is offline"),
                     ),
-                    Scope::Apps => t(&format!("приложений в туннеле: {count}"), &format!("apps in the tunnel: {count}")),
                 };
                 self.log(t(
                     &format!("профиль «{profile}»: sing-box запущен, {scope}"),
@@ -610,6 +668,8 @@ impl Service {
             &format!("profile \"{profile}\" is up for the browser: 127.0.0.1:{port}"),
         ));
         self.browsers.insert(profile.to_string(), proc);
+        // Пропуск браузеру — на время сеанса и не дольше.
+        self.refence();
         Ok(port)
     }
 
@@ -625,6 +685,7 @@ impl Service {
         for name in doomed {
             self.browsers.remove(&name);
         }
+        self.refence();
     }
 
     /// Сеанс браузера погашен. Процесс уходит Drop'ом, порт закрывается — и
@@ -634,6 +695,7 @@ impl Service {
         if self.browsers.remove(profile).is_none() {
             return;
         }
+        self.refence();
         self.log(t(
             &format!("сеанс браузера «{profile}» закрыт"),
             &format!("browser session \"{profile}\" closed"),
@@ -668,15 +730,6 @@ impl Service {
         !moved.is_empty()
     }
 
-    /// Перезапуск с новым списком приложений — иначе только что добавленное
-    /// приложение продолжило бы ходить напрямую.
-    fn reapply(&mut self) {
-        if self.private {
-            if let Some(profile) = self.status.profile.clone() {
-                let _ = self.start(&profile);
-            }
-        }
-    }
 }
 
 /// Есть ли у службы права администратора. Без них не поднять TUN и не тронуть
@@ -1009,14 +1062,53 @@ fn refresh_loop(svc: Arc<Mutex<Service>>) {
 ///   и есть «у остальных сети нет». Выбранным при живом туннеле выдаётся
 ///   пропуск, а на время падения пропуск снимается, и они запираются тем же
 ///   запретом. Сторож — `the_whitelist_locks_the_door_and_hands_out_passes`.
+/// Трогать ли политику брандмауэра машины. Ставим замок — всегда. Снимаем —
+/// только если он наш: политика это состояние всей машины, и точно такой же
+/// `blockoutbound` бывает у другого клиента VPN или выставлен человеком руками.
+///
+/// `was` — что служба применяла сама в этот запуск; `None` значит «ещё ничего»,
+/// то есть первый круг после старта или круг после отказа netsh. Только там и
+/// приходится спрашивать систему, поэтому ответ приходит функцией, а не
+/// значением: на всех прочих кругах его считать незачем.
+///
+/// Сторож — `a_foreign_killswitch_is_not_ours_to_lift`.
+fn touch_policy(killswitch: bool, was: Option<bool>, ours: impl FnOnce() -> bool) -> bool {
+    killswitch || was.unwrap_or_else(ours)
+}
+
+/// Что делать с охватом, сохранённым прошлой версией. Возвращает охват и то,
+/// был ли перенос: про перенос надо сказать в журнале — человек выбирал одно, а
+/// работать будет другое.
+///
+/// Переносим в «весь компьютер», а не в белый список, и безопасен из двух
+/// ровно один: «весь компьютер» ничего не отключает, а белый список отключил бы
+/// всё неотмеченное — то есть обновление молча отрезало бы машину от сети.
+/// Сторож — `an_update_never_cuts_off_a_machine_that_was_not_asked`.
+fn migrate_scope(saved: &Value, all_traffic: bool) -> (Scope, bool) {
+    match serde_json::from_value::<Scope>(saved.clone()) {
+        Ok(scope) => (scope, false),
+        // Сюда попадают три случая: «apps» (тот самый удалённый split-tunnel),
+        // поля нет вовсе (`state.json` старше самих охватов) и мусор. Первые
+        // два означали split-tunnel — кроме старого флага `all_traffic`,
+        // который и тогда значил «весь компьютер»: там человек уже выбрал то,
+        // что получит, и переносом это не считается.
+        Err(_) => (Scope::All, !all_traffic),
+    }
+}
+
 fn fencing(scope: Scope, blocked: bool, private: bool) -> (core_filter::Fence, bool) {
     use core_filter::Fence;
     match scope {
-        Scope::Apps => (if blocked { Fence::Block } else { Fence::Off }, false),
-        Scope::All => (Fence::Off, blocked),
-        // Пропуск выдаётся только при подтверждённом туннеле: выдай мы его
-        // раньше, выбранное приложение вышло бы в открытую сеть ровно в то
-        // окно, ради которого весь этот замок и заведён.
+        // Весь компьютер: делить некого, в туннель уходит всё. Замок нужен
+        // только на окно, пока туннель не подтверждён. `private &&` тут не
+        // лишнее: без него `guard(true)` при выключенном приватном режиме
+        // запер бы машину целиком.
+        Scope::All => (Fence::Off, private && blocked),
+        // Белый список: замок стоит всё время, пока включён приватный режим, а
+        // пропуск выдаётся только при подтверждённом туннеле. Выдай мы его
+        // раньше — выбранное приложение вышло бы в открытую сеть ровно в то
+        // окно, ради которого весь этот замок и заведён. И наоборот: снимать
+        // ради него замок нельзя, это открыло бы сеть всем.
         Scope::Whitelist => (if private && !blocked { Fence::Allow } else { Fence::Off }, private),
     }
 }
@@ -1136,8 +1228,9 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
         }
         Request::SetScope { scope } => {
             if s.status.scope != scope {
-                // Правила прошлого охвата снимет ближайший цикл надзора — при
-                // выключенном приватном режиме блокировать всё равно нечего.
+                // Туннель не трогаем вовсе: конфиг у обоих охватов один, и
+                // перезапуск ради переключения оборвал бы живые соединения на
+                // ровном месте. Меняются только правила брандмауэра.
                 s.edit(|s| {
                     s.status.scope = scope;
                     s.log(match scope {
@@ -1146,7 +1239,6 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                             "охват: только выбранные приложения, остальным сеть закрыта",
                             "scope: selected apps only, everyone else is cut off",
                         ),
-                        Scope::Apps => t("охват: только выбранные приложения", "scope: selected apps only"),
                     });
                     s.save();
                 });
@@ -1589,12 +1681,15 @@ mod tests {
 
     /// Белый список запирает дверь и раздаёт пропуска, а не наоборот.
     ///
-    /// Три вещи, каждая из которых по отдельности означает дыру: запрет обязан
-    /// стоять всё время, пока включён приватный режим (иначе «у остальных сети
-    /// нет» держится только при живом туннеле); пропуск выбранным обязан
-    /// выдаваться только по подтверждённой пробе (иначе они выходят в открытую
-    /// сеть в то самое окно, ради которого замок и заведён); а охват
-    /// «выбранные» обязан не трогать политику машины вовсе — она не наша.
+    /// Две вещи, каждая из которых по отдельности означает дыру. Замок обязан
+    /// стоять всё время, пока включён приватный режим, — иначе «у остальных
+    /// сети нет» держится только при живом туннеле. И пропуск обязан
+    /// выдаваться только по подтверждённой пробе — иначе выбранное приложение
+    /// выходит в открытую сеть ровно в то окно, ради которого замок и заведён.
+    ///
+    /// Третье — что запирать нечем, кроме политики: запрещающих правил у нас не
+    /// осталось вовсе (сторож `the_pass_is_bound_to_the_tunnel_address` в
+    /// `core-filter` следит и за этим).
     #[test]
     fn the_whitelist_locks_the_door_and_hands_out_passes() {
         use core_filter::Fence;
@@ -1604,11 +1699,37 @@ mod tests {
         assert_eq!(fencing(Scope::Whitelist, false, true), (Fence::Allow, true), "замок стоит, выбранным пропуск");
         // Приватный режим выключен — замок обязан сняться, иначе машина без сети.
         assert_eq!(fencing(Scope::Whitelist, false, false), (Fence::Off, false), "выключили — сняли всё");
+        assert_eq!(fencing(Scope::Whitelist, true, false), (Fence::Off, false), "и в окне запрета тоже");
 
-        assert_eq!(fencing(Scope::Apps, true, true), (Fence::Block, false), "чужую политику не трогаем");
-        assert_eq!(fencing(Scope::Apps, false, true), (Fence::Off, false));
-        assert_eq!(fencing(Scope::All, true, true), (Fence::Off, true), "запирать поимённо некого");
-        assert_eq!(fencing(Scope::All, false, true), (Fence::Off, false));
+        assert_eq!(fencing(Scope::All, true, true), (Fence::Off, true), "делить некого — запирает политика");
+        assert_eq!(fencing(Scope::All, false, true), (Fence::Off, false), "туннель подтверждён — замок ни к чему");
+        // Выключенный приватный режим не запирает машину ни в одном охвате, и
+        // это не следствие того, кто как зовёт `guard`: перепутанный здесь знак
+        // оставил бы человека без сети до перезагрузки — политика её переживает.
+        assert_eq!(fencing(Scope::All, true, false), (Fence::Off, false), "режим выключен — замка нет");
+    }
+
+    /// Чужой kill-switch снимать не наше дело. Политика брандмауэра — состояние
+    /// всей машины, и `blockoutbound` там бывает не только наш: точно такой же
+    /// ставит другой клиент VPN, и точно так же его ставят руками. Служба,
+    /// которую только что установили и ни разу не включали, обязана пройти мимо
+    /// — иначе первый же круг надзора молча открыл бы человеку весь исходящий,
+    /// ничего взамен не включив.
+    ///
+    /// Своё узнаём по разрешению для sing-box: оно ставится только нами и только
+    /// вместе с политикой.
+    #[test]
+    fn a_foreign_killswitch_is_not_ours_to_lift() {
+        let never = || panic!("систему спрашиваем только на первом круге");
+        // Ставим замок — вопрос не встаёт вовсе.
+        assert!(touch_policy(true, None, never));
+        assert!(touch_policy(true, Some(false), never));
+        // Служба уже применяла своё — помнит и переспрашивать не должна.
+        assert!(touch_policy(false, Some(true), never), "свой замок снять обязаны");
+        assert!(!touch_policy(false, Some(false), never), "своего замка не было — и снимать нечего");
+        // Первый круг после старта: решает система.
+        assert!(touch_policy(false, None, || true), "наш замок пережил падение службы — снимаем");
+        assert!(!touch_policy(false, None, || false), "чужой замок не наш");
     }
 
     /// Старый `state.json` знал только флаг «весь трафик». Прочитать его обязаны:
@@ -1618,13 +1739,46 @@ mod tests {
     fn the_old_scope_flag_still_means_the_whole_computer() {
         let saved: Saved =
             serde_json::from_str(r#"{"apps": [], "profiles": {}, "all_traffic": true}"#).unwrap();
-        assert_eq!(saved.scope, Scope::Apps, "нового поля в старом файле нет");
+        assert!(saved.scope.is_null(), "нового поля в старом файле нет");
         assert!(saved.all_traffic, "зато есть старое");
-        let migrated = match (saved.scope, saved.all_traffic) {
-            (Scope::Apps, true) => Scope::All,
-            (scope, _) => scope,
-        };
-        assert_eq!(migrated, Scope::All);
+        let (scope, migrated) = migrate_scope(&saved.scope, saved.all_traffic);
+        assert_eq!(scope, Scope::All);
+        assert!(!migrated, "человек этот охват и выбирал — переносом это не считается");
+    }
+
+    /// Обновление не имеет права отрезать от сети машину, которую об этом не
+    /// просили. Охватов было три, и сохранённый split-tunnel («apps») читать
+    /// теперь нечем: перенести его надо в «весь компьютер» — тот ничего не
+    /// отключает. Белый список отключил бы всё неотмеченное, а неотмеченным у
+    /// человека может быть вообще всё: в split-tunnel галочки значили «завернуть
+    /// в туннель», и снятая галочка не означала «этому сеть не нужна».
+    ///
+    /// Второе, не менее важное: неизвестное значение обязано читаться, а не
+    /// ронять разбор. `state.json` — это ещё и профили с подписками, и отказ
+    /// разбора стёр бы их все.
+    #[test]
+    fn an_update_never_cuts_off_a_machine_that_was_not_asked() {
+        let saved: Saved =
+            serde_json::from_str(r#"{"apps": [], "profiles": {}, "scope": "apps", "private": true}"#)
+                .expect("удалённый охват обязан читаться: в файле рядом лежат профили");
+        let (scope, migrated) = migrate_scope(&saved.scope, saved.all_traffic);
+        assert_eq!(scope, Scope::All, "split-tunnel переносится в «весь компьютер», а не в белый список");
+        assert!(migrated, "про смену охвата обязана быть строка в журнале");
+
+        // Файл старше самих охватов — тот же split-tunnel, только неявный.
+        let (scope, migrated) = migrate_scope(&Value::Null, false);
+        assert_eq!(scope, Scope::All);
+        assert!(migrated);
+
+        // Мусор и будущие имена — туда же, а не в панику.
+        assert_eq!(migrate_scope(&serde_json::json!("нет такого"), false).0, Scope::All);
+        // А знакомое имя проходит как есть: перенос обязан быть одноразовым,
+        // иначе выбранный человеком белый список сбрасывался бы каждый старт.
+        assert_eq!(migrate_scope(&serde_json::json!("whitelist"), false), (Scope::Whitelist, false));
+        assert_eq!(migrate_scope(&serde_json::json!("all"), false), (Scope::All, false));
+        // Умолчание чистой установки — тоже «весь компьютер»: белый список
+        // станет им, когда фаза 0 пройдёт на живой Windows целиком.
+        assert_eq!(Scope::default(), Scope::All);
     }
 
     /// Тихая утечка обязана попасть в окно даже тогда, когда громких соединений
@@ -1820,38 +1974,41 @@ mod tests {
         assert!(body.contains("mem::take"), "флаг первой пробы обязан сниматься при чтении: {body}");
     }
 
-    /// Перезапуск туннеля выводится из состояния, а не вспоминается в каждой
-    /// ветке: конфиг перечисляет `process_path` поимённо, и забытый перезапуск —
-    /// это добавленное приложение, которое ходит напрямую под надписью
-    /// «Защищено». Ровно так правило и нарушается молча: всё зелено, туннель
-    /// поднят, а приложения в нём нет.
+    /// Ни галочка в списке приложений, ни переключение охвата не имеют права
+    /// трогать туннель. Конфиг у обоих охватов один и ни списка, ни охвата не
+    /// содержит (сторож `nothing_can_go_direct` в `core-tunnel`), поэтому
+    /// перезапускать нечего — а перезапуск оборвал бы всё живое: SSH, загрузки,
+    /// звонки. Заодно он означал бы и окно, в котором выбранные приложения
+    /// заперты, — на ровном месте, ради одной галочки.
+    ///
+    /// Заменил собой `the_tunnel_restarts_exactly_when_singbox_would_see_another_config`:
+    /// тот сторожил ровно обратное правило, и оно было верным, пока конфиг
+    /// перечислял `process_path` поимённо.
     #[test]
-    fn the_tunnel_restarts_exactly_when_singbox_would_see_another_config() {
+    fn editing_the_list_never_restarts_the_tunnel() {
+        let src = include_str!("main.rs");
+        let body = src
+            .split("fn edit(")
+            .nth(1)
+            .and_then(|s| s.split("\n    fn ").next())
+            .expect("правка на месте");
+        assert!(!body.contains("start("), "правка обязана не поднимать туннель: {body}");
+        assert!(body.contains("refence()"), "но правила брандмауэра переставить обязана: {body}");
+        // Перезапуск ради списка ушёл вместе с охватом «выбранные приложения».
+        // Иголка собирается на месте: написанная целиком, она нашла бы себя.
+        let gone = format!("fn {}(", "reapply");
+        assert!(!src.contains(&gone), "перезапуск ради списка вернулся — значит вернулись и обрывы соединений");
+
+        // И то же самое от состояния, а не от текста: список меняется, ключ
+        // конфига не существует вовсе, а правила брандмауэра идут за списком.
         let mut st = Status::default();
-        let empty = Service::seen(&st);
+        assert!(Service::selected(&st).is_empty());
         st.apps.push(App { path: "/bin/true".into(), name: "true".into(), enabled: false });
-        assert_eq!(Service::seen(&st), empty, "найденное выключенным sing-box не видит — и трогать туннель незачем");
-
+        assert!(Service::selected(&st).is_empty(), "найденное выключенным сети не получает");
         st.apps[0].enabled = true;
-        let one = Service::seen(&st);
-        assert_ne!(one, empty, "приложение вошло в туннель — конфиг другой");
-
-        st.apps[0].path = "/bin/false".into();
-        let moved = Service::seen(&st);
-        assert_ne!(moved, one, "переехавший пакет — та же смена списка");
-
-        st.scope = Scope::All;
-        assert_ne!(Service::seen(&st), moved, "охват живёт в конфиге, а не только в статусе");
-        let all = Service::seen(&st);
-        st.scope = Scope::Whitelist;
-        assert_ne!(Service::seen(&st), all, "белый список — третий охват, а не оттенок первых двух");
-
-        // Решение принимает один `edit`, а не всякая ветка своей памятью:
-        // прямой вызов возвращает правило человеку, у которого оно и терялось.
-        // Иголка собирается на месте: написанная целиком, она нашла бы саму себя.
-        let needle = format!(".{}()", "reapply");
-        let calls = include_str!("main.rs").matches(&needle).count();
-        assert_eq!(calls, 1, "перезапуск зовётся только из edit, а нашлось вызовов: {calls}");
+        // Форм пути может быть две — записанная и приведённая к файловой
+        // системе: какая совпадёт с тем, что покажет Windows, заранее неизвестно.
+        assert!(Service::selected(&st).contains(&"/bin/true".to_string()), "выбранному нужен пропуск");
     }
 
     /// Автообнаружение обязано узнавать путь, который у него уже есть, в любом
