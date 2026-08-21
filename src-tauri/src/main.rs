@@ -232,9 +232,24 @@ fn paint_icon(pid: u32, data: &std::path::Path, color: &str) {
         return;
     }
     std::thread::spawn(move || {
+        // Chromium после создания окна шлёт свой WM_SETICON из ресурсов
+        // chrome.exe и перетирает наш. Одной постановки мало — переставляем
+        // несколько секунд подряд, пока окно не перестанет пересоздавать иконку.
+        let mut successes = 0u32;
         for _ in 0..60 {
             if core_apps::set_window_icon(pid, &icon) {
-                return;
+                successes += 1;
+                // Хватит пяти успешных постановок подряд — к этому моменту
+                // окно уже стабильно, а бесконечный цикл держал бы поток лишнее.
+                if successes >= 5 {
+                    // Ещё одна контрольная через секунду — на случай отложенной
+                    // перерисовки Chrome после загрузки расширения/темы.
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    let _ = core_apps::set_window_icon(pid, &icon);
+                    return;
+                }
+            } else {
+                successes = 0;
             }
             std::thread::sleep(std::time::Duration::from_millis(250));
         }

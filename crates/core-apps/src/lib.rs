@@ -895,7 +895,7 @@ fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
 pub fn set_window_icon(pid: u32, icon: &Path) -> bool {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::{BOOL, PCWSTR};
-    use windows::Win32::Foundation::{FALSE, HWND, LPARAM, TRUE, WPARAM};
+    use windows::Win32::Foundation::{HWND, LPARAM, TRUE, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetWindow, GetWindowThreadProcessId, IsWindowVisible, LoadImageW, SendMessageW, GW_OWNER,
         ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_LOADFROMFILE, WM_SETICON,
@@ -903,27 +903,29 @@ pub fn set_window_icon(pid: u32, icon: &Path) -> bool {
 
     struct Found {
         pid: u32,
-        hwnd: HWND,
+        hwnds: Vec<HWND>,
     }
 
     /// У Chrome полно окон без рамки — служебных, невидимых, принадлежащих
     /// другим окнам. В панели задач видно ровно то, у которого нет владельца и
     /// которое показано; ему значок и нужен.
+    /// Иконку ставим всем подходящим окнам PID, а не первому: у процесса
+    /// бывает окно-заставка, окно профиля и основное — первое попавшее не
+    /// обязательно то, что видно в панели задач.
     unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let found = unsafe { &mut *(lparam.0 as *mut Found) };
         let mut pid = 0u32;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
         let top = unsafe { GetWindow(hwnd, GW_OWNER) }.is_err();
         if pid == found.pid && top && unsafe { IsWindowVisible(hwnd) }.as_bool() {
-            found.hwnd = hwnd;
-            return FALSE; // нашли — перечислять дальше нечего
+            found.hwnds.push(hwnd);
         }
         TRUE
     }
 
-    let mut found = Found { pid, hwnd: HWND::default() };
+    let mut found = Found { pid, hwnds: Vec::new() };
     let _ = unsafe { EnumWindows(Some(visit), LPARAM(&mut found as *mut Found as isize)) };
-    if found.hwnd.is_invalid() {
+    if found.hwnds.is_empty() {
         return false;
     }
     let path: Vec<u16> = icon.as_os_str().encode_wide().chain([0]).collect();
@@ -932,11 +934,19 @@ pub fn set_window_icon(pid: u32, icon: &Path) -> bool {
     let big = unsafe { LoadImageW(None, PCWSTR(path.as_ptr()), IMAGE_ICON, 32, 32, LR_LOADFROMFILE) };
     let small = unsafe { LoadImageW(None, PCWSTR(path.as_ptr()), IMAGE_ICON, 16, 16, LR_LOADFROMFILE) };
     let (Ok(big), Ok(small)) = (big, small) else { return false };
-    unsafe {
-        SendMessageW(found.hwnd, WM_SETICON, Some(WPARAM(ICON_BIG as usize)), Some(LPARAM(big.0 as isize)));
-        SendMessageW(found.hwnd, WM_SETICON, Some(WPARAM(ICON_SMALL as usize)), Some(LPARAM(small.0 as isize)));
+    let mut ok = false;
+    for hwnd in found.hwnds {
+        unsafe {
+            // Handle у иконки — GDI-объект процесса оболочки. WM_SETICON
+            // копирует его шеллом, но Chromium после создания окна шлёт свой
+            // WM_SETICON из ресурсов и перетирает наш — поэтому caller
+            // переставляет иконку несколько раз (см. paint_icon).
+            SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_BIG as usize)), Some(LPARAM(big.0 as isize)));
+            SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_SMALL as usize)), Some(LPARAM(small.0 as isize)));
+        }
+        ok = true;
     }
-    true
+    ok
 }
 
 /// Значок профиля: круг заданного цвета. Байты `.ico` собираются руками —
