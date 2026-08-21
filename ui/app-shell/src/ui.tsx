@@ -173,10 +173,12 @@ export function AddField({
   placeholder,
   label,
   onSubmit,
+  className = "",
 }: {
   placeholder: string;
   label: string;
   onSubmit: (value: string) => Promise<boolean>;
+  className?: string;
 }) {
   const [value, setValue] = useState("");
   // Подписка выкачивается секундами: без этого второй Enter уходил бы службе
@@ -184,7 +186,7 @@ export function AddField({
   const [busy, setBusy] = useState(false);
   return (
     <form
-      className="flex gap-2"
+      className={`flex gap-2 ${className}`}
       onSubmit={(e) => {
         e.preventDefault();
         const trimmed = value.trim();
