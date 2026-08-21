@@ -891,15 +891,35 @@ fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
 /// того же сеанса второе окно — у него будет значок Chrome. Потолок — первое
 /// окно сеанса; апгрейд — свой хук на появление окон процесса, а это уже
 /// `SetWinEventHook` и цикл сообщений в отдельном потоке.
+/// Совместимость: старый вызов без имени профиля. Иконку всё равно
+/// ставим, но без AppUserModelID — на закреплённой панели задач Windows 11
+/// задача покажет иконку ярлыка, а не окна.
 #[cfg(windows)]
 pub fn set_window_icon(pid: u32, icon: &Path) -> bool {
+    set_window_icon_for_profile(pid, icon, "")
+}
+
+/// Ставит иконку всем подходящим окнам PID и отделяет их от Chrome в
+/// панели задач. Без отдельного AppUserModelID WM_SETICON меняет только
+/// иконку в заголовке окна, а в панели задач остаётся значок из
+/// закреплённого ярлыка Chrome (группировка по AUMI). См.
+/// https://learn.microsoft.com/en-us/windows/win32/shell/appids
+/// и chromium: BrowserWindowPropertyManager::UpdateWindowProperties.
+#[cfg(windows)]
+pub fn set_window_icon_for_profile(pid: u32, icon: &Path, profile: &str) -> bool {
     use std::os::windows::ffi::OsStrExt;
-    use windows::core::{BOOL, PCWSTR};
     use windows::Win32::Foundation::{HWND, LPARAM, TRUE, WPARAM};
+    use windows::Win32::Storage::EnhancedStorage::{
+        PKEY_AppUserModel_ID, PKEY_AppUserModel_RelaunchDisplayNameResource,
+        PKEY_AppUserModel_RelaunchIconResource,
+    };
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+    use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetWindow, GetWindowThreadProcessId, IsWindowVisible, LoadImageW, SendMessageW, GW_OWNER,
         ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_LOADFROMFILE, WM_SETICON,
     };
+    use windows::core::PCWSTR;
 
     struct Found {
         pid: u32,
@@ -912,7 +932,7 @@ pub fn set_window_icon(pid: u32, icon: &Path) -> bool {
     /// Иконку ставим всем подходящим окнам PID, а не первому: у процесса
     /// бывает окно-заставка, окно профиля и основное — первое попавшее не
     /// обязательно то, что видно в панели задач.
-    unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
         let found = unsafe { &mut *(lparam.0 as *mut Found) };
         let mut pid = 0u32;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
@@ -929,11 +949,34 @@ pub fn set_window_icon(pid: u32, icon: &Path) -> bool {
         return false;
     }
     let path: Vec<u16> = icon.as_os_str().encode_wide().chain([0]).collect();
-    // Два размера, а не один: панель задач берёт большой, заголовок окна и
-    // Alt+Tab — маленький, и растянутый из большого выглядит грязно.
+    // В файле 16/32/48/256 — грузим 32 и 16 как раньше, но 256 в файле нужен
+    // чтобы Windows 11 не проигнорировала маленький значок в панели задач
+    // (WM_SETICON с 16×16 молча не обновляет taskbar на HiDPI).
     let big = unsafe { LoadImageW(None, PCWSTR(path.as_ptr()), IMAGE_ICON, 32, 32, LR_LOADFROMFILE) };
     let small = unsafe { LoadImageW(None, PCWSTR(path.as_ptr()), IMAGE_ICON, 16, 16, LR_LOADFROMFILE) };
     let (Ok(big), Ok(small)) = (big, small) else { return false };
+
+    // AppUserModelID обязан быть без пробелов и с точками; пробелы и
+    // слэши из имени профиля заменяем. Пустое имя — совместимость со
+    // старым вызовом, тогда свойства не трогаем.
+    let (app_id, display_name, icon_resource) = if profile.is_empty() {
+        (String::new(), String::new(), String::new())
+    } else {
+        let safe: String = profile.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+        let safe = safe.trim_matches('-');
+        let app_id = if safe.is_empty() {
+            "Gerrux.ProxyBox.Browser".to_string()
+        } else {
+            format!("Gerrux.ProxyBox.Browser.{}", safe)
+        };
+        // RelaunchIconResource — путь к .ico, без ",0" тоже работает, но с
+        // индексом — канонично для шелла.
+        let icon_str = icon.to_string_lossy().into_owned();
+        let icon_res = format!("{},0", icon_str);
+        let display = format!("Privacy Gateway — {}", profile);
+        (app_id, display, icon_res)
+    };
+
     let mut ok = false;
     for hwnd in found.hwnds {
         unsafe {
@@ -943,6 +986,23 @@ pub fn set_window_icon(pid: u32, icon: &Path) -> bool {
             // переставляет иконку несколько раз (см. paint_icon).
             SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_BIG as usize)), Some(LPARAM(big.0 as isize)));
             SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_SMALL as usize)), Some(LPARAM(small.0 as isize)));
+        }
+        // Отдельная группировка в панели задач: без своего AUMI окно
+        // Chrome группируется с обычным Chrome и берёт иконку закреплённого
+        // ярлыка, а не WM_SETICON. Ставим свойства через IPropertyStore.
+        if !app_id.is_empty() {
+            unsafe {
+                if let Ok(store) = SHGetPropertyStoreForWindow::<IPropertyStore>(hwnd) {
+                    // Порядок важен: Relaunch* до ID (дока MS).
+                    let pv_icon = PROPVARIANT::from(icon_resource.as_str());
+                    let _ = store.SetValue(&PKEY_AppUserModel_RelaunchIconResource, &pv_icon);
+                    let pv_name = PROPVARIANT::from(display_name.as_str());
+                    let _ = store.SetValue(&PKEY_AppUserModel_RelaunchDisplayNameResource, &pv_name);
+                    let pv_id = PROPVARIANT::from(app_id.as_str());
+                    let _ = store.SetValue(&PKEY_AppUserModel_ID, &pv_id);
+                    // Commit не нужен, но и не мешает.
+                }
+            }
         }
         ok = true;
     }
@@ -959,51 +1019,72 @@ pub fn set_window_icon(pid: u32, icon: &Path) -> bool {
 ///
 /// Круг, а не буква: буква требует шрифта и растеризации, а различить окна
 /// хватает цвета — панель задач показывает значок размером с ноготь.
+///
+/// В файле несколько картинок (16, 32, 48, 256): WM_SETICON с маленьким
+/// 16×16 на Windows 11 не обновляет значок в панели задач (см. коммент
+/// `paint_icon`), а один 32×32 выглядит размыто на HiDPI. 256×256 (>64К)
+/// кодируется нулём в ICONDIRENTRY по спецификации.
 pub fn icon_bytes((r, g, b): (u8, u8, u8)) -> Vec<u8> {
-    const SIZE: usize = 32;
+    const SIZES: &[usize] = &[16, 32, 48, 256];
 
-    // Пиксели снизу вверх и в порядке BGRA — так их читает Windows.
-    let mut pixels = Vec::with_capacity(SIZE * SIZE * 4);
-    for row in (0..SIZE).rev() {
-        for col in 0..SIZE {
-            // Четыре подпробы на пиксель: край круга в 32 точках без этого
-            // выглядит рваным, а полноценное сглаживание тут не нужно.
-            let mut inside = 0u32;
-            for (dy, dx) in [(0.25, 0.25), (0.25, 0.75), (0.75, 0.25), (0.75, 0.75)] {
-                let y = row as f32 + dy - SIZE as f32 / 2.0;
-                let x = col as f32 + dx - SIZE as f32 / 2.0;
-                if x * x + y * y <= 15.0 * 15.0 {
-                    inside += 1;
-                }
-            }
-            pixels.extend_from_slice(&[b, g, r, (inside * 255 / 4) as u8]);
-        }
+    struct Image {
+        size: usize,
+        header: [u8; 40],
+        pixels: Vec<u8>,
+        mask: Vec<u8>,
     }
-    // Маска прозрачности старого формата: у 32-битного значка её роль играет
-    // альфа-канал, но поле обязано присутствовать — нулями.
-    let mask = vec![0u8; SIZE * SIZE / 8];
-    let header: [u8; 40] = {
-        let mut h = [0u8; 40];
-        h[0] = 40; // размер BITMAPINFOHEADER
-        h[4..8].copy_from_slice(&(SIZE as u32).to_le_bytes());
-        // Высота вдвое больше настоящей: в неё считают и картинку, и маску.
-        h[8..12].copy_from_slice(&(SIZE as u32 * 2).to_le_bytes());
-        h[12..14].copy_from_slice(&1u16.to_le_bytes()); // плоскостей
-        h[14..16].copy_from_slice(&32u16.to_le_bytes()); // бит на пиксель
-        h
-    };
-    let image_len = header.len() + pixels.len() + mask.len();
 
-    let mut ico = Vec::with_capacity(22 + image_len);
-    ico.extend_from_slice(&[0, 0, 1, 0, 1, 0]); // ICONDIR: значок, одна картинка
-    ico.extend_from_slice(&[SIZE as u8, SIZE as u8, 0, 0]); // ширина, высота, палитра, резерв
-    ico.extend_from_slice(&1u16.to_le_bytes()); // плоскостей
-    ico.extend_from_slice(&32u16.to_le_bytes()); // бит на пиксель
-    ico.extend_from_slice(&(image_len as u32).to_le_bytes());
-    ico.extend_from_slice(&22u32.to_le_bytes()); // смещение картинки
-    ico.extend_from_slice(&header);
-    ico.extend_from_slice(&pixels);
-    ico.extend_from_slice(&mask);
+    let mut images: Vec<Image> = Vec::with_capacity(SIZES.len());
+    for &size in SIZES {
+        let mut pixels = Vec::with_capacity(size * size * 4);
+        let radius = size as f32 / 2.0 * 0.9375; // как 15/16 для 32
+        for row in (0..size).rev() {
+            for col in 0..size {
+                let mut inside = 0u32;
+                for (dy, dx) in [(0.25, 0.25), (0.25, 0.75), (0.75, 0.25), (0.75, 0.75)] {
+                    let y = row as f32 + dy - size as f32 / 2.0;
+                    let x = col as f32 + dx - size as f32 / 2.0;
+                    if x * x + y * y <= radius * radius {
+                        inside += 1;
+                    }
+                }
+                pixels.extend_from_slice(&[b, g, r, (inside * 255 / 4) as u8]);
+            }
+        }
+        let mask = vec![0u8; size * size / 8];
+        let mut header = [0u8; 40];
+        header[0] = 40;
+        header[4..8].copy_from_slice(&(size as u32).to_le_bytes());
+        header[8..12].copy_from_slice(&(size as u32 * 2).to_le_bytes());
+        header[12..14].copy_from_slice(&1u16.to_le_bytes());
+        header[14..16].copy_from_slice(&32u16.to_le_bytes());
+        images.push(Image { size, header, pixels, mask });
+    }
+
+    let dir_len = 6 + images.len() * 16;
+    let mut ico = Vec::with_capacity(dir_len + images.iter().map(|im| im.header.len() + im.pixels.len() + im.mask.len()).sum::<usize>());
+    ico.extend_from_slice(&[0, 0, 1, 0]);
+    ico.extend_from_slice(&(images.len() as u16).to_le_bytes());
+    let mut offset = dir_len as u32;
+    for im in &images {
+        let w = if im.size >= 256 { 0 } else { im.size as u8 };
+        let h = w;
+        let image_len = (im.header.len() + im.pixels.len() + im.mask.len()) as u32;
+        ico.push(w);
+        ico.push(h);
+        ico.push(0);
+        ico.push(0);
+        ico.extend_from_slice(&1u16.to_le_bytes());
+        ico.extend_from_slice(&32u16.to_le_bytes());
+        ico.extend_from_slice(&image_len.to_le_bytes());
+        ico.extend_from_slice(&offset.to_le_bytes());
+        offset += image_len;
+    }
+    for im in images {
+        ico.extend_from_slice(&im.header);
+        ico.extend_from_slice(&im.pixels);
+        ico.extend_from_slice(&im.mask);
+    }
     ico
 }
 
@@ -1017,11 +1098,20 @@ mod tests {
     #[test]
     fn icon_is_a_valid_ico() {
         let ico = icon_bytes((0x4c, 0x8d, 0xff));
-        assert_eq!(&ico[..6], &[0, 0, 1, 0, 1, 0], "подпись ICONDIR");
-        assert_eq!(ico.len(), 22 + 40 + 32 * 32 * 4 + 32 * 32 / 8, "заголовок, пиксели и маска");
-        let len = u32::from_le_bytes(ico[14..18].try_into().unwrap()) as usize;
-        let offset = u32::from_le_bytes(ico[18..22].try_into().unwrap()) as usize;
-        assert_eq!(offset + len, ico.len(), "картинка обязана кончаться вместе с файлом");
+        // 4 картинки: 16, 32, 48, 256
+        assert_eq!(&ico[..4], &[0, 0, 1, 0], "подпись ICONDIR");
+        let count = u16::from_le_bytes([ico[4], ico[5]]) as usize;
+        assert_eq!(count, 4, "ожидаем 4 размера для панели задач (16/32/48/256)");
+        let dir_len = 6 + count * 16;
+        // Последняя запись обязана кончаться вместе с файлом
+        let last = count - 1;
+        let base = 6 + last * 16;
+        let len = u32::from_le_bytes(ico[base + 8..base + 12].try_into().unwrap()) as usize;
+        let offset = u32::from_le_bytes(ico[base + 12..base + 16].try_into().unwrap()) as usize;
+        assert_eq!(offset + len, ico.len(), "последняя картинка обязана кончаться вместе с файлом");
+        assert_eq!(ico[dir_len], 40, "за картинками идёт BITMAPINFOHEADER");
+        // 256 кодируется нулём
+        assert_eq!(ico[6 + 3 * 16], 0, "256×256 кодируется 0");
         assert_ne!(icon_bytes((0x4c, 0x8d, 0xff)), icon_bytes((0x2e, 0xb8, 0x72)), "цвет доезжает до пикселей");
     }
 
