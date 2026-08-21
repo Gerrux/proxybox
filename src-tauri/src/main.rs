@@ -153,9 +153,10 @@ fn open_browser(port: u16, profile: String, ua: String, lang: String, color: Str
     if let Some(first) = lang.split(',').next().filter(|l| !l.is_empty()) {
         command.arg(format!("--lang={first}"));
     }
+    let profile_for_icon = profile.clone();
     let mut child = command.spawn().map_err(|e| format!("{}: {e}", browser.path))?;
     #[cfg(windows)]
-    paint_icon(child.id(), &data, &color);
+    paint_icon(child.id(), &data, &profile_for_icon, &color);
     // Закрытие окна службе не видно: она видит живой sing-box, а тот переживает
     // браузер легко — и метка «браузер» врала бы, пока жив процесс. Ждёт тот,
     // кто окно и запустил.
@@ -215,7 +216,7 @@ fn set_accept_language(data: &std::path::Path, lang: &str) {
 /// нового профиля и дольше. Пятнадцать секунд с шагом в четверть — это про
 /// холодный старт на медленном диске, а не про красоту числа.
 #[cfg(windows)]
-fn paint_icon(pid: u32, data: &std::path::Path, color: &str) {
+fn paint_icon(pid: u32, data: &std::path::Path, profile: &str, color: &str) {
     // Цвет приходит из окна строкой `#rrggbb` — той же, которой оно рисует точку
     // в списке профилей. Разобрать не вышло — значка просто не будет: рисовать
     // не тот цвет хуже, чем не рисовать вовсе.
@@ -231,13 +232,17 @@ fn paint_icon(pid: u32, data: &std::path::Path, color: &str) {
     if std::fs::write(&icon, core_apps::icon_bytes((r, g, b))).is_err() {
         return;
     }
+    let profile_owned = profile.to_owned();
     std::thread::spawn(move || {
         // Chromium после создания окна шлёт свой WM_SETICON из ресурсов
         // chrome.exe и перетирает наш. Одной постановки мало — переставляем
         // несколько секунд подряд, пока окно не перестанет пересоздавать иконку.
+        // Дополнительно ставим отдельный AppUserModelID чтобы Windows 11 в
+        // сгруппированной панели задач не брала иконку из закреплённого ярлыка
+        // Chrome, а использовала WM_SETICON (SHGetPropertyStoreForWindow).
         let mut successes = 0u32;
         for _ in 0..60 {
-            if core_apps::set_window_icon(pid, &icon) {
+            if core_apps::set_window_icon_for_profile(pid, &icon, &profile_owned) {
                 successes += 1;
                 // Хватит пяти успешных постановок подряд — к этому моменту
                 // окно уже стабильно, а бесконечный цикл держал бы поток лишнее.
@@ -245,7 +250,7 @@ fn paint_icon(pid: u32, data: &std::path::Path, color: &str) {
                     // Ещё одна контрольная через секунду — на случай отложенной
                     // перерисовки Chrome после загрузки расширения/темы.
                     std::thread::sleep(std::time::Duration::from_secs(1));
-                    let _ = core_apps::set_window_icon(pid, &icon);
+                    let _ = core_apps::set_window_icon_for_profile(pid, &icon, &profile_owned);
                     return;
                 }
             } else {

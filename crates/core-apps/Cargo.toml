@@ -20,4 +20,11 @@ windows = { version = "0.62", features = [
     "Win32_System_Threading",
     # Значок окна браузерного сеанса: найти окно процесса и послать ему WM_SETICON.
     "Win32_UI_WindowsAndMessaging",
+    # Иконка в панели задач Windows 11: AppUserModelID + SHGetPropertyStoreForWindow
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_Storage_EnhancedStorage",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
 ] }
