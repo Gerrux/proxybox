@@ -20,7 +20,7 @@ import { Conns } from "./Conns";
 import { Journal } from "./Journal";
 import { Profiles } from "./Profiles";
 import { Settings, useReleases } from "./Settings";
-import { StatusBar } from "./StatusBar";
+import { StatusBar, tunnelState } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
 import { Button, Icon, type IconName } from "./ui";
 
@@ -190,7 +190,7 @@ export function App() {
   const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
 
   return (
-    <div className="relative flex h-full flex-col overflow-hidden">
+    <div className="app relative flex h-full flex-col overflow-hidden" data-state={tunnelState(status)}>
       {/* У плашки полосы нет: кнопок окна ей не надо, а «открыть окно» и
           «настройки» уже есть в меню значка. */}
       {!flyout && (
@@ -243,7 +243,7 @@ export function App() {
             {/* Табы со счётчиками: сколько там строк, видно не открывая. Узкая
                 полоса и широкая «Главная» — одна навигация в двух видах, кто из
                 них показан, решает `index.css` по ширине окна. */}
-            <nav className="tabs flex shrink-0 gap-0.5 rounded-md border border-edge bg-surface-2 p-0.5">
+            <nav className="tabs flex shrink-0 gap-0.5 rounded-md border border-edge p-0.5">
               <TabButton className="tab-narrow" icon="node" active={tab === "profiles"} onClick={() => setTab("profiles")}
                 label={s.profiles} count={status?.profiles.length ?? 0} />
               <TabButton className="tab-narrow" icon="screen" active={tab === "apps"} onClick={() => setTab("apps")}

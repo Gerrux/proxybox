@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Scope, Status } from "./platform";
-import { strings, type Strings } from "./i18n";
+import { strings } from "./i18n";
 import { Button, Segmented, flag } from "./ui";
 
 /** Длина доезда числа. Заметно меньше периода опроса (2 с), иначе счётчик не
@@ -11,6 +11,13 @@ const COUNT_MS = 450;
  *  и вид канала берёт CSS: список состояний живёт в одном месте, а не двумя
  *  параллельными таблицами. */
 type State = "fault" | "off" | "connecting" | "up" | "down";
+
+/** Состояние окна одним словом. Экспортируется ради корня окна: тон плиты и
+ *  тон самого окна обязаны быть одним цветом, а значит браться с одного
+ *  атрибута. Молчащая служба — единственное, чего нет в `Status::tunnel`. */
+export function tunnelState(status: Status | null): State {
+  return status?.tunnel ?? "fault";
+}
 
 /** Экспортируется ради панели соединений: там те же байты в тех же единицах, а
  *  второй такой же форматтер разошёлся бы с этим на первом же округлении. */
@@ -65,10 +72,10 @@ function useCounted(value: number | null): number | null {
  *  истории у нас нет, и заводить её ради картинки значит начать хранить
  *  трафик. */
 const SPARK = 40;
-/** Размер графика в пикселях. Он же система координат SVG: второго масштаба
- *  между отсчётами и линией не заводим. */
-const SPARK_W = 132;
-const SPARK_H = 26;
+/** Система координат графика. Не пиксели: график растянут по ячейке
+ *  (`preserveAspectRatio="none"`), а размер ему задаёт линейка, не мы. */
+const SPARK_W = 118;
+const SPARK_H = 30;
 
 /** Байты в секунду за один такт. */
 type Rate = { rx: number; tx: number };
@@ -126,67 +133,67 @@ function useRates(status: Status | null): Rate[] {
   return rates;
 }
 
-/** Точки ломаной по отсчётам, сверху вниз в координатах SVG. */
-function points(values: number[], peak: number): string {
+/** Путь по отсчётам, сверху вниз в координатах SVG. Именно путь, а не
+ *  polyline: тем же контуром закрашивается заливка под линией, и второй раз
+ *  считать те же точки незачем. */
+function path(values: number[], peak: number): string {
   const step = SPARK_W / (values.length - 1);
   return values
-    .map((v, i) => `${(i * step).toFixed(1)},${(SPARK_H - (v / peak) * SPARK_H).toFixed(1)}`)
+    .map((v, i) => `${i ? "L" : "M"}${(i * step).toFixed(1)} ${(SPARK_H - (v / peak) * SPARK_H).toFixed(1)}`)
     .join(" ");
 }
 
-/** График скорости в конце канала: последние сорок снятий счётчиков одной
- *  картинкой.
+/** История скорости фоном той ячейки, которая считает эти же байты: график
+ *  принятого — под числом принятого, отданного — под отданным.
  *
- *  Масштаб плавающий, по пику окна — постоянной шкалы у канала нет, а «сколько
- *  это в байтах» отвечает подпись рядом. Ровная линия по нижней кромке значит
- *  «туннель поднят, и по нему молчат»: это не то же самое, что замерший
- *  график, и различать их человек должен глазом. */
-function Spark({ rates, s }: { rates: Rate[]; s: Strings }) {
+ *  Масштаб общий на оба графика (`peak` считается по обоим), иначе молчащая
+ *  отдача рисовалась бы такой же горой, что и загруженный приём, — два
+ *  графика рядом читаются как один прибор, и разные шкалы у них врут.
+ *
+ *  Бледный намеренно: это история, а не показание. Число читают, форму
+ *  замечают краем глаза. Ровная линия по нижней кромке значит «туннель поднят,
+ *  и по нему молчат» — это не то же самое, что замерший график. */
+function CellSpark({ values, peak, id, tone }: { values: number[]; peak: number; id: string; tone: string }) {
   // Одна точка — ещё не линия: рисовать нечего, пока не пришёл второй статус.
-  if (rates.length < 2) return null;
-  const peak = Math.max(1, ...rates.map((r) => Math.max(r.rx, r.tx)));
-  const last = rates[rates.length - 1];
+  if (values.length < 2) return null;
+  const line = path(values, peak);
   return (
-    <div className="st-rate flex shrink-0 items-center gap-2" title={s.rateHint(bytes(peak) + s.perSecond)}>
+    <span className={`spark ${tone}`} aria-hidden="true">
       <svg
-        width={SPARK_W}
-        height={SPARK_H}
+        width="100%"
+        height="100%"
         viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
-        aria-hidden="true"
-        className="shrink-0"
+        preserveAspectRatio="none"
+        fill="none"
       >
-        {/* Отправленное под принятым: его обычно меньше, и тонкой линией оно не
-            прячется за толстой. */}
-        <polyline
-          points={points(rates.map((r) => r.tx), peak)}
-          className="text-muted"
-          fill="none"
+        <path d={`${line} L${SPARK_W} ${SPARK_H} L0 ${SPARK_H} Z`} fill={`url(#${id})`} />
+        {/* Толщина не тянется вместе с ячейкой: без non-scaling-stroke
+            растянутый по ширине график давал бы линию в полпикселя. */}
+        <path
+          d={line}
           stroke="currentColor"
-          strokeWidth="1"
+          strokeWidth="1.1"
           strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
         />
-        <polyline
-          points={points(rates.map((r) => r.rx), peak)}
-          className="text-accent"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.4"
-          strokeLinejoin="round"
-        />
+        <defs>
+          <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="currentColor" stopOpacity=".42" />
+            <stop offset="1" stopColor="currentColor" stopOpacity="0" />
+          </linearGradient>
+        </defs>
       </svg>
-      {/* Тот же порядок и те же стрелки, что в приборной линейке: ↓ принято,
-          ↑ отправлено. Цифры табличные, а ширина у каждого числа прибита: и то
-          и другое — про одно и то же. Строку канала числа делят с самим
-          каналом, он в ней тянущийся, и «340 KB/с» → «1.2 MB/с» укорачивало бы
-          его на два знака дважды в секунду — дёргалась бы вся картинка, а не
-          цифра. Ширины хватает на самое длинное, что выдаёт `bytes`
-          («1023 KB/с»); влезет — значит, ничего и не поедет. */}
-      <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted">
-        <span className="inline-block w-[4.75rem]">↓{bytes(last.rx)}{s.perSecond}</span>
-        <span className="inline-block w-[4.75rem]">↑{bytes(last.tx)}{s.perSecond}</span>
-      </span>
-    </div>
+    </span>
   );
+}
+
+/** «Нидерланды, Амстердам» → страна и город по отдельности. Склеивает их сама
+ *  служба (`core_tunnel::parse_country`), и при пустом городе не склеивает
+ *  вовсе — тогда второй строки просто нет. */
+function splitExit(exit: string | null | undefined): [string, string] {
+  if (!exit) return ["", ""];
+  const at = exit.indexOf(",");
+  return at === -1 ? [exit, ""] : [exit.slice(0, at), exit.slice(at + 1).trim()];
 }
 
 /** Цвет задержки. Пороги на глаз, не по науке: до ~120 мс туннель ощущается
@@ -225,11 +232,16 @@ export function StatusBar({
   // счётчики меняются с каждым статусом, и панель перерисовывалась покадрово.
   const rx = status?.rx ?? null;
   const tx = status?.tx ?? null;
+  // Масштаб один на оба графика: разные шкалы рядом читались бы как одинаковая
+  // нагрузка при десятикратной разнице. Пик по обоим рядам, не по своему.
+  const peak = Math.max(1, ...rates.map((r) => Math.max(r.rx, r.tx)));
+  const last = rates.at(-1) ?? null;
+  const scaleHint = s.rateHint(bytes(peak) + s.perSecond);
 
   // Служба не отвечает — это единственная настоящая поломка из пяти состояний,
   // и она единственная требует человека. Остальные четыре — работа продукта.
-  const view: { state: State; title: string; hint: string } = !status
-    ? { state: "fault", title: s.serviceDown, hint: s.serviceDownHint }
+  const view: { title: string; hint: string } = !status
+    ? { title: s.serviceDown, hint: s.serviceDownHint }
     : {
         // Охват меняет не состояние, а того, о ком оно: подсказка про
         // «выбранные приложения» при включённом «весь компьютер» была бы враньём.
@@ -237,7 +249,6 @@ export function StatusBar({
         // под заголовком: гаснущая кнопка сама по себе ничего не объясняет, а
         // единственное объяснение лежало ниже, в пустом списке профилей.
         off: {
-          state: "off" as const,
           title: s.off,
           hint:
             status.profiles.length === 0
@@ -247,17 +258,14 @@ export function StatusBar({
                 : s.offHintWhitelist,
         },
         connecting: {
-          state: "connecting" as const,
           title: s.connecting,
           hint: all ? s.connectingHintAll : s.connectingHintWhitelist,
         },
         up: {
-          state: "up" as const,
           title: s.up,
           hint: all ? s.upHintAll : inTunnel > 0 ? s.upHintWhitelist(inTunnel) : s.upNoApps,
         },
         down: {
-          state: "down" as const,
           title: s.down,
           hint: all ? s.downHintAll : s.downHintWhitelist,
         },
@@ -266,11 +274,12 @@ export function StatusBar({
   const on = status != null && status.tunnel !== "off";
   const code = status?.probes.find((p) => p.name === status.profile)?.code;
   const exitFlag = status?.country ? flag(code) : null;
+  const [exitCountry, exitCity] = splitExit(status?.country);
 
   return (
     <header
-      data-state={view.state}
-      className="st smooth relative shrink-0 overflow-hidden rounded-lg border border-edge bg-[color:var(--tone-soft)] px-5 pb-4 pt-4"
+      data-state={tunnelState(status)}
+      className="st smooth relative shrink-0 overflow-hidden rounded-lg px-5 pb-4 pt-4"
     >
       <div className="st-head flex items-start justify-between gap-6">
         <div className="min-w-0">
@@ -292,7 +301,7 @@ export function StatusBar({
           variant={on ? "ghost" : "primary"}
           disabled={!status || (!on && !status.profile && status.profiles.length === 0)}
           onClick={onToggle}
-          className="st-toggle h-9 px-5 font-display uppercase tracking-[0.08em]"
+          className={`st-toggle ${on ? "st-on" : "st-off"} h-9 px-5 font-display uppercase tracking-[0.08em]`}
         >
           {on ? s.turnOff : s.turnOn}
         </Button>
@@ -314,6 +323,7 @@ export function StatusBar({
             ["all", s.scopeAll, s.scopeHint],
           ]}
           value={scope}
+          className="seg-well"
           disabled={!status || busy}
           onPick={(v) => onScope(v as Scope)}
         />
@@ -325,11 +335,6 @@ export function StatusBar({
         </span>
         <span className="conduit-end smooth" />
         <span className="engraved shrink-0 text-muted">{s.conduitTo}</span>
-        {/* Скорость стоит на конце канала, а не во вкладке соединений: она про
-            сам канал, и смотреть на неё человек приходит туда же, где написано,
-            поднят он или перерублен. В узком окне график уходит, числа
-            остаются (`index.css`). */}
-        <Spark rates={rates} s={s} />
       </div>
 
       {/* Пять колонок или ни одной: промежуточные сетки из двух и трёх колонок
@@ -356,7 +361,14 @@ export function StatusBar({
               )}
               {/* Название прячется только тогда, когда вместо него остаётся
                   флаг: без флага пустая ячейка не значила бы ничего. */}
-              <span className={`truncate ${exitFlag ? "m-country" : ""}`}>{status.country}</span>
+              <span className={`min-w-0 leading-tight ${exitFlag ? "m-country" : ""}`}>
+                <span className="block truncate">{exitCountry}</span>
+                {/* Город — второй строкой и только если он есть: служба склеивает
+                    его со страной через запятую, а при пустом городе не склеивает
+                    вовсе. В одну строку они не помещались, и обрезалось при этом
+                    название страны — то есть главное. */}
+                {exitCity && <span className="m-city block truncate text-[11.5px] text-muted">{exitCity}</span>}
+              </span>
             </>
           ) : (
             "—"
@@ -369,8 +381,24 @@ export function StatusBar({
           value={latency != null ? `${Math.round(latency)} ms` : "—"}
           tone={latencyTone(status?.latency_ms)}
         />
-        <Metric name={s.received} value={rx != null ? bytes(rx) : "—"} hint={s.trafficHint} icon="down" />
-        <Metric name={s.sent} value={tx != null ? bytes(tx) : "—"} hint={s.trafficHint} icon="up" />
+        <Metric
+          name={s.received}
+          value={rx != null ? bytes(rx) : "—"}
+          hint={s.trafficHint}
+          icon="down"
+          rate={last ? `↓${bytes(last.rx)}${s.perSecond}` : undefined}
+          rateHint={scaleHint}
+          spark={<CellSpark values={rates.map((r) => r.rx)} peak={peak} id="pg-spark-down" tone="text-open" />}
+        />
+        <Metric
+          name={s.sent}
+          value={tx != null ? bytes(tx) : "—"}
+          hint={s.trafficHint}
+          icon="up"
+          rate={last ? `↑${bytes(last.tx)}${s.perSecond}` : undefined}
+          rateHint={scaleHint}
+          spark={<CellSpark values={rates.map((r) => r.tx)} peak={peak} id="pg-spark-up" tone="text-accent" />}
+        />
       </dl>
 
       {/* Пока служба не ответила, по нижней кромке панели идёт бегунок. Прогресса
@@ -398,6 +426,9 @@ function Metric({
   hint,
   icon,
   children,
+  spark,
+  rate,
+  rateHint,
 }: {
   name: string;
   value: string;
@@ -412,11 +443,18 @@ function Metric({
   /** Значение сложнее строки — точка выхода: флаг и название живут отдельно,
    *  чтобы в узком окне название могло уйти, а флаг остаться. */
   children?: ReactNode;
+  /** История скорости фоном ячейки. Только у счётчиков: у профиля и страны
+   *  истории нет, а у задержки она есть, но в байтах её не нарисовать. */
+  spark?: ReactNode;
+  /** Скорость под числом — то же измерение, что и график, только словами. */
+  rate?: string;
+  rateHint?: string;
 }) {
   return (
     // Разделители только там, где линейка стоит одной строкой: в две колонки
     // левая граница второго ряда висела бы посреди пустоты.
     <div className="m-cell min-w-0 md:border-l md:border-edge md:px-3 md:first:border-l-0 md:first:pl-0">
+      {spark}
       <dt className="m-label engraved text-muted">{name}</dt>
       {/* tabular-nums обязателен именно из-за доезда: цифры разной ширины
           меняются каждый кадр и дёргали бы линейку по всей строке. */}
@@ -443,6 +481,11 @@ function Metric({
         )}
         {children ?? <span className="truncate">{value}</span>}
       </dd>
+      {rate && (
+        <dd className="rates truncate" title={rateHint}>
+          {rate}
+        </dd>
+      )}
     </div>
   );
 }

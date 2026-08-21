@@ -19,12 +19,12 @@ export function Panel({
 }) {
   return (
     <section
-      className={`smooth flex min-h-0 flex-col overflow-hidden rounded-lg border border-edge bg-surface ${className}`}
+      className={`plate smooth flex min-h-0 flex-col overflow-hidden rounded-lg border border-edge ${className}`}
     >
       {/* Подпись плиты обрезаться не имеет права — по ней и находят панель.
           Ужимается сначала счётчик, потом действия уезжают на вторую строку;
           shrink-0 держит саму полосу, когда панели тесно по высоте. */}
-      <header className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-edge px-4 py-2">
+      <header className="plate-head flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-edge px-4 py-2">
         <h2 className="engraved flex min-w-0 flex-1 items-baseline gap-2 text-muted">
           <span className="shrink-0">{title}</span>
           {note != null && (
