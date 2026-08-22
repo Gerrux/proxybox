@@ -229,8 +229,54 @@ fn paint_icon(pid: u32, data: &std::path::Path, profile: &str, color: &str) {
     if std::fs::create_dir_all(data).is_err() {
         return;
     }
-    if std::fs::write(&icon, core_apps::icon_bytes((r, g, b))).is_err() {
+    let bytes = core_apps::icon_bytes((r, g, b));
+    if std::fs::write(&icon, &bytes).is_err() {
         return;
+    }
+    // Хром хранит иконку профиля отдельно и сам ставит её в
+    // PKEY_AppUserModel_RelaunchIconResource (Google Profile.ico внутри
+    // Default). Если перебить только окно, хром после
+    // BrowserWindowPropertyManager::UpdateWindowProperties перетрёт наш
+    // AUMI/icon своим — поэтому кладём тот же кружок туда, где его ищет
+    // хром, до запуска. Тогда даже если наш SHGetPropertyStoreForWindow
+    // проиграет гонку, хром сам поставит наш цвет.
+    let chrome_icon = data.join("Default").join("Google Profile.ico");
+    let _ = std::fs::create_dir_all(chrome_icon.parent().unwrap_or(data));
+    let _ = std::fs::write(&chrome_icon, &bytes);
+    // И не даём хрому решить что иконка устарела (kProfileIconVersion=10)
+    // — иначе он пересоздаст Google Profile.ico поверх нашего.
+    let prefs = data.join("Default").join("Preferences");
+    let mut need_icon_version = true;
+    if let Ok(raw) = std::fs::read_to_string(&prefs) {
+        if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&raw) {
+            let cur = v
+                .get("profile")
+                .and_then(|p| p.get("icon_version"))
+                .and_then(|n| n.as_i64())
+                .unwrap_or(0);
+            if cur >= 10 {
+                need_icon_version = false;
+            } else if let Some(obj) = v.as_object_mut() {
+                let prof = obj
+                    .entry("profile")
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(p) = prof.as_object_mut() {
+                    p.insert(
+                        "icon_version".into(),
+                        serde_json::Value::Number(10.into()),
+                    );
+                }
+                let _ = std::fs::write(&prefs, v.to_string());
+                need_icon_version = false;
+            }
+        }
+    }
+    if need_icon_version {
+        let _ = std::fs::create_dir_all(prefs.parent().unwrap_or(data));
+        let _ = std::fs::write(
+            &prefs,
+            serde_json::json!({"profile": {"icon_version": 10}}).to_string(),
+        );
     }
     let profile_owned = profile.to_owned();
     std::thread::spawn(move || {
@@ -240,23 +286,62 @@ fn paint_icon(pid: u32, data: &std::path::Path, profile: &str, color: &str) {
         // Дополнительно ставим отдельный AppUserModelID чтобы Windows 11 в
         // сгруппированной панели задач не брала иконку из закреплённого ярлыка
         // Chrome, а использовала WM_SETICON (SHGetPropertyStoreForWindow).
+        //
+        // COM-инициализация вынесена в set_window_icon_for_profile, но без
+        // неё SHGetPropertyStoreForWindow падал с CO_E_NOTINITIALIZED и
+        // группировка оставалась за Chrome — тогда WM_SETICON виден только
+        // в заголовке, а в панели задач остаётся стандартный значок
+        // (симптом после обновлений Chrome/Win11).
+        //
+        // Chromium переставляет свой AUMI не только при создании окна, но и
+        // позже — на OnProfileIconVersionChange, при смене темы/расширения.
+        // Поэтому после первоначальной серии делаем дежурный цикл: раз в
+        // секунду сверяем и, если Chrome перетёр, ставим снова. Держим
+        // поток живо пока процесс жив, иначе вечный утечный цикл.
         let mut successes = 0u32;
-        for _ in 0..60 {
-            if core_apps::set_window_icon_for_profile(pid, &icon, &profile_owned) {
+        let mut consecutive_fails = 0u32;
+        let mut burst_done = false;
+        for iter in 0..300 {
+            let ok = core_apps::set_window_icon_for_profile(pid, &icon, &profile_owned);
+            if ok {
                 successes += 1;
-                // Хватит пяти успешных постановок подряд — к этому моменту
-                // окно уже стабильно, а бесконечный цикл держал бы поток лишнее.
-                if successes >= 5 {
-                    // Ещё одна контрольная через секунду — на случай отложенной
-                    // перерисовки Chrome после загрузки расширения/темы.
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                    let _ = core_apps::set_window_icon_for_profile(pid, &icon, &profile_owned);
-                    return;
-                }
+                consecutive_fails = 0;
             } else {
                 successes = 0;
+                consecutive_fails += 1;
             }
-            std::thread::sleep(std::time::Duration::from_millis(250));
+            if !burst_done && successes >= 5 {
+                // Окно стабилизировалось — контрольная через секунду и
+                // переход в дежурный режим (реже, но долго).
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                let _ = core_apps::set_window_icon_for_profile(pid, &icon, &profile_owned);
+                burst_done = true;
+            }
+            // После всплеска реже: 1 сек вместо 250 мс, чтобы не жечь
+            // GDI-дескрипторы (каждый вызов грузит 2 HICON).
+            let pause = if burst_done {
+                std::time::Duration::from_secs(1)
+            } else {
+                std::time::Duration::from_millis(250)
+            };
+            std::thread::sleep(pause);
+            // Если после обязательного всплеска (60 итераций ≈15 сек на
+            // холодный старт) 15 секунд подряд окна нет — процесс закрыт,
+            // дальше держать поток незачем.
+            if burst_done && consecutive_fails >= 15 {
+                return;
+            }
+            // Даже без всплеска холодный старт мог занять все 60 попыток;
+            // если и после него окна нет долго — тоже выходим.
+            if iter >= 75 && consecutive_fails >= 15 {
+                return;
+            }
+            // 300 итераций ≈ 5 минут дежурства — хватает на любые
+            // отложенные перерисовки Chromium (OnProfileIconVersionChange
+            // и т.п.), дальше значок уже закрепился в шелле.
+            if iter >= 299 {
+                return;
+            }
         }
     });
 }

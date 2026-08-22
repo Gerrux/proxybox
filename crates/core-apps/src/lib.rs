@@ -913,6 +913,7 @@ pub fn set_window_icon_for_profile(pid: u32, icon: &Path, profile: &str) -> bool
         PKEY_AppUserModel_ID, PKEY_AppUserModel_RelaunchDisplayNameResource,
         PKEY_AppUserModel_RelaunchIconResource,
     };
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
     use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
     use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -977,6 +978,15 @@ pub fn set_window_icon_for_profile(pid: u32, icon: &Path, profile: &str) -> bool
         (app_id, display, icon_res)
     };
 
+    // SHGetPropertyStoreForWindow — COM, а поток paint_icon свежий
+    // и без CoInitialize вернёт CO_E_NOTINITIALIZED. На Win10 это могло
+    // молча проходить, на Win11 — нет, и тогда без отдельного AUMI
+    // WM_SETICON меняет только заголовок, а в панели задач остаётся
+    // иконка закреплённого ярлыка Chrome. Инициализируем STA и
+    // запоминаем, надо ли CoUninitialize.
+    let com_ok = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let com_init = com_ok.is_ok();
+
     let mut ok = false;
     for hwnd in found.hwnds {
         unsafe {
@@ -1005,6 +1015,9 @@ pub fn set_window_icon_for_profile(pid: u32, icon: &Path, profile: &str) -> bool
             }
         }
         ok = true;
+    }
+    if com_init {
+        unsafe { CoUninitialize() };
     }
     ok
 }
