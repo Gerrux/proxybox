@@ -269,7 +269,13 @@ export function StatusBar({
         },
         down: {
           title: s.down,
-          hint: all ? s.downHintAll : s.downHintWhitelist,
+          // Отсчёт приписывается к подсказке охвата, а не заменяет её: «доступ
+          // закрыт» — это состояние, а пауза — то, что с ним будет дальше.
+          // Только здесь: в `connecting` попытка уже идёт, в `off` её нет и не
+          // будет, в `up` — тем более.
+          hint:
+            (all ? s.downHintAll : s.downHintWhitelist) +
+            (status.retry_in != null ? ` · ${s.retryIn(status.retry_in)}` : ""),
         },
       }[status.tunnel];
 

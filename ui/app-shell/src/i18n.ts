@@ -24,6 +24,11 @@ const RU = {
   down: "Туннеля нет — доступ закрыт",
   downHintWhitelist: "Так и задумано: без туннеля без сети остаётся весь компьютер",
   downHintAll: "Так и задумано: без туннеля компьютер остаётся без сети",
+  // Пока sing-box не поднимается, окно показывало «доступ закрыт» и молчало:
+  // перезапуск с нарастающей паузой был неотличим от намертво замершего
+  // туннеля. Строка в журнале про паузу есть, но она уезжает вниз и не
+  // обновляется.
+  retryIn: (n: number) => `следующая попытка через ${n} с`,
   turnOn: "Включить",
   turnOff: "Выключить",
   conduitTo: "сеть",
@@ -262,6 +267,7 @@ const EN: typeof RU = {
   down: "No tunnel — access is closed",
   downHintWhitelist: "This is by design: without a tunnel the whole computer stays offline",
   downHintAll: "This is by design: without a tunnel the computer stays offline",
+  retryIn: (n: number) => `retrying in ${n} s`,
   turnOn: "Turn on",
   turnOff: "Turn off",
   conduitTo: "network",
