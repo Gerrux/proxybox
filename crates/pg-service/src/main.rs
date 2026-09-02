@@ -106,6 +106,14 @@ struct Saved {
     /// обновление подписки не смогло бы убрать узлы, которых в ней больше нет.
     #[serde(default)]
     subscriptions: BTreeMap<String, Vec<String>>,
+    /// Адрес подписки → остаток, который панель прислала последней сверкой.
+    /// Ключ тот же, что у `subscriptions`.
+    ///
+    /// Хранится на диске, а не в памяти процесса: остаток приходит только со
+    /// сверкой, а сверка — раз в шесть часов. Без этого окно показывало бы
+    /// пустоту от старта службы до первого круга, то есть почти всегда.
+    #[serde(default)]
+    quotas: BTreeMap<String, Quota>,
     profile: Option<String>,
     /// Когда подписки последний раз пришли с панели. На диске, а не в аптайме
     /// процесса: см. `refresh_due`.
@@ -204,6 +212,7 @@ struct Service {
     status: Status,
     profiles: BTreeMap<String, Value>,
     subscriptions: BTreeMap<String, Vec<String>>,
+    quotas: BTreeMap<String, Quota>,
     /// Приватный режим включён пользователем. Не то же самое, что «туннель жив»:
     /// именно расхождение этих двух флагов и означает DROP.
     private: bool,
@@ -290,7 +299,7 @@ impl Service {
                 apps: Self::dedup_apps(saved.apps),
                 scope,
                 profiles: saved.profiles.keys().cloned().collect(),
-                subscriptions: subscriptions_of(&saved.subscriptions, &saved.profiles),
+                subscriptions: subscriptions_of(&saved.subscriptions, &saved.profiles, &saved.quotas),
                 probes: saved.probes,
                 browser_profiles: saved.browser_profiles,
                 refreshed_at: saved.refreshed_at,
@@ -300,6 +309,7 @@ impl Service {
             settings: saved.settings,
             profiles: saved.profiles,
             subscriptions: saved.subscriptions,
+            quotas: saved.quotas,
             private: saved.private,
             tunnel: None,
             probe_target: (String::new(), 0),
@@ -365,7 +375,7 @@ impl Service {
 
     fn save(&mut self) {
         self.status.profiles = self.profiles.keys().cloned().collect();
-        self.status.subscriptions = subscriptions_of(&self.subscriptions, &self.profiles);
+        self.status.subscriptions = subscriptions_of(&self.subscriptions, &self.profiles, &self.quotas);
         // Профиля больше нет — и мерить нечего: без этой прополки кэш измерений
         // рос бы вечно, а подписка на сотню узлов переписывает их именами раз в
         // сутки. Здесь, а не в каждом месте удаления: через save() проходят все.
@@ -374,6 +384,7 @@ impl Service {
             apps: self.status.apps.clone(),
             profiles: self.profiles.clone(),
             subscriptions: self.subscriptions.clone(),
+            quotas: self.quotas.clone(),
             profile: self.status.profile.clone(),
             refreshed_at: self.status.refreshed_at,
             lang: self.status.lang,
@@ -879,12 +890,16 @@ fn parse_userinfo(header: Option<&str>) -> Option<Quota> {
 /// а окно рисует список профилей группами и показало бы строку без узла.
 /// Отсеиваем здесь, а не в `forget_profile`: на диске лишнее имя безвредно,
 /// сверка заменяет набор целиком.
-fn subscriptions_of(map: &BTreeMap<String, Vec<String>>, profiles: &BTreeMap<String, Value>) -> Vec<Subscription> {
+fn subscriptions_of(
+    map: &BTreeMap<String, Vec<String>>,
+    profiles: &BTreeMap<String, Value>,
+    quotas: &BTreeMap<String, Quota>,
+) -> Vec<Subscription> {
     map.iter()
         .map(|(url, nodes)| Subscription {
             url: url.clone(),
             nodes: nodes.iter().filter(|n| profiles.contains_key(*n)).cloned().collect(),
-            quota: None,
+            quota: quotas.get(url).cloned(),
         })
         .collect()
 }
@@ -1013,6 +1028,17 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Response {
     // того, как человек нажал «обновить» руками, незачем.
     s.status.refreshed_at = Some(now());
     s.subscriptions.insert(url.to_string(), names);
+    // Остаток кладём рядом с узлами и тем же ключом: пришли они одним ответом.
+    // Панель заголовка не прислала — прежнее число убираем, а не оставляем: оно
+    // тем более не свежее, чем список, который только что заменили целиком.
+    match parse_userinfo(userinfo.as_deref()) {
+        Some(quota) => {
+            s.quotas.insert(url.to_string(), quota);
+        }
+        None => {
+            s.quotas.remove(url);
+        }
+    }
     // Окна браузера могли висеть на узлах, которых в подписке больше нет:
     // держать их живыми не за что, ровно как и активный профиль.
     let gone: Vec<String> = s
@@ -1461,6 +1487,9 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
         }
         Request::RemoveSubscription { url } => match s.subscriptions.remove(&url) {
             Some(names) => {
+                // Осиротевшая запись была бы невидима (`subscriptions_of` идёт
+                // по узлам), но копилась бы на диске вечно.
+                s.quotas.remove(&url);
                 for name in &names {
                     s.forget_profile(name);
                 }
@@ -2075,7 +2104,7 @@ mod tests {
         let mut profiles = BTreeMap::new();
         profiles.insert("NL-02".to_string(), json!({"type": "vless"}));
 
-        let out = subscriptions_of(&subs, &profiles);
+        let out = subscriptions_of(&subs, &profiles, &BTreeMap::new());
         assert_eq!(out.len(), 1, "подписка остаётся, даже когда узлов не осталось вовсе");
         assert_eq!(out[0].nodes, vec!["NL-02".to_string()], "удалённый узел ушёл из списка подписки");
     }
