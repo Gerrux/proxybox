@@ -161,17 +161,27 @@ function Editor({
   status,
   act,
   draft,
+  origin,
   setDraft,
 }: {
   status: Status | null;
   act: Act;
   draft: BrowserProfile;
+  /** Имя, под которым профиль открыли: пусто — заводят новый. Из самого
+   *  черновика это не выводится — имя в нём человек набирает сам, и совпадение
+   *  с чужим означало бы «правка» ровно тогда, когда идёт создание. */
+  origin: string;
   setDraft: (draft: BrowserProfile | null) => void;
 }) {
   const s = strings(status?.lang);
   const items = status?.browser_profiles ?? [];
   const nodes = status?.profiles ?? [];
-  const ready = draft.name.trim() !== "" && draft.node !== "";
+  const editing = origin !== "";
+  // Имя занято кем-то другим. Сохранение поверх переписало бы чужой профиль, а
+  // каталог с его куками остался бы лежать под новой личностью — то есть чужие
+  // входы достались бы новому окну.
+  const taken = !editing && items.some((i) => i.name === draft.name.trim());
+  const ready = draft.name.trim() !== "" && draft.node !== "" && !taken;
   // Поля конструктора не хранятся отдельно от строки: два источника правды
   // разъезжаются на первой же правке руками.
   const ua = parseUa(draft.ua);
@@ -180,10 +190,7 @@ function Editor({
   const probe = status?.probes.find((p) => p.name === draft.node);
   const code = probe?.code;
   const country = probe?.country;
-  // Имя занято — значит это правка, а не создание: каталог с куками привязан к
-  // имени и перезапись его переживает.
-  const editing = items.some((i) => i.name === draft.name.trim());
-  const title = editing ? s.browserEdit(draft.name.trim()) : s.browserNew;
+  const title = editing ? s.browserEdit(origin) : s.browserNew;
   useEffect(() => {
     const key = (e: KeyboardEvent) => e.key === "Escape" && setDraft(null);
     window.addEventListener("keydown", key);
@@ -242,14 +249,26 @@ function Editor({
                 <Icon name="repeat" className="size-5" />
               </span>
             </button>
-            <Field icon="tag" label={s.browserName} hint={s.browserNameHint} className="flex-1">
+            {/* В правке поле заперто: имя — ключ профиля и зерно имени его
+                каталога (`core_ipc::dir_name` — сторож `session_dirs_do_not_collide`
+                держит его различающим), а переименовать каталог отсюда нечем. Набранное новое имя раньше давало второй профиль с
+                чистого листа, а входы оставались в старом — и починить это
+                было нечем, потому что старый профиль из формы уже не виден. */}
+            <Field
+              icon="tag"
+              label={s.browserName}
+              hint={editing ? s.browserNameLocked : taken ? s.browserNameTaken : s.browserNameHint}
+              className="flex-1"
+            >
               <input
                 autoFocus
+                readOnly={editing}
+                aria-invalid={taken}
                 value={draft.name}
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                 placeholder={s.browserNamePlaceholder}
                 spellCheck={false}
-                className={FIELD}
+                className={`${FIELD} ${editing ? "text-muted" : ""} ${taken ? "border-fault" : ""}`}
               />
             </Field>
           </div>
@@ -411,8 +430,15 @@ export function Browsers({
   const s = strings(status?.lang);
   const items = status?.browser_profiles ?? [];
   const nodes = status?.profiles ?? [];
-  // Черновик и есть признак открытой страницы правки: null — её нет.
+  // Черновик и есть признак открытой страницы правки: null — её нет. Рядом с
+  // ним — имя, под которым профиль открыли: по нему форма и отличает правку от
+  // заведения. Из самого черновика это не выводится: имя в нём набирают руками.
   const [draft, setDraft] = useState<BrowserProfile | null>(null);
+  const [origin, setOrigin] = useState("");
+  const openForm = (profile: BrowserProfile | null, from = "") => {
+    setDraft(profile);
+    setOrigin(from);
+  };
   return (
     <Panel
       className={className}
@@ -422,7 +448,7 @@ export function Browsers({
         // Заводить профиль, когда нет ни одного узла, не во что: под кнопкой
         // открылась бы форма с пустым списком узлов и запертой кнопкой.
         nodes.length > 0 && (
-          <Button variant="quiet" onClick={() => setDraft(EMPTY)}>
+          <Button variant="quiet" onClick={() => openForm(EMPTY)}>
             {s.browserNew}
           </Button>
         )
@@ -430,13 +456,15 @@ export function Browsers({
     >
       <div className="flex flex-col gap-4">
         {nodes.length === 0 && <Empty>{s.browserNeedsNode}</Empty>}
-        {draft && <Editor status={status} act={act} draft={draft} setDraft={setDraft} />}
+        {draft && (
+          <Editor status={status} act={act} draft={draft} origin={origin} setDraft={(d) => openForm(d, d ? origin : "")} />
+        )}
         {items.length === 0 ? (
           <Empty>{s.browserEmpty}</Empty>
         ) : (
           <ul className="flex flex-col gap-1">
             {items.map((item) => {
-              const open = status?.browsers.includes(item.name) ?? false;
+              const live = status?.browsers.includes(item.name) ?? false;
               // Узел могли удалить или он мог пропасть из подписки: профиль это
               // переживает — в его каталоге входы, — но открыть его нечем, и
               // молчать об этом нельзя.
@@ -456,7 +484,7 @@ export function Browsers({
                       {item.name}
                     </span>
                     <span className="flex items-baseline gap-2 overflow-hidden text-[11px] text-muted">
-                      {open && <span className="engraved shrink-0 text-open">{s.browserOpenState}</span>}
+                      {live && <span className="engraved shrink-0 text-open">{s.browserOpenState}</span>}
                       <span className={`shrink-0 ${gone ? "text-fault" : ""}`} title={gone ? s.browserNodeGone : item.node}>
                         {item.node}
                       </span>
@@ -480,14 +508,19 @@ export function Browsers({
                   >
                     {s.browserOpen}
                   </Button>
-                  <Button variant="quiet" aria-label={s.browserEdit(item.name)} onClick={() => setDraft(item)}>
+                  <Button variant="quiet" aria-label={s.browserEdit(item.name)} onClick={() => openForm(item, item.name)}>
                     ✎
                   </Button>
                   {/* В два клика: с профилем уходят его куки и входы, а это
-                      единственное, чего здесь не восстановить. */}
+                      единственное, чего здесь не восстановить.
+
+                      Пока окно живо, каталог сеанса занят, и `remove_dir_all`
+                      по нему падает: профиль уйдёт, а куки останутся лежать.
+                      Спрашиваем тогда другим текстом: обещание про приватность
+                      либо выполняется, либо не даётся. */}
                   <ConfirmButton
                     label={s.browserRemove(item.name)}
-                    ask={s.confirmRemove}
+                    ask={live ? s.confirmRemoveOpen : s.confirmRemove}
                     onConfirm={() => {
                       // Профиля больше нет — хранить его куки и входы не для
                       // чего. Отказ проглатываем: каталог мог быть занят

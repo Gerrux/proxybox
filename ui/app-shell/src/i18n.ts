@@ -50,6 +50,10 @@ const RU = {
   browserName: "Имя",
   browserNamePlaceholder: "работа, личное, магазин",
   browserNameHint: "Им же назван каталог с куками и входами этого окна.",
+  // Имя — ключ профиля и зерно имени его каталога (`core_ipc::dir_name`),
+  // поэтому в правке оно заперто, а при заведении сверяется с занятыми.
+  browserNameLocked: "Имя не меняется: по нему назван каталог с куками и входами. Другое имя — это другой профиль, с чистого листа.",
+  browserNameTaken: "Профиль с таким именем уже есть — сохранение переписало бы его.",
   browserNode: "Узел",
   browserNodePick: "выберите узел",
   browserNodeHint: "Через него пойдёт трафик окна. Общий режим не трогается.",
@@ -108,6 +112,10 @@ const RU = {
   agoDay: (n: number) => `${n} дн назад`,
   remove: "Удалить",
   confirmRemove: "Удалить?",
+  // Каталог сеанса занят живым окном браузера, и стереть его нечем: profile
+  // уйдёт, а куки останутся лежать. Обещать обратное в средстве приватности
+  // нельзя, поэтому вопрос при открытом окне другой.
+  confirmRemoveOpen: "Окно открыто — куки останутся. Всё равно убрать?",
   langRu: "Русский",
   langEn: "Английский",
   trafficHint: "За текущее подключение: счётчики начинаются заново с каждым запуском туннеля",
@@ -251,6 +259,8 @@ const EN: typeof RU = {
   browserName: "Name",
   browserNamePlaceholder: "work, personal, shop",
   browserNameHint: "It also names the folder with this window's cookies and logins.",
+  browserNameLocked: "The name cannot change: it names the folder with cookies and logins. A different name is a different profile, from scratch.",
+  browserNameTaken: "A profile with this name already exists — saving would overwrite it.",
   browserNode: "Node",
   browserNodePick: "pick a node",
   browserNodeHint: "The window's traffic goes through it. The general mode is untouched.",
@@ -308,6 +318,7 @@ const EN: typeof RU = {
   agoDay: (n: number) => `${n} d ago`,
   remove: "Remove",
   confirmRemove: "Remove?",
+  confirmRemoveOpen: "The window is open — cookies will stay. Remove anyway?",
   langRu: "Russian",
   langEn: "English",
   trafficHint: "For the current connection: the counters start over with every tunnel start",
