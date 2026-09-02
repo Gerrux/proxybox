@@ -2,7 +2,6 @@ import { useEffect, useState, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri, VERSION, type Lang } from "./platform";
 import { strings } from "./i18n";
-import { Button } from "./ui";
 
 /**
  * Своя титульная полоса. Окно рисуется без системной рамки (`decorations:
@@ -55,6 +54,10 @@ export function TitleBar({
   /** Тег вышедшего релиза, если окно о нём уже спросило. Само оно наружу не
    *  ходит: кнопка появляется только после ручной проверки в настройках. */
   update,
+  /** Открывает установщик вышедшего релиза — то же самое, что кнопка
+   *  «Скачать» в настройках, одним нажатием. Раньше здесь открывались сами
+   *  настройки: кнопка звала обновиться и показывала вместо обновления ещё
+   *  одну кнопку. Действие живёт в `useReleases`. */
   onUpdate,
   settingsOpen,
   onSettings,
@@ -107,15 +110,15 @@ export function TitleBar({
       <span data-tauri-drag-region className="min-w-0 flex-1" />
       {/* Точка перед надписью: новость видно и краем глаза, не читая строку. */}
       {update != null && (
-        <Button
-          variant="ghost"
-          className="h-6 gap-1.5 bg-transparent px-2.5 text-accent"
+        <button
+          type="button"
+          className={`${TB_BUTTON} flex items-center gap-1.5 px-2.5 text-accent hover:bg-surface-2`}
           title={s.updateTo(update)}
           onClick={onUpdate}
         >
           <span className="size-1.5 rounded-full bg-accent" />
           {s.updateTo(update)}
-        </Button>
+        </button>
       )}
       {/* Настройки — такая же кнопка полосы, как «свернуть» и «закрыть»: одна
           высота, одна ширина, одна подсветка под курсором. Своя, поменьше и без
@@ -123,13 +126,23 @@ export function TitleBar({
           кнопка держит нажатой — иначе полоса не отличает «там сейчас» от «туда
           можно».
 
-          Ползунки нарисованы сплошным `currentColor`, а не дыркой в цвет
-          поверхности: под курсором подложка меняется, и дырка показала бы
-          прошлый фон. */}
+          Шестерня, а не ползунки: ползунки значат «покрутить прямо здесь», а
+          кнопка открывает целую панель.
+
+          Шестернёй её делает отверстие, а не зубья — это проверено рисованием.
+          Сплошная втулка с восемью штрихами наружу читается солнцем, сколько
+          зубья ни укорачивай: у солнца ровно такой силуэт. Стоит проколоть
+          середину, и та же картинка становится шестернёй. Поэтому здесь три
+          окружности смысла: обод, дырка и зубья от обода наружу.
+
+          Зубьев восемь, а не шесть: на 12 пикселях восемь сливаются в
+          зубчатый обод, а шесть остаются шестью отростками, то есть звездой.
+          Заливки нет нигде — под курсором подложка меняется, и залитое цветом
+          поверхности показало бы прошлый фон. */}
       <WindowButton label={s.settings} title={s.settingsHint} onClick={onSettings} pressed={settingsOpen}>
-        <path d="M1.5 4h9M1.5 8h9" />
-        <circle cx="4" cy="4" r="1.4" fill="currentColor" />
-        <circle cx="8" cy="8" r="1.4" fill="currentColor" />
+        <circle cx="6" cy="6" r="3.4" />
+        <circle cx="6" cy="6" r="1.2" />
+        <path d="M9.4 6h1.1M8.4 8.4l.78.78M6 9.4v1.1M3.6 8.4l-.78.78M2.6 6H1.5M3.6 3.6L2.82 2.82M6 2.6V1.5M8.4 3.6l.78-.78" />
       </WindowButton>
       {desktop && (
         <>
@@ -155,6 +168,15 @@ export function TitleBar({
   );
 }
 
+/** Общий вид кнопки титульной полосы. Кнопки стоят вплотную и читаются как
+ *  один ряд, поэтому высота, реакция на курсор и её плавность обязаны быть
+ *  одной строкой на всех: разъедутся — и ряд рассыплется на разнородные
+ *  детали. Подсветка сюда не входит намеренно, у «закрыть» она своя.
+ *  Кнопка обновления берёт отсюда только контейнер: цвет у неё свой,
+ *  акцентный, и под курсором он остаётся — им она и говорит, зачем она тут. */
+const TB_BUTTON = "h-8 shrink-0 transition-colors";
+const TB_HOVER = "hover:bg-surface-2 hover:text-ink";
+
 function WindowButton({
   label,
   title,
@@ -177,9 +199,9 @@ function WindowButton({
       aria-pressed={pressed}
       title={title ?? label}
       onClick={onClick}
-      className={`grid h-8 w-11 shrink-0 place-items-center transition-colors ${
+      className={`${TB_BUTTON} grid w-11 place-items-center ${
         pressed ? "bg-surface-2 text-ink" : "text-muted"
-      } ${danger ? "hover:bg-fault hover:text-bg" : "hover:bg-surface-2 hover:text-ink"}`}
+      } ${danger ? "hover:bg-fault hover:text-bg" : TB_HOVER}`}
     >
       <svg
         width="12"
