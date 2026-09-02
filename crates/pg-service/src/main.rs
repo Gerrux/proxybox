@@ -863,6 +863,19 @@ fn free_name(taken: &BTreeMap<String, Value>, want: &str) -> String {
     (2..).map(|n| format!("{want} ({n})")).find(|name| !taken.contains_key(name)).expect("номер найдётся")
 }
 
+/// Секунды до момента `at`. Прошедшее и отсутствующее — одинаково `None`:
+/// «пауза кончилась» и «паузы не было» для окна одно и то же, круг надзора в
+/// обоих случаях возьмётся сам. Округление вверх, потому что «через 0 с» на
+/// экране читается как «ничего не происходит» ровно тогда, когда происходит
+/// ожидание. Сторож — `the_retry_countdown_never_shows_zero`.
+fn retry_in(at: Option<Instant>, now: Instant) -> Option<u32> {
+    let left = at?.checked_duration_since(now)?;
+    if left.is_zero() {
+        return None;
+    }
+    Some(left.as_secs() as u32 + u32::from(left.subsec_nanos() > 0))
+}
+
 /// Что вышло из вставленного: одна ссылка, пачка или отказ с причиной.
 ///
 /// Вставляют не только одну ссылку — из канала приходит десяток строк разом, из
@@ -1302,6 +1315,10 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 s.refence();
             }
             s.status.browsers = s.browsers.keys().cloned().collect();
+            // Здесь же, где прополка сеансов, и по той же причине: запомненное
+            // число соврало бы через секунду. Пауза в службе — `Instant`, наружу
+            // едут секунды.
+            s.status.retry_in = retry_in(s.retry_at, Instant::now());
             Response::Status(s.status.clone())
         }
         Request::ListApps => Response::Apps(s.status.apps.clone()),
@@ -2446,6 +2463,26 @@ mod tests {
             2,
             "free_name зовут оба пути импорта: и подписка, и ручная вставка",
         );
+    }
+
+    /// Отсчёт до следующей попытки не показывает ноль: «через 0 с» читается как
+    /// «ничего не происходит» ровно там, где происходит ожидание. Прошедшая
+    /// пауза и отсутствие паузы для окна одно и то же — круг надзора в обоих
+    /// случаях возьмётся сам.
+    #[test]
+    fn the_retry_countdown_never_shows_zero() {
+        // Отсчёт от будущего момента: у свежего процесса `Instant::now()` может
+        // быть меньше вычитаемого, и `now - 5s` паникует.
+        let now = Instant::now() + Duration::from_secs(60);
+        assert_eq!(retry_in(None, now), None, "паузы не запланировано");
+        assert_eq!(retry_in(Some(now - Duration::from_secs(5)), now), None, "пауза уже истекла");
+        assert_eq!(retry_in(Some(now), now), None, "пауза истекает ровно сейчас");
+        assert_eq!(
+            retry_in(Some(now + Duration::from_millis(500)), now),
+            Some(1),
+            "полсекунды — это ещё «через секунду», а не «уже»",
+        );
+        assert_eq!(retry_in(Some(now + Duration::from_secs(30)), now), Some(30));
     }
 
     /// Перезапуск не должен ни тихо возвращать выбранные приложения в открытую
