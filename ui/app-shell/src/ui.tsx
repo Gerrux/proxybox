@@ -185,6 +185,7 @@ export function AddField({
   label,
   onSubmit,
   hint,
+  busyLabel,
   className = "",
 }: {
   placeholder: string;
@@ -193,6 +194,11 @@ export function AddField({
   /** Чем окажется набранное — подписью под полем. Одно поле принимает три
    *  разные вещи, и до отправки об этом не говорило ничего. */
   hint?: (value: string) => string | undefined;
+  /** Надпись на время работы. Подписка выкачивается до двадцати секунд, и всё
+   *  это время погасшая кнопка неотличима от «не нажалось» — второе нажатие
+   *  человек делает не от нетерпения, а потому что первое ничем себя не
+   *  проявило. */
+  busyLabel?: string;
   className?: string;
 }) {
   const [value, setValue] = useState("");
@@ -230,7 +236,7 @@ export function AddField({
           className={FIELD_MULTI}
         />
         <Button type="submit" variant="primary" disabled={busy || !value.trim()}>
-          {label}
+          {busy ? busyLabel ?? label : label}
         </Button>
       </form>
       {said && <span className="text-[11px] text-muted">{said}</span>}

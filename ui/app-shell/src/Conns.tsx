@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { call, type Conn, type Status } from "./platform";
 import { strings } from "./i18n";
 import { bytes } from "./StatusBar";
@@ -14,8 +14,9 @@ const POLL_MS = 2000;
  *
  *  Панель заведена не ради счётчиков: список приложений — это намерение, а
  *  строка соединения — то, что вышло на самом деле, и увидеть одно рядом с
- *  другим больше негде. Выбранное приложение мимо туннеля подсвечено как
- *  поломка, невыбранное — нет: для него прямой путь и есть задуманный.
+ *  другим больше негде. Выбранное приложение не в туннеле подсвечено как
+ *  поломка: маршрута мимо туннеля в конфиге нет вовсе, и задуманным такой путь
+ *  быть не может.
  *
  *  Имя процесса считает служба по локальному порту соединения: у sing-box его
  *  спрашивать нечего — своё поле он заполняет, только когда в маршрутизации
@@ -31,6 +32,13 @@ export function Conns({ status, className }: { status: Status | null; className?
   // Соединения спрашиваются у живого туннеля: без него их нет вовсе, и
   // дёргать службу впустую каждые две секунды незачем.
   const live = status?.tunnel === "up";
+  // Пока курсор внутри списка, обновление придержано. Служба сортирует по
+  // громкости на каждый запрос, и раз в две секунды строки меняются местами —
+  // строку не дочитать, а хост не выделить: он уезжает из-под курсора ровно
+  // тогда, когда его собираются скопировать. В ref, а не в состоянии: опрос
+  // читает признак изнутри таймера, и перезаводить таймер на каждое движение
+  // мыши значило бы сдвигать сам такт опроса.
+  const hold = useRef(false);
 
   useEffect(() => {
     if (!live) {
@@ -42,7 +50,7 @@ export function Conns({ status, className }: { status: Status | null; className?
     const ask = () => {
       // Спрятанное в трей окно живёт сколько угодно долго, и смотреть в него
       // некому: там же, где статус, останавливается и этот опрос.
-      if (document.hidden) return;
+      if (document.hidden || hold.current) return;
       void call({ cmd: "connections" })
         .then((r) => {
           if (gone || r.reply !== "connections") return;
@@ -87,7 +95,11 @@ export function Conns({ status, className }: { status: Status | null; className?
           {status?.scope === "whitelist" && ` ${s.connsEmptyFenced}`} {s.connsHint}
         </Empty>
       ) : (
-        <ul className="flex flex-col">
+        <ul
+          className="flex flex-col"
+          onMouseEnter={() => (hold.current = true)}
+          onMouseLeave={() => (hold.current = false)}
+        >
           {conns.map((c, i) => {
             // Выбранное приложение мимо туннеля — это тот самый тихий промах, а
             // не «так и задумано»: цвет у него поломочный, как у неподнявшихся
