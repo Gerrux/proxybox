@@ -9,8 +9,8 @@
 mod service;
 
 use core_ipc::{
-    dir_name, t, App, BrowserProfile, Conn, Endpoint, Listener, LogLine, Probe, Request, Response,
-    Scope, Settings, Status, Stream, Subscription, Tunnel as TunnelState, ADDR,
+    dir_name, t, App, BrowserProfile, Conn, Endpoint, Listener, LogLine, Probe, Quota, Request,
+    Response, Scope, Settings, Status, Stream, Subscription, Tunnel as TunnelState, ADDR,
 };
 use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
@@ -834,6 +834,33 @@ fn get(url: &str, proxy: Option<&str>) -> Result<String, String> {
         .build()
         .into();
     agent.get(url).call().map_err(|e| fail(&e))?.body_mut().read_to_string().map_err(|e| fail(&e))
+}
+
+/// Разбор заголовка `Subscription-Userinfo`.
+///
+/// Это де-факто стандарт панелей (v2board, sspanel и производные), а не RFC,
+/// поэтому терпимость тут не небрежность: поля необязательны, порядок
+/// произволен, пробелы вокруг `;` и `=` встречаются, а незнакомое поле и битое
+/// число — повод пропустить их, а не отказать в импорте. Заголовка нет вовсе —
+/// это норма: подписка скачалась, узлы разобраны, показывать просто нечего.
+///
+/// Все нули дают `None` по той же причине: понять из заголовка не удалось
+/// ничего, и «0 B из 0 B» в окне было бы шумом вместо ответа. Сторож —
+/// `a_panel_quota_is_read_from_the_header`.
+fn parse_userinfo(header: Option<&str>) -> Option<Quota> {
+    let mut quota = Quota::default();
+    for part in header?.split(';') {
+        let Some((key, value)) = part.split_once('=') else { continue };
+        let Ok(number) = value.trim().parse::<u64>() else { continue };
+        match key.trim().to_ascii_lowercase().as_str() {
+            "upload" => quota.upload = number,
+            "download" => quota.download = number,
+            "total" => quota.total = number,
+            "expire" => quota.expire = number,
+            _ => {}
+        }
+    }
+    (quota != Quota::default()).then_some(quota)
 }
 
 /// Карта «адрес → узлы» в том виде, в каком её ждёт окно. Порядок задаёт
@@ -2464,6 +2491,39 @@ mod tests {
             2,
             "free_name зовут оба пути импорта: и подписка, и ручная вставка",
         );
+    }
+
+    /// Заголовок `Subscription-Userinfo` — де-факто стандарт панелей, а не RFC:
+    /// поля необязательны, порядок произволен, пробелы встречаются, а половина
+    /// панелей не шлёт его вовсе. Терпимость тут не небрежность: непонятый
+    /// заголовок обязан давать «нечего показать», а не отказ импорта — узлы в
+    /// том же ответе разобраны и нужны.
+    #[test]
+    fn a_panel_quota_is_read_from_the_header() {
+        let full = parse_userinfo(Some(
+            "upload=455727941; download=6603863621; total=1073741824000; expire=1673684400",
+        ))
+        .expect("полный заголовок разбирается");
+        assert_eq!(full.upload, 455_727_941);
+        assert_eq!(full.download, 6_603_863_621);
+        assert_eq!(full.total, 1_073_741_824_000);
+        assert_eq!(full.expire, 1_673_684_400);
+
+        // Безлимитная подписка шлёт только расход.
+        let partial = parse_userinfo(Some("upload=1; download=2")).expect("частичный заголовок");
+        assert_eq!((partial.total, partial.expire), (0, 0), "непришедшее — ноль, а не отказ");
+
+        // Пробелы и обратный порядок — та же строка.
+        let messy = parse_userinfo(Some(" expire = 7 ;  total=9 ")).expect("пробелы не мешают");
+        assert_eq!((messy.total, messy.expire), (9, 7));
+
+        // Битое число и незнакомое поле пропускаются, остальное читается.
+        let dirty = parse_userinfo(Some("upload=abc; download=5; reset_day=1")).expect("мусор не роняет");
+        assert_eq!((dirty.upload, dirty.download), (0, 5));
+
+        assert_eq!(parse_userinfo(None), None, "заголовка нет — это норма");
+        assert_eq!(parse_userinfo(Some("хлам без знака равенства")), None, "понять нечего — молчим");
+        assert_eq!(parse_userinfo(Some("upload=0; download=0")), None, "все нули показывать нечего");
     }
 
     /// Отсчёт до следующей попытки не показывает ноль: «через 0 с» читается как
