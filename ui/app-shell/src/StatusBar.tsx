@@ -367,7 +367,7 @@ export function StatusBar({
             видно и что поднимется, и что выбран он не человеком. */}
         <Metric
           name={s.profile}
-          value={status?.profile ?? status?.profiles[0] ?? s.noProfile}
+          value={status?.profile ?? status?.profiles[0]?.name ?? s.noProfile}
           tone={pending ? "text-muted" : ""}
           hint={pending ? s.profileFirst : undefined}
         />

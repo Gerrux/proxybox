@@ -23,8 +23,9 @@ const USAGE_RU: &str = "privacy-gateway <команда>
   add-profile --link <l> импортировать share-link (vless/vmess/trojan/ss/hy2/wg),
                          JSON-конфиг sing-box или подписку по https-адресу;
                          тот же адрес повторно — обновить подписку
-  profiles               список профилей
-  test                   прогнать все профили: кто отвечает и за сколько
+  profiles               список профилей: имя, тип узла и куда он ведёт
+  test [--profile <имя>] прогнать профили: кто отвечает и за сколько.
+                         Без --profile — все, а это секунды на каждый
   conns                  живые соединения туннеля: кто, куда, каким маршрутом.
                          Ничего не сохраняется — список собирается на запрос
   browsers               список браузерных профилей
@@ -60,8 +61,9 @@ const USAGE_EN: &str = "privacy-gateway <command>
   add-profile --link <l> import a share-link (vless/vmess/trojan/ss/hy2/wg),
                          a sing-box JSON config or a subscription https URL;
                          the same URL again refreshes the subscription
-  profiles               list profiles
-  test                   run every profile: who answers and how fast
+  profiles               list profiles: name, node type and where it points
+  test [--profile <name>] run profiles: who answers and how fast.
+                         Without --profile — all of them, seconds each
   conns                  live tunnel connections: who, where, which route.
                          Nothing is stored — the list is built per request
   browsers               list browser profiles
@@ -180,7 +182,7 @@ fn parse(args: &[String]) -> Result<Request, String> {
         },
         Some("profiles") => Ok(Request::Status),
         Some("settings") => Ok(Request::Status),
-        Some("test") => Ok(Request::TestProfiles),
+        Some("test") => Ok(Request::TestProfiles { only: flag(args, "--profile") }),
         Some("conns") => Ok(Request::Connections),
         Some("browse") => flag(args, "--profile")
             .map(|profile| match args.iter().any(|a| a == "--stop") {
@@ -279,8 +281,29 @@ fn main() -> std::process::ExitCode {
             eprintln!("{message}");
             std::process::ExitCode::FAILURE
         }
-        // Иконок CLI не спрашивает — печатать в терминал нечего.
-        Ok(Response::Done | Response::Icon(_)) => std::process::ExitCode::SUCCESS,
+        // Иконок CLI не спрашивает — печатать в терминал нечего. Узел целиком
+        // (`ProfileNode`) спрашивает только форма правки в окне: править JSON в
+        // одну строку аргумента незачем, когда рядом есть `add-profile`.
+        Ok(Response::Done | Response::Icon(_) | Response::ProfileNode { .. }) => std::process::ExitCode::SUCCESS,
+        // Что вышло из импорта. Пропущенное печатается с причиной: вставили
+        // полсотни строк, приехало двенадцать — и куда делись остальные, до сих
+        // пор не отвечал никто.
+        Ok(Response::Imported { added, kept, gone, skipped, skipped_total }) => {
+            println!(
+                "{}",
+                t(
+                    &format!("заведено {added}, уже было {kept}, убрано {gone}, пропущено {skipped_total}"),
+                    &format!("added {added}, already there {kept}, dropped {gone}, skipped {skipped_total}"),
+                )
+            );
+            for why in &skipped {
+                eprintln!("  {why}");
+            }
+            if skipped_total > skipped.len() {
+                eprintln!("  … {}", skipped_total - skipped.len());
+            }
+            std::process::ExitCode::SUCCESS
+        }
         // Адрес целиком: его вставляют в --proxy-server как есть.
         Ok(Response::Proxy { port }) => {
             println!("socks5://127.0.0.1:{port}");
@@ -358,7 +381,15 @@ fn main() -> std::process::ExitCode {
         Ok(Response::Status(s)) if args[0] == "profiles" => {
             adopt(s.lang);
             for p in &s.profiles {
-                println!("{}{p}", if s.profile.as_deref() == Some(p) { "* " } else { "  " });
+                // Куда ведёт узел — то же, что и в окне: по одному имени два
+                // одинаково названных узла подписки не различить.
+                let where_to = match (p.kind.as_str(), p.server.as_str()) {
+                    ("", "") => String::new(),
+                    (kind, "") => format!("  {kind}"),
+                    (kind, server) => format!("  {kind} → {server}"),
+                };
+                let mark = if s.profile.as_deref() == Some(&p.name) { "* " } else { "  " };
+                println!("{mark}{:<24}{where_to}", p.name);
             }
             std::process::ExitCode::SUCCESS
         }

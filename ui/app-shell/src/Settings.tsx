@@ -162,7 +162,26 @@ export function Settings({
         <Line />
 
         <Row title={s.refreshSubs} note={s.refreshSubsHint}>
-          <OnOff lang={lang} value={settings?.refresh ?? true} disabled={!settings} onPick={(refresh) => patch({ refresh })} />
+          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+            {/* Срок показывается только при включённой сверке: выключенной он
+                не значит ничего, а поле рядом с «выкл» читается как «а вот
+                через столько всё-таки сходим». */}
+            {settings?.refresh && (
+              <TextSetting
+                lang={lang}
+                value={String(settings.refresh_hours)}
+                placeholder={s.refreshHoursPlaceholder}
+                onSubmit={(hours) => {
+                  // Мусор и ноль не отправляем вовсе: служба их всё равно
+                  // подожмёт, но поле, вернувшееся другим числом без единого
+                  // слова, читается как «не сохранилось».
+                  const n = Number.parseInt(hours, 10);
+                  patch({ refresh_hours: Number.isFinite(n) ? Math.min(720, Math.max(1, n)) : 6 });
+                }}
+              />
+            )}
+            <OnOff lang={lang} value={settings?.refresh ?? true} disabled={!settings} onPick={(refresh) => patch({ refresh })} />
+          </div>
         </Row>
 
         <Line />

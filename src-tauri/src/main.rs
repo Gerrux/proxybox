@@ -611,7 +611,8 @@ fn build_menu(app: &tauri::AppHandle, status: Option<&Status>) -> tauri::Result<
             let items: Vec<CheckMenuItem<tauri::Wry>> = s
                 .profiles
                 .iter()
-                .map(|name| {
+                .map(|p| {
+                    let name = &p.name;
                     CheckMenuItem::with_id(
                         app,
                         format!("profile:{name}"),
@@ -681,7 +682,9 @@ fn signature(status: Option<&Status>) -> String {
             s.latency_ms.unwrap_or(0),
             s.lang,
             format!("{:?}", s.scope),
-            s.profiles.join(",")
+            // Имена, а не узлы целиком: отпечаток нужен, чтобы заметить смену
+            // списка в меню, а меню показывает имена.
+            s.profiles.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(",")
         ),
     }
 }
@@ -793,7 +796,7 @@ fn tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     let Ok(Response::Status(s)) = call(&Request::Status) else { return };
                     match s.tunnel {
                         core_ipc::Tunnel::Off => {
-                            match s.profile.or_else(|| s.profiles.first().cloned()) {
+                            match s.profile.or_else(|| s.profiles.first().map(|p| p.name.clone())) {
                                 Some(profile) => {
                                     let _ = call(&Request::On { profile });
                                 }
