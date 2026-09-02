@@ -1350,11 +1350,20 @@ mod tests {
 
     /// Прогон профиля не должен ни поднимать TUN, ни отдавать успех, когда
     /// узел недоступен. Работает и без sing-box: тогда падает запуск, а не проба.
+    ///
+    /// Мёртвый адрес берётся у `free_port()`, а не прибит к порту 1. Порт 1
+    /// выбирали в расчёте на то, что занять его нельзя, — но это неправда там,
+    /// где тесты идут с правами администратора (windows-раннер именно такой).
+    /// Тогда на него садился сосед по файлу, `start_reports_immediate_death`,
+    /// и «мёртвый» узел оказывался живым mixed-прокси: тест падал через раз и
+    /// не по своей вине. Прибитый номер порта — это общая переменная на все
+    /// потоки, а тесты идут параллельно.
     #[test]
     fn measure_fails_on_a_dead_node() {
         let dir = std::env::temp_dir().join("pg-measure-test");
-        let dead = json!({ "type": "trojan", "server": "127.0.0.1", "server_port": 1, "password": "p" });
-        assert!(measure(&dead, &dir, ("127.0.0.1", 1), false).is_err(), "мёртвый узел обязан стать ошибкой");
+        let dead_port = free_port().unwrap();
+        let dead = json!({ "type": "trojan", "server": "127.0.0.1", "server_port": dead_port, "password": "p" });
+        assert!(measure(&dead, &dir, ("127.0.0.1", dead_port), false).is_err(), "мёртвый узел обязан стать ошибкой");
         assert_ne!(free_port().unwrap(), 0, "порт должен быть настоящим");
     }
 
@@ -1365,22 +1374,33 @@ mod tests {
     }
 
     /// Упавший на старте sing-box — это ошибка запуска, а не «подключение».
+    ///
+    /// Уронить его надо надёжно, и занятый порт — единственный способ, который
+    /// не зависит от прав. Стоял тут порт 1, в расчёте на «привилегированный
+    /// занять нельзя»: под администратором он занимается прекрасно, sing-box
+    /// спокойно стартовал, и тест падал на собственной посылке — а заодно
+    /// оставлял живой mixed-прокси на общем номере, в который упирался сосед.
+    /// Поэтому порт занимаем сами и держим занятым до конца проверки: отказ
+    /// «уже занято» одинаков и под администратором, и без него.
     #[test]
     fn start_reports_immediate_death() {
         if Command::new(binary()).arg("version").output().is_err() {
             return; // sing-box не установлен
         }
+        let busy = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = busy.local_addr().unwrap().port();
         let dir = std::env::temp_dir().join("pg-start-fail");
         let broken = json!({
-            "inbounds": [{ "type": "mixed", "tag": "local", "listen": "127.0.0.1", "listen_port": 1 }],
+            "inbounds": [{ "type": "mixed", "tag": "local", "listen": "127.0.0.1", "listen_port": port }],
             "outbounds": [{ "type": "direct", "tag": "direct" }],
             "route": { "final": "direct" },
         });
         let err = match Tunnel::start(&broken, &dir) {
             Err(e) => e.to_string(),
-            Ok(_) => panic!("порт 1 занять нельзя"),
+            Ok(_) => panic!("занятый порт обязан уронить sing-box, а он поднялся"),
         };
         assert!(err.contains("завершился сразу"), "{err}");
+        drop(busy);
     }
 
     /// Конфиг проверяется настоящим sing-box, если он есть (PG_SINGBOX или PATH).
