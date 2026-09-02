@@ -850,6 +850,7 @@ fn subscriptions_of(map: &BTreeMap<String, Vec<String>>, profiles: &BTreeMap<Str
         .map(|(url, nodes)| Subscription {
             url: url.clone(),
             nodes: nodes.iter().filter(|n| profiles.contains_key(*n)).cloned().collect(),
+            quota: None,
         })
         .collect()
 }

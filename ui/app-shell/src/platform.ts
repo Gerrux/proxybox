@@ -87,9 +87,20 @@ export type Conn = {
 
 /** Подписка вместе с узлами, которые с неё пришли. Имена — те же, что в
  *  `Status.profiles`: список профилей рисуется группами по подпискам. */
+/** Остаток по подписке из заголовка `Subscription-Userinfo`. Ноль в поле значит
+ *  «панель не прислала» — то же значение стоит у безлимитных и бессрочных. */
+export type Quota = {
+  upload: number;
+  download: number;
+  total: number;
+  expire: number;
+};
+
 export type Subscription = {
   url: string;
   nodes: string[];
+  /** null — панель остатка не прислала. */
+  quota: Quota | null;
 };
 
 export type Status = {
