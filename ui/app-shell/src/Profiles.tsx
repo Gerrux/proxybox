@@ -1,7 +1,8 @@
 import { useState } from "react";
-import type { Act, Probe, Status } from "./platform";
+import type { Act, Lang, Probe, Quota, Status } from "./platform";
 import type { Strings } from "./i18n";
 import { measuredAgo, strings, syncedAgo } from "./i18n";
+import { bytes } from "./StatusBar";
 import { AddField, Button, ConfirmButton, Empty, flag, Panel, SearchField } from "./ui";
 
 /** Чем окажется набранное в поле импорта — по одному лишь префиксу и до
@@ -24,6 +25,44 @@ function sniff(s: Strings, value: string): string | undefined {
   if (text.startsWith("{")) return s.sniffJson;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return s.sniffLink;
   return undefined;
+}
+
+/** Остаток по подписке: сколько израсходовано из лимита и до какого числа.
+ *
+ *  Ноль в поле значит «панель не прислала», и то же значение стоит у
+ *  безлимитных с бессрочными, — поэтому про непришедшее просто молчим, а не
+ *  пишем «0 B из 0 B». Понять нечего вовсе — не рисуем ничего.
+ *
+ *  Израсходовано — это `upload + download`: панели считают их вместе, и два
+ *  числа порознь тут никому не нужны.
+ *
+ *  Тревога двойная и по разным осям: осталось меньше десятой части лимита или
+ *  меньше трёх суток до срока. Тон при этом `wait`, а не `fault`: это
+ *  предупреждение, а не поломка, и красный тут обещал бы сработавшую защиту.
+ *  Красный остаётся истёкшему сроку — он уже объясняет, почему узлы молчат. */
+function Remaining({ s, quota, lang }: { s: Strings; quota: Quota; lang: Lang | undefined }) {
+  const used = quota.upload + quota.download;
+  const parts: string[] = [];
+  if (quota.total > 0) parts.push(s.quotaOf(bytes(used), bytes(quota.total)));
+  else if (used > 0) parts.push(bytes(used));
+  const days = quota.expire > 0 ? (quota.expire * 1000 - Date.now()) / 86_400_000 : null;
+  if (days != null) {
+    parts.push(
+      days < 0 ? s.quotaExpired : s.quotaUntil(new Date(quota.expire * 1000).toLocaleDateString(lang ?? "ru")),
+    );
+  }
+  if (parts.length === 0) return null;
+  const low = quota.total > 0 && quota.total - used < quota.total / 10;
+  const tone =
+    days != null && days < 0 ? "text-fault" : low || (days != null && days < 3) ? "text-wait" : "text-muted";
+  return (
+    <span
+      title={s.quotaHint}
+      className={`shrink-0 font-sans text-[11px] font-normal normal-case tracking-normal ${tone}`}
+    >
+      {parts.join(" · ")}
+    </span>
+  );
 }
 
 /** Со скольких профилей список перестаёт читаться глазом. Порог тот же, что у
@@ -91,8 +130,8 @@ export function Profiles({
   // подписке: связь знает служба, окно её только показывает.
   const fromSubs = new Set(subscriptions.flatMap((sub) => sub.nodes));
   const groups = [
-    { url: null, names: profiles.filter((name) => !fromSubs.has(name) && match(name)) },
-    ...subscriptions.map((sub) => ({ url: sub.url, names: sub.nodes.filter(match) })),
+    { url: null, names: profiles.filter((name) => !fromSubs.has(name) && match(name)), quota: null },
+    ...subscriptions.map((sub) => ({ url: sub.url, names: sub.nodes.filter(match), quota: sub.quota })),
   ];
   const shown = groups.reduce((n, g) => n + g.names.length, 0);
   // Группы заводит только подписка: с одними своими узлами заголовок «Свои»
@@ -187,7 +226,7 @@ export function Profiles({
           // понятного нам узла, а отписаться больше неоткуда. Прячет группу
           // только поиск.
           groups.map(
-            ({ url, names }) =>
+            ({ url, names, quota }) =>
               (names.length > 0 || (url !== null && needle === "")) && (
                 // Сворачивается родным <details>: подписка на сотню узлов иначе
                 // уводит все остальные группы за нижний край окна.
@@ -225,6 +264,12 @@ export function Profiles({
                         {url.replace(/^https?:\/\//, "")}
                       </span>
                     )}
+                    {/* Остаток стоит `shrink-0`, а обрезается адрес: остаток
+                        короткий и постоянной длины, а схема с хвостом адреса —
+                        длинная. Живёт он в <summary>, а не под ним: в свёрнутом
+                        виде это единственное место, где его вообще видно, а
+                        свёрнуты подписки как раз чаще всего. */}
+                    {quota && <Remaining s={s} quota={quota} lang={status?.lang} />}
                     <span className="shrink-0 font-sans text-[11px] font-normal normal-case tracking-normal">
                       {names.length}
                     </span>

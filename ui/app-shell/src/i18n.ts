@@ -55,6 +55,12 @@ const RU = {
   noProfiles: "Профилей нет. Вставьте share-link, адрес подписки или JSON-конфиг — разберётся сам.",
   ownProfiles: "Свои",
   refreshSubscription: (url: string) => `Обновить подписку ${url}`,
+  // Остаток по подписке: трафик и срок. До сих пор их не показывали вовсе, и
+  // человек узнавал про них в тот момент, когда перестало работать.
+  quotaOf: (used: string, total: string) => `${used} из ${total}`,
+  quotaUntil: (date: string) => `до ${date}`,
+  quotaExpired: "подписка кончилась",
+  quotaHint: "Остаток по подписке, как его прислала панель последней сверкой.",
   tabMain: "Главное",
   tabBrowsers: "Браузеры",
   browsers: "Браузеры",
@@ -289,6 +295,10 @@ const EN: typeof RU = {
   noProfiles: "No profiles yet. Paste a share-link, a subscription URL or a JSON config — it parses itself.",
   ownProfiles: "Own",
   refreshSubscription: (url: string) => `Refresh subscription ${url}`,
+  quotaOf: (used: string, total: string) => `${used} of ${total}`,
+  quotaUntil: (date: string) => `until ${date}`,
+  quotaExpired: "subscription has expired",
+  quotaHint: "The subscription balance as the panel reported it at the last sync.",
   tabMain: "Main",
   tabBrowsers: "Browsers",
   browsers: "Browsers",
