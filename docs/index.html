@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>proxybox — частный шлюз для рабочего компьютера</title>
+<meta name="description" content="Контроль исходящего трафика по принципу fail-closed: выбранные программы ходят в сеть только через ваш туннель; туннеля нет — сети нет.">
+<meta property="og:title" content="proxybox">
+<meta property="og:description" content="Выбранные программы ходят в сеть только через ваш туннель. Туннеля нет — сети нет.">
+<meta property="og:image" content="og.png">
+<link rel="icon" href="favicon.png">
+<style>
+/* Шрифты только системные. Продукт не ходит наружу ни за чем, и его сайт тоже:
+   подключённый Google Fonts — это запрос с адреса читателя на чужой сервер на
+   странице, которая обещает обратное. Bahnschrift назван первым, потому что он
+   есть на Windows, где живёт сам продукт; на остальных подхватит системный. */
+:root{
+  --ink:#0E1016;
+  --ink-2:#14161A;
+  --line:rgba(255,255,255,.09);
+  --text:#F2F4F8;
+  --muted:#8A93A6;
+  --brand-a:#5B4BFF;
+  --brand-b:#C13BE0;
+  --open:#2FBE6C;
+  --wait:#FF9A2E;
+  --fault:#F4564A;
+  --display:'Bahnschrift','Segoe UI Semibold','Inter',system-ui,sans-serif;
+  --condensed:'Bahnschrift Condensed','Bahnschrift','Segoe UI Semibold',system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--ink);color:var(--text);
+  font:16px/1.6 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1060px;margin:0 auto;padding:0 24px}
+a{color:inherit}
+
+/* Шапка: локап прижат влево, над ним свободное поле — как на титульном слайде
+   фирменного стиля. Полоса-акцент повторяет диагональ бренда. */
+header{padding:72px 0 56px;border-bottom:1px solid var(--line)}
+.lockup{display:flex;align-items:center;gap:16px}
+.lockup svg{display:block;width:56px;height:56px;flex:none}
+.wordmark{font-family:var(--condensed);font-size:44px;font-weight:600;line-height:1;letter-spacing:.01em}
+.tagline{margin:26px 0 0;font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+.rule{display:block;width:64px;height:3px;border-radius:2px;margin-top:14px;
+      background:linear-gradient(90deg,var(--brand-a),var(--brand-b))}
+h1{margin:34px 0 0;font-family:var(--display);font-size:clamp(28px,4.6vw,46px);font-weight:600;line-height:1.15;letter-spacing:-.01em;max-width:19ch}
+.lede{margin:20px 0 0;font-size:clamp(16px,2vw,19px);line-height:1.55;color:#C7CEDB;max-width:62ch;text-wrap:pretty}
+.cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:32px}
+.btn{display:inline-flex;align-items:center;gap:9px;padding:12px 20px;border-radius:9px;
+     font-weight:600;font-size:15px;text-decoration:none;border:1px solid transparent;transition:.15s}
+.btn-main{background:linear-gradient(120deg,var(--brand-a),var(--brand-b));color:#fff}
+.btn-main:hover{filter:brightness(1.1)}
+.btn-ghost{border-color:var(--line);color:var(--text)}
+.btn-ghost:hover{background:rgba(255,255,255,.05)}
+.note{margin-top:16px;font-size:13px;color:var(--muted)}
+
+section{padding:64px 0;border-bottom:1px solid var(--line)}
+h2{margin:0 0 10px;font-family:var(--display);font-size:12px;font-weight:600;
+   letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.claim{margin:0 0 34px;font-family:var(--display);font-size:clamp(21px,2.8vw,29px);
+       font-weight:600;line-height:1.25;max-width:24ch}
+p{text-wrap:pretty}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}
+.card{border:1px solid var(--line);border-radius:12px;background:var(--ink-2);padding:22px}
+.card h3{margin:0 0 8px;font-family:var(--display);font-size:15px;font-weight:600}
+.card p{margin:0;font-size:14.5px;line-height:1.55;color:#AFB7C6}
+
+/* Состояния — те же четыре цвета, что у значка в трее. Точка, а не знак:
+   ниже 11 px знак не ставится, а здесь он и не нужен — цвет и есть смысл. */
+.states{display:flex;flex-wrap:wrap;gap:10px;margin-top:26px;list-style:none;padding:0}
+.states li{display:flex;align-items:center;gap:9px;padding:9px 15px;border:1px solid var(--line);
+           border-radius:999px;font-size:13.5px;color:#C7CEDB;background:var(--ink-2)}
+.dot{width:9px;height:9px;border-radius:50%;flex:none}
+
+figure{margin:0}
+figure img{display:block;width:100%;height:auto;border-radius:12px;border:1px solid var(--line)}
+figcaption{margin-top:12px;font-size:13.5px;color:var(--muted)}
+.shots{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:24px;margin-top:8px}
+
+footer{padding:44px 0 72px;color:var(--muted);font-size:13.5px}
+footer .lockup svg{width:22px;height:22px}
+footer .wordmark{font-size:17px}
+.foot-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <!-- Знак крупный, поэтому несёт диагональ бренда: свечение принадлежит
+         значку операционной системы и в макетах не появляется. Лаз вычитается
+         через fill-rule, а не закрашивается — под ним обязан быть фон. -->
+    <div class="lockup">
+      <svg viewBox="0 0 100 100" aria-label="proxybox">
+        <defs>
+          <linearGradient id="brand" x1="8" y1="0" x2="92" y2="100" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#5B4BFF"></stop><stop offset="1" stop-color="#C13BE0"></stop>
+          </linearGradient>
+        </defs>
+        <path fill-rule="evenodd" clip-rule="evenodd" fill="url(#brand)"
+          d="M22 0h56a22 22 0 0 1 22 22v56a22 22 0 0 1-22 22H22A22 22 0 0 1 0 78V22A22 22 0 0 1 22 0zm14 44a20 20 0 1 0 0 40 20 20 0 0 0 0-40z"></path>
+      </svg>
+      <span class="wordmark">proxybox</span>
+    </div>
+
+    <p class="tagline">частный шлюз для рабочего компьютера</p>
+    <span class="rule"></span>
+
+    <h1>Туннеля нет — сети нет.</h1>
+    <p class="lede">Выбранные вами программы ходят в сеть только через ваш туннель.
+      Промежуточных состояний с прямым доступом не существует: пока туннель не
+      подтверждён, у них просто нет сети. Трафик остальных не трогается вообще.</p>
+
+    <div class="cta">
+      <a class="btn btn-main" href="https://github.com/Gerrux/proxybox/releases">Скачать для Windows</a>
+      <a class="btn btn-ghost" href="https://github.com/Gerrux/proxybox">Исходный код</a>
+    </div>
+    <p class="note">Windows 10 и 11. Своей сети у продукта нет: туннель — ваш собственный сервер.</p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>Инвариант</h2>
+    <p class="claim">Отбор происходит в брандмауэре, до всякого туннеля.</p>
+    <div class="grid">
+      <div class="card">
+        <h3>Запрещает политика, а не правило</h3>
+        <p>Пока приватный режим включён, в брандмауэре стоит запрет всего исходящего.
+          Выбранным программам при подтверждённом туннеле выдаётся пропуск сквозь него —
+          запрет не снимается, иначе сеть открылась бы всем сразу.</p>
+      </div>
+      <div class="card">
+        <h3>Уйти напрямую некуда</h3>
+        <p>В конфиге туннеля нет маршрута мимо него: ни правил по имени процесса,
+          ни выхода «напрямую». Пропуск привязан к адресу туннеля, поэтому пакет с
+          физического интерфейса под него не подпадает.</p>
+      </div>
+      <div class="card">
+        <h3>Список правится без обрыва</h3>
+        <p>Ни список программ, ни охват в конфиг не входят, поэтому их правка не
+          перезапускает туннель. Живые соединения — SSH, загрузки, звонки — её
+          переживают.</p>
+      </div>
+    </div>
+
+    <ul class="states">
+      <li><span class="dot" style="background:var(--open)"></span>канал несёт трафик</li>
+      <li><span class="dot" style="background:var(--wait)"></span>подключаемся</li>
+      <li><span class="dot" style="background:#EBBD57"></span>заперто намеренно</li>
+      <li><span class="dot" style="background:var(--fault)"></span>сломано, нужен человек</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Окно</h2>
+    <p class="claim">Состояние — главное, что показывает окно, поэтому оно занимает верх.</p>
+    <div class="shots">
+      <figure>
+        <img src="interface.png" alt="Окно в состоянии «защищено»: канал поднят, по нему идёт трафик" loading="lazy">
+        <figcaption>Под заголовком нарисован сам путь: от выбранных программ к сети.
+          Пока туннель поднят, по нему идут штрихи.</figcaption>
+      </figure>
+      <figure>
+        <img src="interface-failclosed.png" alt="Окно в состоянии «доступ закрыт»: канал перерублен" loading="lazy">
+        <figcaption>Туннеля нет — канал перерублен и стоит. Янтарный, а не красный:
+          сработавшая защита не поломка.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Ещё в коробке</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Два охвата</h3>
+        <p>Белый список — сеть только выбранным и только через туннель. Весь
+          компьютер — в туннель идёт всё. Инвариант один и тот же, меняется только
+          то, кого он касается.</p>
+      </div>
+      <div class="card">
+        <h3>Браузерные профили</h3>
+        <p>Отдельные окна со своим узлом, User-Agent и языком. У каждого свой
+          каталог сеанса и свой цвет значка в панели задач.</p>
+      </div>
+      <div class="card">
+        <h3>Подписки и прогон</h3>
+        <p>Подписка обновляется по https и заменяет профили молча, не гася туннель.
+          Прогон меряет задержку по всем узлам сразу, на своём sing-box и своих портах.</p>
+      </div>
+      <div class="card">
+        <h3>Ничего наружу</h3>
+        <p>Ни телеметрии, ни журналов трафика. Проба по умолчанию идёт на ваш
+          собственный сервер. Соответствие «адрес — имя» на диск не пишется.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-row">
+    <div class="lockup">
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <path fill-rule="evenodd" clip-rule="evenodd" fill="#7B8CFF"
+          d="M18 0h64a18 18 0 0 1 18 18v64a18 18 0 0 1-18 18H18A18 18 0 0 1 0 82V18A18 18 0 0 1 18 0zm18 36a26 26 0 1 0 0 52 26 26 0 0 0 0-52z"></path>
+      </svg>
+      <span class="wordmark">proxybox</span>
+    </div>
+    <span>Исходный код на <a href="https://github.com/Gerrux/proxybox">GitHub</a></span>
+  </div>
+</footer>
+
+</body>
+</html>
