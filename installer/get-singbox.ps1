@@ -2,10 +2,20 @@
 # сборка установщика, и служба при разработке. Вместе с бинарником забирается
 # LICENSE: sing-box под GPL-3.0, распространять его без текста лицензии нельзя.
 #
-#   pwsh installer\get-singbox.ps1 [-Arch amd64|arm64] [-Version 1.13.19]
+#   pwsh installer\get-singbox.ps1 [-Arch amd64|arm64] [-Version 1.13.21]
+#
+# Версия закреплена, и это не педантизм. Раньше пустая $Version означала
+# «последний релиз с GitHub» — то есть версию sing-box выбирала дата сборки, а
+# не репозиторий. Так и вышло: 0.3.1 собрался через два дня после выхода 1.14.0
+# и унёс его в установщике, а конфиг писан под 1.13. Приватный режим не
+# включался вовсе — «create service: initialize dns router: Legacy `strategy`
+# DNS rule action option is deprecated». Код при этом не менялся ни строкой.
+#
+# Поднимать версию — отдельная осознанная правка: в CLAUDE.md десяток замеров и
+# «проверено на 1.13.x», и каждый из них новая версия вправе отменить.
 param(
   [ValidateSet("amd64", "arm64")] [string]$Arch = "amd64",
-  [string]$Version = ""
+  [string]$Version = "1.13.21"
 )
 $ErrorActionPreference = "Stop"
 # Windows PowerShell 5.1: TLS 1.2 по умолчанию не включён на старых системах,
@@ -16,10 +26,6 @@ $root = Split-Path -Parent $PSScriptRoot
 $bin  = Join-Path $root "src-tauri\binaries"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 
-if (-not $Version) {
-  $latest = Invoke-RestMethod "https://api.github.com/repos/SagerNet/sing-box/releases/latest"
-  $Version = $latest.tag_name.TrimStart("v")
-}
 $name = "sing-box-$Version-windows-$Arch"
 $url  = "https://github.com/SagerNet/sing-box/releases/download/v$Version/$name.zip"
 $tmp  = Join-Path $env:TEMP "pg-singbox"

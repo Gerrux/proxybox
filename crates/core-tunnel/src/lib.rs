@@ -55,7 +55,9 @@ const TUN_GATEWAY: &str = "172.27.234.2";
 /// Диапазона IPv6 у пула нет намеренно, и это не экономия. Раздай мы фальшивый
 /// AAAA — приложение пошло бы в IPv6, а адреса v6 у нашего TUN нет, и такое
 /// соединение умерло бы, не начавшись. Пока TUN только IPv4, ответ на AAAA
-/// обязан быть пустым, и делает это `strategy: ipv4_only` на том же правиле.
+/// обязан быть пустым, и делает это отдельное правило с действием
+/// `predefined` — раньше тем же занимался `strategy: ipv4_only`, но 1.14
+/// отвергает эту ручку фатально.
 /// Сторож — `fake_addresses_are_handed_out_locally`.
 const FAKE_RANGE: &str = "198.18.0.0/15";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -268,7 +270,15 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
         true => json!([
             { "domain_suffix": ["lan", "local", "home", "home.arpa", "internal"], "server": "lan" },
             { "domain_regex": ["^[^.]+$"], "server": "lan" },
-            { "query_type": ["A", "AAAA"], "server": "fake", "strategy": "ipv4_only" },
+            { "query_type": ["A"], "server": "fake" },
+            // AAAA обязан возвращаться пустым: адреса v6 у нашего TUN нет, и
+            // фальшивый AAAA увёл бы приложение в соединение, которое умрёт, не
+            // начавшись. Раньше это делал `strategy: ipv4_only` на самом правиле
+            // FakeIP — побочным эффектом стратегии, а не сказанным вслух. 1.14
+            // отвергает эту ручку фатально («Legacy `strategy` DNS rule action
+            // option»), 1.16 удалит вовсе, поэтому пустой ответ назван прямо
+            // отдельным правилом. Ответ тот же — NOERROR без записей.
+            { "query_type": ["AAAA"], "action": "predefined", "rcode": "NOERROR" },
         ]),
     };
 
@@ -1424,7 +1434,11 @@ mod tests {
         for rule in &rules[..fake] {
             assert_eq!(rule["server"], "lan", "впереди FakeIP стоят только локальные имена: {rule}");
         }
-        assert_eq!(fake, rules.len() - 1, "после FakeIP правилам делать нечего: {rules:#?}");
+        // После FakeIP осталось ровно одно правило — пустой NOERROR на AAAA, и
+        // оно обязано стоять именно там: раньше него оно съело бы AAAA
+        // локальных имён, позже — не съело бы ничего.
+        assert_eq!(fake, rules.len() - 2, "после FakeIP место только у пустого AAAA: {rules:#?}");
+        assert_eq!(rules[fake + 1]["action"], "predefined", "{rules:#?}");
         let suffixes = rules.iter().find_map(|r| r["domain_suffix"].as_array()).expect("суффиксы");
         assert!(suffixes.iter().any(|s| s == "lan"));
         // Односложные имена `domain_suffix` не ловит, а зовут так чаще всего.
@@ -1451,8 +1465,11 @@ mod tests {
     /// Три вещи здесь обязаны держаться вместе, и каждая проверена на живом
     /// 1.13.19 (A → `198.18.0.2` за 0 мс, AAAA → пустой NOERROR за 0 мс):
     ///
-    /// - `strategy: ipv4_only` — иначе AAAA уходит на `remote`, то есть в
-    ///   туннель, и круг возвращается ровно туда, откуда его убирали;
+    /// - пустой NOERROR на AAAA отдельным правилом (`action: predefined`) —
+    ///   иначе AAAA уходит на `remote`, то есть в туннель, и круг возвращается
+    ///   ровно туда, откуда его убирали. Делал это `strategy: ipv4_only` на
+    ///   правиле FakeIP, пока 1.14 не объявил ручку устаревшей и не начал
+    ///   падать на ней насмерть; ответ от замены не изменился;
     /// - у пула нет `inet6_range` — фальшивый AAAA увёл бы приложение в IPv6,
     ///   которого наш TUN не держит, и соединение умерло бы, не начавшись;
     /// - `independent_cache` — одно имя у `fake` и у `lan` имеет разные ответы.
@@ -1475,16 +1492,35 @@ mod tests {
         assert!(fake["inet6_range"].is_null(), "фальшивый AAAA уводит в IPv6, которого у TUN нет: {fake}");
         assert_eq!(cfg["dns"]["independent_cache"], true, "общий кэш смешал бы ответы `fake` и `lan`");
 
-        let rule = cfg["dns"]["rules"]
-            .as_array()
-            .unwrap()
+        let rules = cfg["dns"]["rules"].as_array().unwrap();
+        let rule = rules
             .iter()
             .find(|r| r["server"] == "fake")
             .expect("правила FakeIP нет")
             .clone();
         let types: Vec<&str> = rule["query_type"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
-        assert_eq!(types, ["A", "AAAA"], "AAAA мимо правила уходит в туннель: {rule}");
-        assert_eq!(rule["strategy"], "ipv4_only", "без этого AAAA стоит круга по каналу: {rule}");
+        assert_eq!(types, ["A"], "фальшивый адрес выдаётся только на A: {rule}");
+        assert!(rule["strategy"].is_null(), "1.14 отвергает `strategy` в действии правила фатально: {rule}");
+
+        // Вторая половина той же мысли: AAAA обязан получать пустой NOERROR, и
+        // именно отдельным правилом. Пропадёт оно — запрос уедет на `remote`,
+        // то есть кругом по каналу, ради ответа, которым всё равно не
+        // воспользоваться: адреса v6 у TUN нет.
+        let empty = rules
+            .iter()
+            .find(|r| r["action"] == "predefined")
+            .expect("пустого ответа на AAAA нет: он уйдёт в туннель");
+        let types: Vec<&str> = empty["query_type"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+        assert_eq!(types, ["AAAA"], "пустым обязан быть только AAAA: {empty}");
+        assert_eq!(empty["rcode"], "NOERROR", "{empty}");
+        assert!(empty["answer"].is_null(), "ответ обязан быть пустым: {empty}");
+
+        // Порядок: локальные имена впереди обоих, иначе `nas.lan` получил бы
+        // фальшивый адрес вместо роутера, а его AAAA — пустоту.
+        let lan = rules.iter().position(|r| r["server"] == "lan").unwrap();
+        let fake_at = rules.iter().position(|r| r["server"] == "fake").unwrap();
+        let empty_at = rules.iter().position(|r| r["action"] == "predefined").unwrap();
+        assert!(lan < fake_at && lan < empty_at, "локальные имена обязаны идти первыми: {rules:#?}");
 
         // Файла кэша нет и быть не должно: соответствие «фальшивый адрес — имя»
         // это список всех посещённых сайтов, и на диске ему не место.
