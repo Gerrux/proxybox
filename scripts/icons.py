@@ -65,7 +65,10 @@ def ramp(t):
     return GLOW[-1][1]
 
 
-def mark(size):
+def mark(size, paint=None):
+    """Знак в пикселях. `paint` — чем залить массу: None выбирает по размеру
+    (свечение от 48, ниже плоский синий), "brand" даёт диагональ бренда для
+    макетов и сайта, кортеж RGB — свой плоский цвет."""
     corner, hole, (hx, hy) = form(size)
     k = size * SS / 100.0
 
@@ -77,7 +80,21 @@ def mark(size):
     d.ellipse(((hx - hole) * k, (hy - hole) * k, (hx + hole) * k, (hy + hole) * k), fill=0)
     mask = mask.resize((size, size), Image.LANCZOS)
 
-    if size >= 48:
+    if isinstance(paint, tuple):
+        fill = Image.new("RGB", (size, size), paint)
+    elif paint == "brand":
+        # Диагональ: проекция точки на отрезок (8,0)—(92,100), как в стиле.
+        ax, ay, bx, by = 8.0, 0.0, 92.0, 100.0
+        vx, vy = bx - ax, by - ay
+        vv = vx * vx + vy * vy
+        fill = Image.new("RGB", (size, size))
+        px = fill.load()
+        for y in range(size):
+            for x in range(size):
+                gx = (x + 0.5) * 100.0 / size - ax
+                gy = (y + 0.5) * 100.0 / size - ay
+                px[x, y] = _lerp(BRAND, (gx * vx + gy * vy) / vv)
+    elif size >= 48:
         fill = Image.new("RGB", (size, size))
         px = fill.load()
         for y in range(size):
@@ -106,7 +123,12 @@ def dib(img):
             r, g, b, a = px[x, y]
             row += bytes((b, g, r, a))
         rows.append(bytes(row))
-    return head + b"".join(rows) + bytes(size * size // 8)
+    # Маска прозрачности идёт по биту на пиксель, и её строки выравниваются
+    # по 4 байта, как всякий DIB. Наивные size*size/8 короче нужного у 16,
+    # 24 и 48: 16 бит занимают 2 байта, а строка обязана быть 4. Windows на
+    # укороченной маске показывает не наш значок, а что придётся.
+    mask_row = ((size + 31) // 32) * 4
+    return head + b"".join(rows) + bytes(mask_row * size)
 
 
 def payload(size):
@@ -136,15 +158,17 @@ def ico(path, sizes):
 
 
 DOCS = Path(__file__).resolve().parent.parent / "docs" / "brand"
+SITE = Path(__file__).resolve().parent.parent / "docs"
 
 # Плитки, на которых знак показывают в документации. Своего фона у знака нет:
 # лаз сквозной, и без подложки он проваливается в цвет страницы — у GitHub он
 # бывает и белым, и почти чёрным.
 PLATE_LIGHT = (0xF4, 0xF6, 0xFF)
 PLATE_DARK = (0x14, 0x16, 0x1A)
+PLATE_INK = (0x0E, 0x10, 0x16)
 
 
-def tile(size, fill=None, plate=PLATE_LIGHT):
+def tile(size, fill=None, plate=PLATE_LIGHT, paint=None):
     """Знак на плитке того же размера и с тем же скруглением: подложка видна
     только сквозь лаз, как в самом стиле."""
     corner = form(size)[0]
@@ -154,7 +178,7 @@ def tile(size, fill=None, plate=PLATE_LIGHT):
     )
     out = Image.new("RGBA", (size, size), plate + (0,))
     out.putalpha(base.resize((size, size), Image.LANCZOS))
-    m = mark(size)
+    m = mark(size, paint)
     if fill is not None:
         # Тот же силуэт, но своим цветом: у трея и у предельного размера
         # заливка плоская, а форма обязана остаться той же самой.
@@ -210,6 +234,12 @@ def docs():
         row.append(sw)
     strip(row, 12, 10, (0, 0, 0, 0)).save(DOCS / "palette.png")
     print(f"картинки стиля пересобраны: {DOCS}")
+
+    # Сайту по стилю положена диагональ бренда, а не свечение: свечение
+    # принадлежит значку операционной системы и в макеты не переносится.
+    tile(512, plate=PLATE_INK, paint="brand").save(SITE / "og.png")
+    mark(32).save(SITE / "favicon.png")
+    print(f"картинки сайта пересобраны: {SITE}")
 
 
 # Цвета трея — тёмный ряд состояний: поток, подключение, заперто, сбой, выкл.

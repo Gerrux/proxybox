@@ -1127,7 +1127,12 @@ pub fn icon_bytes((r, g, b): (u8, u8, u8)) -> Vec<u8> {
                 pixels.extend_from_slice(&[b, g, r, (inside * 255 / 4) as u8]);
             }
         }
-        let mask = vec![0u8; size * size / 8];
+        // Маска идёт по биту на пиксель, и её строки выравниваются по 4
+        // байта, как всякий DIB. Наивные size * size / 8 короче нужного там,
+        // где ширина не кратна 32: у 16 строка занимает 2 байта вместо
+        // четырёх, у 48 — шесть вместо восьми. Windows на укороченной маске
+        // берёт не наш значок, а что придётся.
+        let mask = vec![0u8; size.div_ceil(32) * 4 * size];
         let mut header = [0u8; 40];
         header[0] = 40;
         header[4..8].copy_from_slice(&(size as u32).to_le_bytes());
@@ -1188,6 +1193,15 @@ mod tests {
         assert_eq!(ico[dir_len], 40, "за картинками идёт BITMAPINFOHEADER");
         // 256 кодируется нулём
         assert_eq!(ico[6 + 3 * 16], 0, "256×256 кодируется 0");
+        // Длина каждой записи обязана сходиться с заголовком, пикселями и
+        // выровненной маской. Укороченная маска — файл, который читается
+        // нашими глазами и не читается Windows: значок молча заменяется чужим.
+        for (i, size) in [16usize, 32, 48, 256].into_iter().enumerate() {
+            let base = 6 + i * 16;
+            let len = u32::from_le_bytes(ico[base + 8..base + 12].try_into().unwrap()) as usize;
+            let want = 40 + size * size * 4 + size.div_ceil(32) * 4 * size;
+            assert_eq!(len, want, "у {size}×{size} не сходится длина: маска не выровнена по 4 байта");
+        }
         assert_ne!(icon_bytes((0x4c, 0x8d, 0xff)), icon_bytes((0x2e, 0xb8, 0x72)), "цвет доезжает до пикселей");
     }
 
