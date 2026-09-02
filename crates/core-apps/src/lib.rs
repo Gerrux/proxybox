@@ -917,8 +917,8 @@ pub fn set_window_icon_for_profile(pid: u32, icon: &Path, profile: &str) -> bool
     use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
     use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindow, GetWindowThreadProcessId, IsWindowVisible, LoadImageW, SendMessageW, GW_OWNER,
-        ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_LOADFROMFILE, WM_SETICON,
+        DestroyIcon, EnumWindows, GetWindow, GetWindowThreadProcessId, HICON, IsWindowVisible, LoadImageW,
+        SendMessageW, GW_OWNER, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_LOADFROMFILE, WM_SETICON,
     };
     use windows::core::PCWSTR;
 
@@ -957,25 +957,16 @@ pub fn set_window_icon_for_profile(pid: u32, icon: &Path, profile: &str) -> bool
     let small = unsafe { LoadImageW(None, PCWSTR(path.as_ptr()), IMAGE_ICON, 16, 16, LR_LOADFROMFILE) };
     let (Ok(big), Ok(small)) = (big, small) else { return false };
 
-    // AppUserModelID обязан быть без пробелов и с точками; пробелы и
-    // слэши из имени профиля заменяем. Пустое имя — совместимость со
-    // старым вызовом, тогда свойства не трогаем.
+    // Пустое имя — совместимость со старым вызовом, тогда свойства не трогаем.
     let (app_id, display_name, icon_resource) = if profile.is_empty() {
         (String::new(), String::new(), String::new())
     } else {
-        let safe: String = profile.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
-        let safe = safe.trim_matches('-');
-        let app_id = if safe.is_empty() {
-            "Gerrux.ProxyBox.Browser".to_string()
-        } else {
-            format!("Gerrux.ProxyBox.Browser.{}", safe)
-        };
         // RelaunchIconResource — путь к .ico, без ",0" тоже работает, но с
         // индексом — канонично для шелла.
         let icon_str = icon.to_string_lossy().into_owned();
         let icon_res = format!("{},0", icon_str);
         let display = format!("Privacy Gateway — {}", profile);
-        (app_id, display, icon_res)
+        (app_user_model_id(profile), display, icon_res)
     };
 
     // SHGetPropertyStoreForWindow — COM, а поток paint_icon свежий
@@ -990,10 +981,11 @@ pub fn set_window_icon_for_profile(pid: u32, icon: &Path, profile: &str) -> bool
     let mut ok = false;
     for hwnd in found.hwnds {
         unsafe {
-            // Handle у иконки — GDI-объект процесса оболочки. WM_SETICON
-            // копирует его шеллом, но Chromium после создания окна шлёт свой
-            // WM_SETICON из ресурсов и перетирает наш — поэтому caller
-            // переставляет иконку несколько раз (см. paint_icon).
+            // WM_SETICON хендл не копирует — окно берёт его себе и держит,
+            // пока не получит следующий. Поэтому освободить пару сразу после
+            // отправки нельзя, и освобождается она кругом позже (ниже).
+            // Кругов много, потому что Chromium после создания окна шлёт свой
+            // WM_SETICON из ресурсов и перетирает наш (см. paint_icon).
             SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_BIG as usize)), Some(LPARAM(big.0 as isize)));
             SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_SMALL as usize)), Some(LPARAM(small.0 as isize)));
         }
@@ -1016,10 +1008,81 @@ pub fn set_window_icon_for_profile(pid: u32, icon: &Path, profile: &str) -> bool
         }
         ok = true;
     }
+
+    // Пара прошлого круга: новая уже разослана всем окнам PID, `SendMessageW`
+    // синхронный даже через границу процесса, так что на старую никто больше
+    // не смотрит — её и освобождаем. Без этого дежурный цикл `paint_icon`
+    // оставлял бы по два USER-объекта на круг, до шестисот на сеанс браузера
+    // при квоте в десять тысяч на процесс. Процесс тут — оболочка, и теми же
+    // объектами она рисует собственное окно: полтора десятка открытых
+    // профилей, и рисовать станет нечем.
+    //
+    // Последняя пара сеанса не освобождается никогда, и не должна: ею окно
+    // и живёт. Два хендла на сеанс — цена того, что владелец у иконки окно,
+    // а не мы. Сторож — `every_loaded_icon_is_released`.
+    let prev = PREV.with(|p| p.replace((big.0 as isize, small.0 as isize)));
+    if prev.0 != 0 {
+        unsafe {
+            let _ = DestroyIcon(HICON(prev.0 as *mut _));
+            let _ = DestroyIcon(HICON(prev.1 as *mut _));
+        }
+    }
+
     if com_init {
         unsafe { CoUninitialize() };
     }
     ok
+}
+
+/// Идентификатор задачи в панели задач: по нему Windows решает, к какой
+/// кнопке отнести окно и чей значок на ней рисовать. Своей функцией, а не
+/// строчкой на месте, потому что `set_window_icon_for_profile` целиком под
+/// `#[cfg(windows)]` и на Linux не собирается — а правила тут строгие, и без
+/// отдельной функции сторожу не за что взяться. Сторож —
+/// `the_task_id_fits_the_shell_limit`.
+///
+/// Идентификатор обязан быть без пробелов и не длиннее ста двадцати восьми
+/// знаков. Лишнее шелл не обрезает, а отказывается принимать целиком — и
+/// молча: ошибку `SetValue` наверху глотает `let _`, так что длинное имя
+/// профиля отправило бы окно в общую кнопку Chrome вместе со значком, ради
+/// которого всё и затевалось. Неалфавитно-цифровое становится дефисом,
+/// заодно уходят пробелы и слэши. Режем по символам, а не по байтам: срез
+/// посреди кириллицы уронил бы поток. Длину считаем в UTF-16 — меряет её
+/// буфер шелла, а не Rust.
+///
+/// Два имени, разошедшиеся после сто четвёртого знака, склеятся в одну
+/// кнопку. Это цена обрезки, и чинится она хешем в хвосте — если такие
+/// имена вообще у кого-нибудь заведутся.
+///
+/// Вне Windows её зовёт только сторож — отсюда и `cfg`.
+#[cfg(any(windows, test))]
+fn app_user_model_id(profile: &str) -> String {
+    const PREFIX: &str = "Gerrux.ProxyBox.Browser";
+    let safe: String = profile.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+    let mut room = 128 - PREFIX.len() - 1; // минус точка-разделитель
+    let mut tail = String::new();
+    for c in safe.trim_matches('-').chars() {
+        let Some(left) = room.checked_sub(c.len_utf16()) else { break };
+        room = left;
+        tail.push(c);
+    }
+    // Второй trim: обрезка могла кончиться ровно на разделителе, а
+    // идентификатор с дефисом на хвосте потом никто не опознает.
+    let tail = tail.trim_matches('-');
+    if tail.is_empty() {
+        PREFIX.to_string()
+    } else {
+        format!("{PREFIX}.{tail}")
+    }
+}
+
+#[cfg(windows)]
+thread_local! {
+    /// Пара хендлов, отданная окнам на прошлом круге. Своя у каждого потока:
+    /// `paint_icon` заводит поток на сеанс браузера и зовёт отсюда только из
+    /// него, так что делить пару между сеансами незачем — а общая ещё и
+    /// путала бы цвета, у каждого профиля свой.
+    static PREV: std::cell::Cell<(isize, isize)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 /// Значок профиля: круг заданного цвета. Байты `.ico` собираются руками —
@@ -1126,6 +1189,37 @@ mod tests {
         // 256 кодируется нулём
         assert_eq!(ico[6 + 3 * 16], 0, "256×256 кодируется 0");
         assert_ne!(icon_bytes((0x4c, 0x8d, 0xff)), icon_bytes((0x2e, 0xb8, 0x72)), "цвет доезжает до пикселей");
+    }
+
+    /// Идентификатор задачи обязан влезать в предел шелла и быть без
+    /// пробелов: длиннее — и `SetValue` откажет молча, окно уедет в общую
+    /// кнопку Chrome, то есть ровно туда, откуда его этим полем и уводят.
+    #[test]
+    fn the_task_id_fits_the_shell_limit() {
+        let long = app_user_model_id(&"Длинное имя профиля ".repeat(30));
+        assert!(long.encode_utf16().count() <= 128, "{} знаков в UTF-16: {long}", long.encode_utf16().count());
+        assert!(!long.ends_with('-'), "обрезка оставила разделитель на хвосте: {long}");
+        assert!(!app_user_model_id("Работа / дом").contains(' '), "пробелов в идентификаторе быть не может");
+        assert_eq!(app_user_model_id(" / "), "Gerrux.ProxyBox.Browser", "имя без букв — общий идентификатор");
+        assert_ne!(app_user_model_id("дом"), app_user_model_id("работа"), "разные профили — разные кнопки");
+    }
+
+    /// Каждый загруженный значок обязан быть освобождён. Проверить это
+    /// исполнением нечем: постановка значка вся под `#[cfg(windows)]`, а
+    /// тесты бегут на Linux — поэтому сторож текстовый, как
+    /// `the_shell_never_calls_from_its_event_loop` в `core-ipc`. Считаем
+    /// вызовы: сколько загрузили, столько и освободили. Иглы склеены из
+    /// кусков намеренно — иначе тест нашёл бы сам себя.
+    #[test]
+    fn every_loaded_icon_is_released() {
+        let src = include_str!("lib.rs");
+        let loads = src.matches(concat!("LoadImage", "W(")).count();
+        let frees = src.matches(concat!("Destroy", "Icon(")).count();
+        assert_eq!(loads, 2, "значков грузится не два — пересчитайте освобождение");
+        assert_eq!(
+            frees, loads,
+            "{loads} загрузок против {frees} освобождений: дежурный цикл paint_icon жжёт хендлы"
+        );
     }
 
     #[test]
