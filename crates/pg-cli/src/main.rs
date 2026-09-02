@@ -5,7 +5,7 @@
 #[cfg_attr(not(windows), allow(dead_code))]
 mod doctor;
 
-use core_ipc::{call, t, Request, Response, Scope};
+use core_ipc::{call, t, tf, Request, Response, Scope};
 
 const USAGE_RU: &str = "proxybox <команда>
 
@@ -37,7 +37,7 @@ const USAGE_RU: &str = "proxybox <команда>
                          адрес: браузер с --proxy-server пойдёт в него; сеансов
                          бывает несколько, по одному на браузерный профиль
   browse --stop --profile <имя>  погасить этот сеанс браузера
-  lang ru|en             язык сообщений службы и окна
+  lang ru|en|fa          язык сообщений службы и окна
   settings               настройки службы: что действует прямо сейчас
   settings [--refresh on|off] [--geo on|off] [--probe host:port]
            [--singbox <путь>]
@@ -75,7 +75,7 @@ const USAGE_EN: &str = "proxybox <command>
                          its address: a browser with --proxy-server goes there;
                          sessions are per browser profile, several at once
   browse --stop --profile <name>  close that browser session
-  lang ru|en             language of service and window messages
+  lang ru|en|fa          language of service and window messages
   settings               service settings: what is in force right now
   settings [--refresh on|off] [--geo on|off] [--probe host:port]
            [--singbox <path>]
@@ -83,8 +83,58 @@ const USAGE_EN: &str = "proxybox <command>
                          (empty — the node's own server) and the sing-box path.
                          Environment variables win over settings";
 
+const USAGE_FA: &str = "proxybox <فرمان>
+
+  status                 وضعیت تونل و فهرست برنامه‌ها
+  doctor                 بررسی محیط: چرا ممکن است کار نکند
+  on --profile <نام>     روشن کردن حالت خصوصی
+  off                    خاموش کردن حالت خصوصی
+  list-apps              برنامه‌های زیر کنترل
+  discover               یافتن برنامه‌های نصب‌شده و افزودن آن‌ها به‌صورت خاموش
+  add-app --path <exe>   افزودن برنامه با مسیر فایل .exe
+  enable --path <exe>    راه دادن برنامه به تونل
+  disable --path <exe>   بیرون بردن برنامه از کنترل
+  scope whitelist|all    دامنه: شبکه فقط برای برنامه‌های انتخاب‌شده و فقط از
+                         راه تونل؛ یا همهٔ ترافیک رایانه در تونل
+  add-profile --link <l> وارد کردن share-link (vless/vmess/trojan/ss/hy2/wg)،
+                         پیکربندی JSON سینگ‌باکس یا اشتراک با نشانی https؛
+                         همان نشانی برای بار دوم — به‌روزرسانی اشتراک
+  profiles               فهرست پروفایل‌ها: نام، نوع گره و مقصد آن
+  test [--profile <نام>] آزمودن پروفایل‌ها: کدام پاسخ می‌دهد و در چه زمانی.
+                         بدون --profile — همه، و هر کدام چند ثانیه
+  conns                  اتصال‌های زندهٔ تونل: که، به کجا، از کدام مسیر.
+                         چیزی ذخیره نمی‌شود — فهرست برای هر درخواست ساخته می‌شود
+  browsers               فهرست پروفایل‌های مرورگر
+  add-browser --name <نام> --node <پروفایل> [--ua <رشته>] [--lang <زبان‌ها>]
+                         ساختن پروفایل مرورگر یا بازنویسی همان: گره نشانی را
+                         می‌دهد، ua و lang همان چیزی است که سایت می‌بیند
+  remove-browser --name <نام>    برداشتن پروفایل مرورگر
+  browse --profile <نام> بالا آوردن پراکسی برای پروفایل مرورگر و چاپ نشانی آن:
+                         مرورگر با --proxy-server به آن می‌رود؛ نشست‌ها چندتایی
+                         هستند، یکی برای هر پروفایل مرورگر
+  browse --stop --profile <نام>  بستن این نشست مرورگر
+  lang ru|en|fa          زبان پیام‌های سرویس و پنجره
+  settings               تنظیمات سرویس: هم‌اکنون چه چیزی برقرار است
+  settings [--refresh on|off] [--geo on|off] [--probe host:port]
+           [--singbox <مسیر>]
+                         به‌روزرسانی اشتراک‌ها، پرسیدن کشور از سرویس بیرونی،
+                         هدف آزمون (خالی — سرور خود گره) و مسیر sing-box.
+                         متغیرهای محیطی بر تنظیمات چیره‌اند";
+
+/// Экран помощи — не строка, а вёрстка: колонка команд, колонка пояснений.
+/// Ключом в словаре он был бы сорокастрочным литералом, поэтому лежит
+/// константами, а `match` без запасной ветки требует написать его на новом
+/// языке осознанно — забыть здесь молча нельзя.
+///
+/// В консоли с фарси колонки поедут: команды латиницей идут слева направо,
+/// пояснения — справа налево, и раскладывает это терминал, а не мы.
 fn usage() -> String {
-    t(USAGE_RU, USAGE_EN)
+    match core_ipc::lang() {
+        core_ipc::Lang::Ru => USAGE_RU,
+        core_ipc::Lang::En => USAGE_EN,
+        core_ipc::Lang::Fa => USAGE_FA,
+    }
+    .to_string()
 }
 
 /// Байты человеку, ровно как в окне: `12.4 MB` вместо тринадцати цифр подряд.
@@ -117,10 +167,7 @@ fn onoff(args: &[String], name: &str) -> Result<Option<bool>, String> {
         None => Ok(None),
         Some("on") => Ok(Some(true)),
         Some("off") => Ok(Some(false)),
-        Some(v) => Err(t(
-            &format!("{name}: нужно on или off, а не «{v}»"),
-            &format!("{name}: expected on or off, not \"{v}\""),
-        )),
+        Some(v) => Err(tf!("{}: нужно on или off, а не «{}»", name, v)),
     }
 }
 
@@ -135,10 +182,7 @@ fn onoff(args: &[String], name: &str) -> Result<Option<bool>, String> {
 /// перебивку говорит в журнале при старте.
 fn patch_settings(args: &[String]) -> Result<Request, String> {
     let Ok(Response::Status(status)) = call(&Request::Status) else {
-        return Err(t(
-            "служба недоступна: настройки хранит она",
-            "service unavailable: it is the one keeping the settings",
-        ));
+        return Err(t("служба недоступна: настройки хранит она"));
     };
     let mut settings = status.settings;
     if let Some(v) = onoff(args, "--refresh")? {
@@ -165,20 +209,20 @@ fn parse(args: &[String]) -> Result<Request, String> {
         Some("discover") => Ok(Request::Discover { env: core_ipc::whoami() }),
         Some("on") => flag(args, "--profile")
             .map(|profile| Request::On { profile })
-            .ok_or_else(|| t("нужен --profile <имя>", "needs --profile <name>")),
+            .ok_or_else(|| t("нужен --profile <имя>")),
         Some("add-app") => flag(args, "--path")
             .map(|path| Request::AddApp { path })
-            .ok_or_else(|| t("нужен --path <путь к .exe>", "needs --path <path to .exe>")),
+            .ok_or_else(|| t("нужен --path <путь к .exe>")),
         Some(cmd @ ("enable" | "disable")) => flag(args, "--path")
             .map(|path| Request::SetApp { path, enabled: cmd == "enable" })
-            .ok_or_else(|| t("нужен --path <путь к .exe>", "needs --path <path to .exe>")),
+            .ok_or_else(|| t("нужен --path <путь к .exe>")),
         Some("add-profile") => flag(args, "--link")
             .map(|link| Request::AddProfile { link })
-            .ok_or_else(|| t("нужен --link <share-link>", "needs --link <share-link>")),
+            .ok_or_else(|| t("нужен --link <share-link>")),
         Some("scope") => match args.get(1).map(String::as_str) {
             Some("all") => Ok(Request::SetScope { scope: Scope::All }),
             Some("whitelist") => Ok(Request::SetScope { scope: Scope::Whitelist }),
-            _ => Err(t("нужен охват: whitelist или all", "pick a scope: whitelist or all")),
+            _ => Err(t("нужен охват: whitelist или all")),
         },
         Some("profiles") => Ok(Request::Status),
         Some("settings") => Ok(Request::Status),
@@ -189,7 +233,7 @@ fn parse(args: &[String]) -> Result<Request, String> {
                 true => Request::BrowseStop { profile },
                 false => Request::Browse { profile },
             })
-            .ok_or_else(|| t("нужен --profile <имя>", "needs --profile <name>")),
+            .ok_or_else(|| t("нужен --profile <имя>")),
         Some("browsers") => Ok(Request::Status),
         Some("add-browser") => match (flag(args, "--name"), flag(args, "--node")) {
             (Some(name), Some(node)) => Ok(Request::SetBrowserProfile {
@@ -203,15 +247,16 @@ fn parse(args: &[String]) -> Result<Request, String> {
                     icon: String::new(),
                 },
             }),
-            _ => Err(t("нужны --name <имя> и --node <профиль>", "needs --name <name> and --node <profile>")),
+            _ => Err(t("нужны --name <имя> и --node <профиль>")),
         },
         Some("remove-browser") => flag(args, "--name")
             .map(|name| Request::RemoveBrowserProfile { name })
-            .ok_or_else(|| t("нужно --name <имя>", "needs --name <name>")),
+            .ok_or_else(|| t("нужно --name <имя>")),
         Some("lang") => match args.get(1).map(String::as_str) {
             Some("ru") => Ok(Request::SetLang { lang: core_ipc::Lang::Ru }),
             Some("en") => Ok(Request::SetLang { lang: core_ipc::Lang::En }),
-            _ => Err(t("нужен язык: ru или en", "pick a language: ru or en")),
+            Some("fa") => Ok(Request::SetLang { lang: core_ipc::Lang::Fa }),
+            _ => Err(t("нужен язык: ru, en или fa")),
         },
         _ => Err(usage()),
     }
@@ -274,7 +319,7 @@ fn main() -> std::process::ExitCode {
     };
     match call(&req) {
         Err(e) => {
-            eprintln!("{}", t(&format!("служба недоступна ({e}): запустите pg-service"), &format!("service unavailable ({e}): start pg-service")));
+            eprintln!("{}", tf!("служба недоступна ({}): запустите pg-service", e));
             std::process::ExitCode::FAILURE
         }
         Ok(Response::Error { message }) => {
@@ -291,10 +336,7 @@ fn main() -> std::process::ExitCode {
         Ok(Response::Imported { added, kept, gone, skipped, skipped_total }) => {
             println!(
                 "{}",
-                t(
-                    &format!("заведено {added}, уже было {kept}, убрано {gone}, пропущено {skipped_total}"),
-                    &format!("added {added}, already there {kept}, dropped {gone}, skipped {skipped_total}"),
-                )
+                tf!("заведено {}, уже было {}, убрано {}, пропущено {}", added, kept, gone, skipped_total)
             );
             for why in &skipped {
                 eprintln!("  {why}");
@@ -314,12 +356,12 @@ fn main() -> std::process::ExitCode {
                 // Маршрут первой колонкой: ради него список и спрашивают.
                 // Процесс — именем файла: путь целиком гонит строку за край, а
                 // отличать один chrome.exe от другого тут всё равно нечем.
-                let route = if c.tunneled { t("туннель", "tunnel") } else { t("напрямую", "direct") };
+                let route = if c.tunneled { t("туннель") } else { t("напрямую") };
                 let name = c.process.rsplit(['\\', '/']).next().unwrap_or("—");
                 println!("{route:<10} {:<24} {:<40} ↓{} ↑{}", if name.is_empty() { "—" } else { name }, c.host, bytes(c.rx), bytes(c.tx));
             }
             if total > conns.len() {
-                println!("{}", t(&format!("… и ещё {}", total - conns.len()), &format!("… and {} more", total - conns.len())));
+                println!("{}", tf!("… и ещё {}", total - conns.len()));
             }
             std::process::ExitCode::SUCCESS
         }
@@ -338,8 +380,8 @@ fn main() -> std::process::ExitCode {
             let or = |v: &str, empty: String| if v.is_empty() { empty } else { v.to_string() };
             println!("{:<10} {}", "refresh", onoff(s.settings.refresh));
             println!("{:<10} {}", "geo", onoff(s.settings.geo));
-            println!("{:<10} {}", "probe", or(&s.settings.probe, t("сервер узла", "the node's server")));
-            println!("{:<10} {}", "singbox", or(&s.settings.singbox, t("рядом со службой либо PATH", "next to the service or PATH")));
+            println!("{:<10} {}", "probe", or(&s.settings.probe, t("сервер узла")));
+            println!("{:<10} {}", "singbox", or(&s.settings.singbox, t("рядом со службой либо PATH")));
             std::process::ExitCode::SUCCESS
         }
         Ok(Response::Status(s)) if args[0] == "test" => {
@@ -347,11 +389,11 @@ fn main() -> std::process::ExitCode {
             for p in &s.probes {
                 let verdict = match (p.latency_ms, &p.error) {
                     (Some(ms), _) => match &p.country {
-                        Some(c) => t(&format!("{ms} мс — {c}"), &format!("{ms} ms — {c}")),
-                        None => t(&format!("{ms} мс"), &format!("{ms} ms")),
+                        Some(c) => tf!("{} мс — {}", ms, c),
+                        None => tf!("{} мс", ms),
                     },
                     (None, Some(e)) => e.clone(),
-                    (None, None) => t("не проверен", "not checked"),
+                    (None, None) => t("не проверен"),
                 };
                 println!("{:<20} {verdict}", p.name);
             }
@@ -365,8 +407,8 @@ fn main() -> std::process::ExitCode {
             adopt(s.lang);
             for b in &s.browser_profiles {
                 let open = match s.browsers.contains(&b.name) {
-                    true => t("открыт", "open"),
-                    false => t("закрыт", "closed"),
+                    true => t("открыт"),
+                    false => t("закрыт"),
                 };
                 println!("{:<20} {:<20} {open}", b.name, b.node);
                 if !b.ua.is_empty() {
@@ -397,39 +439,36 @@ fn main() -> std::process::ExitCode {
             adopt(s.lang);
             let latency = s.latency_ms.unwrap_or(0);
             let state = match s.tunnel {
-                core_ipc::Tunnel::Off => t("выключен", "off"),
-                core_ipc::Tunnel::Connecting => t("подключение", "connecting"),
-                core_ipc::Tunnel::Up => t(&format!("поднят, {latency} мс"), &format!("up, {latency} ms")),
-                core_ipc::Tunnel::Down => t(
-                    "недоступен — выбранные приложения без сети",
-                    "unavailable — selected apps have no network",
-                ),
+                core_ipc::Tunnel::Off => t("выключен"),
+                core_ipc::Tunnel::Connecting => t("подключение"),
+                core_ipc::Tunnel::Up => tf!("поднят, {} мс", latency),
+                core_ipc::Tunnel::Down => t("недоступен — выбранные приложения без сети"),
             };
             let on = s.apps.iter().filter(|a| a.enabled).count();
-            println!("{:<11} {state}", t("туннель:", "tunnel:"));
+            println!("{:<11} {state}", t("туннель:"));
             println!(
                 "{:<11} {}",
-                t("охват:", "scope:"),
+                t("охват:"),
                 match s.scope {
-                    Scope::All => t("весь трафик компьютера", "all computer traffic"),
-                    Scope::Whitelist => t("только выбранные приложения, остальным сеть закрыта", "selected apps only, everyone else cut off"),
+                    Scope::All => t("весь трафик компьютера"),
+                    Scope::Whitelist => t("только выбранные приложения, остальным сеть закрыта"),
                 }
             );
-            println!("{:<11} {}", t("профиль:", "profile:"), s.profile.unwrap_or_else(|| "—".into()));
-            println!("{:<11} {}", t("страна:", "exit:"), s.country.unwrap_or_else(|| "—".into()));
-            println!("{:<11} ↓{} ↑{}", t("трафик:", "traffic:"), bytes(s.rx), bytes(s.tx));
+            println!("{:<11} {}", t("профиль:"), s.profile.unwrap_or_else(|| "—".into()));
+            println!("{:<11} {}", t("страна:"), s.country.unwrap_or_else(|| "—".into()));
+            println!("{:<11} ↓{} ↑{}", t("трафик:"), bytes(s.rx), bytes(s.tx));
             println!(
                 "{:<11} {} ({} {})",
-                t("приложения:", "apps:"),
+                t("приложения:"),
                 s.apps.len(),
-                t("в туннеле", "in tunnel"),
+                t("в туннеле"),
                 on
             );
             if !s.browsers.is_empty() {
-                println!("{:<11} {}", t("браузер:", "browser:"), s.browsers.join(", "));
+                println!("{:<11} {}", t("браузер:"), s.browsers.join(", "));
             }
             if let Some(last) = s.log.first() {
-                println!("{:<11} {}", t("последнее:", "last:"), last.text);
+                println!("{:<11} {}", t("последнее:"), last.text);
             }
             std::process::ExitCode::SUCCESS
         }

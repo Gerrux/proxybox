@@ -117,10 +117,10 @@ export function Conns({ status, className }: { status: Status | null; className?
                 // поломки: серую («sing-box разобрал сам») раньше не объяснял
                 // никто, и читалась она ровно как красная.
                 title={leak ? s.connsDirectHint : c.tunneled ? undefined : s.connsAsideHint}
-                className="smooth relative flex items-baseline gap-3 rounded-md py-1.5 pl-3 pr-1 hover:bg-surface-2"
+                className="smooth relative flex items-baseline gap-3 rounded-md py-1.5 ps-3 pe-1 hover:bg-surface-2"
               >
                 <span
-                  className={`absolute inset-y-1 left-0 w-[3px] rounded-full ${
+                  className={`absolute inset-y-1 start-0 w-[3px] rounded-full ${
                     c.tunneled ? "bg-open" : leak ? "bg-fault" : "bg-muted"
                   }`}
                 />

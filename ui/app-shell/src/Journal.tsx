@@ -92,17 +92,21 @@ export function Journal({ lines, lang, className }: { lines: LogLine[]; lang?: L
                   <time
                     dateTime={at(line).toISOString()}
                     aria-label={clock(line)}
-                    className="w-11 shrink-0 py-1 pr-2 text-right text-[10.5px] tabular-nums text-muted"
+                    className="w-11 shrink-0 py-1 pe-2 text-end text-[10.5px] tabular-nums text-muted"
                   >
                     {opens || clock(prev) !== clock(line) ? clock(line) : <span className="opacity-40">·</span>}
                   </time>
                   {/* Рельс — левая граница текста, а не отдельная линия: строки
                       стоят вплотную, и границы смыкаются в одну сплошную. */}
-                  <span className="selectable border-l border-edge py-1 pl-3">{line.text}</span>
+                  <span className="selectable border-s border-edge py-1 ps-3">{line.text}</span>
                   {/* Насечка на голове ленты. Единственное яркое пятно в панели:
-                      всё остальное здесь — приглушённая запись прибора. */}
+                      всё остальное здесь — приглушённая запись прибора.
+
+                      Сдвиг на полразмера логическим не бывает: `start-11`
+                      зеркалится сам, а `-translate-x` — нет, и в фарси насечка
+                      уезжала бы с рельса на свою же ширину. */}
                   {i === 0 && (
-                    <span className="absolute top-[9px] left-11 size-[5px] -translate-x-1/2 rotate-45 bg-ink" />
+                    <span className="absolute top-[9px] start-11 size-[5px] -translate-x-1/2 rotate-45 bg-ink rtl:translate-x-1/2" />
                   )}
                 </div>
               </li>

@@ -9,9 +9,9 @@
 mod service;
 
 use core_ipc::{
-    dir_name, t, App, BrowserProfile, Conn, Endpoint, Listener, LogLine, Probe, ProfileInfo, Quota,
-    Request, Response, Scope, Settings, Status, Stream, Subscription, TestRun, Tunnel as TunnelState,
-    ADDR,
+    dir_name, t, tf, App, BrowserProfile, Conn, Endpoint, Listener, LogLine, Probe, ProfileInfo,
+    Quota, Request, Response, Scope, Settings, Status, Stream, Subscription, TestRun,
+    Tunnel as TunnelState, ADDR,
 };
 use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
@@ -353,12 +353,7 @@ impl Service {
         if migrated {
             // Молчать тут нельзя: человек выбирал одно, а работать будет
             // другое. Строка объясняет и что сменилось, и почему именно так.
-            me.log(t(
-                "охват «выбранные приложения» убран из продукта: он выпускал остальных в открытую сеть. \
-                 Поставлен «весь компьютер» — он ничего не отключает; белый список включается вручную",
-                "the \"selected apps\" scope is gone: it let everyone else out in the open. \
-                 Switched to \"whole computer\" — it cuts nothing off; the whitelist is a manual choice",
-            ));
+            me.log(t("охват «выбранные приложения» убран из продукта: он выпускал остальных в открытую сеть. Поставлен «весь компьютер» — он ничего не отключает; белый список включается вручную"));
         }
         me
     }
@@ -394,10 +389,7 @@ impl Service {
         core_tunnel::set_binary(&eff.singbox);
         if !overridden.is_empty() {
             let list = overridden.join(", ");
-            self.log(t(
-                &format!("настройки перебиты окружением: {list}"),
-                &format!("settings overridden by the environment: {list}"),
-            ));
+            self.log(tf!("настройки перебиты окружением: {}", list));
         }
         self.status.settings = eff;
     }
@@ -594,13 +586,13 @@ impl Service {
             Err(e) => {
                 // Неудачу не запоминаем: на следующей смене состояния попробуем снова.
                 self.applied = None;
-                self.warn(t(&format!("правила брандмауэра не поставлены — {e}"), &format!("firewall rules not applied — {e}")));
+                self.warn(tf!("правила брандмауэра не поставлены — {}", e));
             }
         }
     }
 
     fn start(&mut self, profile: &str) -> Result<(), String> {
-        let node = self.profiles.get(profile).cloned().ok_or_else(|| t(&format!("нет профиля «{profile}»"), &format!("no profile \"{profile}\"")))?;
+        let node = self.profiles.get(profile).cloned().ok_or_else(|| tf!("нет профиля «{}»", profile))?;
         self.private = true;
         self.status.profile = Some(profile.to_string());
         self.save();
@@ -637,16 +629,10 @@ impl Service {
                 // пути, и `opts.apps.len()` показывал бы человеку удвоенное число.
                 let count = self.status.apps.iter().filter(|a| a.enabled).count();
                 let scope = match self.status.scope {
-                    Scope::All => t("весь трафик компьютера", "all computer traffic"),
-                    Scope::Whitelist => t(
-                        &format!("приложений с сетью: {count}, у остальных её нет"),
-                        &format!("apps with network: {count}, everyone else is offline"),
-                    ),
+                    Scope::All => t("весь трафик компьютера"),
+                    Scope::Whitelist => tf!("приложений с сетью: {}, у остальных её нет", count),
                 };
-                self.log(t(
-                    &format!("профиль «{profile}»: sing-box запущен, {scope}"),
-                    &format!("profile \"{profile}\": sing-box started, {scope}"),
-                ));
+                self.log(tf!("профиль «{}»: sing-box запущен, {}", profile, scope));
                 Ok(())
             }
             Err(e) => {
@@ -655,10 +641,7 @@ impl Service {
                 let wait = self.retry_delay.as_secs();
                 self.retry_delay = (self.retry_delay * 2).min(RETRY_MAX);
                 let reason = explain(&e.to_string());
-                self.warn(t(
-                    &format!("sing-box не запустился: {reason}; следующая попытка через {wait} с"),
-                    &format!("sing-box failed to start: {reason}; retrying in {wait} s"),
-                ));
+                self.warn(tf!("sing-box не запустился: {}; следующая попытка через {} с", reason, wait));
                 Err(reason)
             }
         }
@@ -674,7 +657,7 @@ impl Service {
         self.status.latency_ms = None;
         (self.status.rx, self.status.tx) = (0, 0);
         self.guard(false);
-        self.log(t("приватный режим выключен: правила сняты", "private mode off: rules removed"));
+        self.log(t("приватный режим выключен: правила сняты"));
     }
 
     /// Отдельный прокси под окно браузера. Тот же браузерный профиль второй раз
@@ -691,7 +674,7 @@ impl Service {
             .find(|b| b.name == profile)
             .map(|b| b.node.clone())
             .ok_or_else(|| {
-                t(&format!("нет браузерного профиля «{profile}»"), &format!("no browser profile \"{profile}\""))
+                tf!("нет браузерного профиля «{}»", profile)
             })?;
         // Узел могли удалить или он мог пропасть из подписки: сам браузерный
         // профиль это переживает (в его каталоге входы), а вот открыть его
@@ -700,7 +683,7 @@ impl Service {
             .profiles
             .get(&node_name)
             .cloned()
-            .ok_or_else(|| t(&format!("нет узла «{node_name}»"), &format!("no node \"{node_name}\"")))?;
+            .ok_or_else(|| tf!("нет узла «{}»", node_name))?;
         if let Some(proc) = self.browsers.get_mut(profile) {
             if proc.alive() {
                 return Ok(proc.socks_port);
@@ -712,10 +695,7 @@ impl Service {
         let dir = dir().join("browser").join(dir_name(profile));
         let proc = core_tunnel::sidecar(&node, &dir).map_err(|e| e.to_string())?;
         let port = proc.socks_port;
-        self.log(t(
-            &format!("профиль «{profile}» поднят под браузер: 127.0.0.1:{port}"),
-            &format!("profile \"{profile}\" is up for the browser: 127.0.0.1:{port}"),
-        ));
+        self.log(tf!("профиль «{}» поднят под браузер: 127.0.0.1:{}", profile, port));
         self.browsers.insert(profile.to_string(), proc);
         // Пропуск браузеру — на время сеанса и не дольше.
         self.refence();
@@ -745,10 +725,7 @@ impl Service {
             return;
         }
         self.refence();
-        self.log(t(
-            &format!("сеанс браузера «{profile}» закрыт"),
-            &format!("browser session \"{profile}\" closed"),
-        ));
+        self.log(tf!("сеанс браузера «{}» закрыт", profile));
     }
 
     /// Список приложений переезжает вслед за обновившимися пакетами MSIX.
@@ -770,10 +747,7 @@ impl Service {
             // дубль, которого больше завести неоткуда.
             self.status.apps = Self::dedup_apps(std::mem::take(&mut self.status.apps));
             let names = moved.join(", ");
-            self.log(t(
-                &format!("приложения обновились, пути в списке освежены: {names}"),
-                &format!("apps updated, paths refreshed: {names}"),
-            ));
+            self.log(tf!("приложения обновились, пути в списке освежены: {}", names));
             self.save();
         }
         !moved.is_empty()
@@ -844,10 +818,7 @@ fn fetch(url: &str, via_tunnel: bool) -> Result<(String, Option<String>), String
     // которые пойдёт весь трафик выбранных приложений; по открытому каналу его
     // подменяет любой, кто на пути, и это не утечка, а подмена VPN целиком.
     if !url.starts_with("https://") {
-        return Err(t(
-            "подписка только по https: по http список узлов подменит любой, кто на пути",
-            "subscriptions must use https: over http anyone on the path can replace the node list",
-        ));
+        return Err(t("подписка только по https: по http список узлов подменит любой, кто на пути"));
     }
     let direct = || get(url, None);
     if !via_tunnel {
@@ -859,7 +830,7 @@ fn fetch(url: &str, via_tunnel: bool) -> Result<(String, Option<String>), String
 
 fn get(url: &str, proxy: Option<&str>) -> Result<(String, Option<String>), String> {
     let fail = |e: &dyn std::fmt::Display| {
-        t(&format!("подписка не скачалась: {e}"), &format!("subscription download failed: {e}"))
+        tf!("подписка не скачалась: {}", e)
     };
     let proxy = match proxy.map(ureq::Proxy::new).transpose() {
         Ok(proxy) => proxy,
@@ -1004,7 +975,7 @@ fn parse_pasted(text: &str) -> Result<core_config::Batch, String> {
     if text.lines().filter(|line| !line.trim().is_empty()).count() > 1 {
         let many = core_config::parse_many(text);
         if many.found.is_empty() {
-            return Err(t("ни одной ссылки не разобрано", "no links could be parsed"));
+            return Err(t("ни одной ссылки не разобрано"));
         }
         return Ok(many);
     }
@@ -1117,11 +1088,8 @@ fn import(svc: &Mutex<Service>, urls: &[String], rest: &str) -> Response {
         // красной рамке не сказало бы, чего не хватило.
         let message = match tally.skipped.first() {
             Some(first) if tally.skipped.len() == 1 => first.clone(),
-            Some(first) => t(
-                &format!("ни одной строки не импортировано, первая причина — {first}"),
-                &format!("nothing imported, first reason — {first}"),
-            ),
-            None => t("импортировать нечего", "nothing to import"),
+            Some(first) => tf!("ни одной строки не импортировано, первая причина — {}", first),
+            None => t("импортировать нечего"),
         };
         return Response::Error { message };
     }
@@ -1150,12 +1118,9 @@ fn add_profiles(s: &mut Service, batch: core_config::Batch) -> Tally {
         tally.added += 1;
     }
     s.log(match names.as_slice() {
-        [] => t("новых профилей во вставке нет", "the paste brought no new profiles"),
-        [one] => t(&format!("профиль «{one}» импортирован"), &format!("profile \"{one}\" imported")),
-        many => t(
-            &format!("импортировано профилей: {}", many.len()),
-            &format!("profiles imported: {}", many.len()),
-        ),
+        [] => t("новых профилей во вставке нет"),
+        [one] => tf!("профиль «{}» импортирован", one),
+        many => tf!("импортировано профилей: {}", many.len()),
     });
     s.save();
     tally
@@ -1176,15 +1141,12 @@ fn add_profiles(s: &mut Service, batch: core_config::Batch) -> Tally {
 fn edit_profile(s: &mut Service, name: &str, rename: &str, node: &str) -> Response {
     let Some(before) = s.profiles.get(name).cloned() else {
         return Response::Error {
-            message: t(&format!("нет профиля «{name}»"), &format!("no profile \"{name}\"")),
+            message: tf!("нет профиля «{}»", name),
         };
     };
     if s.subscriptions.values().any(|nodes| nodes.iter().any(|n| n == name)) {
         return Response::Error {
-            message: t(
-                "узел пришёл из подписки: сверка вернёт его прежним. Отпишитесь или заведите свою копию",
-                "the node came from a subscription: a refresh would undo the edit. Unsubscribe or make your own copy",
-            ),
+            message: t("узел пришёл из подписки: сверка вернёт его прежним. Отпишитесь или заведите свою копию"),
         };
     }
     let to = match rename.trim() {
@@ -1193,7 +1155,7 @@ fn edit_profile(s: &mut Service, name: &str, rename: &str, node: &str) -> Respon
     };
     if to != name && s.profiles.contains_key(&to) {
         return Response::Error {
-            message: t(&format!("профиль «{to}» уже есть"), &format!("profile \"{to}\" already exists")),
+            message: tf!("профиль «{}» уже есть", to),
         };
     }
     // Пустой узел — это «правится только имя»: гонять текст туда-обратно ради
@@ -1221,17 +1183,14 @@ fn edit_profile(s: &mut Service, name: &str, rename: &str, node: &str) -> Respon
         }
     }
     s.profiles.insert(to.clone(), after.clone());
-    s.log(t(&format!("профиль «{to}» изменён"), &format!("profile \"{to}\" edited")));
+    s.log(tf!("профиль «{}» изменён", to));
     s.save();
     // Живой туннель на правленом узле обязан перечитать конфиг — ровно то же
     // решение, что принимает сверка подписки, сделанная руками.
     if s.status.profile.as_deref() == Some(to.as_str())
         && after_refresh(Some(&before), Some(&after), s.private, false) == Active::Restart
     {
-        s.log(t(
-            &format!("узел «{to}» изменился, туннель перезапускается"),
-            &format!("node \"{to}\" changed, restarting the tunnel"),
-        ));
+        s.log(tf!("узел «{}» изменился, туннель перезапускается", to));
         let _ = s.start(&to);
     }
     Response::Done
@@ -1262,10 +1221,7 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Result<Tally, 
     if batch.found.is_empty() {
         // Пустой ответ — это чаще всего не пустая подписка, а неверный адрес
         // или чужой формат. Старые профили в таком случае не трогаем.
-        let message = t(
-            "в ответе подписки нет ни одного узла — проверьте адрес",
-            "the subscription returned no nodes — check the address",
-        );
+        let message = t("в ответе подписки нет ни одного узла — проверьте адрес");
         s.warn(message.clone());
         return Err(message);
     }
@@ -1304,10 +1260,7 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Result<Tally, 
         names.push(name);
     }
     tally.gone = was.iter().filter(|node| !now_nodes.contains(node)).count();
-    s.log(t(
-        &format!("подписка обновлена, узлов — {}", names.len()),
-        &format!("subscription updated, nodes — {}", names.len()),
-    ));
+    s.log(tf!("подписка обновлена, узлов — {}", names.len()));
     // Отметку двигает любая удачная сверка, а не только плановая: список пришёл
     // с панели — значит он свежий, и ходить за ним снова через пять минут после
     // того, как человек нажал «обновить» руками, незачем.
@@ -1346,18 +1299,12 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Result<Tally, 
             Active::Keep => {}
             // start() сам ставит правила впереди всего, порядок здесь безопасен.
             Active::Restart => {
-                s.log(t(
-                    &format!("узел «{name}» изменился, туннель перезапускается"),
-                    &format!("node \"{name}\" changed, restarting the tunnel"),
-                ));
+                s.log(tf!("узел «{}» изменился, туннель перезапускается", name));
                 let _ = s.start(&name);
             }
             Active::Stop => s.stop(),
             Active::Drop => {
-                s.warn(t(
-                    &format!("узел «{name}» пропал из подписки: приватный режим оставлен включённым, выбранные приложения без сети"),
-                    &format!("node \"{name}\" is gone from the subscription: private mode left on, selected apps have no network"),
-                ));
+                s.warn(tf!("узел «{}» пропал из подписки: приватный режим оставлен включённым, выбранные приложения без сети", name));
                 s.tunnel = None; // надзор увидит отсутствие процесса и заблокирует приложения
                 s.generation += 1;
                 s.save();
@@ -1618,8 +1565,8 @@ fn discover(svc: &Mutex<Service>, env: &BTreeMap<String, String>) -> Response {
     let mut s = lock(svc);
     let added = newcomers(&s.status.apps, found);
     s.log(match added.len() {
-        0 => t("автообнаружение: ничего нового не найдено", "discovery: nothing new found"),
-        n => t(&format!("автообнаружение: добавлено приложений — {n}"), &format!("discovery: {n} apps added")),
+        0 => t("автообнаружение: ничего нового не найдено"),
+        n => tf!("автообнаружение: добавлено приложений — {}", n),
     });
     // Добавленное выключенным sing-box не видит: перезапуска не будет.
     s.edit(|s| {
@@ -1708,11 +1655,8 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 s.edit(|s| {
                     s.status.scope = scope;
                     s.log(match scope {
-                        Scope::All => t("охват: весь трафик компьютера", "scope: all computer traffic"),
-                        Scope::Whitelist => t(
-                            "охват: только выбранные приложения, остальным сеть закрыта",
-                            "scope: selected apps only, everyone else is cut off",
-                        ),
+                        Scope::All => t("охват: весь трафик компьютера"),
+                        Scope::Whitelist => t("охват: только выбранные приложения, остальным сеть закрыта"),
                     });
                     s.save();
                 });
@@ -1730,7 +1674,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 Response::Done
             }
             false => Response::Error {
-                message: t(&format!("приложение не в списке: {path}"), &format!("app is not in the list: {path}")),
+                message: tf!("приложение не в списке: {}", path),
             },
         },
         Request::RemoveApp { path } => {
@@ -1745,7 +1689,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             // однострочный узел с транспортом и TLS не читается вовсе.
             Some(node) => Response::ProfileNode { json: serde_json::to_string_pretty(node).unwrap_or_default() },
             None => Response::Error {
-                message: t(&format!("нет профиля «{name}»"), &format!("no profile \"{name}\"")),
+                message: tf!("нет профиля «{}»", name),
             },
         },
         Request::EditProfile { name, rename, node } => edit_profile(&mut s, &name, &rename, &node),
@@ -1770,21 +1714,18 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 for name in &names {
                     s.forget_profile(name);
                 }
-                s.log(t(
-                    &format!("подписка отключена, профилей убрано — {}", names.len()),
-                    &format!("subscription removed, profiles dropped — {}", names.len()),
-                ));
+                s.log(tf!("подписка отключена, профилей убрано — {}", names.len()));
                 s.save();
                 Response::Done
             }
             None => Response::Error {
-                message: t(&format!("нет подписки {url}"), &format!("no subscription {url}")),
+                message: tf!("нет подписки {}", url),
             },
         },
         Request::RenameSubscription { url, name } => {
             if !s.subscriptions.contains_key(&url) {
                 return Response::Error {
-                    message: t(&format!("нет подписки {url}"), &format!("no subscription {url}")),
+                    message: tf!("нет подписки {}", url),
                 };
             }
             // Пустое имя — это «показывать адрес», а не подпись из пробелов.
@@ -1926,7 +1867,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             if profiles.is_empty() {
                 return match only {
                     Some(name) => Response::Error {
-                        message: t(&format!("нет профиля «{name}»"), &format!("no profile \"{name}\"")),
+                        message: tf!("нет профиля «{}»", name),
                     },
                     None => Response::Status(s.status.clone()),
                 };
@@ -1985,10 +1926,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             s.status.testing = None;
             // Строка одна на весь прогон, а не на узел: журнал пишется на диск
             // каждой строкой, и логировать в цикле нельзя.
-            s.log(t(
-                &format!("прогон профилей: отвечают {live} из {all}"),
-                &format!("profile run: {live} of {all} alive"),
-            ));
+            s.log(tf!("прогон профилей: отвечают {} из {}", live, all));
             // На диск — один раз в конце: в память итоги уже легли по одному,
             // а `state.json` переписывается целиком.
             s.save();
@@ -2115,10 +2053,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             // этом остаются заблокированными, и это не сбой, а ожидаемое
             // состояние: обещать в журнале перезапуск было бы неправдой.
             let Some(profile) = s.status.profile.clone() else { continue };
-            s.warn(t(
-                "sing-box не работает: выбранные приложения без сети, перезапуск",
-                "sing-box is down: selected apps have no network, restarting",
-            ));
+            s.warn(t("sing-box не работает: выбранные приложения без сети, перезапуск"));
             let _ = s.start(&profile);
             continue;
         };
@@ -2146,7 +2081,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
         match result {
             Ok(latency) => {
                 if s.status.tunnel != TunnelState::Up {
-                    s.log(t(&format!("туннель поднят, задержка {latency} мс"), &format!("tunnel is up, latency {latency} ms")));
+                    s.log(tf!("туннель поднят, задержка {} мс", latency));
                     s.guard(false); // дальше маршрутизацией занимается сам sing-box
                     // Про чужой туннель говорим уже после выдачи пропусков, а не
                     // до. Он не мешает нам подняться, но может забрать маршруты —
@@ -2158,10 +2093,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
                     // приложениям, под общим замком: окно всё это время ждало
                     // ответа на `Status`.
                     for name in core_filter::foreign_tunnels(core_tunnel::TUN_NAME) {
-                        s.warn(t(
-                            &format!("рядом поднят чужой туннель «{name}» — выберите один: маршруты уйдут к тому, кто выиграет"),
-                            &format!("another tunnel \"{name}\" is up — keep one: routes go to whichever wins"),
-                        ));
+                        s.warn(tf!("рядом поднят чужой туннель «{}» — выберите один: маршруты уйдут к тому, кто выиграет", name));
                     }
                     just_up = true;
                 }
@@ -2177,10 +2109,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             }
             Err(e) => {
                 if s.status.tunnel != TunnelState::Down {
-                    s.warn(t(
-                        &format!("туннель недоступен ({e}): выбранные приложения без сети"),
-                        &format!("tunnel unavailable ({e}): selected apps have no network"),
-                    ));
+                    s.warn(tf!("туннель недоступен ({}): выбранные приложения без сети", e));
                     s.guard(true);
                 }
                 s.status.tunnel = TunnelState::Down;
@@ -2210,7 +2139,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             match found {
                 Ok(exit) => {
                     let name = &exit.name;
-                    s.log(t(&format!("точка выхода: {name}"), &format!("exit point: {name}")));
+                    s.log(tf!("точка выхода: {}", name));
                     s.status.country = Some(exit.name.clone());
                     // Единственный раз, когда страна вообще спрашивается, —
                     // этот. Не запомнить её здесь значит потерять до следующего
@@ -2224,7 +2153,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
                 // Страна — украшение статуса; не узнали, значит не показываем.
                 // На fail-closed это не влияет никак.
                 Err(e) => {
-                    s.warn(t(&format!("страну выхода узнать не удалось ({e})"), &format!("could not determine the exit country ({e})")));
+                    s.warn(tf!("страну выхода узнать не удалось ({})", e));
                     s.status.country = None;
                 }
             }
@@ -2239,7 +2168,7 @@ mod tests {
 
     /// Свой пустой каталог на каждый прогон: тесты бегут в одном процессе, и
     /// общий временный каталог давал бы им ронять друг друга через диск.
-    fn scratch(tag: &str) -> PathBuf {
+    fn settle_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("pg-settle-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -2256,7 +2185,7 @@ mod tests {
     /// и чистая установка, где переносить нечего и выдумывать каталог не надо.
     #[test]
     fn the_rename_never_loses_what_the_service_remembered() {
-        let base = scratch("moves");
+        let base = settle_dir("moves");
         std::fs::create_dir_all(base.join("privacy-gateway")).unwrap();
         std::fs::write(base.join("privacy-gateway").join("state.json"), "{\"profiles\":[]}").unwrap();
         let dir = settle(base.clone());
@@ -2270,7 +2199,7 @@ mod tests {
 
         // Нажитое под новым именем сильнее старого: переезд поверх — это потеря
         // ровно того состояния, которым человек пользуется прямо сейчас.
-        let base = scratch("keeps");
+        let base = settle_dir("keeps");
         std::fs::create_dir_all(base.join("privacy-gateway")).unwrap();
         std::fs::write(base.join("privacy-gateway").join("state.json"), "старое").unwrap();
         std::fs::create_dir_all(base.join("proxybox")).unwrap();
@@ -2279,7 +2208,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("state.json")).unwrap(), "новое", "переезд затёр нажитое");
 
         // Чистая установка: каталога нет вовсе, и выдумывать переезд не из чего.
-        let base = scratch("fresh");
+        let base = settle_dir("fresh");
         assert_eq!(settle(base.clone()), base.join("proxybox"));
     }
 
@@ -3099,12 +3028,12 @@ fn serve(svc: &Mutex<Service>, mut conn: Stream) {
         // запрос, и разбирать его значит отвечать мусором на мусор.
         let overflow = !line.ends_with('\n');
         let resp = if overflow {
-            Response::Error { message: t("запрос слишком длинный", "the request is too long") }
+            Response::Error { message: t("запрос слишком длинный") }
         } else {
             match serde_json::from_str(&line) {
                 Ok(req) => handle(svc, req),
                 Err(e) => Response::Error {
-                    message: t(&format!("неразбираемый запрос: {e}"), &format!("unparsable request: {e}")),
+                    message: tf!("неразбираемый запрос: {}", e),
                 },
             }
         };
@@ -3130,25 +3059,16 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
             Endpoint::Pipe => format!("канал {}", core_ipc::PIPE),
             Endpoint::Tcp => format!("сокет {ADDR}"),
         };
-        s.log(t(
-            &format!("служба слушает {where_}; приложений: {apps}, профилей: {profiles}"),
-            &format!("service listening on {where_}; apps: {apps}, profiles: {profiles}"),
-        ));
+        s.log(tf!("служба слушает {}; приложений: {}, профилей: {}", where_, apps, profiles));
         if !elevated() {
-            s.warn(t(
-                "ВНИМАНИЕ: служба запущена без прав администратора — TUN и правила брандмауэра работать не будут",
-                "WARNING: the service is running without administrator rights — TUN and firewall rules will not work",
-            ));
+            s.warn(t("ВНИМАНИЕ: служба запущена без прав администратора — TUN и правила брандмауэра работать не будут"));
         }
         match (s.private, s.status.profile.clone()) {
             // Приватный режим пережил перезапуск — восстанавливаем его сами.
             // start() сначала блокирует, потом поднимает туннель, поэтому окна
             // прямого доступа между загрузкой системы и туннелем не возникает.
             (true, Some(profile)) => {
-                s.log(t(
-                    &format!("приватный режим был включён — восстанавливаю профиль «{profile}»"),
-                    &format!("private mode was on — restoring profile \"{profile}\""),
-                ));
+                s.log(tf!("приватный режим был включён — восстанавливаю профиль «{}»", profile));
                 let _ = s.start(&profile);
             }
             // Служба, убитая прошлый раз, могла оставить блокирующие правила: без
