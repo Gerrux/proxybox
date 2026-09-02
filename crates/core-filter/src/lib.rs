@@ -82,7 +82,15 @@ pub fn policy(private_mode: bool, tunnel_up: bool) -> Policy {
 /// Общее начало имени у всех наших правил: по нему и только по нему они
 /// снимаются. Путь входит в имя, чтобы правило было опознаваемо в брандмауэре
 /// глазами, но искать по нему нельзя — см. `sweep`.
-const RULE_PREFIX: &str = "Privacy Gateway: ";
+const RULE_PREFIX: &str = "proxybox: ";
+
+/// Тот же префикс до переименования продукта. Метла обязана мести и его: наши
+/// правила — разрешающие, запрещает политика по умолчанию. Осиротевшее
+/// разрешение поэтому не запирает приложение, а наоборот — пускает в туннель
+/// то, что человек из списка уже убрал, и делает это молча и навсегда.
+/// Правила брандмауэра переживают перезагрузку и переустановку. Сторож —
+/// `the_broom_sweeps_the_old_name_too`.
+const LEGACY_RULE_PREFIX: &str = "Privacy Gateway: ";
 
 fn rule_name(path: &str) -> String {
     format!("{RULE_PREFIX}{path}")
@@ -246,15 +254,16 @@ fn needs_sweep(previous: Option<Fence>) -> bool {
 
 fn sweep_command() -> String {
     format!(
-        "Get-NetFirewallRule -DisplayName '{}' -ErrorAction SilentlyContinue \
+        "Get-NetFirewallRule -DisplayName '{}','{}*' -ErrorAction SilentlyContinue \
          | Where-Object DisplayName -ne '{ALLOW_RULE}' | Remove-NetFirewallRule",
-        sweep_mask()
+        sweep_mask(),
+        LEGACY_RULE_PREFIX
     )
 }
 
 /// Имя разрешающего правила для sing-box. Своё, отдельное от правил приложений:
 /// снимается оно вместе с политикой, а не вместе со списком.
-const ALLOW_RULE: &str = "Privacy Gateway: sing-box";
+const ALLOW_RULE: &str = "proxybox: sing-box";
 
 fn policy_args(outbound: &str) -> Vec<String> {
     vec!["advfirewall".into(), "set".into(), "allprofiles".into(), "firewallpolicy".into(), format!("blockinbound,{outbound}")]
@@ -420,7 +429,7 @@ mod tests {
         assert_eq!(policy(true, false), Policy::Drop);
     }
 
-    const OURS: &str = "Privacy Gateway";
+    const OURS: &str = "proxybox";
 
     #[test]
     fn only_tunnel_adapters_are_flagged() {
@@ -428,7 +437,7 @@ mod tests {
                         wg0\tWireGuard Tunnel\n\
                         Ethernet\tRealtek PCIe GbE Family Controller\n\
                         tap\tTAP-Windows Adapter V9\n\
-                        Privacy Gateway\tsing-tun Tunnel\n\n";
+                        proxybox\tsing-tun Tunnel\n\n";
         assert_eq!(detect(adapters, OURS), vec!["WireGuard Tunnel", "TAP-Windows Adapter V9"]);
         assert!(detect("Wi-Fi\tIntel(R) Wi-Fi 6 AX201 160MHz\n", OURS).is_empty());
     }
@@ -439,7 +448,7 @@ mod tests {
     /// она сама. Замер охватов из-за этой записи выглядел испорченным.
     #[test]
     fn our_own_adapter_is_not_a_stranger() {
-        assert!(detect("Privacy Gateway\tsing-tun Tunnel\n", OURS).is_empty());
+        assert!(detect("proxybox\tsing-tun Tunnel\n", OURS).is_empty());
         // И наоборот: настоящий второй sing-box рядом обязан быть виден.
         assert_eq!(detect("nekoray-tun\tsing-tun Tunnel\n", OURS), vec!["sing-tun Tunnel"]);
     }
@@ -522,6 +531,22 @@ mod tests {
         // команду одним аргументом, и разорванная молча не сделала бы ничего.
         assert!(!sweep_command().contains('\n'), "{}", sweep_command());
         assert!(sweep_command().contains("SilentlyContinue | Where-Object"), "{}", sweep_command());
+    }
+
+    /// Переименование продукта не отменяет правил, поставленных под старым
+    /// именем: они лежат в брандмауэре и переживают и перезагрузку, и
+    /// переустановку. Наши правила разрешающие, поэтому сирота не запирает
+    /// приложение, а пускает — то самое, которое человек из списка уже убрал.
+    /// Метла обязана снимать оба префикса, пока на свете есть хоть одна машина
+    /// с прошлой установкой.
+    #[test]
+    fn the_broom_sweeps_the_old_name_too() {
+        let cmd = sweep_command();
+        assert!(cmd.contains(&format!("'{LEGACY_RULE_PREFIX}*'")), "метла не метёт старое имя: {cmd}");
+        assert!(cmd.contains(&format!("'{}'", sweep_mask())), "метла не метёт своё же имя: {cmd}");
+        // Старое разрешение sing-box обязано уйти вместе с остальными: обход по
+        // имени сделан для нынешнего, а прошлое разрешает чужой уже бинарник.
+        assert!(!ALLOW_RULE.starts_with(LEGACY_RULE_PREFIX), "обход пощадил бы и старое разрешение");
     }
 
     /// Метла — самый дорогой вызов на пути включения, и пропустить её можно

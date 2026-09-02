@@ -42,7 +42,7 @@ param(
     [int]$ApiPort = 48293,
     # Имя нашего TUN-адаптера — core_tunnel::TUN_NAME. Разъедется с ним, и
     # главный знаменатель (пакеты через TUN) молча пропадёт из вывода.
-    [string]$TunName = "Privacy Gateway",
+    [string]$TunName = "proxybox",
     # Куда долбиться короткими соединениями. Отвечает быстро, рвётся сразу,
     # байтов почти нет — нужны именно соединения, а не трафик.
     [string]$ChurnTarget = "1.1.1.1",
@@ -52,7 +52,7 @@ param(
     # не может, — правило process_path либо есть в конфиге, либо его нет.
     [switch]$Scope,
     # Путь к клиенту. Пустой — ищем сами рядом с приложением и в target/.
-    # Файл зовётся privacy-gateway.exe: крейт pg-cli, а имя бинарника своё.
+    # Файл зовётся proxybox.exe: крейт pg-cli, а имя бинарника своё.
     [string]$Cli = ""
 )
 
@@ -84,7 +84,7 @@ if ($sb.Count -gt 1) {
 # Охват решает, чем мерить второй проход: в «выбранных приложениях» каждое
 # соединение сверяется с process_path, а powershell.exe в списке не значится и
 # в TUN не попадёт вовсе — значит качать придётся руками, выбранным приложением.
-$state = Join-Path $env:ProgramData "privacy-gateway\state.json"
+$state = Join-Path $env:ProgramData "proxybox\state.json"
 $all = $false
 $apps = 0
 if (Test-Path $state) {
@@ -139,7 +139,7 @@ function Get-TunStats {
     # выходит 27 секунд ЦП на «один мегабайт» и полная бессмыслица.
     try {
         # Имя возвращается наружу не для красоты: смена охвата пересоздаёт
-        # адаптер, а Windows при столкновении имён даёт «Privacy Gateway 2».
+        # адаптер, а Windows при столкновении имён даёт «proxybox 2».
         # Маска со звёздочкой и `-First 1` могли выбрать мёртвого предшественника,
         # через который, разумеется, не идёт ни пакета.
         $s = Get-NetAdapterStatistics -Name "$TunName*" -ErrorAction Stop | Select-Object -First 1
@@ -471,25 +471,25 @@ try {
     }
 } catch { }
 
-$rules = @(Get-NetFirewallRule -DisplayName 'Privacy Gateway: *' -ErrorAction SilentlyContinue)
-Write-Host "Правил 'Privacy Gateway: *': $($rules.Count)"
+$rules = @(Get-NetFirewallRule -DisplayName 'proxybox: *' -ErrorAction SilentlyContinue)
+Write-Host "Правил 'proxybox: *': $($rules.Count)"
 if ($rules.Count -gt $apps + 1) {
     Write-Host "  больше, чем включённых приложений — похоже на осиротевшие, снимает их sweep() при выключении" -ForegroundColor Yellow
 }
 
-# Крейт зовётся pg-cli, а бинарник — privacy-gateway: так задано в [[bin]] его
+# Крейт зовётся pg-cli, а бинарник — proxybox: так задано в [[bin]] его
 # Cargo.toml, и под этим же именем его кладёт установщик (installer/sidecars.ps1
 # копирует в src-tauri/binaries). Файла pg-cli.exe не существует нигде, и
-# искать надо именно это имя. Рядом стоит «Privacy Gateway.exe» — это окно, а
+# искать надо именно это имя. Рядом стоит «proxybox.exe» — это окно, а
 # не клиент; имена различаются пробелом против дефиса.
-$CLI_NAME = "privacy-gateway"
+$CLI_NAME = "proxybox"
 
 function Find-Cli {
     if ($Cli) { return $Cli }
     # Пустая база пропускается: Join-Path с null бросает, а с ErrorAction=Stop
     # это убивает весь замер из-за необязательного кандидата.
     $bases = @(${env:ProgramFiles}, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
-    $paths = @($bases | ForEach-Object { Join-Path $_ "Privacy Gateway\$CLI_NAME.exe" })
+    $paths = @($bases | ForEach-Object { Join-Path $_ "proxybox\$CLI_NAME.exe" })
     $paths += (Join-Path $PSScriptRoot "..\target\release\$CLI_NAME.exe")
     $paths += (Join-Path $PSScriptRoot "..\target\debug\$CLI_NAME.exe")
     foreach ($c in $paths) {
@@ -518,7 +518,7 @@ function Get-RouteInfo {
             Where-Object { $_.DestinationPrefix -in @("0.0.0.0/0", "0.0.0.0/1", "128.0.0.0/1") })
         if (-not $r) { return "маршрутов по умолчанию нет" }
         # Метрика решает, кто из двух маршрутов по умолчанию выигрывает, — без
-        # неё строка «0.0.0.0/0->Wi-Fi  0.0.0.0/0->Privacy Gateway» не говорит
+        # неё строка «0.0.0.0/0->Wi-Fi  0.0.0.0/0->proxybox» не говорит
         # ничего. Windows складывает метрику маршрута с метрикой интерфейса.
         ($r | Sort-Object DestinationPrefix | ForEach-Object {
             $im = try { (Get-NetIPInterface -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction Stop | Select-Object -First 1).InterfaceMetric } catch { 0 }
@@ -548,7 +548,7 @@ function Show-WhyNot($cli) {
     Write-Host "-- состояние службы --" -ForegroundColor Yellow
     try { & $cli status 2>&1 | ForEach-Object { Write-Host "   $_" } } catch { Write-Host "   status не ответил" }
 
-    $dir = Join-Path $env:ProgramData "privacy-gateway"
+    $dir = Join-Path $env:ProgramData "proxybox"
     Write-Host "-- журнал службы (свежее сверху) --" -ForegroundColor Yellow
     try {
         # -Encoding UTF8 обязателен: служба пишет журнал в UTF-8, а PowerShell
@@ -594,7 +594,7 @@ if ($Scope) {
         # Ровно та ошибка, которую легко сделать: подсунуть pg-service.exe.
         # Служба команду `scope` не разбирает — она её слушает, а не шлёт.
         Write-Host "«$cli» — это не клиент. Охват меняет $CLI_NAME.exe, а не служба и не окно." -ForegroundColor Red
-        Write-Host "Путь с пробелами обязателен в кавычках: -Cli `"C:\Program Files\Privacy Gateway\$CLI_NAME.exe`"" -ForegroundColor Red
+        Write-Host "Путь с пробелами обязателен в кавычках: -Cli `"C:\Program Files\proxybox\$CLI_NAME.exe`"" -ForegroundColor Red
         exit 1
     }
     $was = if ($all) { "all" } else { "apps" }

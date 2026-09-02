@@ -1,8 +1,8 @@
 {
-  "name": "privacy-gateway-ui",
+  "name": "proxybox-ui",
   "private": true,
   "version": "0.1.0",
-  "description": "Privacy Gateway — контроль исходящего трафика выбранных приложений, fail-closed",
+  "description": "proxybox — контроль исходящего трафика выбранных приложений, fail-closed",
   "license": "UNLICENSED",
   "type": "module",
   "packageManager": "pnpm@9.15.9",

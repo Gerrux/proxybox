@@ -5,7 +5,7 @@ import type { Lang } from "./platform";
 
 const RU = {
   serviceDown: "Служба не отвечает",
-  serviceDownHint: "Запустите PrivacyGateway от имени администратора — без службы ничего не работает",
+  serviceDownHint: "Запустите proxybox от имени администратора — без службы ничего не работает",
   off: "Приватный режим выключен",
   offHintWhitelist: "Пока режим выключен, в сеть ходят все — и выбранные, и остальные",
   offNoProfiles: "Сначала добавьте профиль — включать пока нечего",
@@ -282,7 +282,7 @@ const RU = {
 
 const EN: typeof RU = {
   serviceDown: "Service is not responding",
-  serviceDownHint: "Start PrivacyGateway as administrator — nothing works without the service",
+  serviceDownHint: "Start proxybox as administrator — nothing works without the service",
   off: "Private mode is off",
   offHintWhitelist: "While the mode is off, everyone reaches the network — selected or not",
   offNoProfiles: "Add a profile first — there is nothing to turn on yet",

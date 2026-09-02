@@ -7,7 +7,7 @@ mod doctor;
 
 use core_ipc::{call, t, Request, Response, Scope};
 
-const USAGE_RU: &str = "privacy-gateway <команда>
+const USAGE_RU: &str = "proxybox <команда>
 
   status                 состояние туннеля и список приложений
   doctor                 проверка окружения: почему может не работать
@@ -45,7 +45,7 @@ const USAGE_RU: &str = "privacy-gateway <команда>
                          цель пробы (пусто — сервер самого узла) и путь к
                          sing-box. Переменные окружения сильнее настроек";
 
-const USAGE_EN: &str = "privacy-gateway <command>
+const USAGE_EN: &str = "proxybox <command>
 
   status                 tunnel state and app list
   doctor                 environment check: why it may not work
@@ -452,7 +452,7 @@ mod tests {
     }
 
     /// Имя бинарника у крейта своё (`[[bin]]` в Cargo.toml), и `pg-cli.exe` не
-    /// существует нигде: установщик кладёт `privacy-gateway.exe`, и он же
+    /// существует нигде: установщик кладёт `proxybox.exe`, и он же
     /// собирается в `target/`. `scripts/cpu.ps1` зовёт клиента, чтобы
     /// переключить охват, и знает это имя третьим местом — разъедется, и
     /// скрипт будет искать несуществующий файл, а человеку предложит собрать

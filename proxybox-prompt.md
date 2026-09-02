@@ -1,6 +1,6 @@
-# Промпт: Privacy Gateway (Windows, fail-closed)
+# Промпт: proxybox (Windows, fail-closed)
 
-Напиши нативное десктопное приложение «Privacy Gateway» — контроль исходящего
+Напиши нативное десктопное приложение «proxybox» — контроль исходящего
 сетевого трафика по принципу fail-closed: выбранные пользователем программы
 ходят в сеть ИСКЛЮЧИТЕЛЬНО через его прокси-туннель, а если туннель упал —
 не ходят вообще. Никакого fallback на прямое соединение, никаких bypass-правил.
@@ -87,7 +87,7 @@ installer/             WiX/NSIS, подпись драйверов, автооб
 
 ## CLI
 
-`privacy-gateway on --profile myvpn`, `off`, `status`, `list-apps`, `discover`,
+`proxybox on --profile myvpn`, `off`, `status`, `list-apps`, `discover`,
 `add-app --path`, `enable --path`, `disable --path`, `add-profile --link`,
 `profiles`.
 

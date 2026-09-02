@@ -20,7 +20,7 @@ copy путь\к\sing-box\LICENSE src-tauri\binaries\LICENSE-sing-box.txt
 pwsh installer\build.ps1 -SingBox путь\к\sing-box.exe
 ```
 
-Скрипт собирает `pg-service.exe` и `privacy-gateway.exe`, раскладывает их с
+Скрипт собирает `pg-service.exe` и `proxybox.exe`, раскладывает их с
 суффиксом целевой платформы в `src-tauri\binaries\` (так Tauri ожидает
 sidecar-бинарники), затем собирает окно и установщик NSIS в
 `src-tauri\target\release\bundle\nsis\`.
@@ -48,7 +48,7 @@ git tag v0.2.0 && git push --tags
 ## Что делает установщик
 
 Ставит per-machine в `Program Files`, кладёт рядом окно, службу, CLI и sing-box,
-затем вызывает `pg-service.exe install` — регистрация службы `PrivacyGateway`
+затем вызывает `pg-service.exe install` — регистрация службы `proxybox`
 (LocalSystem, автозапуск) и её немедленный старт. Установка идемпотентна: если
 служба уже в SCM (обновление поверх, остановленная служба от прошлой версии),
 ей переписываются настройки и она запускается, а не считается ошибкой. Удаление вызывает
@@ -58,9 +58,9 @@ git tag v0.2.0 && git push --tags
 ## Проверка после установки
 
 ```powershell
-sc query PrivacyGateway
-"C:\Program Files\Privacy Gateway\privacy-gateway.exe" doctor
-"C:\Program Files\Privacy Gateway\privacy-gateway.exe" status
+sc query proxybox
+"C:\Program Files\proxybox\proxybox.exe" doctor
+"C:\Program Files\proxybox\proxybox.exe" status
 ```
 
 ## Подпись

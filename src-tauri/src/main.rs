@@ -50,8 +50,8 @@ fn ipc(req: Request) -> Result<Response, String> {
         // Ни канала, ни сокета — служба не запущена. Код ошибки об этом не
         // говорит, а человеку нужно ровно одно действие.
         io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound => core_ipc::t(
-            &format!("служба не запущена ({e}): запустите Privacy Gateway"),
-            &format!("the service is not running ({e}): start Privacy Gateway"),
+            &format!("служба не запущена ({e}): запустите proxybox"),
+            &format!("the service is not running ({e}): start proxybox"),
         ),
         _ => core_ipc::t(&format!("служба недоступна: {e}"), &format!("service unavailable: {e}")),
     })
@@ -104,7 +104,7 @@ fn open_url(url: String) -> Result<(), String> {
 /// делят один каталог.
 fn session_dir(profile: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_default())
-        .join("privacy-gateway")
+        .join("proxybox")
         .join("browser")
         .join(core_ipc::dir_name(profile))
 }
@@ -167,7 +167,7 @@ fn open_browser(port: u16, profile: String, ua: String, lang: String, color: Str
     // из-под открытого окна.
     //
     // ponytail: ждём мы, а не служба, поэтому закрытое раньше браузера окно
-    // Privacy Gateway оставляет сеанс жить до перезапуска службы. Потолок —
+    // proxybox оставляет сеанс жить до перезапуска службы. Потолок —
     // сирота на один сеанс: без TUN, без правил, никуда не маршрутизирует;
     // апгрейд — сообщать службе время жизни сеанса и гасить по молчанию, но
     // тогда придётся выдумывать «молчание» для окна, которое просто открыто.
@@ -389,7 +389,47 @@ fn forget_browser(profile: String) -> Result<(), String> {
 #[cfg(windows)]
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(windows)]
-const RUN_NAME: &str = "Privacy Gateway";
+const RUN_NAME: &str = "proxybox";
+/// Имя записи до переименования продукта. Оставленная в реестре, она указывает
+/// на exe прошлой установки — а он никуда не делся, установщик кладёт новый в
+/// каталог под новым именем. То есть после перезагрузки человеку открывалось бы
+/// прошлое приложение, разговаривающее с уже удалённой службой: «служба не
+/// запущена» на исправной машине.
+#[cfg(windows)]
+const LEGACY_RUN_NAME: &str = "Privacy Gateway";
+
+/// Переносит автозапуск на новое имя. Именно переносит, а не стирает: тумблер
+/// человек когда-то включил сам, и молча его выключить — та же потеря выбора,
+/// что и потерянный `state.json`, только незаметнее. Ставим новую запись на
+/// свой путь, старую убираем.
+///
+/// Ничего не делаем, когда старой записи нет или новая уже стоит: второе — это
+/// повторный запуск, и переносить там нечего.
+#[cfg(windows)]
+fn migrate_autostart() {
+    let has = |name: &str| {
+        quiet("reg")
+            .args(["query", RUN_KEY, "/v", name])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    if !has(LEGACY_RUN_NAME) {
+        return;
+    }
+    if !has(RUN_NAME) {
+        let _ = set_autostart(true);
+    }
+    let _ = quiet("reg")
+        .args(["delete", RUN_KEY, "/v", LEGACY_RUN_NAME, "/f"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+#[cfg(not(windows))]
+fn migrate_autostart() {}
 
 #[cfg(windows)]
 #[tauri::command(async)]
@@ -575,7 +615,7 @@ fn words(status: Option<&Status>) -> (String, String) {
     let Some(s) = status else {
         return (
             core_ipc::t("Служба не отвечает", "Service is not responding"),
-            core_ipc::t("запустите Privacy Gateway", "start Privacy Gateway"),
+            core_ipc::t("запустите proxybox", "start proxybox"),
         );
     };
     let title = match s.tunnel {
@@ -797,7 +837,7 @@ fn tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle().clone();
     TrayIconBuilder::with_id("pg")
         .icon(tray_icon(Look::Fault))
-        .tooltip("Privacy Gateway")
+        .tooltip("proxybox")
         .menu(&build_menu(&handle, None)?)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, e| match e.id.as_ref() {
@@ -911,7 +951,7 @@ fn tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 shown = now;
                 if let Some(tray) = handle.tray_by_id("pg") {
                     let _ = tray.set_icon(Some(tray_icon(look(status.as_ref()))));
-                    let _ = tray.set_tooltip(Some(format!("Privacy Gateway — {title}\n{detail}")));
+                    let _ = tray.set_tooltip(Some(format!("proxybox — {title}\n{detail}")));
                     if let Ok(menu) = build_menu(&handle, status.as_ref()) {
                         let _ = tray.set_menu(Some(menu));
                     }
@@ -931,7 +971,7 @@ fn tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 /// плашки из трея своей кнопки на панели быть не должно.
 fn flyout(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     WebviewWindowBuilder::new(app, "tray", WebviewUrl::App("index.html".into()))
-        .title("Privacy Gateway")
+        .title("proxybox")
         .inner_size(380.0, 520.0)
         .resizable(false)
         .decorations(false)
@@ -956,6 +996,10 @@ fn main() {
         // не спрашивал: см. `notify`.
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            // Переезд автозапуска на новое имя — своим потоком: три вызова
+            // `reg` в цикле событий задержали бы появление окна на ровном месте,
+            // а ответа от них никто не ждёт.
+            std::thread::spawn(migrate_autostart);
             match tray(app) {
                 Ok(()) => {
                     TRAY.store(true, Ordering::Relaxed);

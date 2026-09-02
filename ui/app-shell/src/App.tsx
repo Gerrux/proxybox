@@ -195,7 +195,7 @@ export function App() {
           «настройки» уже есть в меню значка. */}
       {!flyout && (
         <TitleBar
-          title="Privacy Gateway"
+          title="proxybox"
           lang={status?.lang}
           update={rel.latest && rel.fresh ? rel.latest.tag_name : null}
           onUpdate={rel.openUpdate}

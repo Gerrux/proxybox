@@ -1,15 +1,15 @@
 @echo off
 rem ===========================================================================
-rem  Privacy Gateway - launcher для Windows: проверка окружения + запуск.
+rem  proxybox - launcher для Windows: проверка окружения + запуск.
 rem  Двойной клик или: run.bat
 rem ===========================================================================
 chcp 65001 >nul
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
-title Privacy Gateway launcher
+title proxybox launcher
 
 echo ==========================================================
-echo   Privacy Gateway  -  проверка окружения и запуск
+echo   proxybox  -  проверка окружения и запуск
 echo ==========================================================
 echo.
 echo [1/3] Обязательные компоненты...
@@ -73,7 +73,7 @@ echo     [1] Служба + окно приложения ^(Tauri dev^)
 echo     [2] Служба + интерфейс в браузере ^(http://127.0.0.1:5173^)
 echo     [3] Собрать установщик ^(NSIS^)
 echo     [4] Тесты ядра ^(cargo test^)
-echo     [5] Проверка окружения ^(privacy-gateway doctor^)
+echo     [5] Проверка окружения ^(proxybox doctor^)
 echo ==========================================================
 set "CHOICE="
 set /p "CHOICE=Выбор [2]: "
@@ -95,7 +95,7 @@ if errorlevel 1 ( echo   ОШИБКА сборки службы. & exit /b 1 )
 echo   - служба запускается в отдельном окне ^(закройте его, чтобы остановить^)
 rem chcp в новом окне обязателен: без него русский вывод службы превращается
 rem в мусор — окно от start наследует кодовую страницу системы, а не эту.
-start "Privacy Gateway - служба" cmd /k "chcp 65001 >nul && set PG_SINGBOX=%SINGBOX%&& target\debug\pg-service.exe"
+start "proxybox - служба" cmd /k "chcp 65001 >nul && set PG_SINGBOX=%SINGBOX%&& target\debug\pg-service.exe"
 rem Дать службе занять порт до первого запроса от интерфейса.
 timeout /t 2 >nul
 exit /b 0
@@ -130,7 +130,7 @@ goto :end
 call cargo build -p pg-cli
 set "PG_SINGBOX=%SINGBOX%"
 echo.
-call target\debug\privacy-gateway.exe doctor
+call target\debug\proxybox.exe doctor
 goto :end
 
 rem ---------------------------------------------------------------------------

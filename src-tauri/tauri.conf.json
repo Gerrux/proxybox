@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Privacy Gateway",
+  "productName": "proxybox",
   "version": "0.3.2",
-  "identifier": "ru.privacygateway.desktop",
+  "identifier": "ru.proxybox.desktop",
   "build": {
     "frontendDist": "../ui/app-shell/dist",
     "devUrl": "http://127.0.0.1:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Privacy Gateway",
+        "title": "proxybox",
         "width": 1000,
         "height": 700,
         "minWidth": 380,
@@ -39,10 +39,10 @@
     "category": "Utility",
     "shortDescription": "Выбранные приложения — только через туннель",
     "longDescription": "Контроль исходящего трафика: выбранные приложения ходят в сеть только через туннель пользователя, а без туннеля не ходят вовсе.",
-    "publisher": "Privacy Gateway",
+    "publisher": "proxybox",
     "externalBin": [
       "binaries/pg-service",
-      "binaries/privacy-gateway",
+      "binaries/proxybox",
       "binaries/sing-box"
     ],
     "resources": [

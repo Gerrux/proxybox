@@ -44,10 +44,10 @@ if ($LASTEXITCODE -ne 0) {
   # «Отказано в доступе» к pg-service.exe — это не код, а живая служба: она
   # держит собственный бинарник. Гасить её отсюда нельзя: снимется надзор, а
   # правила брандмауэра останутся, и приложения будут без сети.
-  throw "cargo build упал (если отказано в доступе к pg-service.exe — сначала privacy-gateway off, затем остановите службу)"
+  throw "cargo build упал (если отказано в доступе к pg-service.exe — сначала proxybox off, затем остановите службу)"
 }
 
-foreach ($name in @("pg-service", "privacy-gateway")) {
+foreach ($name in @("pg-service", "proxybox")) {
   $target = Join-Path $bin "$name-$Triple$exe"
   Copy-Item (Join-Path $root "target\$Config\$name$exe") $target -Force
   if ($Thumbprint) {
