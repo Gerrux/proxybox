@@ -34,6 +34,24 @@ const PROBE_EVERY: Duration = Duration::from_secs(3);
 /// окно сделало бы `WaitForSingleObject` на дублированном хэндле (на Unix —
 /// pidfd), но это платформенный unsafe в обмен на последние 200 мс.
 const DEATH_EVERY: Duration = Duration::from_millis(200);
+/// Сколько проб подряд обязаны промахнуться, чтобы туннель считался упавшим.
+///
+/// Одна промахнувшаяся проба — это не упавший туннель, а одна не состоявшаяся
+/// TCP-сессия: сервер моргнул, DoH-запрос за его адресом не дошёл, у узла
+/// сработал лимит на соединения с самого себя (цель пробы по умолчанию — сам
+/// сервер пользователя). Отвечал на это надзор запиранием: `guard(true)`,
+/// выбранные приложения без сети, а следующая проба через три секунды снимала
+/// всё обратно — и так по кругу, с парой строк в журнале на каждый оборот и
+/// походом за страной наружу на каждый подъём.
+///
+/// Терпеть промахи здесь можно ровно потому, что утечкой они не грозят: уйти
+/// напрямую можно только когда исчез TUN, а исчезает он вместе с процессом —
+/// за этим смотрит `watch_for_death` каждые `DEATH_EVERY` и запирает сам. Пока
+/// процесс жив, в конфиге нет ни одного маршрута мимо туннеля (`final: proxy`,
+/// сторож `nothing_can_go_direct`), то есть промахнувшаяся проба означает
+/// «наружу не ходит ничего», а не «ходит мимо». Сторож —
+/// `a_single_missed_probe_does_not_lock_the_apps`.
+const PROBE_MISSES: u32 = 3;
 /// Счётчики трафика забираются не каждый круг, а раз в столько кругов, и это
 /// не экономия на спичках. Clash API отдаёт итоги только в теле `/connections`,
 /// вместе со всем списком живых соединений и после него — оборвать разбор на
@@ -250,6 +268,8 @@ struct Service {
     /// живом туннеле. Ждать там было нечего — `Process::start` к этому моменту
     /// уже выждал `STARTUP_GRACE` и убедился, что процесс не умер сразу.
     probe_now: bool,
+    /// Промахов пробы подряд. Запираем не по первому — см. `PROBE_MISSES`.
+    misses: u32,
     /// Что уже применено к брандмауэру. Помним применённое, а не то, из чего
     /// оно выведено: без этой памяти надзор дёргал бы netsh каждые три секунды
     /// и засыпал бы журнал одинаковыми отказами. Неудачу не запоминаем
@@ -346,6 +366,7 @@ impl Service {
             retry_delay: RETRY_BASE,
             applied: None,
             probe_now: false,
+            misses: 0,
             browsers: BTreeMap::new(),
             generation: 0,
         };
@@ -631,6 +652,9 @@ impl Service {
                 // приложения заперты, и каждая лишняя секунда здесь это просто
                 // время без сети, а не запас прочности.
                 self.probe_now = true;
+                // Промахи считались про прошлый процесс: с ними новый туннель
+                // заперли бы первой же неудачной пробой.
+                self.misses = 0;
                 self.retry_at = None;
                 self.retry_delay = RETRY_BASE;
                 // Приложений, а не путей: в конфиг на каждое уходит до двух форм
@@ -2167,6 +2191,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
                 }
                 s.status.tunnel = TunnelState::Up;
                 s.status.latency_ms = Some(latency);
+                s.misses = 0;
                 // Живая задержка активного профиля — она же его последнее
                 // измерение: строка профиля не должна показывать цифру прошлого
                 // прогона, пока туннель под ней жив. На диск не пишем — надзор
@@ -2176,16 +2201,23 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
                 }
             }
             Err(e) => {
-                if s.status.tunnel != TunnelState::Down {
-                    s.warn(t(
-                        &format!("туннель недоступен ({e}): выбранные приложения без сети"),
-                        &format!("tunnel unavailable ({e}): selected apps have no network"),
-                    ));
-                    s.guard(true);
+                s.misses += 1;
+                // Промах сам по себе не запирает: запираем на `PROBE_MISSES`-м
+                // подряд. До него прошлая задержка остаётся на месте — числа
+                // туннеля стирает его падение, а не пропущенный круг.
+                if s.misses >= PROBE_MISSES {
+                    if s.status.tunnel != TunnelState::Down {
+                        let misses = s.misses;
+                        s.warn(t(
+                            &format!("туннель недоступен ({e}), проб без ответа подряд: {misses} — выбранные приложения без сети"),
+                            &format!("tunnel unavailable ({e}), probes unanswered in a row: {misses} — selected apps have no network"),
+                        ));
+                        s.guard(true);
+                    }
+                    s.status.tunnel = TunnelState::Down;
+                    s.status.latency_ms = None;
+                    s.status.country = None;
                 }
-                s.status.tunnel = TunnelState::Down;
-                s.status.latency_ms = None;
-                s.status.country = None;
             }
         }
         if let Some((rx, tx)) = traffic {
@@ -2239,7 +2271,7 @@ mod tests {
 
     /// Свой пустой каталог на каждый прогон: тесты бегут в одном процессе, и
     /// общий временный каталог давал бы им ронять друг друга через диск.
-    fn scratch(tag: &str) -> PathBuf {
+    fn settle_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("pg-settle-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -2256,7 +2288,7 @@ mod tests {
     /// и чистая установка, где переносить нечего и выдумывать каталог не надо.
     #[test]
     fn the_rename_never_loses_what_the_service_remembered() {
-        let base = scratch("moves");
+        let base = settle_dir("moves");
         std::fs::create_dir_all(base.join("privacy-gateway")).unwrap();
         std::fs::write(base.join("privacy-gateway").join("state.json"), "{\"profiles\":[]}").unwrap();
         let dir = settle(base.clone());
@@ -2270,7 +2302,7 @@ mod tests {
 
         // Нажитое под новым именем сильнее старого: переезд поверх — это потеря
         // ровно того состояния, которым человек пользуется прямо сейчас.
-        let base = scratch("keeps");
+        let base = settle_dir("keeps");
         std::fs::create_dir_all(base.join("privacy-gateway")).unwrap();
         std::fs::write(base.join("privacy-gateway").join("state.json"), "старое").unwrap();
         std::fs::create_dir_all(base.join("proxybox")).unwrap();
@@ -2279,7 +2311,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("state.json")).unwrap(), "новое", "переезд затёр нажитое");
 
         // Чистая установка: каталога нет вовсе, и выдумывать переезд не из чего.
-        let base = scratch("fresh");
+        let base = settle_dir("fresh");
         assert_eq!(settle(base.clone()), base.join("proxybox"));
     }
 
@@ -2727,6 +2759,53 @@ mod tests {
         // ждать как раз и должно.
         let before_loop = body.split("for _ in 0..rounds").next().unwrap_or_default();
         assert!(!before_loop.contains("probe_now"), "флаг первой пробы обязан читаться внутри цикла, а не на входе: {body}");
+    }
+
+    /// Одна промахнувшаяся проба выбранные приложения не запирает.
+    ///
+    /// Мигало это так: «туннель поднят, задержка 60 мс» — «туннель недоступен
+    /// (туннель не пропустил соединение (код 1))» — и снова поднят, каждые три
+    /// секунды. Код 1 — общий отказ SOCKS5: узел моргнул, не дошёл DoH-запрос
+    /// за его адресом, сработал лимит на соединения с самим собой (цель пробы
+    /// по умолчанию — сервер пользователя). Одного такого хватало на
+    /// `guard(true)`, то есть на выбранные приложения без сети, на две строки в
+    /// журнале и на поход за страной наружу с каждым подъёмом.
+    ///
+    /// Терпеть промахи можно ровно потому, что мимо туннеля от них никто не
+    /// уйдёт: маршрут наружу исчезает вместе с TUN, а TUN — вместе с процессом,
+    /// и это чужая забота (`watch_for_death`, `DEATH_EVERY`). Пока процесс жив,
+    /// маршрута мимо туннеля в конфиге нет вовсе (`nothing_can_go_direct`).
+    #[test]
+    fn a_single_missed_probe_does_not_lock_the_apps() {
+        assert!(PROBE_MISSES >= 2, "порог в одну пробу — это то самое мигание, ради которого порог и заведён");
+        assert!(
+            PROBE_EVERY * PROBE_MISSES <= Duration::from_secs(15),
+            "терпеть дольше — это минуты «Защищено» при мёртвом узле",
+        );
+
+        let src = include_str!("main.rs");
+        let body = src
+            .split("fn supervise(")
+            .nth(1)
+            .and_then(|s| s.split("\nfn ").next())
+            .expect("надзор на месте");
+        let refused = body.split("Err(e) => {").nth(1).expect("ветка отказа пробы на месте");
+        assert!(refused.contains("s.misses += 1"), "промах обязан считаться: {refused}");
+        let before_threshold = refused.split("if s.misses >= PROBE_MISSES").next().unwrap_or_default();
+        assert!(!before_threshold.contains("guard(true)"), "запирать раньше порога нельзя: {refused}");
+        assert!(
+            !before_threshold.contains("TunnelState::Down"),
+            "и объявлять туннель упавшим раньше порога тоже: {refused}",
+        );
+
+        // Счётчик обязан обнуляться удачной пробой, иначе редкие промахи копятся
+        // и туннель запирается сам собой через сутки исправной работы.
+        let confirmed = body
+            .split("Ok(latency) => {")
+            .nth(1)
+            .and_then(|s| s.split("Err(e) => {").next())
+            .expect("ветка подтверждённой пробы на месте");
+        assert!(confirmed.contains("s.misses = 0"), "подтверждённая проба обязана обнулять промахи: {confirmed}");
     }
 
     /// Ни галочка в списке приложений, ни переключение охвата не имеют права
