@@ -87,7 +87,16 @@ export function useReleases() {
   const latest = releases?.[0] ?? null;
   const fresh = latest != null && latest.tag_name.replace(/^v/, "") !== VERSION;
 
-  return { releases, error, busy, check, latest, fresh };
+  /** Само обновление — одно действие на оба места, где его предлагают: кнопку
+   *  в титульной полосе и кнопку в настройках. Живёт здесь, рядом с `target`:
+   *  полосе незачем знать, где у релиза лежит установщик. Полоса раньше вместо
+   *  этого открывала настройки — то есть предлагала обновиться и вместо
+   *  обновления показывала ещё одну кнопку «Скачать». */
+  const openUpdate = () => {
+    if (latest != null) void openUrl(target(latest));
+  };
+
+  return { releases, error, busy, check, latest, fresh, openUpdate };
 }
 
 export type Releases = ReturnType<typeof useReleases>;
@@ -204,7 +213,7 @@ export function Settings({
           }
         >
           {latest && fresh && (
-            <Button variant="primary" onClick={() => void openUrl(target(latest))}>
+            <Button variant="primary" onClick={rel.openUpdate}>
               {s.download}
             </Button>
           )}

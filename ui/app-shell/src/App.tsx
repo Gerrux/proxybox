@@ -198,7 +198,7 @@ export function App() {
           title="Privacy Gateway"
           lang={status?.lang}
           update={rel.latest && rel.fresh ? rel.latest.tag_name : null}
-          onUpdate={() => setSettings(true)}
+          onUpdate={rel.openUpdate}
           settingsOpen={settings}
           onSettings={() => setSettings((v) => !v)}
         />
