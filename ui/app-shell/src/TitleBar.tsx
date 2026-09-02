@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri, VERSION, type Lang } from "./platform";
 import { strings } from "./i18n";
+import { Mark } from "./ui";
 
 /**
  * Своя титульная полоса. Окно рисуется без системной рамки (`decorations:
@@ -99,6 +100,13 @@ export function TitleBar({
       data-tauri-drag-region
       className="flex h-8 shrink-0 items-center gap-2 overflow-hidden border-b border-edge bg-surface pl-3"
     >
+      {/* Знак остаётся, когда имя и версия уже ушли (`.tb-name` на узкой
+          ширине): 16 px не мешают кнопкам, а без него полоса перестаёт
+          говорить, чьё это окно. Обёртка нужна ради перетаскивания — тянут за
+          неё, а не за svg, поэтому у знака событий мыши нет вовсе. */}
+      <span data-tauri-drag-region className="flex shrink-0 items-center text-accent">
+        <Mark className="pointer-events-none" />
+      </span>
       <span data-tauri-drag-region className="tb-name engraved min-w-0 truncate text-muted">
         {title}
       </span>
