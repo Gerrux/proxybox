@@ -281,15 +281,40 @@ pub enum Request {
     /// wg://) либо из JSON-конфига sing-box. `https://` — это подписка: служба
     /// скачает её и заведёт профиль на каждый узел. Повторный импорт того же
     /// адреса обновляет подписку, отдельной команды на это нет.
+    ///
+    /// Одной вставкой принимается и пачка: несколько адресов подписок,
+    /// несколько ссылок, то и другое вперемешку. Разбирается это построчно, а
+    /// не по первому префиксу всего текста: пока смотрели на первый, вставка из
+    /// двух адресов уезжала в `fetch` целиком, вместе с переносом строки.
     AddProfile { link: String },
+    /// Узел профиля как JSON — тем же текстом, каким его принимает `AddProfile`.
+    /// Отдельным запросом, а не полем в статусе: узлов бывают сотни, а статус
+    /// окно опрашивает каждые две секунды. Нужен ровно на открытие формы правки.
+    ProfileNode { name: String },
+    /// Переименовать профиль и/или переписать его узел. `node` — тот же текст,
+    /// что принимает `AddProfile`: JSON узла либо share-link. Пустой `node`
+    /// оставляет узел как есть, то есть это же и переименование.
+    ///
+    /// Узел из подписки не правится: сверка заменяет её набор целиком, и правка
+    /// вернулась бы к прежнему виду ближайшим кругом — обещание, которого
+    /// продукт не держит. Сторож — `a_subscription_node_is_never_edited`.
+    EditProfile { name: String, rename: String, node: String },
     RemoveProfile { name: String },
     /// Отписаться: уходит и адрес, и все профили, которые с него пришли.
     RemoveSubscription { url: String },
+    /// Назвать подписку по-человечески. Адрес остаётся ключом — меняется только
+    /// подпись группы в окне: у панелей адрес отличается одним токеном в хвосте,
+    /// а обрезается как раз хвост. Пустое имя возвращает показ адреса.
+    RenameSubscription { url: String, name: String },
     SetLang { lang: Lang },
-    /// Прогнать все профили: каждый поднимается отдельным sing-box без TUN и
+    /// Прогнать профили: каждый поднимается отдельным sing-box без TUN и
     /// пробуется. Живой туннель при этом не трогается — прогон ничего не
     /// переключает, только меряет.
-    TestProfiles,
+    ///
+    /// `only` — прогнать один профиль. Прогон идёт по узлу за раз и стоит
+    /// секунд на каждый, так что на подписке в сотню узлов «проверить вот этот»
+    /// — это минуты разницы.
+    TestProfiles { only: Option<String> },
     /// Поднять под профиль отдельный локальный прокси и вернуть его порт
     /// (`Response::Proxy`). Нужен окну браузера: одно окно ходит в выбранный
     /// туннель мимо общего режима. Живой туннель не трогается — у инстанса свои
@@ -363,13 +388,63 @@ pub struct Probe {
     pub at: u64,
 }
 
+/// Остаток по подписке, как его прислала панель заголовком
+/// `Subscription-Userinfo`.
+///
+/// Ноль значит «не прислали». Отдельного `Option` на каждое поле нет намеренно:
+/// у панелей ноль стоит и у безлимитных с бессрочными, так что различить «не
+/// прислали» и «нет лимита» всё равно нечем, а четыре развилки в окне ради
+/// разницы, которой нет в данных, — четыре лишние ветки.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Quota {
+    /// Отдано, байты.
+    pub upload: u64,
+    /// Принято, байты. Израсходованным панели считают сумму с `upload`.
+    pub download: u64,
+    /// Лимит, байты.
+    pub total: u64,
+    /// Когда подписка кончается, секунды с эпохи.
+    pub expire: u64,
+}
+
 /// Подписка: адрес и имена профилей, которые с него пришли. Имена — ключи из
 /// `Status::profiles`, а не отдельные записи: узел живёт в одном месте, и
 /// второй его копии здесь быть не должно.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Subscription {
     pub url: String,
+    /// Как её назвал человек. Пусто — окно показывает адрес: имени у подписки
+    /// нет, пока его не дали, и выдумывать его за человека не из чего.
+    #[serde(default)]
+    pub name: String,
     pub nodes: Vec<String>,
+    /// Панель остатка не прислала — здесь `None`, и окно про остаток молчит.
+    /// Заголовок этот у панелей необязателен, и его отсутствие — норма, а не
+    /// сбой: узлы разобраны, показывать просто нечего.
+    #[serde(default)]
+    pub quota: Option<Quota>,
+}
+
+/// Профиль в списке: имя и то, куда он ведёт. Раньше в окно уезжало одно имя,
+/// и это ломало сразу три вещи: убедиться, что вставленная ссылка разобралась
+/// во что ожидалось, различить два одинаково названных узла из подписки и
+/// заметить, что тот же узел заведён дважды. Имя пишет чужая панель — оно не
+/// свойство узла, а подпись к нему.
+///
+/// Ровно три поля, и в них нет ни пароля, ни ключа: статус окно опрашивает
+/// каждые две секунды, а подписка приносит сотни узлов. Всё остальное про узел
+/// достаётся по запросу (`Request::ProfileNode`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileInfo {
+    pub name: String,
+    /// Тип узла sing-box: «vless», «wireguard», «shadowsocks». Пусто — узел без
+    /// `type`: так выглядит запись из state.json, правленного руками.
+    #[serde(default)]
+    pub kind: String,
+    /// Сервер узла, `host:port`. Пусто — не нашли: у WireGuard адрес лежит в
+    /// первом пире, а у правленного руками узла его может не быть вовсе.
+    #[serde(default)]
+    pub server: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -408,8 +483,14 @@ pub struct LogLine {
 /// липнет, и понять почему неоткуда.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
-    /// Сверять подписки в фоне раз в шесть часов. `PG_REFRESH=0` — то же самое.
+    /// Сверять подписки в фоне. `PG_REFRESH=0` — то же самое.
     pub refresh: bool,
+    /// Как часто сверять, в часах. Нулю не бывать: срок в ноль часов означал бы
+    /// поход в сеть каждый круг потока сверки, то есть раз в пять минут по всем
+    /// подпискам сразу — служба выключается флажком выше, а не сроком.
+    /// Сторож — `the_refresh_period_is_never_zero`.
+    #[serde(default = "six_hours")]
+    pub refresh_hours: u32,
     /// Куда стучится проба, `host:port`. Пусто — сам сервер выбранного узла:
     /// сторонних адресов продукт по умолчанию не трогает. `PG_PROBE` сильнее.
     pub probe: String,
@@ -421,12 +502,19 @@ pub struct Settings {
     pub geo: bool,
 }
 
+/// Умолчание срока сверки. Функцией, а не константой: `serde(default = …)`
+/// умеет только путь к функции, а поле обязано подставляться и в те
+/// `state.json`, которые записаны версией без него.
+fn six_hours() -> u32 {
+    6
+}
+
 /// Умолчания — то же поведение, что было до появления настроек: подписки
 /// сверяются, проба идёт на сервер пользователя, sing-box ищется рядом,
 /// страна спрашивается.
 impl Default for Settings {
     fn default() -> Self {
-        Self { refresh: true, probe: String::new(), singbox: String::new(), geo: true }
+        Self { refresh: true, refresh_hours: six_hours(), probe: String::new(), singbox: String::new(), geo: true }
     }
 }
 
@@ -455,7 +543,7 @@ pub struct Status {
     /// пропуск в сеть.
     #[serde(default)]
     pub scope: Scope,
-    pub profiles: Vec<String>,
+    pub profiles: Vec<ProfileInfo>,
     /// Подписки вместе с их узлами: окно показывает список профилей группами,
     /// и без этой связи узел, пришедший с панели, ничем не отличался бы от
     /// заведённого руками.
@@ -492,6 +580,31 @@ pub struct Status {
     /// сверялись ни разу: список узлов ровно такой, каким его завели руками.
     #[serde(default)]
     pub refreshed_at: Option<u64>,
+    /// Сколько секунд до следующей попытки поднять туннель. `None` — попытки не
+    /// запланировано: приватный режим выключен, туннель поднят, либо пауза уже
+    /// истекла и круг надзора вот-вот возьмётся сам.
+    ///
+    /// Поле вычисляемое, а не хранимое: в службе пауза живёт как `Instant`, а он
+    /// ни сериализуется, ни означает настенное время. Считается в ответе на
+    /// `Status` и на диск не попадает — `Saved` собирается поимённо.
+    #[serde(default)]
+    pub retry_in: Option<u32>,
+    /// Идёт прогон профилей: сколько уже смерено из скольких. `None` — не идёт.
+    ///
+    /// Итог каждого узла и так ложится в `probes` сразу, но по нему не видно
+    /// границ прогона: измерение недельной давности выглядит так же, как
+    /// сегодняшнее. Прогон на подписке в сотню узлов идёт минуты, и всё это
+    /// время единственным его признаком была погасшая кнопка.
+    #[serde(default)]
+    pub testing: Option<TestRun>,
+}
+
+/// Сколько узлов прогон уже прошёл. Не сохраняется на диск: прогон не переживает
+/// перезапуск службы, а поле, пережившее его, означало бы вечный бегунок.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestRun {
+    pub done: usize,
+    pub total: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -508,6 +621,30 @@ pub enum Response {
     /// самые говорливые, и без этого числа обрезанный список читался бы как
     /// полный.
     Connections { conns: Vec<Conn>, total: usize },
+    /// Что получилось из импорта. `Done` тут не годится: вставили полсотни
+    /// строк, приехало двенадцать — куда делись остальные, узнать было негде,
+    /// а причина у службы на руках.
+    ///
+    /// Одна форма и на вставку, и на сверку подписки: это одно действие —
+    /// «заменить набор тем, что пришло», и различаются они только тем, откуда
+    /// пришло.
+    Imported {
+        /// Заведено новых профилей.
+        added: usize,
+        /// Уже были: тот же узел под тем же адресом (вставка) либо не менявшийся
+        /// узел подписки (сверка).
+        kept: usize,
+        /// Убрано: узла, который был в подписке, в ней больше нет.
+        gone: usize,
+        /// Причины, по которым строки не стали профилями, — не все, а первые:
+        /// вставленный мусор бывает и на тысячу строк, а читают из них первые.
+        skipped: Vec<String>,
+        /// Сколько всего таких строк. Без этого числа обрезанный список причин
+        /// читался бы как полный — ровно та же беда, что и у соединений.
+        skipped_total: usize,
+    },
+    /// Узел профиля как JSON, отформатированный для чтения человеком.
+    ProfileNode { json: String },
     Error { message: String },
 }
 
@@ -745,11 +882,15 @@ mod tests {
             Request::Discover { env: BTreeMap::new() },
             Request::Icon { path: r"C:\app.exe".into() },
             Request::AddProfile { link: "vless://u@a.com:443".into() },
+            Request::ProfileNode { name: "myvpn".into() },
+            Request::EditProfile { name: "myvpn".into(), rename: "дом".into(), node: "{\"type\":\"vless\"}".into() },
             Request::RemoveProfile { name: "myvpn".into() },
             Request::RemoveSubscription { url: "https://panel.example/sub?token=1".into() },
+            Request::RenameSubscription { url: "https://panel.example/sub?token=1".into(), name: "рабочая".into() },
             Request::SetScope { scope: Scope::Whitelist },
             Request::SetLang { lang: Lang::En },
-            Request::TestProfiles,
+            Request::TestProfiles { only: None },
+            Request::TestProfiles { only: Some("myvpn".into()) },
             Request::Browse { profile: "myvpn".into() },
             Request::BrowseStop { profile: "myvpn".into() },
             Request::SetBrowserProfile {
@@ -766,6 +907,7 @@ mod tests {
             Request::SetSettings {
                 settings: Settings {
                     refresh: false,
+                    refresh_hours: 12,
                     probe: "1.1.1.1:443".into(),
                     singbox: r"C:\Program Files\sing-box\sing-box.exe".into(),
                     geo: false,
@@ -789,7 +931,12 @@ mod tests {
                 scope: Scope::All,
                 country: Some("Нидерланды, Амстердам".into()),
                 apps: vec![App { path: r"C:\app.exe".into(), name: "app".into(), enabled: true }],
-                profiles: vec!["myvpn".into()],
+                profiles: vec![ProfileInfo {
+                    name: "myvpn".into(),
+                    kind: "vless".into(),
+                    server: "a.com:443".into(),
+                }],
+                testing: Some(TestRun { done: 3, total: 8 }),
                 browsers: vec!["работа".into()],
                 browser_profiles: vec![BrowserProfile {
                     name: "работа".into(),
@@ -823,6 +970,14 @@ mod tests {
                 }],
                 total: 17,
             },
+            Response::Imported {
+                added: 12,
+                kept: 3,
+                gone: 1,
+                skipped: vec!["ssr://…: протокол не поддерживается: ssr".into()],
+                skipped_total: 38,
+            },
+            Response::ProfileNode { json: "{}".into() },
             Response::Error { message: "нет".into() },
         ];
         let mut seen = Vec::new();

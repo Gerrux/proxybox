@@ -9,8 +9,9 @@
 mod service;
 
 use core_ipc::{
-    dir_name, t, App, BrowserProfile, Conn, Endpoint, Listener, LogLine, Probe, Request, Response,
-    Scope, Settings, Status, Stream, Subscription, Tunnel as TunnelState, ADDR,
+    dir_name, t, App, BrowserProfile, Conn, Endpoint, Listener, LogLine, Probe, ProfileInfo, Quota,
+    Request, Response, Scope, Settings, Status, Stream, Subscription, TestRun, Tunnel as TunnelState,
+    ADDR,
 };
 use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
@@ -52,12 +53,6 @@ const TRAFFIC_EVERY: u32 = 5;
 /// в бесконечный поток одинаковых ошибок в журнале.
 const RETRY_BASE: Duration = Duration::from_secs(3);
 const RETRY_MAX: Duration = Duration::from_secs(60);
-/// Как часто служба сама сверяет подписки. Шесть часов — это про списки узлов,
-/// которые панели правят днями, а не минутами; чаще значило бы дёргать чужой
-/// сервер без повода.
-/// ponytail: срок прибит гвоздями — настройка появится тогда же, когда её будет
-/// где показать.
-const REFRESH_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 /// Как часто поток сверки просыпается посмотреть на календарь. Срок считается
 /// от отметки на диске, а не от сна потока, — значит спать по шесть часов
 /// нельзя: проснувшись, он промахивался бы мимо срока ровно на столько же.
@@ -127,6 +122,19 @@ struct Saved {
     /// обновление подписки не смогло бы убрать узлы, которых в ней больше нет.
     #[serde(default)]
     subscriptions: BTreeMap<String, Vec<String>>,
+    /// Адрес подписки → имя, которое ей дал человек. Отдельной картой, а не
+    /// полем рядом со списком узлов: имя переживает сверку, а список она
+    /// заменяет целиком.
+    #[serde(default)]
+    sub_names: BTreeMap<String, String>,
+    /// Адрес подписки → остаток, который панель прислала последней сверкой.
+    /// Ключ тот же, что у `subscriptions`.
+    ///
+    /// Хранится на диске, а не в памяти процесса: остаток приходит только со
+    /// сверкой, а сверка — раз в несколько часов. Без этого окно показывало бы
+    /// пустоту от старта службы до первого круга, то есть почти всегда.
+    #[serde(default)]
+    quotas: BTreeMap<String, Quota>,
     profile: Option<String>,
     /// Когда подписки последний раз пришли с панели. На диске, а не в аптайме
     /// процесса: см. `refresh_due`.
@@ -225,6 +233,9 @@ struct Service {
     status: Status,
     profiles: BTreeMap<String, Value>,
     subscriptions: BTreeMap<String, Vec<String>>,
+    /// Имена подписок: адрес → как её назвал человек.
+    sub_names: BTreeMap<String, String>,
+    quotas: BTreeMap<String, Quota>,
     /// Приватный режим включён пользователем. Не то же самое, что «туннель жив»:
     /// именно расхождение этих двух флагов и означает DROP.
     private: bool,
@@ -310,8 +321,13 @@ impl Service {
                 profile: saved.profile,
                 apps: Self::dedup_apps(saved.apps),
                 scope,
-                profiles: saved.profiles.keys().cloned().collect(),
-                subscriptions: subscriptions_of(&saved.subscriptions, &saved.profiles),
+                profiles: profiles_of(&saved.profiles),
+                subscriptions: subscriptions_of(
+                    &saved.subscriptions,
+                    &saved.sub_names,
+                    &saved.profiles,
+                    &saved.quotas,
+                ),
                 probes: saved.probes,
                 browser_profiles: saved.browser_profiles,
                 refreshed_at: saved.refreshed_at,
@@ -321,6 +337,8 @@ impl Service {
             settings: saved.settings,
             profiles: saved.profiles,
             subscriptions: saved.subscriptions,
+            sub_names: saved.sub_names,
+            quotas: saved.quotas,
             private: saved.private,
             tunnel: None,
             probe_target: (String::new(), 0),
@@ -385,8 +403,9 @@ impl Service {
     }
 
     fn save(&mut self) {
-        self.status.profiles = self.profiles.keys().cloned().collect();
-        self.status.subscriptions = subscriptions_of(&self.subscriptions, &self.profiles);
+        self.status.profiles = profiles_of(&self.profiles);
+        self.status.subscriptions =
+            subscriptions_of(&self.subscriptions, &self.sub_names, &self.profiles, &self.quotas);
         // Профиля больше нет — и мерить нечего: без этой прополки кэш измерений
         // рос бы вечно, а подписка на сотню узлов переписывает их именами раз в
         // сутки. Здесь, а не в каждом месте удаления: через save() проходят все.
@@ -395,6 +414,15 @@ impl Service {
             apps: self.status.apps.clone(),
             profiles: self.profiles.clone(),
             subscriptions: self.subscriptions.clone(),
+            // Имя подписки, которой больше нет, на диске не нужно: отписались —
+            // значит и подпись ей больше ни к чему.
+            sub_names: self
+                .sub_names
+                .iter()
+                .filter(|(url, _)| self.subscriptions.contains_key(*url))
+                .map(|(url, name)| (url.clone(), name.clone()))
+                .collect(),
+            quotas: self.quotas.clone(),
             profile: self.status.profile.clone(),
             refreshed_at: self.status.refreshed_at,
             lang: self.status.lang,
@@ -809,7 +837,7 @@ fn probe_target(configured: &str, node: &Value) -> (String, u16) {
 /// подписку импортируют ровно тогда, когда туннеля ещё нет, поэтому без него
 /// идём напрямую; а не вышло через туннель — пробуем напрямую, потому что отказ
 /// сервера от блокировки здесь ничем не отличается.
-fn fetch(url: &str, via_tunnel: bool) -> Result<String, String> {
+fn fetch(url: &str, via_tunnel: bool) -> Result<(String, Option<String>), String> {
     // Только https, и проверка здесь, а не в разборе команды: этот же fetch
     // ходит за плановым обновлением подписки, адрес которой мог приехать в
     // state.json ещё до этой проверки. Тело ответа — список серверов, через
@@ -829,7 +857,7 @@ fn fetch(url: &str, via_tunnel: bool) -> Result<String, String> {
     get(url, Some(&format!("http://127.0.0.1:{}", Options::default().socks_port))).or_else(|_| direct())
 }
 
-fn get(url: &str, proxy: Option<&str>) -> Result<String, String> {
+fn get(url: &str, proxy: Option<&str>) -> Result<(String, Option<String>), String> {
     let fail = |e: &dyn std::fmt::Display| {
         t(&format!("подписка не скачалась: {e}"), &format!("subscription download failed: {e}"))
     };
@@ -854,7 +882,41 @@ fn get(url: &str, proxy: Option<&str>) -> Result<String, String> {
         .user_agent(concat!("proxybox/", env!("CARGO_PKG_VERSION")))
         .build()
         .into();
-    agent.get(url).call().map_err(|e| fail(&e))?.body_mut().read_to_string().map_err(|e| fail(&e))
+    let mut response = agent.get(url).call().map_err(|e| fail(&e))?;
+    // Заголовок снимаем до тела: `body_mut()` заимствует ответ изменяемо, и
+    // после него заголовки уже не спросить. Имя регистронезависимо — за это
+    // отвечает `HeaderMap`, а панели пишут его вразнобой.
+    let userinfo =
+        response.headers().get("subscription-userinfo").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let body = response.body_mut().read_to_string().map_err(|e| fail(&e))?;
+    Ok((body, userinfo))
+}
+
+/// Разбор заголовка `Subscription-Userinfo`.
+///
+/// Это де-факто стандарт панелей (v2board, sspanel и производные), а не RFC,
+/// поэтому терпимость тут не небрежность: поля необязательны, порядок
+/// произволен, пробелы вокруг `;` и `=` встречаются, а незнакомое поле и битое
+/// число — повод пропустить их, а не отказать в импорте. Заголовка нет вовсе —
+/// это норма: подписка скачалась, узлы разобраны, показывать просто нечего.
+///
+/// Все нули дают `None` по той же причине: понять из заголовка не удалось
+/// ничего, и «0 B из 0 B» в окне было бы шумом вместо ответа. Сторож —
+/// `a_panel_quota_is_read_from_the_header`.
+fn parse_userinfo(header: Option<&str>) -> Option<Quota> {
+    let mut quota = Quota::default();
+    for part in header?.split(';') {
+        let Some((key, value)) = part.split_once('=') else { continue };
+        let Ok(number) = value.trim().parse::<u64>() else { continue };
+        match key.trim().to_ascii_lowercase().as_str() {
+            "upload" => quota.upload = number,
+            "download" => quota.download = number,
+            "total" => quota.total = number,
+            "expire" => quota.expire = number,
+            _ => {}
+        }
+    }
+    (quota != Quota::default()).then_some(quota)
 }
 
 /// Карта «адрес → узлы» в том виде, в каком её ждёт окно. Порядок задаёт
@@ -866,11 +928,35 @@ fn get(url: &str, proxy: Option<&str>) -> Result<String, String> {
 /// а окно рисует список профилей группами и показало бы строку без узла.
 /// Отсеиваем здесь, а не в `forget_profile`: на диске лишнее имя безвредно,
 /// сверка заменяет набор целиком.
-fn subscriptions_of(map: &BTreeMap<String, Vec<String>>, profiles: &BTreeMap<String, Value>) -> Vec<Subscription> {
+fn subscriptions_of(
+    map: &BTreeMap<String, Vec<String>>,
+    names: &BTreeMap<String, String>,
+    profiles: &BTreeMap<String, Value>,
+    quotas: &BTreeMap<String, Quota>,
+) -> Vec<Subscription> {
     map.iter()
         .map(|(url, nodes)| Subscription {
             url: url.clone(),
+            name: names.get(url).cloned().unwrap_or_default(),
             nodes: nodes.iter().filter(|n| profiles.contains_key(*n)).cloned().collect(),
+            quota: quotas.get(url).cloned(),
+        })
+        .collect()
+}
+
+/// Профили для окна: имя и то, куда узел ведёт. Имя профиля пишет чужая панель,
+/// и до сих пор в окно уезжало только оно — два одинаково названных узла были
+/// неразличимы, а вставленную ссылку не с чем было сверить.
+///
+/// Пароля и ключа здесь нет: статус окно спрашивает каждые две секунды, и всё
+/// содержимое узла ездило бы туда-сюда сотнями раз в минуту. За узлом целиком
+/// окно ходит отдельно и только на открытие формы правки (`Request::ProfileNode`).
+fn profiles_of(profiles: &BTreeMap<String, Value>) -> Vec<ProfileInfo> {
+    profiles
+        .iter()
+        .map(|(name, node)| {
+            let (kind, server) = core_config::describe(node);
+            ProfileInfo { name: name.clone(), kind, server }
         })
         .collect()
 }
@@ -882,6 +968,19 @@ fn free_name(taken: &BTreeMap<String, Value>, want: &str) -> String {
         return want.to_string();
     }
     (2..).map(|n| format!("{want} ({n})")).find(|name| !taken.contains_key(name)).expect("номер найдётся")
+}
+
+/// Секунды до момента `at`. Прошедшее и отсутствующее — одинаково `None`:
+/// «пауза кончилась» и «паузы не было» для окна одно и то же, круг надзора в
+/// обоих случаях возьмётся сам. Округление вверх, потому что «через 0 с» на
+/// экране читается как «ничего не происходит» ровно тогда, когда происходит
+/// ожидание. Сторож — `the_retry_countdown_never_shows_zero`.
+fn retry_in(at: Option<Instant>, now: Instant) -> Option<u32> {
+    let left = at?.checked_duration_since(now)?;
+    if left.is_zero() {
+        return None;
+    }
+    Some(left.as_secs() as u32 + u32::from(left.subsec_nanos() > 0))
 }
 
 /// Что вышло из вставленного: одна ссылка, пачка или отказ с причиной.
@@ -901,26 +1000,241 @@ fn free_name(taken: &BTreeMap<String, Value>, want: &str) -> String {
 /// `parse_many`: на битой одиночной ссылке тот вернул бы пустой список, то есть
 /// «ничего не нашлось» вместо причины, а причина — единственное, чем человек
 /// чинит опечатку в один символ. Сторож — `a_pasted_batch_is_imported_whole`.
-fn parse_pasted(text: &str) -> Result<Vec<core_config::Profile>, String> {
+fn parse_pasted(text: &str) -> Result<core_config::Batch, String> {
     if text.lines().filter(|line| !line.trim().is_empty()).count() > 1 {
         let many = core_config::parse_many(text);
-        if many.is_empty() {
+        if many.found.is_empty() {
             return Err(t("ни одной ссылки не разобрано", "no links could be parsed"));
         }
         return Ok(many);
     }
     match core_config::parse(text) {
-        Ok(one) => Ok(vec![one]),
+        Ok(one) => Ok(core_config::Batch { found: vec![one], skipped: Vec::new() }),
         // Одна строка, а ссылкой не оказалась: так выглядит base64-блоб
         // подписки, сохранённый в файл и вставленный телом.
         Err(why) => {
             let many = core_config::parse_many(text);
-            if many.is_empty() {
+            if many.found.is_empty() {
                 return Err(why);
             }
             Ok(many)
         }
     }
+}
+
+/// Вставленное разделяется на адреса подписок и всё остальное — **построчно**.
+///
+/// Смотреть на префикс всего текста было нельзя: вставка из двух адресов, как и
+/// адрес вместе со ссылками, уезжала в `fetch` целиком, вместе с переносами
+/// строк. Окно при этом обещало «строк: N — импортируются разом», а человек
+/// получал «подписка не скачалась». Сторож — `a_paste_splits_into_lines`.
+///
+/// JSON целиком — исключение и построчно не разбирается вовсе: адрес внутри
+/// конфига (транспорт, ECH, куда угодно) не адрес подписки.
+fn split_paste(text: &str) -> (Vec<String>, String) {
+    let text = text.trim();
+    if text.starts_with('{') {
+        return (Vec::new(), text.to_string());
+    }
+    let (mut urls, mut rest) = (Vec::new(), Vec::new());
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        if line.starts_with("http://") || line.starts_with("https://") {
+            urls.push(line.to_string());
+        } else {
+            rest.push(line);
+        }
+    }
+    (urls, rest.join("\n"))
+}
+
+/// Сколько причин пропуска едет в ответ. Вставляют и тысячу строк мусора, а
+/// читают из объяснений первые: остальное — тот же обрезанный список, что и у
+/// соединений, и число рядом.
+const MAX_SKIPPED: usize = 5;
+
+/// Что получилось из импорта. Общий счёт на вставку и на сверку: действие одно —
+/// «заменить набор тем, что пришло».
+#[derive(Default)]
+struct Tally {
+    added: usize,
+    kept: usize,
+    gone: usize,
+    skipped: Vec<String>,
+}
+
+impl Tally {
+    fn merge(&mut self, other: Tally) {
+        self.added += other.added;
+        self.kept += other.kept;
+        self.gone += other.gone;
+        self.skipped.extend(other.skipped);
+    }
+
+    /// Ничего не пришло — это отказ, а не пустой успех: так выглядит и мусор во
+    /// вставке, и недоступная панель.
+    fn empty(&self) -> bool {
+        self.added == 0 && self.kept == 0 && self.gone == 0
+    }
+
+    fn into_response(mut self) -> Response {
+        let skipped_total = self.skipped.len();
+        self.skipped.truncate(MAX_SKIPPED);
+        Response::Imported {
+            added: self.added,
+            kept: self.kept,
+            gone: self.gone,
+            skipped: self.skipped,
+            skipped_total,
+        }
+    }
+}
+
+/// Импорт всего, что было во вставке: сперва адреса подписок (каждый — поход в
+/// сеть, и потому до замка), следом остальные строки одним заходом под замком.
+///
+/// Отказ одного адреса не отменяет остальные: в пачке из пяти панелей одна
+/// лежащая не повод потерять четыре живые. Причина отказа едет в тот же список
+/// пропущенного, что и непонятые строки.
+fn import(svc: &Mutex<Service>, urls: &[String], rest: &str) -> Response {
+    let mut tally = Tally::default();
+    for url in urls {
+        match subscribe(svc, url, false) {
+            Ok(got) => tally.merge(got),
+            Err(why) => tally.skipped.push(format!("{url}: {why}")),
+        }
+    }
+    if !rest.is_empty() {
+        match parse_pasted(rest) {
+            Ok(batch) => {
+                let got = add_profiles(&mut lock(svc), batch);
+                tally.merge(got);
+            }
+            Err(why) => tally.skipped.push(why),
+        }
+    }
+    if tally.empty() {
+        // Единственная причина — она же и весь ответ: «импортировано 0» в
+        // красной рамке не сказало бы, чего не хватило.
+        let message = match tally.skipped.first() {
+            Some(first) if tally.skipped.len() == 1 => first.clone(),
+            Some(first) => t(
+                &format!("ни одной строки не импортировано, первая причина — {first}"),
+                &format!("nothing imported, first reason — {first}"),
+            ),
+            None => t("импортировать нечего", "nothing to import"),
+        };
+        return Response::Error { message };
+    }
+    tally.into_response()
+}
+
+/// Завести профили из разобранной вставки. Узел, который уже заведён, вторым
+/// профилем не становится: имя ему `free_name` выдал бы свободное, и в списке
+/// оказались бы две неотличимые строки — а различить их нечем, имя пишет чужая
+/// панель. Сторож — `the_same_node_is_never_imported_twice`.
+fn add_profiles(s: &mut Service, batch: core_config::Batch) -> Tally {
+    let mut tally = Tally { skipped: batch.skipped, ..Default::default() };
+    let mut names: Vec<String> = Vec::new();
+    for profile in batch.found {
+        if s.profiles.values().any(|node| *node == profile.node) {
+            tally.kept += 1;
+            continue;
+        }
+        // Занятое имя получает номер — ровно как в подписке. Голый `insert`
+        // молча заменял узел под уже существующим именем, и если это имя было
+        // активным профилем, оно начинало показывать на другой сервер при живом
+        // sing-box от прежнего.
+        let name = free_name(&s.profiles, &profile.name);
+        s.profiles.insert(name.clone(), profile.node);
+        names.push(name);
+        tally.added += 1;
+    }
+    s.log(match names.as_slice() {
+        [] => t("новых профилей во вставке нет", "the paste brought no new profiles"),
+        [one] => t(&format!("профиль «{one}» импортирован"), &format!("profile \"{one}\" imported")),
+        many => t(
+            &format!("импортировано профилей: {}", many.len()),
+            &format!("profiles imported: {}", many.len()),
+        ),
+    });
+    s.save();
+    tally
+}
+
+/// Правка профиля: имя, узел или то и другое разом. Одной командой, потому что
+/// это одно действие: у профиля, заведённого из ссылки с опечаткой, чинят и то,
+/// и другое — а имя из подписки («🇳🇱 vip-01 |2x») остаётся навсегда, потому что
+/// сменить его было нечем.
+///
+/// Узел из подписки не правится вовсе: сверка заменяет её набор целиком, и
+/// правка вернулась бы к прежнему виду ближайшим кругом — то же обещание,
+/// которого продукт не держит, что и `✕` на таком узле. Сторож —
+/// `a_subscription_node_is_never_edited`.
+///
+/// Новый узел принимается тем же разбором, что и импорт: JSON годится, share-link
+/// годится, второй парсер тут не нужен.
+fn edit_profile(s: &mut Service, name: &str, rename: &str, node: &str) -> Response {
+    let Some(before) = s.profiles.get(name).cloned() else {
+        return Response::Error {
+            message: t(&format!("нет профиля «{name}»"), &format!("no profile \"{name}\"")),
+        };
+    };
+    if s.subscriptions.values().any(|nodes| nodes.iter().any(|n| n == name)) {
+        return Response::Error {
+            message: t(
+                "узел пришёл из подписки: сверка вернёт его прежним. Отпишитесь или заведите свою копию",
+                "the node came from a subscription: a refresh would undo the edit. Unsubscribe or make your own copy",
+            ),
+        };
+    }
+    let to = match rename.trim() {
+        "" => name.to_string(),
+        want => want.to_string(),
+    };
+    if to != name && s.profiles.contains_key(&to) {
+        return Response::Error {
+            message: t(&format!("профиль «{to}» уже есть"), &format!("profile \"{to}\" already exists")),
+        };
+    }
+    // Пустой узел — это «правится только имя»: гонять текст туда-обратно ради
+    // переименования незачем, а разбор пустой строки был бы отказом.
+    let after = match node.trim() {
+        "" => before.clone(),
+        text => match core_config::parse(text) {
+            Ok(parsed) => parsed.node,
+            Err(why) => return Response::Error { message: why },
+        },
+    };
+    if to != name {
+        s.profiles.remove(name);
+        if s.status.profile.as_deref() == Some(name) {
+            s.status.profile = Some(to.clone());
+        }
+        // На узел по имени смотрят браузерные профили и измерения. Забыть
+        // перевесить их значило бы окно браузера без узла и цифру задержки,
+        // приклеенную к чужой строке.
+        for b in s.status.browser_profiles.iter_mut().filter(|b| b.node == name) {
+            b.node = to.clone();
+        }
+        for p in s.status.probes.iter_mut().filter(|p| p.name == name) {
+            p.name = to.clone();
+        }
+    }
+    s.profiles.insert(to.clone(), after.clone());
+    s.log(t(&format!("профиль «{to}» изменён"), &format!("profile \"{to}\" edited")));
+    s.save();
+    // Живой туннель на правленом узле обязан перечитать конфиг — ровно то же
+    // решение, что принимает сверка подписки, сделанная руками.
+    if s.status.profile.as_deref() == Some(to.as_str())
+        && after_refresh(Some(&before), Some(&after), s.private, false) == Active::Restart
+    {
+        s.log(t(
+            &format!("узел «{to}» изменился, туннель перезапускается"),
+            &format!("node \"{to}\" changed, restarting the tunnel"),
+        ));
+        let _ = s.start(&to);
+    }
+    Response::Done
 }
 
 /// Импорт и обновление подписки — одно и то же действие: скачать и заменить
@@ -933,19 +1247,19 @@ fn parse_pasted(text: &str) -> Result<Vec<core_config::Profile>, String> {
 /// выбранные приложения без сети. Выключить приватный режим за спящего
 /// пользователя значило бы вернуть его приложения в открытую сеть по чужому
 /// решению — панель правит список, а не режим.
-fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Response {
+fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Result<Tally, String> {
     // Сеть — до захвата замка. Иначе окно на все двадцать секунд перестало бы
     // получать статус, а служба — выглядеть живой.
     // Замок берём на одно поле и сразу отпускаем: знать, жив ли туннель, надо
     // до сети, а держать состояние на все двадцать секунд запроса — нельзя.
     let via_tunnel = lock(svc).status.tunnel == TunnelState::Up;
-    let body = match fetch(url, via_tunnel) {
-        Ok(body) => body,
-        Err(message) => return Response::Error { message },
-    };
-    let found = core_config::parse_many(&body);
+    // Заголовок остатка приезжает тем же ответом, что и список узлов. Второго
+    // запроса за ним не заводим: подписки сверяются раз в несколько часов и ещё
+    // по нажатию, а лишний поход к панели — лишний повод считать нас флудом.
+    let (body, userinfo) = fetch(url, via_tunnel)?;
+    let batch = core_config::parse_many(&body);
     let mut s = lock(svc);
-    if found.is_empty() {
+    if batch.found.is_empty() {
         // Пустой ответ — это чаще всего не пустая подписка, а неверный адрес
         // или чужой формат. Старые профили в таком случае не трогаем.
         let message = t(
@@ -953,7 +1267,7 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Response {
             "the subscription returned no nodes — check the address",
         );
         s.warn(message.clone());
-        return Response::Error { message };
+        return Err(message);
     }
 
     // Набор заменяется целиком, но живой туннель на это время не гасится:
@@ -963,17 +1277,33 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Response {
     // узла решается уже по готовому списку.
     let active = s.status.profile.clone();
     let before = active.as_ref().and_then(|name| s.profiles.get(name)).cloned();
+    // Что было и что стало — узлами, а не именами: имена панель переставляет и
+    // нумерует как ей вздумается, и по ним «пришло десять новых» вышло бы на
+    // ровном месте. Сравнение перебором: узлов сотни, значений в узле десяток,
+    // и стоит это заметно меньше самой закачки.
+    let was: Vec<Value> = s
+        .subscriptions
+        .get(url)
+        .map(|names| names.iter().filter_map(|n| s.profiles.get(n).cloned()).collect())
+        .unwrap_or_default();
     for name in s.subscriptions.remove(url).unwrap_or_default() {
         s.profiles.remove(&name);
     }
-    let names: Vec<String> = found
-        .into_iter()
-        .map(|p| {
-            let name = free_name(&s.profiles, &p.name);
-            s.profiles.insert(name.clone(), p.node);
-            name
-        })
-        .collect();
+    let mut tally = Tally { skipped: batch.skipped, ..Default::default() };
+    let mut names: Vec<String> = Vec::new();
+    let mut now_nodes: Vec<Value> = Vec::new();
+    for p in batch.found {
+        if was.contains(&p.node) {
+            tally.kept += 1;
+        } else {
+            tally.added += 1;
+        }
+        now_nodes.push(p.node.clone());
+        let name = free_name(&s.profiles, &p.name);
+        s.profiles.insert(name.clone(), p.node);
+        names.push(name);
+    }
+    tally.gone = was.iter().filter(|node| !now_nodes.contains(node)).count();
     s.log(t(
         &format!("подписка обновлена, узлов — {}", names.len()),
         &format!("subscription updated, nodes — {}", names.len()),
@@ -983,6 +1313,17 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Response {
     // того, как человек нажал «обновить» руками, незачем.
     s.status.refreshed_at = Some(now());
     s.subscriptions.insert(url.to_string(), names);
+    // Остаток кладём рядом с узлами и тем же ключом: пришли они одним ответом.
+    // Панель заголовка не прислала — прежнее число убираем, а не оставляем: оно
+    // тем более не свежее, чем список, который только что заменили целиком.
+    match parse_userinfo(userinfo.as_deref()) {
+        Some(quota) => {
+            s.quotas.insert(url.to_string(), quota);
+        }
+        None => {
+            s.quotas.remove(url);
+        }
+    }
     // Окна браузера могли висеть на узлах, которых в подписке больше нет:
     // держать их живыми не за что, ровно как и активный профиль.
     let gone: Vec<String> = s
@@ -1023,7 +1364,7 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Response {
             }
         }
     }
-    Response::Done
+    Ok(tally)
 }
 
 /// Судьба активного профиля после того, как подписка заменила набор. Вынесено
@@ -1052,18 +1393,26 @@ fn after_refresh(before: Option<&Value>, after: Option<&Value>, private: bool, s
     }
 }
 
+/// Срок сверки из настроек. Ноль часов сюда не доходит — его отбивает
+/// `SetSettings`, — но `max(1)` стоит и здесь: `state.json` правят руками, а
+/// нулевой срок означал бы поход по всем подпискам каждый круг потока, то есть
+/// раз в пять минут. Сторож — `the_refresh_period_is_never_zero`.
+fn refresh_every(settings: &Settings) -> Duration {
+    Duration::from_secs(u64::from(settings.refresh_hours.max(1)) * 60 * 60)
+}
+
 /// Пора ли сверять подписки. Срок отсчитывается от последней удачной сверки, а
 /// не от старта службы: домашняя машина живёт часами и уходит в сон, шесть
 /// часов подряд на ней не набираются никогда — и плановая сверка при отсчёте от
 /// старта не случалась бы вообще ни разу.
-fn refresh_due(refreshed_at: Option<u64>, now: u64) -> bool {
+fn refresh_due(refreshed_at: Option<u64>, now: u64, every: Duration) -> bool {
     match refreshed_at {
         // Не сверялись ни разу: подписку завели до того, как служба научилась
         // это помнить, — сверить один раз и запомнить.
         None => true,
         // saturating: часы могли перевести назад, и отрицательного возраста у
         // отметки не бывает — «в будущем» значит «только что».
-        Some(at) => now.saturating_sub(at) >= REFRESH_EVERY.as_secs(),
+        Some(at) => now.saturating_sub(at) >= every.as_secs(),
     }
 }
 
@@ -1087,10 +1436,11 @@ fn refresh_loop(svc: Arc<Mutex<Service>>) {
             if !s.status.settings.refresh {
                 continue;
             }
-            if tried.is_some_and(|t| t.elapsed() < REFRESH_EVERY) {
+            let every = refresh_every(&s.status.settings);
+            if tried.is_some_and(|t| t.elapsed() < every) {
                 continue;
             }
-            if !refresh_due(s.status.refreshed_at, now()) {
+            if !refresh_due(s.status.refreshed_at, now(), every) {
                 continue;
             }
             s.subscriptions.keys().cloned().collect()
@@ -1280,13 +1630,12 @@ fn discover(svc: &Mutex<Service>, env: &BTreeMap<String, String>) -> Response {
 }
 
 fn handle(svc: &Mutex<Service>, req: Request) -> Response {
-    // Подписка ходит в сеть, поэтому разбирается до замка — остальные команды
-    // работают с состоянием и берут его сразу.
+    // Импорт ходит в сеть за каждой подпиской, поэтому разбирается до замка —
+    // остальные команды работают с состоянием и берут его сразу. Замок внутри
+    // берётся сам и ненадолго: сперва на все закачки, потом на одну запись.
     if let Request::AddProfile { link } = &req {
-        let link = link.trim();
-        if link.starts_with("http://") || link.starts_with("https://") {
-            return subscribe(svc, link, false);
-        }
+        let (urls, rest) = split_paste(link);
+        return import(svc, &urls, &rest);
     }
     // Иконку служба не хранит и не спрашивает у состояния вовсе: путь пришёл в
     // запросе, ответ достаётся из самого файла. Под общим замком этот поход по
@@ -1323,13 +1672,19 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 s.refence();
             }
             s.status.browsers = s.browsers.keys().cloned().collect();
+            // Здесь же, где прополка сеансов, и по той же причине: запомненное
+            // число соврало бы через секунду. Пауза в службе — `Instant`, наружу
+            // едут секунды.
+            s.status.retry_in = retry_in(s.retry_at, Instant::now());
             Response::Status(s.status.clone())
         }
         Request::ListApps => Response::Apps(s.status.apps.clone()),
         // Обе разобраны до замка и сюда не доходят. Паника тут безопасна:
         // до `lock(svc)` управление не дошло, отравить замок нечем, а поток
         // на этом соединении свой — уронить она может только его.
-        Request::Icon { .. } | Request::Discover { .. } => unreachable!("разбирается до замка"),
+        Request::Icon { .. } | Request::Discover { .. } | Request::AddProfile { .. } => {
+            unreachable!("разбирается до замка")
+        }
         Request::AddApp { path } => {
             if !s.status.apps.iter().any(|a| a.path == path) {
                 let name = path
@@ -1385,33 +1740,15 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             });
             Response::Done
         }
-        Request::AddProfile { link } => {
-            let found = match parse_pasted(&link) {
-                Ok(found) => found,
-                Err(why) => return Response::Error { message: why },
-            };
-            // Занятое имя получает номер — ровно как в подписке. Голый `insert`
-            // молча заменял узел под уже существующим именем, и если это имя
-            // было активным профилем, оно начинало показывать на другой сервер
-            // при живом sing-box от прежнего.
-            let names: Vec<String> = found
-                .into_iter()
-                .map(|profile| {
-                    let name = free_name(&s.profiles, &profile.name);
-                    s.profiles.insert(name.clone(), profile.node);
-                    name
-                })
-                .collect();
-            s.log(match names.as_slice() {
-                [one] => t(&format!("профиль «{one}» импортирован"), &format!("profile \"{one}\" imported")),
-                many => t(
-                    &format!("импортировано профилей: {}", many.len()),
-                    &format!("profiles imported: {}", many.len()),
-                ),
-            });
-            s.save();
-            Response::Done
-        }
+        Request::ProfileNode { name } => match s.profiles.get(&name) {
+            // С отступами: этот текст человек читает и правит руками, а
+            // однострочный узел с транспортом и TLS не читается вовсе.
+            Some(node) => Response::ProfileNode { json: serde_json::to_string_pretty(node).unwrap_or_default() },
+            None => Response::Error {
+                message: t(&format!("нет профиля «{name}»"), &format!("no profile \"{name}\"")),
+            },
+        },
+        Request::EditProfile { name, rename, node } => edit_profile(&mut s, &name, &rename, &node),
         Request::SetLang { lang } => {
             // Язык переключает и журнал службы: сообщения пишет она, а читает
             // их пользователь в окне.
@@ -1427,6 +1764,9 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
         }
         Request::RemoveSubscription { url } => match s.subscriptions.remove(&url) {
             Some(names) => {
+                // Осиротевшая запись была бы невидима (`subscriptions_of` идёт
+                // по узлам), но копилась бы на диске вечно.
+                s.quotas.remove(&url);
                 for name in &names {
                     s.forget_profile(name);
                 }
@@ -1441,6 +1781,20 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 message: t(&format!("нет подписки {url}"), &format!("no subscription {url}")),
             },
         },
+        Request::RenameSubscription { url, name } => {
+            if !s.subscriptions.contains_key(&url) {
+                return Response::Error {
+                    message: t(&format!("нет подписки {url}"), &format!("no subscription {url}")),
+                };
+            }
+            // Пустое имя — это «показывать адрес», а не подпись из пробелов.
+            match name.trim() {
+                "" => s.sub_names.remove(&url),
+                want => s.sub_names.insert(url, want.to_string()),
+            };
+            s.save();
+            Response::Done
+        }
         Request::On { profile } => {
             // Команда пользователя — пробуем сразу, накопленная пауза не в счёт.
             s.retry_at = None;
@@ -1497,6 +1851,11 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             if std::env::var("PG_SINGBOX").is_ok_and(|v| !v.is_empty()) {
                 next.singbox = s.settings.singbox.clone();
             }
+            // Ноль часов — это сверка каждый круг потока, то есть поход по всем
+            // подпискам раз в пять минут: выключают её флажком выше, а не
+            // сроком. Верхняя граница — про то же с другой стороны: срок в
+            // тысячу лет неотличим от выключенной сверки, только молча.
+            next.refresh_hours = next.refresh_hours.clamp(1, 24 * 30);
             s.settings = next;
             // Туннель не трогаем намеренно: ни одно поле не меняет судьбу уже
             // поднятого sing-box. Путь к бинарнику действует со следующего
@@ -1555,11 +1914,28 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 Err(e) => Response::Error { message: e.to_string() },
             }
         }
-        Request::TestProfiles => {
+        Request::TestProfiles { only } => {
             // Список снимается под замком, а меряется без него: профиль тратит
             // до нескольких секунд, а под этим замком стоит весь GUI.
-            let profiles: Vec<(String, Value)> =
-                s.profiles.iter().map(|(name, node)| (name.clone(), node.clone())).collect();
+            let profiles: Vec<(String, Value)> = s
+                .profiles
+                .iter()
+                .filter(|(name, _)| only.as_ref().is_none_or(|want| want == *name))
+                .map(|(name, node)| (name.clone(), node.clone()))
+                .collect();
+            if profiles.is_empty() {
+                return match only {
+                    Some(name) => Response::Error {
+                        message: t(&format!("нет профиля «{name}»"), &format!("no profile \"{name}\"")),
+                    },
+                    None => Response::Status(s.status.clone()),
+                };
+            }
+            // Бегунок взводится до того, как замок отпущен: окно спрашивает
+            // статус раз в две секунды, и первый же ответ обязан сказать, что
+            // прогон пошёл. Прогон на сотне узлов идёт минуты, и всё это время
+            // единственным его признаком была погасшая кнопка.
+            s.status.testing = Some(TestRun { done: 0, total: profiles.len() });
             drop(s);
             // Свой каталог: в общем с туннелем прогон добил бы по singbox.pid
             // ровно тот процесс, который проверяет. По той же причине прогон
@@ -1589,7 +1965,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             // причина, по которой список и снят копией выше.
             let mut live = 0usize;
             let all = profiles.len();
-            for (name, node) in &profiles {
+            for (done, (name, node)) in profiles.iter().enumerate() {
                 let (host, port) = probe_target(&target, node);
                 let (latency, exit, error) = match core_tunnel::measure(node, &probe_dir, (&host, port), geo) {
                     Ok((ms, exit)) => (Some(ms), exit, None),
@@ -1599,9 +1975,14 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 // Не замена списка, а обновление: прогон переписывает задержку и
                 // отказ, но страну неответившего оставляет — она от того, что узел
                 // сегодня молчит, не изменилась.
-                remember(&mut lock(svc).status.probes, name, latency, exit, error);
+                let mut s = lock(svc);
+                remember(&mut s.status.probes, name, latency, exit, error);
+                s.status.testing = Some(TestRun { done: done + 1, total: all });
             }
             let mut s = lock(svc);
+            // Бегунок гаснет здесь и только здесь: оставленный взведённым, он
+            // означал бы вечный прогон — кнопка заперта, а мерить некому.
+            s.status.testing = None;
             // Строка одна на весь прогон, а не на узел: журнал пишется на диск
             // каждой строкой, и логировать в цикле нельзя.
             s.log(t(
@@ -2087,9 +2468,13 @@ mod tests {
         let mut profiles = BTreeMap::new();
         profiles.insert("NL-02".to_string(), json!({"type": "vless"}));
 
-        let out = subscriptions_of(&subs, &profiles);
+        let mut names = BTreeMap::new();
+        names.insert("https://panel/sub".to_string(), "рабочая".to_string());
+
+        let out = subscriptions_of(&subs, &names, &profiles, &BTreeMap::new());
         assert_eq!(out.len(), 1, "подписка остаётся, даже когда узлов не осталось вовсе");
         assert_eq!(out[0].nodes, vec!["NL-02".to_string()], "удалённый узел ушёл из списка подписки");
+        assert_eq!(out[0].name, "рабочая", "имя подписки переживает сверку: её заменяет только человек");
     }
 
     #[test]
@@ -2131,11 +2516,23 @@ mod tests {
     #[test]
     fn the_refresh_clock_runs_on_the_calendar() {
         let day = 24 * 60 * 60;
-        let period = REFRESH_EVERY.as_secs();
-        assert!(refresh_due(None, day), "не сверялись ни разу — пора");
-        assert!(!refresh_due(Some(day), day + 60), "сверялись минуту назад — рано");
-        assert!(refresh_due(Some(day), day + period), "срок вышел — пора, сколько бы служба ни жила");
-        assert!(!refresh_due(Some(day), 0), "часы перевели назад — это не повод идти на панель");
+        let every = refresh_every(&Settings::default());
+        let period = every.as_secs();
+        assert!(refresh_due(None, day, every), "не сверялись ни разу — пора");
+        assert!(!refresh_due(Some(day), day + 60, every), "сверялись минуту назад — рано");
+        assert!(refresh_due(Some(day), day + period, every), "срок вышел — пора, сколько бы служба ни жила");
+        assert!(!refresh_due(Some(day), 0, every), "часы перевели назад — это не повод идти на панель");
+    }
+
+    /// Срок сверки стал настройкой, и ноль в нём — это поход по всем подпискам
+    /// каждый круг потока, то есть раз в пять минут. Выключают сверку флажком,
+    /// а не сроком; `state.json` при этом правят руками, поэтому нижнюю границу
+    /// держит не только команда настроек.
+    #[test]
+    fn the_refresh_period_is_never_zero() {
+        let broken = Settings { refresh_hours: 0, ..Default::default() };
+        assert_eq!(refresh_every(&broken), Duration::from_secs(60 * 60), "нулевой срок — это час, а не круг потока");
+        assert_eq!(refresh_every(&Settings::default()), Duration::from_secs(6 * 60 * 60), "умолчание — шесть часов");
     }
 
     /// Фоновая сверка подписки не вправе выключить приватный режим: панель
@@ -2486,16 +2883,85 @@ mod tests {
         const A: &str = "vless://b831381d-6324-4d53-ad4f-8cda48b30811@a.com:443?type=tcp#A";
         const B: &str = "vless://b831381d-6324-4d53-ad4f-8cda48b30811@b.com:443?type=tcp#B";
 
-        assert_eq!(parse_pasted(A).unwrap().len(), 1, "одна ссылка так и остаётся одной");
+        assert_eq!(parse_pasted(A).unwrap().found.len(), 1, "одна ссылка так и остаётся одной");
         let both = parse_pasted(&format!("{A}\n{B}")).unwrap();
-        let names: Vec<&str> = both.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(both.len(), 2, "пачка разбирается целиком, а не первой строкой: {names:?}");
+        let names: Vec<&str> = both.found.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(both.found.len(), 2, "пачка разбирается целиком, а не первой строкой: {names:?}");
         // Имена — то самое место, где ломался прежний путь: `parse` утаскивал
         // вторую ссылку во фрагмент первой и звал это именем узла.
         assert_eq!(names, ["A", "B"], "у каждого узла своё имя, а не хвост из соседней строки");
 
         let why = parse_pasted("это вообще не ссылка").unwrap_err();
         assert!(!why.is_empty(), "у битой одиночной ссылки остаётся причина отказа");
+    }
+
+    /// Адрес подписки узнаётся построчно, а не по префиксу всего текста.
+    ///
+    /// Пока смотрели на первый префикс, вставка из двух адресов уезжала в
+    /// `fetch` целиком — вместе с переносом строки и вторым адресом, — и
+    /// человек получал «подписка не скачалась» на двух исправных панелях. Окно
+    /// при этом обещало «строк: 2 — импортируются разом».
+    #[test]
+    fn a_paste_splits_into_lines() {
+        const LINK: &str = "vless://b831381d-6324-4d53-ad4f-8cda48b30811@a.com:443?type=tcp#A";
+
+        let (urls, rest) = split_paste("https://panel/one\nhttps://panel/two");
+        assert_eq!(urls, ["https://panel/one", "https://panel/two"], "два адреса — две подписки");
+        assert!(rest.is_empty(), "лишнего не осталось: {rest}");
+
+        let (urls, rest) = split_paste(&format!("https://panel/one\n{LINK}\n# комментарий"));
+        assert_eq!(urls, ["https://panel/one"], "адрес отделён от ссылок");
+        assert_eq!(rest, LINK, "ссылка осталась ссылкой, комментарий выброшен");
+
+        let (urls, rest) = split_paste("  https://panel/one  ");
+        assert_eq!(urls, ["https://panel/one"], "одиночный адрес — по-прежнему подписка");
+        assert!(rest.is_empty());
+
+        // JSON построчно не режется вовсе: адрес внутри конфига — не подписка.
+        let json = "{\n  \"type\": \"vless\",\n  \"server\": \"https://a.com\"\n}";
+        let (urls, rest) = split_paste(json);
+        assert!(urls.is_empty(), "адрес внутри JSON не адрес подписки: {urls:?}");
+        assert_eq!(rest, json, "JSON уходит на разбор целиком");
+    }
+
+    /// Тот же узел вторым профилем не заводится. Имя ему `free_name` выдал бы
+    /// свободное, и в списке оказались бы две строки, которые ничем не
+    /// различить: имя узлу пишет чужая панель, а не мы.
+    #[test]
+    fn the_same_node_is_never_imported_twice() {
+        const LINK: &str = "vless://b831381d-6324-4d53-ad4f-8cda48b30811@a.com:443?type=tcp#A";
+        let _state = scratch("pg-import-test");
+        let mut s = Service::load();
+
+        let first = add_profiles(&mut s, parse_pasted(LINK).unwrap());
+        assert_eq!((first.added, first.kept), (1, 0), "первый раз — новый профиль");
+
+        let again = add_profiles(&mut s, parse_pasted(LINK).unwrap());
+        assert_eq!((again.added, again.kept), (0, 1), "второй раз — тот же узел, а не «A (2)»");
+        assert_eq!(s.profiles.len(), 1, "в списке по-прежнему один: {:?}", s.profiles.keys());
+    }
+
+    /// Узел из подписки не правится: её набор заменяет сверка целиком, и правка
+    /// вернулась бы к прежнему виду ближайшим кругом.
+    #[test]
+    fn a_subscription_node_is_never_edited() {
+        let _state = scratch("pg-edit-test");
+        let mut s = Service::load();
+        s.profiles.insert("NL-01".into(), json!({"type": "vless", "server": "a.com"}));
+        s.subscriptions.insert("https://panel/sub".into(), vec!["NL-01".into()]);
+
+        let out = edit_profile(&mut s, "NL-01", "дом", "");
+        assert!(matches!(out, Response::Error { .. }), "переименование узла подписки отклоняется: {out:?}");
+        assert!(s.profiles.contains_key("NL-01"), "имя осталось прежним");
+
+        // Свой профиль правится: имя, узел и то и другое разом.
+        s.subscriptions.clear();
+        let out = edit_profile(&mut s, "NL-01", "дом", "");
+        assert!(matches!(out, Response::Done), "{out:?}");
+        assert!(s.profiles.contains_key("дом"), "свой профиль переименовался: {:?}", s.profiles.keys());
+
+        let out = edit_profile(&mut s, "дом", "", "не ссылка и не JSON");
+        assert!(matches!(out, Response::Error { .. }), "битый узел отклоняется с причиной: {out:?}");
     }
 
     /// Занятое имя получает номер на обоих путях импорта. Голый `insert` в
@@ -2515,15 +2981,78 @@ mod tests {
         );
     }
 
-    /// Перезапуск не должен ни тихо возвращать выбранные приложения в открытую
-    /// сеть, ни поднимать туннель после того, как его выключили. Обе половины
-    /// в одном тесте: они делят каталог состояния, а тесты идут параллельно.
+    /// Заголовок `Subscription-Userinfo` — де-факто стандарт панелей, а не RFC:
+    /// поля необязательны, порядок произволен, пробелы встречаются, а половина
+    /// панелей не шлёт его вовсе. Терпимость тут не небрежность: непонятый
+    /// заголовок обязан давать «нечего показать», а не отказ импорта — узлы в
+    /// том же ответе разобраны и нужны.
     #[test]
-    fn private_mode_survives_restart() {
-        let tmp = std::env::temp_dir().join("pg-state-test");
+    fn a_panel_quota_is_read_from_the_header() {
+        let full = parse_userinfo(Some(
+            "upload=455727941; download=6603863621; total=1073741824000; expire=1673684400",
+        ))
+        .expect("полный заголовок разбирается");
+        assert_eq!(full.upload, 455_727_941);
+        assert_eq!(full.download, 6_603_863_621);
+        assert_eq!(full.total, 1_073_741_824_000);
+        assert_eq!(full.expire, 1_673_684_400);
+
+        // Безлимитная подписка шлёт только расход.
+        let partial = parse_userinfo(Some("upload=1; download=2")).expect("частичный заголовок");
+        assert_eq!((partial.total, partial.expire), (0, 0), "непришедшее — ноль, а не отказ");
+
+        // Пробелы и обратный порядок — та же строка.
+        let messy = parse_userinfo(Some(" expire = 7 ;  total=9 ")).expect("пробелы не мешают");
+        assert_eq!((messy.total, messy.expire), (9, 7));
+
+        // Битое число и незнакомое поле пропускаются, остальное читается.
+        let dirty = parse_userinfo(Some("upload=abc; download=5; reset_day=1")).expect("мусор не роняет");
+        assert_eq!((dirty.upload, dirty.download), (0, 5));
+
+        assert_eq!(parse_userinfo(None), None, "заголовка нет — это норма");
+        assert_eq!(parse_userinfo(Some("хлам без знака равенства")), None, "понять нечего — молчим");
+        assert_eq!(parse_userinfo(Some("upload=0; download=0")), None, "все нули показывать нечего");
+    }
+
+    /// Отсчёт до следующей попытки не показывает ноль: «через 0 с» читается как
+    /// «ничего не происходит» ровно там, где происходит ожидание. Прошедшая
+    /// пауза и отсутствие паузы для окна одно и то же — круг надзора в обоих
+    /// случаях возьмётся сам.
+    #[test]
+    fn the_retry_countdown_never_shows_zero() {
+        // Отсчёт от будущего момента: у свежего процесса `Instant::now()` может
+        // быть меньше вычитаемого, и `now - 5s` паникует.
+        let now = Instant::now() + Duration::from_secs(60);
+        assert_eq!(retry_in(None, now), None, "паузы не запланировано");
+        assert_eq!(retry_in(Some(now - Duration::from_secs(5)), now), None, "пауза уже истекла");
+        assert_eq!(retry_in(Some(now), now), None, "пауза истекает ровно сейчас");
+        assert_eq!(
+            retry_in(Some(now + Duration::from_millis(500)), now),
+            Some(1),
+            "полсекунды — это ещё «через секунду», а не «уже»",
+        );
+        assert_eq!(retry_in(Some(now + Duration::from_secs(30)), now), Some(30));
+    }
+
+    /// Пустой каталог состояния и очередь к нему. Каталог задаётся переменными
+    /// окружения, а они одни на процесс: без очереди тест, поставивший свой
+    /// каталог, писал бы в чужой — и оба читали бы чужое состояние.
+    static STATE_DIR: Mutex<()> = Mutex::new(());
+
+    fn scratch(name: &str) -> std::sync::MutexGuard<'static, ()> {
+        let held = STATE_DIR.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tmp = std::env::temp_dir().join(name);
         let _ = std::fs::remove_dir_all(&tmp);
         std::env::set_var("XDG_CONFIG_HOME", &tmp);
         std::env::set_var("ProgramData", &tmp);
+        held
+    }
+
+    /// Перезапуск не должен ни тихо возвращать выбранные приложения в открытую
+    /// сеть, ни поднимать туннель после того, как его выключили.
+    #[test]
+    fn private_mode_survives_restart() {
+        let _state = scratch("pg-state-test");
 
         let mut s = Service::load();
         s.status.apps.push(App { path: "/bin/true".into(), name: "true".into(), enabled: true });

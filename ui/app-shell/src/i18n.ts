@@ -24,6 +24,11 @@ const RU = {
   down: "Туннеля нет — доступ закрыт",
   downHintWhitelist: "Так и задумано: без туннеля без сети остаётся весь компьютер",
   downHintAll: "Так и задумано: без туннеля компьютер остаётся без сети",
+  // Пока sing-box не поднимается, окно показывало «доступ закрыт» и молчало:
+  // перезапуск с нарастающей паузой был неотличим от намертво замершего
+  // туннеля. Строка в журнале про паузу есть, но она уезжает вниз и не
+  // обновляется.
+  retryIn: (n: number) => `следующая попытка через ${n} с`,
   turnOn: "Включить",
   turnOff: "Выключить",
   conduitTo: "сеть",
@@ -50,6 +55,12 @@ const RU = {
   noProfiles: "Профилей нет. Вставьте share-link, адрес подписки или JSON-конфиг — разберётся сам.",
   ownProfiles: "Свои",
   refreshSubscription: (url: string) => `Обновить подписку ${url}`,
+  // Остаток по подписке: трафик и срок. До сих пор их не показывали вовсе, и
+  // человек узнавал про них в тот момент, когда перестало работать.
+  quotaOf: (used: string, total: string) => `${used} из ${total}`,
+  quotaUntil: (date: string) => `до ${date}`,
+  quotaExpired: "подписка кончилась",
+  quotaHint: "Остаток по подписке, как его прислала панель последней сверкой.",
   tabMain: "Главное",
   tabBrowsers: "Браузеры",
   browsers: "Браузеры",
@@ -104,6 +115,30 @@ const RU = {
   browserRemove: (name: string) => `Убрать «${name}» вместе с его входами и куками`,
   browserNodeGone: "Узла больше нет — выберите профилю другой",
   removeSubscription: (url: string) => `Отписаться от ${url}`,
+  renameSubscription: "Назвать подписку",
+  subName: "Имя подписки",
+  refreshAll: "Обновить все",
+  refreshAllHint: "Сверить все подписки разом — то же, что нажать ⟳ у каждой",
+  // Отчёт об импорте. Читается там же, куда вставляли: общая рамка наверху
+  // окна о пропущенных строках сказать не может.
+  imported: (added: number, kept: number, gone: number) =>
+    `Заведено: ${added}` + (kept > 0 ? `, уже было: ${kept}` : "") + (gone > 0 ? `, убрано: ${gone}` : ""),
+  skipped: (n: number) => `Пропущено строк: ${n}`,
+  fromFile: "Файл",
+  fromFileHint: "Взять текст из файла: сохранённый конфиг, выгрузка подписки, список ссылок",
+  editProfile: (name: string) => `Изменить «${name}»`,
+  editName: "Имя",
+  editNode: "Узел",
+  editNodeHint:
+    "JSON узла sing-box либо share-link — то же, что принимает импорт. Пусто — меняется только имя.",
+  editFromSub: "Узел пришёл из подписки: сверка вернёт его прежним. Править можно только свои.",
+  save: "Сохранить",
+  cancel: "Отмена",
+  testOne: "Проверить",
+  testOneHint: "Проверить только этот профиль — остальные не трогать",
+  testingProgress: (done: number, total: number) => `Прогон ${done}/${total}`,
+  fastest: "Включить быстрый",
+  fastestHint: "Поднять туннель на профиле с наименьшей измеренной задержкой",
   active: "активен",
   browserOn: "браузер",
   browserOpenState: "открыт",
@@ -200,7 +235,8 @@ const RU = {
     "«Весь компьютер» — это не «выбрать все приложения»: под туннель попадает и трафик, за которым нет процесса, — служба, драйвер, DNS. Отличается охват только судьбой невыбранных, поэтому переключение не рвёт живые соединения.",
   refreshSubs: "Сверка подписок",
   refreshSubsHint:
-    "Раз в шесть часов служба перечитывает подписки и заменяет узлы. Срок считается от последней сверки, а не от запуска службы. Активный узел при этом не гаснет, а пропавший не выключает приватный режим.",
+    "Служба сама перечитывает подписки и заменяет узлы. Срок в часах считается от последней удачной сверки, а не от запуска службы. Активный узел при этом не гаснет, а пропавший не выключает приватный режим.",
+  refreshHoursPlaceholder: "часов",
   geoTitle: "Спрашивать страну",
   geoHint:
     "Единственный запрос службы наружу: страну узла спрашивают у стороннего сервиса — и только через туннель, с вашего настоящего адреса запрос не уходит. Выключите — страны в окне не будет.",
@@ -262,6 +298,7 @@ const EN: typeof RU = {
   down: "No tunnel — access is closed",
   downHintWhitelist: "This is by design: without a tunnel the whole computer stays offline",
   downHintAll: "This is by design: without a tunnel the computer stays offline",
+  retryIn: (n: number) => `retrying in ${n} s`,
   turnOn: "Turn on",
   turnOff: "Turn off",
   conduitTo: "network",
@@ -283,6 +320,10 @@ const EN: typeof RU = {
   noProfiles: "No profiles yet. Paste a share-link, a subscription URL or a JSON config — it parses itself.",
   ownProfiles: "Own",
   refreshSubscription: (url: string) => `Refresh subscription ${url}`,
+  quotaOf: (used: string, total: string) => `${used} of ${total}`,
+  quotaUntil: (date: string) => `until ${date}`,
+  quotaExpired: "subscription has expired",
+  quotaHint: "The subscription balance as the panel reported it at the last sync.",
   tabMain: "Main",
   tabBrowsers: "Browsers",
   browsers: "Browsers",
@@ -333,6 +374,27 @@ const EN: typeof RU = {
   browserRemove: (name: string) => `Drop "${name}" with its logins and cookies`,
   browserNodeGone: "The node is gone — pick another one for this profile",
   removeSubscription: (url: string) => `Unsubscribe from ${url}`,
+  renameSubscription: "Name the subscription",
+  subName: "Subscription name",
+  refreshAll: "Refresh all",
+  refreshAllHint: "Re-sync every subscription at once — the same as pressing ⟳ on each",
+  imported: (added: number, kept: number, gone: number) =>
+    `Added: ${added}` + (kept > 0 ? `, already there: ${kept}` : "") + (gone > 0 ? `, dropped: ${gone}` : ""),
+  skipped: (n: number) => `Skipped lines: ${n}`,
+  fromFile: "File",
+  fromFileHint: "Take the text from a file: a saved config, a subscription dump, a list of links",
+  editProfile: (name: string) => `Edit "${name}"`,
+  editName: "Name",
+  editNode: "Node",
+  editNodeHint: "sing-box node JSON or a share-link — the same as import takes. Empty means name only.",
+  editFromSub: "The node came from a subscription: a refresh would undo the edit. Only your own are editable.",
+  save: "Save",
+  cancel: "Cancel",
+  testOne: "Test",
+  testOneHint: "Check this profile only, leaving the rest alone",
+  testingProgress: (done: number, total: number) => `Testing ${done}/${total}`,
+  fastest: "Turn on fastest",
+  fastestHint: "Bring the tunnel up on the profile with the lowest measured latency",
   active: "active",
   browserOn: "browser",
   browserOpenState: "open",
@@ -420,8 +482,9 @@ const EN: typeof RU = {
   scopeHint:
     "\"Whole computer\" is not \"select every app\": traffic with no process behind it — the service, the driver, DNS — goes into the tunnel too.",
   refreshSubs: "Subscription refresh",
+  refreshHoursPlaceholder: "hours",
   refreshSubsHint:
-    "Every six hours the service re-reads the subscriptions and replaces the nodes. The clock runs from the last sync, not from the service start. The active node stays up, and a node that disappeared does not turn private mode off.",
+    "The service re-reads the subscriptions on its own and replaces the nodes. The period, in hours, runs from the last successful sync, not from the service start. The active node stays up, and a node that disappeared does not turn private mode off.",
   geoTitle: "Ask for the country",
   geoHint:
     "The only request the service makes outwards: the node country is asked from a third-party service — and only through the tunnel, never from your real address. Turn it off and the window shows no country.",

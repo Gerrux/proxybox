@@ -28,7 +28,15 @@ pub fn parse(link: &str) -> Result<Profile, String> {
     if link.starts_with('{') {
         return from_json(link);
     }
-    let scheme = link.split("://").next().unwrap_or_default().to_ascii_lowercase();
+    // Строка без «://» — не ссылка вовсе, и звать её протоколом нельзя: до
+    // этого причина отказа выходила вида «протокол не поддерживается: не ссылка
+    // вовсе», то есть повторяла саму строку вместо объяснения. Раньше это
+    // видел только тот, кто вставлял одну строку; теперь причины пропуска едут
+    // в окно списком, и таких строк там бывает десяток.
+    let Some((scheme, _)) = link.split_once("://") else {
+        return Err(t("не ссылка: нет схемы", "not a link: no scheme"));
+    };
+    let scheme = scheme.to_ascii_lowercase();
     match scheme.as_str() {
         "vless" => vless(link),
         "trojan" => trojan(link),
@@ -41,30 +49,65 @@ pub fn parse(link: &str) -> Result<Profile, String> {
     }
 }
 
+/// Что вышло из тела: разобранные профили и причины по каждой строке, которая
+/// профилем не стала.
+///
+/// Причины ездят рядом с находками, а не вместо них: терять всю подписку из-за
+/// одного незнакомого протокола не за что, но и молчать о пропущенном нельзя —
+/// вставили полсотни строк, приехало двенадцать, и куда делись остальные, до сих
+/// пор нельзя было спросить нигде.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Batch {
+    pub found: Vec<Profile>,
+    /// По строке на пропущенную: обрезанное начало строки и причина отказа.
+    /// Строка обрезана намеренно — в ней бывает пароль узла, а едет она в окно
+    /// и в журнал.
+    pub skipped: Vec<String>,
+}
+
+/// Начало строки для сообщения об отказе. Обрезаем по символам, а не по байтам:
+/// в имени узла кириллица и эмодзи — норма, а срез посреди символа паникует.
+fn head(line: &str) -> String {
+    let short: String = line.chars().take(40).collect();
+    if short.chars().count() < line.chars().count() {
+        format!("{short}…")
+    } else {
+        short
+    }
+}
+
 /// Тело подписки → профили. Панель отдаёт список ссылок либо открытым текстом,
-/// либо целиком в base64 — второе встречается чаще. Строку, которую разобрать не
-/// вышло, пропускаем: терять всю подписку из-за одного незнакомого протокола не
-/// за что, а сколько узлов дошло, видно по длине ответа.
-pub fn parse_many(body: &str) -> Vec<Profile> {
+/// либо целиком в base64 — второе встречается чаще.
+pub fn parse_many(body: &str) -> Batch {
     // Переносы внутри base64 — норма для подписок, `b64` их не ждёт. Проверка
     // на `://` отсекает случай, когда открытый текст сам похож на base64.
     let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
     let decoded = b64_str(&compact).filter(|text| text.contains("://"));
-    let found: Vec<Profile> = decoded
+    let mut out = Batch::default();
+    for line in decoded
         .as_deref()
         .unwrap_or(body)
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .filter_map(|line| parse(line).ok())
-        .collect();
+    {
+        match parse(line) {
+            Ok(profile) => out.found.push(profile),
+            Err(why) => out.skipped.push(format!("{}: {why}", head(line))),
+        }
+    }
     // Ни одной ссылки — либо адрес неверный, либо панель отдала Clash-YAML.
     // Разбор YAML стоит одного прохода по телу и отвечает пустым списком на
     // что угодно другое, так что различать эти случаи заранее не за чем.
-    if found.is_empty() {
-        return clash(body);
+    if out.found.is_empty() {
+        let found = clash(body);
+        // Пожаловаться на каждую строку YAML — это сотня одинаковых «не ссылка»
+        // там, где всё разобралось: строки тела к ссылкам отношения не имеют.
+        if !found.is_empty() {
+            return Batch { found, skipped: Vec::new() };
+        }
     }
-    found
+    out
 }
 
 /// Типы узлов, которые мы согласны поднимать. Именно белый список, а не
@@ -78,6 +121,26 @@ pub fn parse_many(body: &str) -> Vec<Profile> {
 const NODES: [&str; 10] = [
     "vless", "vmess", "trojan", "shadowsocks", "hysteria", "hysteria2", "tuic", "anytls", "wireguard", "ssh",
 ];
+
+/// Куда ведёт узел: тип sing-box и `host:port` сервера. Ровно это едет в окно
+/// вместе с именем — имя профилю даёт чужая панель, и по нему не отличить два
+/// одинаково названных узла от одного, заведённого дважды.
+///
+/// Живёт здесь, а не в службе: где у узла лежит адрес, знает разбор. У
+/// WireGuard это первый пир, у остальных `server`/`server_port`.
+pub fn describe(node: &Value) -> (String, String) {
+    let kind = node["type"].as_str().unwrap_or_default().to_string();
+    let (host, port) = match node["server"].as_str() {
+        Some(host) => (host, node["server_port"].as_u64()),
+        None => (node["peers"][0]["address"].as_str().unwrap_or_default(), node["peers"][0]["port"].as_u64()),
+    };
+    let server = match (host, port) {
+        ("", _) => String::new(),
+        (host, Some(port)) => format!("{host}:{port}"),
+        (host, None) => host.to_string(),
+    };
+    (kind, server)
+}
 
 fn is_node(value: &Value) -> bool {
     value["type"].as_str().is_some_and(|kind| NODES.contains(&kind))
@@ -894,6 +957,17 @@ mod tests {
         assert_eq!(p.node["tls"]["alpn"][0], "h3");
     }
 
+    /// Строка «куда ведёт узел» обязана находить адрес у обоих раскладов:
+    /// у WireGuard он в первом пире, у остальных в самом узле.
+    #[test]
+    fn a_node_says_where_it_goes() {
+        let vless = parse("vless://u@a.com:443#N").unwrap();
+        assert_eq!(describe(&vless.node), ("vless".into(), "a.com:443".into()));
+        let wg = parse("wg://cHJpdmF0ZQ@a.com:51820?publickey=cHVibGlj&address=10.0.0.2/32").unwrap();
+        assert_eq!(describe(&wg.node), ("wireguard".into(), "a.com:51820".into()));
+        assert_eq!(describe(&serde_json::json!({})), (String::new(), String::new()), "пустой узел не паникует");
+    }
+
     #[test]
     fn wireguard_endpoint() {
         let p = parse("wg://cHJpdmF0ZQ@a.com:51820?publickey=cHVibGlj&address=10.0.0.2/32&mtu=1408#W").unwrap();
@@ -930,8 +1004,9 @@ mod tests {
 
         let list = "vless://u@a.com:443#Живой\n{\"type\":\"direct\",\"server\":\"b.com\"}\n";
         let got = parse_many(list);
-        assert_eq!(got.len(), 1, "битый узел выбрасывается, живой остаётся: {got:?}");
-        assert_eq!(got[0].name, "Живой");
+        assert_eq!(got.found.len(), 1, "битый узел выбрасывается, живой остаётся: {got:?}");
+        assert_eq!(got.found[0].name, "Живой");
+        assert_eq!(got.skipped.len(), 1, "и о нём сказано: {got:?}");
     }
 
     /// Подписка приходит в двух видах, и оба должны дать один и тот же список.
@@ -940,9 +1015,9 @@ mod tests {
         let list = "vless://u@a.com:443?security=none#Первый\n\
                     trojan://p@b.com:443#Второй\n";
         let plain = parse_many(list);
-        assert_eq!(plain.len(), 2, "{plain:?}");
-        assert_eq!(plain[0].name, "Первый");
-        assert_eq!(plain[1].name, "Второй");
+        assert_eq!(plain.found.len(), 2, "{plain:?}");
+        assert_eq!(plain.found[0].name, "Первый");
+        assert_eq!(plain.found[1].name, "Второй");
 
         // Панели переносят base64 по строкам — это не должно ничего ломать.
         let encoded = base64::engine::general_purpose::STANDARD.encode(list);
@@ -958,9 +1033,13 @@ mod tests {
                     vless://u@a.com:443?security=none#Живой\n\
                     не ссылка вовсе\n";
         let found = parse_many(body);
-        assert_eq!(found.len(), 1, "мусор пропускается, а не роняет подписку: {found:?}");
-        assert_eq!(found[0].name, "Живой");
-        assert!(parse_many("").is_empty(), "пустое тело — пустой список");
+        assert_eq!(found.found.len(), 1, "мусор пропускается, а не роняет подписку: {found:?}");
+        assert_eq!(found.found[0].name, "Живой");
+        // Пропущенное названо: обе строки мусора со своей причиной, а
+        // комментарий и пустая строка — не мусор и в счёт не идут.
+        assert_eq!(found.skipped.len(), 2, "{found:?}");
+        assert!(found.skipped[0].starts_with("magnet://не-протокол:"), "{found:?}");
+        assert!(parse_many("").found.is_empty(), "пустое тело — пустой список");
     }
 
     /// Clash-YAML: панель отдаёт его вместо списка ссылок, и подписка обязана
@@ -1025,7 +1104,7 @@ proxy-groups:
   - name: PROXY
     type: select
 ";
-        let found = parse_many(body);
+        let found = parse_many(body).found;
         let names: Vec<&str> = found.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["Узел ①", "SS", "VM", "HY", "WG"], "ssr не наш протокол — узел пропускается");
 
@@ -1065,12 +1144,14 @@ proxy-groups:
     /// Разбор YAML — запасной путь, и включаться он должен только вместо ссылок.
     #[test]
     fn clash_yaml_is_a_fallback() {
-        assert!(parse_many("proxies:\n").is_empty(), "пустая секция — пустой список");
-        assert!(parse_many("не yaml и не ссылки").is_empty());
+        assert!(parse_many("proxies:\n").found.is_empty(), "пустая секция — пустой список");
+        assert!(parse_many("не yaml и не ссылки").found.is_empty());
         // Узел без обязательного поля — пропуск, а не профиль, который молча не соединится.
-        assert!(parse_many("proxies:\n  - {name: X, type: vless, server: a.com, port: 443}").is_empty(), "vless без uuid");
+        assert!(parse_many("proxies:\n  - {name: X, type: vless, server: a.com, port: 443}").found.is_empty(), "vless без uuid");
         assert!(
-            parse_many("proxies:\n  - {name: X, type: ss, server: a.com, port: 8388, cipher: aes-256-gcm, password: p, plugin: shadow-tls}").is_empty(),
+            parse_many("proxies:\n  - {name: X, type: ss, server: a.com, port: 8388, cipher: aes-256-gcm, password: p, plugin: shadow-tls}")
+                .found
+                .is_empty(),
             "плагин, который не переложить в ссылку"
         );
     }
@@ -1079,6 +1160,8 @@ proxy-groups:
     fn errors_are_explained() {
         for (link, expect) in [
             ("", "нет схемы"),
+            ("не ссылка вовсе", "нет схемы"),
+            ("://x", "нет схемы"),
             ("magnet://x", "не поддерживается"),
             ("vless://@a.com:443", "нет UUID"),
             ("ss://not-base64-at-all", "не разбирается"),

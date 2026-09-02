@@ -167,6 +167,11 @@ export const FIELD =
 /** То же поле, но многострочное: высоту задаёт `rows`, а не `h-8`. */
 const FIELD_MULTI = `${FIELD.replace("h-8", "h-auto")} resize-none py-[5px] leading-[22px]`;
 
+/** Чем кончилась отправка: приняли ли и что сказали. Служба отвечает не только
+ *  «да» и «нет» — из импорта приезжает счёт («заведено 12, пропущено 38»), и
+ *  показывать его надо там же, куда вставляли. */
+export type Outcome = { ok: boolean; note?: string; bad?: boolean };
+
 /** Поле «ввести и добавить»: своё состояние держит само — снаружи оно не нужно.
  *
  *  Чистится только на «приняли». Разобрать ссылку служба может отказаться — и
@@ -186,11 +191,12 @@ export function AddField({
   onSubmit,
   hint,
   busyLabel,
+  fileLabel,
   className = "",
 }: {
   placeholder: string;
   label: string;
-  onSubmit: (value: string) => Promise<boolean>;
+  onSubmit: (value: string) => Promise<Outcome>;
   /** Чем окажется набранное — подписью под полем. Одно поле принимает три
    *  разные вещи, и до отправки об этом не говорило ничего. */
   hint?: (value: string) => string | undefined;
@@ -199,13 +205,30 @@ export function AddField({
    *  человек делает не от нетерпения, а потому что первое ничем себя не
    *  проявило. */
   busyLabel?: string;
+  /** Подпись кнопки «взять из файла». Не задана — кнопки нет: список
+   *  приложений набирают путём, а не файлом. */
+  fileLabel?: string;
   className?: string;
 }) {
   const [value, setValue] = useState("");
+  // Что ответила служба на прошлую отправку. Живёт под этим полем, а не в общей
+  // рамке наверху окна: «пропущено 38 строк» — это про то, что вставили сюда, и
+  // читать это надо не отводя глаз от вставленного.
+  const [said, setSaid] = useState<Outcome | null>(null);
   // Подписка выкачивается секундами: без этого второй Enter уходил бы службе
   // вдогонку первому.
   const [busy, setBusy] = useState(false);
-  const said = hint?.(value);
+  const sniffed = hint?.(value);
+  // Файл читается прямо здесь: конфиг сохраняют файлом, а подписку — блобом в
+  // файле, и человек до сих пор открывал их «Блокнотом», чтобы скопировать
+  // текст. `<input type="file">` — родной путь и в вебвью, и в браузере.
+  const take = (file: File | undefined) => {
+    if (!file) return;
+    void file.text().then((text) => {
+      setSaid(null);
+      setValue((was) => (was.trim() ? `${was.trimEnd()}\n${text.trim()}` : text.trim()));
+    });
+  };
   return (
     <div className={`flex min-w-0 flex-col gap-1 ${className}`}>
       <form
@@ -216,7 +239,10 @@ export function AddField({
           if (!trimmed || busy) return;
           setBusy(true);
           void onSubmit(trimmed)
-            .then((accepted) => accepted && setValue(""))
+            .then((outcome) => {
+              setSaid(outcome.note ? outcome : null);
+              if (outcome.ok) setValue("");
+            })
             .finally(() => setBusy(false));
         }}
       >
@@ -225,6 +251,14 @@ export function AddField({
           value={value}
           rows={Math.min(6, value.split("\n").length)}
           onChange={(e) => setValue(e.target.value)}
+          // Файл, брошенный на поле, — тот же импорт из файла, только без
+          // диалога. В окне это работает, только пока оболочка не перехватывает
+          // перетаскивание сама (`dragDropEnabled: false` в tauri.conf.json).
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            take(e.dataTransfer.files[0]);
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -235,11 +269,33 @@ export function AddField({
           spellCheck={false}
           className={FIELD_MULTI}
         />
-        <Button type="submit" variant="primary" disabled={busy || !value.trim()}>
-          {busy ? busyLabel ?? label : label}
-        </Button>
+        <div className="flex shrink-0 flex-col gap-1">
+          <Button type="submit" variant="primary" disabled={busy || !value.trim()}>
+            {busy ? busyLabel ?? label : label}
+          </Button>
+          {fileLabel && (
+            // Диалог открывает сам `<input>`, поэтому кнопка — это `<label>`:
+            // programmatic click по скрытому полю вебвью не всегда пускает.
+            <label className={`${VARIANTS.ghost} inline-flex h-8 cursor-pointer items-center justify-center whitespace-nowrap rounded-md border px-3 text-[13px] font-medium transition duration-200`}>
+              {fileLabel}
+              <input
+                type="file"
+                className="hidden"
+                onChange={(e) => {
+                  take(e.target.files?.[0]);
+                  // Тот же файл вторым разом иначе не выберется: `change` на
+                  // неизменившемся значении не приходит.
+                  e.target.value = "";
+                }}
+              />
+            </label>
+          )}
+        </div>
       </form>
-      {said && <span className="text-[11px] text-muted">{said}</span>}
+      {said?.note && (
+        <span className={`text-[11px] ${said.bad ? "text-fault" : "text-muted"}`}>{said.note}</span>
+      )}
+      {!said && sniffed && <span className="text-[11px] text-muted">{sniffed}</span>}
     </div>
   );
 }

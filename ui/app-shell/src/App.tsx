@@ -155,7 +155,7 @@ export function App() {
       setError(null);
       setBusy((n) => n + 1);
       return send(req)
-        .then((r) => refresh().then(() => r != null && r.reply !== "error"))
+        .then((r) => refresh().then(() => r))
         .finally(() => setBusy((n) => n - 1));
     },
     [send, refresh],
@@ -180,10 +180,10 @@ export function App() {
       setStatus({ ...status, tunnel: "off" });
       return act({ cmd: "off" });
     }
-    const profile = status.profile ?? status.profiles[0];
+    const profile = status.profile ?? status.profiles[0]?.name;
     if (!profile) return;
     setStatus({ ...status, tunnel: "connecting", profile });
-    act({ cmd: "on", arg: { profile } });
+    void act({ cmd: "on", arg: { profile } });
   };
 
   const s = strings(status?.lang);
