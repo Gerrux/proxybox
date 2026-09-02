@@ -24,6 +24,11 @@ const RU = {
   down: "Туннеля нет — доступ закрыт",
   downHintWhitelist: "Так и задумано: без туннеля без сети остаётся весь компьютер",
   downHintAll: "Так и задумано: без туннеля компьютер остаётся без сети",
+  // Пока sing-box не поднимается, окно показывало «доступ закрыт» и молчало:
+  // перезапуск с нарастающей паузой был неотличим от намертво замершего
+  // туннеля. Строка в журнале про паузу есть, но она уезжает вниз и не
+  // обновляется.
+  retryIn: (n: number) => `следующая попытка через ${n} с`,
   turnOn: "Включить",
   turnOff: "Выключить",
   conduitTo: "сеть",
@@ -50,6 +55,12 @@ const RU = {
   noProfiles: "Профилей нет. Вставьте share-link, адрес подписки или JSON-конфиг — разберётся сам.",
   ownProfiles: "Свои",
   refreshSubscription: (url: string) => `Обновить подписку ${url}`,
+  // Остаток по подписке: трафик и срок. До сих пор их не показывали вовсе, и
+  // человек узнавал про них в тот момент, когда перестало работать.
+  quotaOf: (used: string, total: string) => `${used} из ${total}`,
+  quotaUntil: (date: string) => `до ${date}`,
+  quotaExpired: "подписка кончилась",
+  quotaHint: "Остаток по подписке, как его прислала панель последней сверкой.",
   tabMain: "Главное",
   tabBrowsers: "Браузеры",
   browsers: "Браузеры",
@@ -262,6 +273,7 @@ const EN: typeof RU = {
   down: "No tunnel — access is closed",
   downHintWhitelist: "This is by design: without a tunnel the whole computer stays offline",
   downHintAll: "This is by design: without a tunnel the computer stays offline",
+  retryIn: (n: number) => `retrying in ${n} s`,
   turnOn: "Turn on",
   turnOff: "Turn off",
   conduitTo: "network",
@@ -283,6 +295,10 @@ const EN: typeof RU = {
   noProfiles: "No profiles yet. Paste a share-link, a subscription URL or a JSON config — it parses itself.",
   ownProfiles: "Own",
   refreshSubscription: (url: string) => `Refresh subscription ${url}`,
+  quotaOf: (used: string, total: string) => `${used} of ${total}`,
+  quotaUntil: (date: string) => `until ${date}`,
+  quotaExpired: "subscription has expired",
+  quotaHint: "The subscription balance as the panel reported it at the last sync.",
   tabMain: "Main",
   tabBrowsers: "Browsers",
   browsers: "Browsers",
