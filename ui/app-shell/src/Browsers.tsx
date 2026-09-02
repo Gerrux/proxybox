@@ -282,8 +282,11 @@ function Editor({
             >
               <option value="">{s.browserNodePick}</option>
               {nodes.map((node) => (
-                <option key={node} value={node}>
-                  {node}
+                // Адрес узла рядом с именем: имя профилю пишет чужая панель, и
+                // два одинаково названных узла в выпадающем списке иначе
+                // неразличимы.
+                <option key={node.name} value={node.name}>
+                  {node.server ? `${node.name} — ${node.server}` : node.name}
                 </option>
               ))}
             </select>
@@ -468,7 +471,7 @@ export function Browsers({
               // Узел могли удалить или он мог пропасть из подписки: профиль это
               // переживает — в его каталоге входы, — но открыть его нечем, и
               // молчать об этом нельзя.
-              const gone = !nodes.includes(item.node);
+              const gone = !nodes.some((n) => n.name === item.node);
               const code = status?.probes.find((p) => p.name === item.node)?.code;
               return (
                 <li

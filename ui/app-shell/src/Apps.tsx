@@ -186,7 +186,9 @@ export function Apps({
                 placeholder={s.appPlaceholder}
                 label={s.addApp}
                 busyLabel={s.adding}
-                onSubmit={(path) => act({ cmd: "add-app", arg: { path } })}
+                onSubmit={(path) =>
+                  act({ cmd: "add-app", arg: { path } }).then((r) => ({ ok: r != null && r.reply !== "error" }))
+                }
               />
             )}
             {searchable && <SearchField value={query} onChange={setQuery} placeholder={s.searchApps} />}
