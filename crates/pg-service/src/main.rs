@@ -535,7 +535,7 @@ impl Service {
         }
         let touch = touch_policy(killswitch, self.applied.as_ref().map(|a| a.killswitch), core_filter::locked_by_us);
         let outcome =
-            core_filter::set_fence(fence, core_tunnel::TUN_ADDR, &want.apps, want.browser.as_deref())
+            core_filter::set_fence(fence, self.applied.as_ref().map(|a| a.fence), core_tunnel::TUN_ADDR, &want.apps, want.browser.as_deref())
                 .and_then(|()| match touch {
                     true => core_filter::set_killswitch(killswitch, &core_tunnel::binary()),
                     false => Ok(()),
@@ -1071,9 +1071,23 @@ fn refresh_loop(svc: Arc<Mutex<Service>>) {
 /// приходится спрашивать систему, поэтому ответ приходит функцией, а не
 /// значением: на всех прочих кругах его считать незачем.
 ///
+/// Когда `was` известно, трогаем политику только на смене бита. Дело не в трёх
+/// лишних вызовах netsh: `set_killswitch(true)` начинается со снятия разрешения
+/// для sing-box и ставит его заново уже под действующим `blockoutbound` — то
+/// есть на два вызова оставляет туннель без пропуска. Приходилось это ровно на
+/// подтверждении пробы (`Fence::Off` → `Fence::Allow` при неизменном замке), где
+/// отбирать у sing-box сеть хуже всего.
+///
+/// Цена — политику, изменённую снаружи под уже стоящим нашим замком, служба
+/// сама не чинит. Она и раньше её не чинила: `guard` выходит рано, когда
+/// применённое совпало, и починка случалась только попутно, на смене пропусков.
+///
 /// Сторож — `a_foreign_killswitch_is_not_ours_to_lift`.
 fn touch_policy(killswitch: bool, was: Option<bool>, ours: impl FnOnce() -> bool) -> bool {
-    killswitch || was.unwrap_or_else(ours)
+    match was {
+        Some(was) => was != killswitch,
+        None => killswitch || ours(),
+    }
 }
 
 /// Что делать с охватом, сохранённым прошлой версией. Возвращает охват и то,
@@ -1483,16 +1497,25 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
 /// `singbox.pid`. Здесь только запрет — то есть движение строго в сторону
 /// «без сети». Сторож — `the_death_watch_only_blocks`.
 fn watch_for_death(svc: &Arc<Mutex<Service>>) {
-    // Первая проба после запуска идёт вперёд наблюдения, и окна утечки это не
-    // расширяет: живость процесса только что проверил сам запуск, а выбранные
-    // приложения всё это время заперты. Флаг снимается тем же движением —
-    // оставь его взведённым, и наблюдатель не отработал бы больше никогда,
-    // то есть окно после смерти процесса стало бы бесконечным.
-    if std::mem::take(&mut lock(svc).probe_now) {
-        return;
-    }
     let rounds = PROBE_EVERY.as_millis() / DEATH_EVERY.as_millis();
     for _ in 0..rounds {
+        // Первая проба после запуска идёт вперёд наблюдения, и окна утечки это
+        // не расширяет: живость процесса только что проверил сам запуск, а
+        // выбранные приложения всё это время заперты. Флаг снимается тем же
+        // движением — оставь его взведённым, и наблюдатель не отработал бы
+        // больше никогда, то есть окно после смерти процесса стало бы
+        // бесконечным.
+        //
+        // Читается он здесь, а не на входе в наблюдение, и это не вкусовщина:
+        // взводит его `Service::start()` из чужого потока, а цикл занимает все
+        // три секунды из трёх — то есть на входе флаг почти никогда и не
+        // застать. Прочитанный только там, он сокращал не ту паузу: текущий
+        // круг досыпал до конца, первая проба ждала до `PROBE_EVERY`, а флаг
+        // съедался следующим входом — тем самым, который ждать как раз и
+        // должен. Внутри цикла ожидание — не больше `DEATH_EVERY`.
+        if std::mem::take(&mut lock(svc).probe_now) {
+            return;
+        }
         std::thread::sleep(DEATH_EVERY);
         let mut s = lock(svc);
         if !s.private || s.status.tunnel == TunnelState::Down {
@@ -1591,16 +1614,22 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             Ok(latency) => {
                 if s.status.tunnel != TunnelState::Up {
                     s.log(t(&format!("туннель поднят, задержка {latency} мс"), &format!("tunnel is up, latency {latency} ms")));
-                    // Проверяем именно здесь: чужой туннель не мешает нам
-                    // подняться, но может забрать маршруты — и тогда «Защищено»
-                    // окажется правдой только про нас, а не про приложения.
+                    s.guard(false); // дальше маршрутизацией занимается сам sing-box
+                    // Про чужой туннель говорим уже после выдачи пропусков, а не
+                    // до. Он не мешает нам подняться, но может забрать маршруты —
+                    // и тогда «Защищено» окажется правдой только про нас, а не
+                    // про приложения; то есть предупредить обязаны, а вот
+                    // задерживать этим сеть — нет. `foreign_tunnels` — поход в
+                    // PowerShell за списком адаптеров, и стоял он ровно между
+                    // подтверждённой пробой и открытием сети выбранным
+                    // приложениям, под общим замком: окно всё это время ждало
+                    // ответа на `Status`.
                     for name in core_filter::foreign_tunnels(core_tunnel::TUN_NAME) {
                         s.warn(t(
                             &format!("рядом поднят чужой туннель «{name}» — выберите один: маршруты уйдут к тому, кто выиграет"),
                             &format!("another tunnel \"{name}\" is up — keep one: routes go to whichever wins"),
                         ));
                     }
-                    s.guard(false); // дальше маршрутизацией занимается сам sing-box
                     just_up = true;
                 }
                 s.status.tunnel = TunnelState::Up;
@@ -1733,6 +1762,10 @@ mod tests {
         assert!(touch_policy(true, Some(false), never));
         // Служба уже применяла своё — помнит и переспрашивать не должна.
         assert!(touch_policy(false, Some(true), never), "свой замок снять обязаны");
+        assert!(
+            !touch_policy(true, Some(true), never),
+            "замок уже стоит: переставлять его — значит на два вызова netsh отобрать пропуск у sing-box",
+        );
         assert!(!touch_policy(false, Some(false), never), "своего замка не было — и снимать нечего");
         // Первый круг после старта: решает система.
         assert!(touch_policy(false, None, || true), "наш замок пережил падение службы — снимаем");
@@ -1979,6 +2012,13 @@ mod tests {
         // навсегда — то есть окно после смерти процесса стало бы бесконечным.
         assert_eq!(body.matches("probe_now").count(), 1, "флаг первой пробы читается ровно один раз: {body}");
         assert!(body.contains("mem::take"), "флаг первой пробы обязан сниматься при чтении: {body}");
+        // И читаться он обязан внутри цикла кругов. Взводит флаг чужой поток, а
+        // цикл занимает все три секунды из трёх: прочитанный только на входе, он
+        // не застаётся почти никогда — первая проба ждёт полный `PROBE_EVERY`
+        // вместо `DEATH_EVERY`, а сам флаг съедает следующее ожидание, которое
+        // ждать как раз и должно.
+        let before_loop = body.split("for _ in 0..rounds").next().unwrap_or_default();
+        assert!(!before_loop.contains("probe_now"), "флаг первой пробы обязан читаться внутри цикла, а не на входе: {body}");
     }
 
     /// Ни галочка в списке приложений, ни переключение охвата не имеют права
