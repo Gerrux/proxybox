@@ -788,7 +788,7 @@ fn probe_target(configured: &str, node: &Value) -> (String, u16) {
 /// подписку импортируют ровно тогда, когда туннеля ещё нет, поэтому без него
 /// идём напрямую; а не вышло через туннель — пробуем напрямую, потому что отказ
 /// сервера от блокировки здесь ничем не отличается.
-fn fetch(url: &str, via_tunnel: bool) -> Result<String, String> {
+fn fetch(url: &str, via_tunnel: bool) -> Result<(String, Option<String>), String> {
     // Только https, и проверка здесь, а не в разборе команды: этот же fetch
     // ходит за плановым обновлением подписки, адрес которой мог приехать в
     // state.json ещё до этой проверки. Тело ответа — список серверов, через
@@ -808,7 +808,7 @@ fn fetch(url: &str, via_tunnel: bool) -> Result<String, String> {
     get(url, Some(&format!("http://127.0.0.1:{}", Options::default().socks_port))).or_else(|_| direct())
 }
 
-fn get(url: &str, proxy: Option<&str>) -> Result<String, String> {
+fn get(url: &str, proxy: Option<&str>) -> Result<(String, Option<String>), String> {
     let fail = |e: &dyn std::fmt::Display| {
         t(&format!("подписка не скачалась: {e}"), &format!("subscription download failed: {e}"))
     };
@@ -833,7 +833,14 @@ fn get(url: &str, proxy: Option<&str>) -> Result<String, String> {
         .user_agent(concat!("privacy-gateway/", env!("CARGO_PKG_VERSION")))
         .build()
         .into();
-    agent.get(url).call().map_err(|e| fail(&e))?.body_mut().read_to_string().map_err(|e| fail(&e))
+    let mut response = agent.get(url).call().map_err(|e| fail(&e))?;
+    // Заголовок снимаем до тела: `body_mut()` заимствует ответ изменяемо, и
+    // после него заголовки уже не спросить. Имя регистронезависимо — за это
+    // отвечает `HeaderMap`, а панели пишут его вразнобой.
+    let userinfo =
+        response.headers().get("subscription-userinfo").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let body = response.body_mut().read_to_string().map_err(|e| fail(&e))?;
+    Ok((body, userinfo))
 }
 
 /// Разбор заголовка `Subscription-Userinfo`.
@@ -959,8 +966,11 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Response {
     // Замок берём на одно поле и сразу отпускаем: знать, жив ли туннель, надо
     // до сети, а держать состояние на все двадцать секунд запроса — нельзя.
     let via_tunnel = lock(svc).status.tunnel == TunnelState::Up;
-    let body = match fetch(url, via_tunnel) {
-        Ok(body) => body,
+    // Заголовок приезжает тем же ответом, что и список узлов. Второго запроса
+    // за остатком не заводим: подписки сверяются раз в шесть часов и ещё по
+    // нажатию, а лишний поход к панели — лишний повод считать нас флудом.
+    let (body, userinfo) = match fetch(url, via_tunnel) {
+        Ok(got) => got,
         Err(message) => return Response::Error { message },
     };
     let found = core_config::parse_many(&body);
