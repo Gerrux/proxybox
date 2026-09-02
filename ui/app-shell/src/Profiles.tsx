@@ -105,6 +105,13 @@ export function Profiles({
   // Поле не прячем, пока в нём что-то есть: иначе фильтр остался бы включённым
   // и невидимым, а строки просто пропали бы.
   const searchable = profiles.length > SEARCH_FROM || query !== "";
+  // Прогон запускают ровно затем, чтобы выбрать быстрый узел, — а в списке на
+  // сотню строк 40 ms до сих пор искали глазами. Порядок живёт в окне и никуда
+  // не сохраняется: это способ посмотреть, а не свойство списка. Переключатель
+  // показывается, только когда есть что упорядочивать: без единого измерения он
+  // не сделал бы ничего.
+  const [byLatency, setByLatency] = useState(false);
+  const measured = (status?.probes ?? []).some((p) => p.latency_ms != null);
   return (
     <Panel
       className={className}
@@ -124,6 +131,16 @@ export function Profiles({
       }
       action={
         <>
+          {measured && (
+            <Button
+              variant="quiet"
+              aria-pressed={byLatency}
+              title={s.byLatencyHint}
+              onClick={() => setByLatency((v) => !v)}
+            >
+              {s.byLatency}
+            </Button>
+          )}
           {profiles.length > 0 && (
             // Пока прогон идёт, кнопка заперта: второй прогон добил бы sing-box
             // первого — они делят каталог проверки.
@@ -133,7 +150,7 @@ export function Profiles({
               title={s.testProfilesHint}
               onClick={() => void act({ cmd: "test-profiles" })}
             >
-              {s.testProfiles}
+              {busy ? s.testing : s.testProfiles}
             </Button>
           )}
           <Button
@@ -153,6 +170,7 @@ export function Profiles({
           <AddField
             placeholder={s.linkPlaceholder}
             label={s.importLink}
+            busyLabel={s.importing}
             hint={(value) => sniff(s, value)}
             onSubmit={(link) => act({ cmd: "add-profile", arg: { link } })}
           />
@@ -163,10 +181,11 @@ export function Profiles({
         ) : shown === 0 && needle !== "" ? (
           <Empty>{s.noMatches}</Empty>
         ) : !grouped ? (
-          <Rows names={groups[0].names} status={status} act={act} s={s} />
+          <Rows names={groups[0].names} status={status} act={act} s={s} byLatency={byLatency} />
         ) : (
-          // Подписка показывается даже пустой: узлы могли удалить по одному, а
-          // отписаться больше неоткуда. Прячет группу только поиск.
+          // Подписка показывается даже пустой: она могла не отдать ни одного
+          // понятного нам узла, а отписаться больше неоткуда. Прячет группу
+          // только поиск.
           groups.map(
             ({ url, names }) =>
               (names.length > 0 || (url !== null && needle === "")) && (
@@ -230,7 +249,14 @@ export function Profiles({
                       </span>
                     )}
                   </summary>
-                  <Rows names={names} status={status} act={act} s={s} />
+                  <Rows
+                    names={names}
+                    status={status}
+                    act={act}
+                    s={s}
+                    byLatency={byLatency}
+                    fromSub={url !== null}
+                  />
                 </details>
               ),
           )
@@ -242,11 +268,36 @@ export function Profiles({
 
 /** Строки списка. Отдельно от групп: под каждой подпиской и над ними лежит один
  *  и тот же список, и второй его копии быть не должно. */
-function Rows({ names, status, act, s }: { names: string[]; status: Status | null; act: Act; s: Strings }) {
+function Rows({
+  names,
+  status,
+  act,
+  s,
+  byLatency,
+  fromSub,
+}: {
+  names: string[];
+  status: Status | null;
+  act: Act;
+  s: Strings;
+  /** Переставить по измеренной задержке. Неизмеренные и мёртвые уходят вниз
+   *  общей кучей в том порядке, в каком пришли: «не знаем» и «не отвечает» —
+   *  не числа, и делать вид, что они сравнимы, незачем. */
+  byLatency?: boolean;
+  /** Узлы пришли из подписки. Тогда у строки нет `✕`: набор здесь заменяет
+   *  сверка целиком (`subscribe` вычищает прежние имена и кладёт найденные
+   *  заново), и удалённый вручную узел вернулся бы ближайшим же кругом — то
+   *  есть кнопка обещала бы то, чего не делает. Уходят они с отпиской. */
+  fromSub?: boolean;
+}) {
   const probes = status?.probes ?? [];
+  const at = (name: string) => probes.find((p) => p.name === name)?.latency_ms ?? Infinity;
+  // Сортировка устойчива, поэтому внутри «неизмеренных» порядок остаётся тем,
+  // каким пришёл, — а пришёл он от службы и от подписки.
+  const shown = byLatency ? [...names].sort((a, b) => at(a) - at(b)) : names;
   return (
     <ul className="flex flex-col gap-1">
-      {names.map((name) => {
+      {shown.map((name) => {
         const active = status?.profile === name;
         const probe = probes.find((p) => p.name === name);
         // У активного профиля точка выхода известна и без прогона —
@@ -308,7 +359,21 @@ function Rows({ names, status, act, s }: { names: string[]; status: Status | nul
                         {country}
                       </span>
                     ))}
-                  <Verdict probe={probe} failed={s.probeFailed} measured={measuredAgo(s, probe?.at ?? 0)} />
+                  {/* Число, снятое при поднятом туннеле, включает и его RTT:
+                      прогон идёт цепочкой сквозь общий туннель, своего
+                      маршрута мимо TUN у него нет. Сравнивать такие числа с
+                      выключенным режимом нельзя, а выбирают узел именно
+                      сравнением — значит, сказать об этом обязано само
+                      число. */}
+                  <Verdict
+                    probe={probe}
+                    failed={s.probeFailed}
+                    measured={
+                      status?.tunnel === "up"
+                        ? `${measuredAgo(s, probe?.at ?? 0)} · ${s.latencyThroughTunnel}`
+                        : measuredAgo(s, probe?.at ?? 0)
+                    }
+                  />
                 </span>
               )}
             </div>
@@ -323,8 +388,13 @@ function Rows({ names, status, act, s }: { names: string[]; status: Status | nul
                 окно браузера: `forget_profile` зовёт `stop_sessions_on`, то есть
                 промах мыши оставляет это окно без сети. Признак уже посчитан
                 строкой выше — спрашиваем. Неактивный и никем не занятый уходит
-                сразу. */}
-            {live || browsing ? (
+                сразу.
+
+                У узла из подписки кнопки нет вовсе: набор здесь заменяет сверка
+                целиком, и удалённый вручную узел вернулся бы ближайшим кругом.
+                Кнопка, которую отменяет расписание, — это обещание, которого
+                продукт не держит; уходят такие узлы с отпиской. */}
+            {fromSub ? null : live || browsing ? (
               <ConfirmButton label={s.removeProfile(name)} ask={s.confirmRemove} onConfirm={remove} />
             ) : (
               <Button variant="danger" aria-label={s.removeProfile(name)} onClick={remove}>

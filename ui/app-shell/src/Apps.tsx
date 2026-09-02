@@ -104,6 +104,10 @@ export function Apps({
   // Поле не прячем, пока в нём что-то есть: иначе фильтр остался бы включённым
   // и невидимым, а строки просто пропали бы.
   const searchable = apps.length > SEARCH_FROM || query !== "";
+  // Своё ожидание, а не общее `busy`: обход реестра, меню «Пуск» и каталога
+  // WindowsApps идёт секундами, и надпись обязана говорить про него, а не про
+  // любую команду в полёте — иначе кнопка писала бы «Ищу…» на снятую галочку.
+  const [finding, setFinding] = useState(false);
 
   return (
     <Panel
@@ -122,8 +126,15 @@ export function Apps({
         // белый, а не после — переключение и есть то действие, которое рубит
         // сеть всем неотмеченным.
         <>
-          <Button variant="quiet" disabled={busy} onClick={() => void act({ cmd: "discover", arg: { env: {} } })}>
-            {s.discover}
+          <Button
+            variant="quiet"
+            disabled={busy}
+            onClick={() => {
+              setFinding(true);
+              void act({ cmd: "discover", arg: { env: {} } }).finally(() => setFinding(false));
+            }}
+          >
+            {finding ? s.searching : s.discover}
           </Button>
           <Button
             aria-pressed={noteOpen}
@@ -174,6 +185,7 @@ export function Apps({
                 className="min-w-[16rem] flex-1"
                 placeholder={s.appPlaceholder}
                 label={s.addApp}
+                busyLabel={s.adding}
                 onSubmit={(path) => act({ cmd: "add-app", arg: { path } })}
               />
             )}
