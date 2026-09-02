@@ -27,7 +27,15 @@ jobs:
           $tag = "${{ github.ref_name }}".TrimStart("v")
           if ($conf -ne $tag) { throw "tauri.conf.json = $conf, а тег = $tag" }
 
+      # Тот же сторож, что и в ci.yml: без бинарника проверка старта конфига
+      # молча пропускается, и релиз уезжает с конфигом, на котором служба
+      # падает. Скачанное переиспользует sidecars.ps1 — лишней закачки нет.
+      - name: sing-box для сторожей запуска
+        run: pwsh installer/get-singbox.ps1
+
       - run: cargo test --workspace
+        env:
+          PG_SINGBOX: ${{ github.workspace }}/src-tauri/binaries/sing-box.exe
 
       # pnpm берётся из packageManager в package.json, отдельный action не нужен.
       - run: corepack enable

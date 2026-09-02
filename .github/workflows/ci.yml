@@ -20,6 +20,18 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Без бинарника сторожа запуска (`the_config_actually_starts`,
+      # `tun_config_passes_singbox_check`) молча выходят: «sing-box не
+      # установлен — проверять нечем». Ровно так фатальный конфиг и уехал в
+      # 0.3.1 — тесты прошли, не проверив ничего. Версия берётся из
+      # get-singbox.ps1: закреплённая обязана быть одна на установщик и на CI,
+      # иначе CI зеленеет на той, которой нет у людей.
+      - name: sing-box для сторожей запуска
+        run: |
+          v=$(grep -oP '\$Version = "\K[^"]+' installer/get-singbox.ps1)
+          echo "sing-box $v"
+          curl -sL "https://github.com/SagerNet/sing-box/releases/download/v$v/sing-box-$v-linux-amd64.tar.gz" | tar xz
+          echo "PG_SINGBOX=$PWD/sing-box-$v-linux-amd64/sing-box" >> "$GITHUB_ENV"
       # tsc --noEmit + vite build + cargo test --workspace
       - run: pnpm validate
       # Ветки под Windows компилятор здесь иначе не увидит вовсе: половина
