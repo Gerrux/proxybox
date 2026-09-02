@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import type { Act, ProfileInfo, Probe, Response, Status } from "./platform";
+import type { Act, Lang, ProfileInfo, Probe, Quota, Response, Status } from "./platform";
 import type { Strings } from "./i18n";
 import { measuredAgo, strings, syncedAgo } from "./i18n";
+import { bytes } from "./StatusBar";
 import { AddField, Button, ConfirmButton, Empty, FIELD, flag, type Outcome, Panel, SearchField } from "./ui";
 
 /** Чем окажется набранное в поле импорта — по одному лишь префиксу и до
@@ -44,6 +45,44 @@ function imported(s: Strings, r: Response | null): Outcome {
   // Ничего нового при непустом пропуске — это не успех, а «вставили не то»:
   // цвет тут единственное, что читается боковым зрением.
   return { ok: true, note: lines.join("\n"), bad: r.data.added === 0 && r.data.skipped_total > 0 };
+}
+
+/** Остаток по подписке: сколько израсходовано из лимита и до какого числа.
+ *
+ *  Ноль в поле значит «панель не прислала», и то же значение стоит у
+ *  безлимитных с бессрочными, — поэтому про непришедшее просто молчим, а не
+ *  пишем «0 B из 0 B». Понять нечего вовсе — не рисуем ничего.
+ *
+ *  Израсходовано — это `upload + download`: панели считают их вместе, и два
+ *  числа порознь тут никому не нужны.
+ *
+ *  Тревога двойная и по разным осям: осталось меньше десятой части лимита или
+ *  меньше трёх суток до срока. Тон при этом `wait`, а не `fault`: это
+ *  предупреждение, а не поломка, и красный тут обещал бы сработавшую защиту.
+ *  Красный остаётся истёкшему сроку — он уже объясняет, почему узлы молчат. */
+function Remaining({ s, quota, lang }: { s: Strings; quota: Quota; lang: Lang | undefined }) {
+  const used = quota.upload + quota.download;
+  const parts: string[] = [];
+  if (quota.total > 0) parts.push(s.quotaOf(bytes(used), bytes(quota.total)));
+  else if (used > 0) parts.push(bytes(used));
+  const days = quota.expire > 0 ? (quota.expire * 1000 - Date.now()) / 86_400_000 : null;
+  if (days != null) {
+    parts.push(
+      days < 0 ? s.quotaExpired : s.quotaUntil(new Date(quota.expire * 1000).toLocaleDateString(lang ?? "ru")),
+    );
+  }
+  if (parts.length === 0) return null;
+  const low = quota.total > 0 && quota.total - used < quota.total / 10;
+  const tone =
+    days != null && days < 0 ? "text-fault" : low || (days != null && days < 3) ? "text-wait" : "text-muted";
+  return (
+    <span
+      title={s.quotaHint}
+      className={`shrink-0 font-sans text-[11px] font-normal normal-case tracking-normal ${tone}`}
+    >
+      {parts.join(" · ")}
+    </span>
+  );
 }
 
 /** Со скольких профилей список перестаёт читаться глазом. Порог тот же, что у
@@ -369,6 +408,16 @@ export function Profiles({
                       >
                         {sub.name || sub.url.replace(/^https?:\/\//, "")}
                       </span>
+                    )}
+                    {/* Остаток стоит `shrink-0`, а обрезается имя с адресом:
+                        остаток короткий и постоянной длины, а схема с хвостом
+                        адреса — длинная. Живёт он в <summary>, а не под ним: в
+                        свёрнутом виде это единственное место, где его вообще
+                        видно, а свёрнуты подписки как раз чаще всего. Пока
+                        подписку переименовывают, его не видно — поле занимает
+                        ту же строку, и два поля рядом не помещаются. */}
+                    {sub?.quota && renaming !== sub.url && (
+                      <Remaining s={s} quota={sub.quota} lang={status?.lang} />
                     )}
                     <span className="shrink-0 font-sans text-[11px] font-normal normal-case tracking-normal">
                       {items.length}

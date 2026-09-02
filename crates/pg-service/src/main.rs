@@ -9,8 +9,9 @@
 mod service;
 
 use core_ipc::{
-    dir_name, t, App, BrowserProfile, Conn, Endpoint, Listener, LogLine, Probe, ProfileInfo, Request,
-    Response, Scope, Settings, Status, Stream, Subscription, TestRun, Tunnel as TunnelState, ADDR,
+    dir_name, t, App, BrowserProfile, Conn, Endpoint, Listener, LogLine, Probe, ProfileInfo, Quota,
+    Request, Response, Scope, Settings, Status, Stream, Subscription, TestRun, Tunnel as TunnelState,
+    ADDR,
 };
 use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
@@ -105,6 +106,14 @@ struct Saved {
     /// заменяет целиком.
     #[serde(default)]
     sub_names: BTreeMap<String, String>,
+    /// Адрес подписки → остаток, который панель прислала последней сверкой.
+    /// Ключ тот же, что у `subscriptions`.
+    ///
+    /// Хранится на диске, а не в памяти процесса: остаток приходит только со
+    /// сверкой, а сверка — раз в несколько часов. Без этого окно показывало бы
+    /// пустоту от старта службы до первого круга, то есть почти всегда.
+    #[serde(default)]
+    quotas: BTreeMap<String, Quota>,
     profile: Option<String>,
     /// Когда подписки последний раз пришли с панели. На диске, а не в аптайме
     /// процесса: см. `refresh_due`.
@@ -205,6 +214,7 @@ struct Service {
     subscriptions: BTreeMap<String, Vec<String>>,
     /// Имена подписок: адрес → как её назвал человек.
     sub_names: BTreeMap<String, String>,
+    quotas: BTreeMap<String, Quota>,
     /// Приватный режим включён пользователем. Не то же самое, что «туннель жив»:
     /// именно расхождение этих двух флагов и означает DROP.
     private: bool,
@@ -291,7 +301,12 @@ impl Service {
                 apps: Self::dedup_apps(saved.apps),
                 scope,
                 profiles: profiles_of(&saved.profiles),
-                subscriptions: subscriptions_of(&saved.subscriptions, &saved.sub_names, &saved.profiles),
+                subscriptions: subscriptions_of(
+                    &saved.subscriptions,
+                    &saved.sub_names,
+                    &saved.profiles,
+                    &saved.quotas,
+                ),
                 probes: saved.probes,
                 browser_profiles: saved.browser_profiles,
                 refreshed_at: saved.refreshed_at,
@@ -302,6 +317,7 @@ impl Service {
             profiles: saved.profiles,
             subscriptions: saved.subscriptions,
             sub_names: saved.sub_names,
+            quotas: saved.quotas,
             private: saved.private,
             tunnel: None,
             probe_target: (String::new(), 0),
@@ -367,7 +383,8 @@ impl Service {
 
     fn save(&mut self) {
         self.status.profiles = profiles_of(&self.profiles);
-        self.status.subscriptions = subscriptions_of(&self.subscriptions, &self.sub_names, &self.profiles);
+        self.status.subscriptions =
+            subscriptions_of(&self.subscriptions, &self.sub_names, &self.profiles, &self.quotas);
         // Профиля больше нет — и мерить нечего: без этой прополки кэш измерений
         // рос бы вечно, а подписка на сотню узлов переписывает их именами раз в
         // сутки. Здесь, а не в каждом месте удаления: через save() проходят все.
@@ -384,6 +401,7 @@ impl Service {
                 .filter(|(url, _)| self.subscriptions.contains_key(*url))
                 .map(|(url, name)| (url.clone(), name.clone()))
                 .collect(),
+            quotas: self.quotas.clone(),
             profile: self.status.profile.clone(),
             refreshed_at: self.status.refreshed_at,
             lang: self.status.lang,
@@ -798,7 +816,7 @@ fn probe_target(configured: &str, node: &Value) -> (String, u16) {
 /// подписку импортируют ровно тогда, когда туннеля ещё нет, поэтому без него
 /// идём напрямую; а не вышло через туннель — пробуем напрямую, потому что отказ
 /// сервера от блокировки здесь ничем не отличается.
-fn fetch(url: &str, via_tunnel: bool) -> Result<String, String> {
+fn fetch(url: &str, via_tunnel: bool) -> Result<(String, Option<String>), String> {
     // Только https, и проверка здесь, а не в разборе команды: этот же fetch
     // ходит за плановым обновлением подписки, адрес которой мог приехать в
     // state.json ещё до этой проверки. Тело ответа — список серверов, через
@@ -818,7 +836,7 @@ fn fetch(url: &str, via_tunnel: bool) -> Result<String, String> {
     get(url, Some(&format!("http://127.0.0.1:{}", Options::default().socks_port))).or_else(|_| direct())
 }
 
-fn get(url: &str, proxy: Option<&str>) -> Result<String, String> {
+fn get(url: &str, proxy: Option<&str>) -> Result<(String, Option<String>), String> {
     let fail = |e: &dyn std::fmt::Display| {
         t(&format!("подписка не скачалась: {e}"), &format!("subscription download failed: {e}"))
     };
@@ -843,7 +861,41 @@ fn get(url: &str, proxy: Option<&str>) -> Result<String, String> {
         .user_agent(concat!("privacy-gateway/", env!("CARGO_PKG_VERSION")))
         .build()
         .into();
-    agent.get(url).call().map_err(|e| fail(&e))?.body_mut().read_to_string().map_err(|e| fail(&e))
+    let mut response = agent.get(url).call().map_err(|e| fail(&e))?;
+    // Заголовок снимаем до тела: `body_mut()` заимствует ответ изменяемо, и
+    // после него заголовки уже не спросить. Имя регистронезависимо — за это
+    // отвечает `HeaderMap`, а панели пишут его вразнобой.
+    let userinfo =
+        response.headers().get("subscription-userinfo").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let body = response.body_mut().read_to_string().map_err(|e| fail(&e))?;
+    Ok((body, userinfo))
+}
+
+/// Разбор заголовка `Subscription-Userinfo`.
+///
+/// Это де-факто стандарт панелей (v2board, sspanel и производные), а не RFC,
+/// поэтому терпимость тут не небрежность: поля необязательны, порядок
+/// произволен, пробелы вокруг `;` и `=` встречаются, а незнакомое поле и битое
+/// число — повод пропустить их, а не отказать в импорте. Заголовка нет вовсе —
+/// это норма: подписка скачалась, узлы разобраны, показывать просто нечего.
+///
+/// Все нули дают `None` по той же причине: понять из заголовка не удалось
+/// ничего, и «0 B из 0 B» в окне было бы шумом вместо ответа. Сторож —
+/// `a_panel_quota_is_read_from_the_header`.
+fn parse_userinfo(header: Option<&str>) -> Option<Quota> {
+    let mut quota = Quota::default();
+    for part in header?.split(';') {
+        let Some((key, value)) = part.split_once('=') else { continue };
+        let Ok(number) = value.trim().parse::<u64>() else { continue };
+        match key.trim().to_ascii_lowercase().as_str() {
+            "upload" => quota.upload = number,
+            "download" => quota.download = number,
+            "total" => quota.total = number,
+            "expire" => quota.expire = number,
+            _ => {}
+        }
+    }
+    (quota != Quota::default()).then_some(quota)
 }
 
 /// Карта «адрес → узлы» в том виде, в каком её ждёт окно. Порядок задаёт
@@ -859,12 +911,14 @@ fn subscriptions_of(
     map: &BTreeMap<String, Vec<String>>,
     names: &BTreeMap<String, String>,
     profiles: &BTreeMap<String, Value>,
+    quotas: &BTreeMap<String, Quota>,
 ) -> Vec<Subscription> {
     map.iter()
         .map(|(url, nodes)| Subscription {
             url: url.clone(),
             name: names.get(url).cloned().unwrap_or_default(),
             nodes: nodes.iter().filter(|n| profiles.contains_key(*n)).cloned().collect(),
+            quota: quotas.get(url).cloned(),
         })
         .collect()
 }
@@ -893,6 +947,19 @@ fn free_name(taken: &BTreeMap<String, Value>, want: &str) -> String {
         return want.to_string();
     }
     (2..).map(|n| format!("{want} ({n})")).find(|name| !taken.contains_key(name)).expect("номер найдётся")
+}
+
+/// Секунды до момента `at`. Прошедшее и отсутствующее — одинаково `None`:
+/// «пауза кончилась» и «паузы не было» для окна одно и то же, круг надзора в
+/// обоих случаях возьмётся сам. Округление вверх, потому что «через 0 с» на
+/// экране читается как «ничего не происходит» ровно тогда, когда происходит
+/// ожидание. Сторож — `the_retry_countdown_never_shows_zero`.
+fn retry_in(at: Option<Instant>, now: Instant) -> Option<u32> {
+    let left = at?.checked_duration_since(now)?;
+    if left.is_zero() {
+        return None;
+    }
+    Some(left.as_secs() as u32 + u32::from(left.subsec_nanos() > 0))
 }
 
 /// Что вышло из вставленного: одна ссылка, пачка или отказ с причиной.
@@ -1165,7 +1232,10 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Result<Tally, 
     // Замок берём на одно поле и сразу отпускаем: знать, жив ли туннель, надо
     // до сети, а держать состояние на все двадцать секунд запроса — нельзя.
     let via_tunnel = lock(svc).status.tunnel == TunnelState::Up;
-    let body = fetch(url, via_tunnel)?;
+    // Заголовок остатка приезжает тем же ответом, что и список узлов. Второго
+    // запроса за ним не заводим: подписки сверяются раз в несколько часов и ещё
+    // по нажатию, а лишний поход к панели — лишний повод считать нас флудом.
+    let (body, userinfo) = fetch(url, via_tunnel)?;
     let batch = core_config::parse_many(&body);
     let mut s = lock(svc);
     if batch.found.is_empty() {
@@ -1222,6 +1292,17 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Result<Tally, 
     // того, как человек нажал «обновить» руками, незачем.
     s.status.refreshed_at = Some(now());
     s.subscriptions.insert(url.to_string(), names);
+    // Остаток кладём рядом с узлами и тем же ключом: пришли они одним ответом.
+    // Панель заголовка не прислала — прежнее число убираем, а не оставляем: оно
+    // тем более не свежее, чем список, который только что заменили целиком.
+    match parse_userinfo(userinfo.as_deref()) {
+        Some(quota) => {
+            s.quotas.insert(url.to_string(), quota);
+        }
+        None => {
+            s.quotas.remove(url);
+        }
+    }
     // Окна браузера могли висеть на узлах, которых в подписке больше нет:
     // держать их живыми не за что, ровно как и активный профиль.
     let gone: Vec<String> = s
@@ -1570,6 +1651,10 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 s.refence();
             }
             s.status.browsers = s.browsers.keys().cloned().collect();
+            // Здесь же, где прополка сеансов, и по той же причине: запомненное
+            // число соврало бы через секунду. Пауза в службе — `Instant`, наружу
+            // едут секунды.
+            s.status.retry_in = retry_in(s.retry_at, Instant::now());
             Response::Status(s.status.clone())
         }
         Request::ListApps => Response::Apps(s.status.apps.clone()),
@@ -1658,6 +1743,9 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
         }
         Request::RemoveSubscription { url } => match s.subscriptions.remove(&url) {
             Some(names) => {
+                // Осиротевшая запись была бы невидима (`subscriptions_of` идёт
+                // по узлам), но копилась бы на диске вечно.
+                s.quotas.remove(&url);
                 for name in &names {
                     s.forget_profile(name);
                 }
@@ -2316,7 +2404,7 @@ mod tests {
         let mut names = BTreeMap::new();
         names.insert("https://panel/sub".to_string(), "рабочая".to_string());
 
-        let out = subscriptions_of(&subs, &names, &profiles);
+        let out = subscriptions_of(&subs, &names, &profiles, &BTreeMap::new());
         assert_eq!(out.len(), 1, "подписка остаётся, даже когда узлов не осталось вовсе");
         assert_eq!(out[0].nodes, vec!["NL-02".to_string()], "удалённый узел ушёл из списка подписки");
         assert_eq!(out[0].name, "рабочая", "имя подписки переживает сверку: её заменяет только человек");
@@ -2824,6 +2912,59 @@ mod tests {
             2,
             "free_name зовут оба пути импорта: и подписка, и ручная вставка",
         );
+    }
+
+    /// Заголовок `Subscription-Userinfo` — де-факто стандарт панелей, а не RFC:
+    /// поля необязательны, порядок произволен, пробелы встречаются, а половина
+    /// панелей не шлёт его вовсе. Терпимость тут не небрежность: непонятый
+    /// заголовок обязан давать «нечего показать», а не отказ импорта — узлы в
+    /// том же ответе разобраны и нужны.
+    #[test]
+    fn a_panel_quota_is_read_from_the_header() {
+        let full = parse_userinfo(Some(
+            "upload=455727941; download=6603863621; total=1073741824000; expire=1673684400",
+        ))
+        .expect("полный заголовок разбирается");
+        assert_eq!(full.upload, 455_727_941);
+        assert_eq!(full.download, 6_603_863_621);
+        assert_eq!(full.total, 1_073_741_824_000);
+        assert_eq!(full.expire, 1_673_684_400);
+
+        // Безлимитная подписка шлёт только расход.
+        let partial = parse_userinfo(Some("upload=1; download=2")).expect("частичный заголовок");
+        assert_eq!((partial.total, partial.expire), (0, 0), "непришедшее — ноль, а не отказ");
+
+        // Пробелы и обратный порядок — та же строка.
+        let messy = parse_userinfo(Some(" expire = 7 ;  total=9 ")).expect("пробелы не мешают");
+        assert_eq!((messy.total, messy.expire), (9, 7));
+
+        // Битое число и незнакомое поле пропускаются, остальное читается.
+        let dirty = parse_userinfo(Some("upload=abc; download=5; reset_day=1")).expect("мусор не роняет");
+        assert_eq!((dirty.upload, dirty.download), (0, 5));
+
+        assert_eq!(parse_userinfo(None), None, "заголовка нет — это норма");
+        assert_eq!(parse_userinfo(Some("хлам без знака равенства")), None, "понять нечего — молчим");
+        assert_eq!(parse_userinfo(Some("upload=0; download=0")), None, "все нули показывать нечего");
+    }
+
+    /// Отсчёт до следующей попытки не показывает ноль: «через 0 с» читается как
+    /// «ничего не происходит» ровно там, где происходит ожидание. Прошедшая
+    /// пауза и отсутствие паузы для окна одно и то же — круг надзора в обоих
+    /// случаях возьмётся сам.
+    #[test]
+    fn the_retry_countdown_never_shows_zero() {
+        // Отсчёт от будущего момента: у свежего процесса `Instant::now()` может
+        // быть меньше вычитаемого, и `now - 5s` паникует.
+        let now = Instant::now() + Duration::from_secs(60);
+        assert_eq!(retry_in(None, now), None, "паузы не запланировано");
+        assert_eq!(retry_in(Some(now - Duration::from_secs(5)), now), None, "пауза уже истекла");
+        assert_eq!(retry_in(Some(now), now), None, "пауза истекает ровно сейчас");
+        assert_eq!(
+            retry_in(Some(now + Duration::from_millis(500)), now),
+            Some(1),
+            "полсекунды — это ещё «через секунду», а не «уже»",
+        );
+        assert_eq!(retry_in(Some(now + Duration::from_secs(30)), now), Some(30));
     }
 
     /// Пустой каталог состояния и очередь к нему. Каталог задаётся переменными
