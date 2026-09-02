@@ -531,3 +531,37 @@ export function Avatar({
 export function Empty({ children }: { children: ReactNode }) {
   return <p className="py-6 text-center text-[13px] text-muted">{children}</p>;
 }
+
+/** Знак: корпус со сквозным лазом, смещённым влево и вниз. Смещение и есть
+ *  марка — соосное отверстие превращает её в объектив. Разбор форм и заливок
+ *  в `docs/brand.md`.
+ *
+ *  Форма здесь одна, мелкая (углы 18, лаз 26 в точке 36/62), потому что
+ *  потребитель один — титульная полоса, 16 px. Крупная форма со свечением
+ *  живёт там, где её видит операционная система: `scripts/icons.py`. Сторож —
+ *  `the_mark_is_one_shape` в `core-ipc`.
+ *
+ *  Цвет берётся от текста (`currentColor`), а не фирменный #2E4BD8: плоский
+ *  синий стиля рассчитан на светлую плитку, а полоса окна бывает и тёмной.
+ *  Ставит цвет вызывающий — токеном темы, чтобы знак не тонул ни в одной.
+ *
+ *  Лаз вычитается (`fill-rule="evenodd"`), а не закрашивается фоном: заглушка
+ *  своим цветом — прямо запрещённый вариант знака. */
+export function Mark({ size = 16, className = "" }: { size?: number; className?: string }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 100 100"
+      fill="currentColor"
+      className={className}
+      aria-hidden="true"
+    >
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M18 0h64a18 18 0 0 1 18 18v64a18 18 0 0 1-18 18H18A18 18 0 0 1 0 82V18A18 18 0 0 1 18 0zm18 36a26 26 0 1 0 0 52 26 26 0 0 0 0-52z"
+      />
+    </svg>
+  );
+}

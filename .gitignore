@@ -5,3 +5,4 @@ dist/
 src-tauri/binaries/
 src-tauri/gen/
 .claude/
+__pycache__/
