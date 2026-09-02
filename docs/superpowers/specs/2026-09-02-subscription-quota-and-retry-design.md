@@ -256,16 +256,20 @@ fn retry_in(at: Option<Instant>, now: Instant) -> Option<u32>
    `Request::Status`; сторож на помощнике.
 2. **B, окно:** тип в `platform.ts`, строка в `i18n.ts`, ветка `down:` в
    `StatusBar.tsx`.
-3. **A, разбор:** `parse_userinfo()` + сторож на образцах. Ни диска, ни сети —
+3. **A, контракт:** `Quota` и поле `Subscription` в `core-ipc`, тип в
+   `platform.ts`. Идёт впереди разбора, а не за ним: `parse_userinfo` возвращает
+   `Quota`, и без типа не собирается ни он, ни его сторож.
+4. **A, разбор:** `parse_userinfo()` + сторож на образцах. Ни диска, ни сети —
    чистая функция, делается и проверяется отдельно от всего.
-4. **A, добыча:** сигнатуры `get()` и `fetch()`, чтение заголовка в
+5. **A, добыча:** сигнатуры `get()` и `fetch()`, чтение заголовка в
    `subscribe()`.
-5. **A, хранение:** `Saved.quotas`, запись в `subscribe()`, удаление на отписке,
+6. **A, хранение:** `Saved.quotas`, запись в `subscribe()`, удаление на отписке,
    третий аргумент `subscriptions_of()`.
-6. **A, контракт:** `Quota` и поле `Subscription` в `core-ipc`, тип в
-   `platform.ts`.
 7. **A, окно:** строка остатка в `<summary>` подписки, тона и пороги, строки в
    `i18n.ts`.
+
+Пошагово это разложено в
+`docs/superpowers/plans/2026-09-02-subscription-quota-and-retry.md`.
 
 ## Проверка
 
