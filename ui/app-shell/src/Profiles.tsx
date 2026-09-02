@@ -4,6 +4,28 @@ import type { Strings } from "./i18n";
 import { measuredAgo, strings, syncedAgo } from "./i18n";
 import { AddField, Button, ConfirmButton, Empty, flag, Panel, SearchField } from "./ui";
 
+/** Чем окажется набранное в поле импорта — по одному лишь префиксу и до
+ *  отправки. Это подпись, а не разбор: разбирает служба, и спорить с ней
+ *  нечем. Правило для `https` тут то же, по которому она уводит ссылку в
+ *  подписку, — префикс, увиденный ещё до замка (`handle()`).
+ *
+ *  Не узнали — молчим. Догадка «наверное, мусор» была бы враньём: base64-блоб
+ *  подписки, сохранённый в файл, ни на что из перечисленного не похож, а
+ *  импортируется прекрасно. */
+function sniff(s: Strings, value: string): string | undefined {
+  const text = value.trim();
+  if (text === "") return undefined;
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
+  if (lines.length > 1) return s.sniffList(lines.length);
+  if (/^https?:\/\//i.test(text)) return s.sniffSub;
+  if (text.startsWith("{")) return s.sniffJson;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return s.sniffLink;
+  return undefined;
+}
+
 /** Со скольких профилей список перестаёт читаться глазом. Порог тот же, что у
  *  приложений: одна подписка приносит десятки узлов, а подписок бывает
  *  несколько. */
@@ -131,6 +153,7 @@ export function Profiles({
           <AddField
             placeholder={s.linkPlaceholder}
             label={s.importLink}
+            hint={(value) => sniff(s, value)}
             onSubmit={(link) => act({ cmd: "add-profile", arg: { link } })}
           />
         )}

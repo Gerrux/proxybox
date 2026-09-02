@@ -29,6 +29,12 @@ const RU = {
   conduitTo: "сеть",
   profile: "Профиль",
   noProfile: "не выбран",
+  // Что окажется из набранного — подписью под полем импорта. Это не разбор:
+  // решает служба, а подпись убирает загадку «одно поле на три сущности».
+  sniffSub: "адрес подписки",
+  sniffJson: "JSON узла",
+  sniffLink: "ссылка на узел",
+  sniffList: (n: number) => `строк: ${n} — импортируются разом`,
   profileFirst: "Профиль не выбран — «Включить» поднимет этот, первый по алфавиту",
   latency: "Задержка",
   exit: "Точка выхода",
@@ -247,6 +253,10 @@ const EN: typeof RU = {
   conduitTo: "network",
   profile: "Profile",
   noProfile: "not selected",
+  sniffSub: "subscription address",
+  sniffJson: "node JSON",
+  sniffLink: "node link",
+  sniffList: (n: number) => `${n} lines — imported at once`,
   profileFirst: "No profile chosen — Turn on will start this one, first alphabetically",
   latency: "Latency",
   exit: "Exit point",
