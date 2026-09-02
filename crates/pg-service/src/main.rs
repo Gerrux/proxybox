@@ -1499,29 +1499,39 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 let s = lock(svc);
                 (s.status.settings.geo, s.status.settings.probe.clone())
             };
-            let measured: Vec<(String, Option<u32>, Option<core_tunnel::Exit>, Option<String>)> = profiles
-                .iter()
-                .map(|(name, node)| {
-                    let (host, port) = probe_target(&target, node);
-                    match core_tunnel::measure(node, &probe_dir, (&host, port), geo) {
-                        Ok((ms, exit)) => (name.clone(), Some(ms), exit, None),
-                        Err(e) => (name.clone(), None, None, Some(e.to_string())),
-                    }
-                })
-                .collect();
+            // Итог каждого узла кладётся в состояние сразу, а не копится до
+            // конца прогона. Узел стоит до `measure`-таймаута, и подписка на
+            // полсотни — это минуты бегунка без единой цифры: человек не знает,
+            // идёт прогон или завис. Окно опрашивает статус раз в две секунды,
+            // так что список сам становится указателем прогресса, и заводить
+            // ради этого ни новой команды, ни события не нужно.
+            //
+            // Замок берётся на каждый узел отдельно и только на запись: держать
+            // его через `measure` нельзя — под ним стоит весь GUI, ровно та
+            // причина, по которой список и снят копией выше.
+            let mut live = 0usize;
+            let all = profiles.len();
+            for (name, node) in &profiles {
+                let (host, port) = probe_target(&target, node);
+                let (latency, exit, error) = match core_tunnel::measure(node, &probe_dir, (&host, port), geo) {
+                    Ok((ms, exit)) => (Some(ms), exit, None),
+                    Err(e) => (None, None, Some(e.to_string())),
+                };
+                live += usize::from(latency.is_some());
+                // Не замена списка, а обновление: прогон переписывает задержку и
+                // отказ, но страну неответившего оставляет — она от того, что узел
+                // сегодня молчит, не изменилась.
+                remember(&mut lock(svc).status.probes, name, latency, exit, error);
+            }
             let mut s = lock(svc);
-            let live = measured.iter().filter(|(_, ms, _, _)| ms.is_some()).count();
-            let all = measured.len();
+            // Строка одна на весь прогон, а не на узел: журнал пишется на диск
+            // каждой строкой, и логировать в цикле нельзя.
             s.log(t(
                 &format!("прогон профилей: отвечают {live} из {all}"),
                 &format!("profile run: {live} of {all} alive"),
             ));
-            // Не замена списка, а обновление: прогон переписывает задержку и
-            // отказ, но страну неответившего оставляет — она от того, что узел
-            // сегодня молчит, не изменилась.
-            for (name, latency, exit, error) in measured {
-                remember(&mut s.status.probes, &name, latency, exit, error);
-            }
+            // На диск — один раз в конце: в память итоги уже легли по одному,
+            // а `state.json` переписывается целиком.
             s.save();
             Response::Status(s.status.clone())
         }

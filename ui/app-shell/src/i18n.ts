@@ -16,7 +16,11 @@ const RU = {
   up: "Защищено",
   upHintWhitelist: (n: number) => `Сеть выдана приложениям: ${n}. У остальных её нет`,
   upHintAll: "Весь трафик компьютера идёт через туннель",
-  upNoApps: "Туннель поднят, но сеть не выдана никому: ни одно приложение не выбрано",
+  // Пустой белый список запирает машину целиком: пропуска раздаются по
+  // списку, а пустой список — это ноль пропусков. Предупреждений два, и
+  // разница между ними в том, случилось это уже или ещё нет.
+  noAppsLocked: "Ни одно приложение не выбрано — сети нет ни у кого",
+  noAppsAhead: "Ни одно приложение не выбрано — в этом охвате сети не будет ни у кого",
   down: "Туннеля нет — доступ закрыт",
   downHintWhitelist: "Так и задумано: без туннеля без сети остаётся весь компьютер",
   downHintAll: "Так и задумано: без туннеля компьютер остаётся без сети",
@@ -25,6 +29,7 @@ const RU = {
   conduitTo: "сеть",
   profile: "Профиль",
   noProfile: "не выбран",
+  profileFirst: "Профиль не выбран — «Включить» поднимет этот, первый по алфавиту",
   latency: "Задержка",
   exit: "Точка выхода",
   received: "Принято",
@@ -216,7 +221,8 @@ const EN: typeof RU = {
   up: "Protected",
   upHintWhitelist: (n: number) => `Apps given network: ${n}. Everyone else has none`,
   upHintAll: "All computer traffic goes through the tunnel",
-  upNoApps: "The tunnel is up, but nobody was given network: no app is selected",
+  noAppsLocked: "No app is selected — nobody has network",
+  noAppsAhead: "No app is selected — in this scope nobody will have network",
   down: "No tunnel — access is closed",
   downHintWhitelist: "This is by design: without a tunnel the whole computer stays offline",
   downHintAll: "This is by design: without a tunnel the computer stays offline",
@@ -225,6 +231,7 @@ const EN: typeof RU = {
   conduitTo: "network",
   profile: "Profile",
   noProfile: "not selected",
+  profileFirst: "No profile chosen — Turn on will start this one, first alphabetically",
   latency: "Latency",
   exit: "Exit point",
   received: "Received",

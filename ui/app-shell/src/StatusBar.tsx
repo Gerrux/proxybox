@@ -224,6 +224,8 @@ export function StatusBar({
   const scope = status?.scope ?? "all";
   const all = scope === "all";
   const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
+  // Профиль не выбран, но включать есть что: поднимется первый по алфавиту.
+  const pending = status != null && !status.profile && status.profiles.length > 0;
   const latency = useCounted(status?.latency_ms ?? null);
   const rates = useRates(status);
   // Байты не доезжают: между двумя статусами их набегают десятки килобайт, и
@@ -263,13 +265,25 @@ export function StatusBar({
         },
         up: {
           title: s.up,
-          hint: all ? s.upHintAll : inTunnel > 0 ? s.upHintWhitelist(inTunnel) : s.upNoApps,
+          hint: all ? s.upHintAll : s.upHintWhitelist(inTunnel),
         },
         down: {
           title: s.down,
           hint: all ? s.downHintAll : s.downHintWhitelist,
         },
       }[status.tunnel];
+
+  // Белый список без единой галочки запирает машину целиком: пропуска
+  // раздаются по списку, а пустой список — это ноль пропусков, и остаются
+  // только sing-box да щель для DNS. Имена при этом разрешаются, поэтому со
+  // стороны это выглядит не как сработавшая защита, а как «интернет
+  // отвалился» — сказать об этом должно каждое состояние, а не только
+  // «поднят»: решение принимают в «выключено», а последствие видно там, где
+  // сети уже нет. Профилей нет вовсе — впереди более срочная новость:
+  // включать нечем.
+  if (status && !all && inTunnel === 0 && status.profiles.length > 0) {
+    view.hint = status.tunnel === "off" ? s.noAppsAhead : s.noAppsLocked;
+  }
 
   const on = status != null && status.tunnel !== "off";
   const code = status?.probes.find((p) => p.name === status.profile)?.code;
@@ -319,7 +333,7 @@ export function StatusBar({
         <Segmented
           label={s.scope}
           options={[
-            ["whitelist", s.scopeWhitelist, s.scopeHintWhitelist],
+            ["whitelist", s.scopeWhitelist, inTunnel === 0 ? s.noAppsAhead : s.scopeHintWhitelist],
             ["all", s.scopeAll, s.scopeHint],
           ]}
           value={scope}
@@ -341,7 +355,16 @@ export function StatusBar({
           уносили счётчики трафика на второй-третий ряд, а его — за нижний край
           окна. Ниже 768 px линейка целиком уходит в строку (`index.css`). */}
       <dl className="st-metrics mt-4 grid grid-cols-5 gap-y-3 border-t border-edge pt-3">
-        <Metric name={s.profile} value={status?.profile ?? s.noProfile} />
+        {/* «Не выбран» — не то же, что «неизвестен»: `App.tsx` включает первый
+            по алфавиту, и молчание тут уводит в чужую страну без единого слова.
+            Показываем предстоящий профиль приглушённо и с подсказкой — так
+            видно и что поднимется, и что выбран он не человеком. */}
+        <Metric
+          name={s.profile}
+          value={status?.profile ?? status?.profiles[0] ?? s.noProfile}
+          tone={pending ? "text-muted" : ""}
+          hint={pending ? s.profileFirst : undefined}
+        />
         {/* Флаг перед названием: точка выхода — единственная метрика, которую
             читают глазом, а не цифрой, и в узкой ячейке название всё равно
             обрезается. Код берётся из измерений того же профиля: страну и код
