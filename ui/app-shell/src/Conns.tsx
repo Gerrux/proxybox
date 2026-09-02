@@ -77,7 +77,15 @@ export function Conns({ status, className }: { status: Status | null; className?
       {!live ? (
         <Empty>{s.connsOff}</Empty>
       ) : conns.length === 0 ? (
-        <Empty>{s.connsEmpty}</Empty>
+        // Пусто — это и есть ответ на вопрос, ради которого панель открывают, и
+        // единственное место, где он помещается словами: в белом списке
+        // доказательством защиты служит отсутствие строк, а обещание «нигде не
+        // сохраняется» до сих пор жило в подсказке на счётчике, то есть не
+        // показывалось никому.
+        <Empty>
+          {s.connsEmpty}
+          {status?.scope === "whitelist" && ` ${s.connsEmptyFenced}`} {s.connsHint}
+        </Empty>
       ) : (
         <ul className="flex flex-col">
           {conns.map((c, i) => {
@@ -93,7 +101,10 @@ export function Conns({ status, className }: { status: Status | null; className?
                 // Соединения живут секундами и своего имени не имеют: ключ по
                 // содержимому, а порядковый номер — на случай двух одинаковых.
                 key={`${i}-${c.process}-${c.host}`}
-                title={leak ? s.connsDirectHint : undefined}
+                // Объяснение есть у обеих не-туннельных строк, а не только у
+                // поломки: серую («sing-box разобрал сам») раньше не объяснял
+                // никто, и читалась она ровно как красная.
+                title={leak ? s.connsDirectHint : c.tunneled ? undefined : s.connsAsideHint}
                 className="smooth relative flex items-baseline gap-3 rounded-md py-1.5 pl-3 pr-1 hover:bg-surface-2"
               >
                 <span
@@ -101,13 +112,17 @@ export function Conns({ status, className }: { status: Status | null; className?
                     c.tunneled ? "bg-open" : leak ? "bg-fault" : "bg-muted"
                   }`}
                 />
-                <span
-                  className={`w-[4.5rem] shrink-0 text-[11px] ${
-                    c.tunneled ? "text-open" : leak ? "text-fault" : "text-muted"
-                  }`}
-                >
-                  {c.tunneled ? s.connsTunnel : s.connsDirect}
-                </span>
+                {/* Слово пишется только у исключения. Под `final: proxy` в
+                    туннель идёт всё, что sing-box вообще видит, — столбец с
+                    неизменным «туннель» приучал глаз его не читать ровно к
+                    тому дню, когда там появится другое слово, и отнимал
+                    полтора сантиметра у имени хоста, которое режется. Рельс
+                    слева остаётся: он и был тем, что различает строки. */}
+                {!c.tunneled && (
+                  <span className={`shrink-0 text-[11px] ${leak ? "text-fault" : "text-muted"}`}>
+                    {s.connsDirect}
+                  </span>
+                )}
                 <span
                   className={`w-32 shrink-0 truncate text-[12.5px] ${name ? "" : "text-muted"}`}
                   title={name ? c.process : s.connsNoProcessHint}

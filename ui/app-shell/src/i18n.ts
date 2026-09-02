@@ -122,6 +122,10 @@ const RU = {
   fateUp: "Идёт через туннель",
   fateClosed: "Без сети: туннель не подтверждён",
   fateDirect: "Идёт напрямую, мимо туннеля",
+  // Снятая галочка под замком белого списка — это не «мимо туннеля»:
+  // прямого пути в продукте не осталось вовсе, приложению просто не
+  // выдан пропуск.
+  fateFenced: "Без сети: приложение не выбрано",
   apps: "Приложения",
   appsCount: (on: number, all: number) => `${on} из ${all} в туннеле`,
   discover: "Найти установленные",
@@ -148,12 +152,16 @@ const RU = {
     "Что идёт через туннель прямо сейчас. Список спрашивается, пока эта панель открыта, и нигде не сохраняется: ни в журнале, ни на диске, ни тем более наружу.",
   connsOff: "Туннеля нет — и соединений нет.",
   connsEmpty: "Туннель поднят, но по нему пока никто не ходит.",
-  connsTunnel: "туннель",
   connsDirect: "напрямую",
   connsDirectHint:
-    "Это соединение идёт мимо туннеля. Для невыбранного приложения так и задумано; если приложение выбрано — правило по пути не совпало, и оно только считается защищённым.",
+    "Выбранное приложение ушло не в туннель. Маршрута мимо туннеля в конфиге нет вовсе, так что это поломка, а не задуманный путь.",
+  connsAsideHint:
+    "Не в туннель — но и не в открытую сеть: маршрута мимо туннеля в конфиге нет. Так выглядит то, что sing-box разобрал сам: отбитый опрос шлюза, перехваченный DNS. По-настоящему ушедшего мимо соединения тут не было бы вовсе — его sing-box не видит.",
   connsNoProcess: "без процесса",
-  connsNoProcessHint: "sing-box не определил владельца: так выглядит трафик службы, драйвера и DNS.",
+  connsNoProcessHint:
+    "Владельца ищет служба по локальному порту соединения. Имени нет, если соединение уже закрылось, порт делят два сокета или это трафик драйвера, службы и DNS.",
+  connsEmptyFenced:
+    "Невыбранные приложения заперты брандмауэром, и их соединений тут не бывает: пустой список и есть признак того, что отбор работает.",
   rateHint: (peak: string) =>
     `Скорость канала: ↓ принято, ↑ отправлено. Шкала плавающая, пик окна — ${peak}. Считается по счётчикам туннеля прямо в окне и нигде не сохраняется; служба снимает их своим тактом, поэтому и график едет её шагом, а не шагом опроса.`,
   perSecond: "/с",
@@ -325,6 +333,7 @@ const EN: typeof RU = {
   fateUp: "Goes through the tunnel",
   fateClosed: "No network: the tunnel is not confirmed",
   fateDirect: "Goes directly, past the tunnel",
+  fateFenced: "No network: the app is not selected",
   apps: "Apps",
   appsCount: (on: number, all: number) => `${on} of ${all} in the tunnel`,
   discover: "Find installed",
@@ -351,12 +360,16 @@ const EN: typeof RU = {
     "What goes through the tunnel right now. The list is asked for while this panel is open and stored nowhere: not in the journal, not on disk, and certainly not outside.",
   connsOff: "No tunnel — no connections.",
   connsEmpty: "The tunnel is up, but nobody is using it yet.",
-  connsTunnel: "tunnel",
   connsDirect: "direct",
   connsDirectHint:
-    "This connection bypasses the tunnel. For an app you did not pick that is by design; if the app is picked, the path rule did not match and it is only considered protected.",
+    "A selected app went somewhere other than the tunnel. There is no bypass route in the config at all, so this is a fault, not a designed path.",
+  connsAsideHint:
+    "Not into the tunnel — but not into the open network either: there is no bypass route in the config. This is what sing-box handled itself: a rejected gateway poll, a hijacked DNS query. A connection that truly went past would not appear here at all — sing-box never sees it.",
   connsNoProcess: "no process",
-  connsNoProcessHint: "sing-box could not tell the owner: that is how service, driver and DNS traffic looks.",
+  connsNoProcessHint:
+    "The service finds the owner by the connection's local port. There is no name when the connection has already closed, two sockets share the port, or it is driver, service and DNS traffic.",
+  connsEmptyFenced:
+    "Apps you did not pick are fenced off by the firewall, and their connections never show up here: an empty list is the sign that the picking works.",
   rateHint: (peak: string) =>
     `Link speed: ↓ received, ↑ sent. The scale floats with the window, peaking at ${peak}. Counted from the tunnel counters right here in the window and stored nowhere; the service samples them at its own pace, so the graph advances at that pace, not at the polling one.`,
   perSecond: "/s",
