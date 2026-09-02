@@ -957,25 +957,16 @@ pub fn set_window_icon_for_profile(pid: u32, icon: &Path, profile: &str) -> bool
     let small = unsafe { LoadImageW(None, PCWSTR(path.as_ptr()), IMAGE_ICON, 16, 16, LR_LOADFROMFILE) };
     let (Ok(big), Ok(small)) = (big, small) else { return false };
 
-    // AppUserModelID обязан быть без пробелов и с точками; пробелы и
-    // слэши из имени профиля заменяем. Пустое имя — совместимость со
-    // старым вызовом, тогда свойства не трогаем.
+    // Пустое имя — совместимость со старым вызовом, тогда свойства не трогаем.
     let (app_id, display_name, icon_resource) = if profile.is_empty() {
         (String::new(), String::new(), String::new())
     } else {
-        let safe: String = profile.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
-        let safe = safe.trim_matches('-');
-        let app_id = if safe.is_empty() {
-            "Gerrux.ProxyBox.Browser".to_string()
-        } else {
-            format!("Gerrux.ProxyBox.Browser.{}", safe)
-        };
         // RelaunchIconResource — путь к .ico, без ",0" тоже работает, но с
         // индексом — канонично для шелла.
         let icon_str = icon.to_string_lossy().into_owned();
         let icon_res = format!("{},0", icon_str);
         let display = format!("Privacy Gateway — {}", profile);
-        (app_id, display, icon_res)
+        (app_user_model_id(profile), display, icon_res)
     };
 
     // SHGetPropertyStoreForWindow — COM, а поток paint_icon свежий
@@ -1041,6 +1032,48 @@ pub fn set_window_icon_for_profile(pid: u32, icon: &Path, profile: &str) -> bool
         unsafe { CoUninitialize() };
     }
     ok
+}
+
+/// Идентификатор задачи в панели задач: по нему Windows решает, к какой
+/// кнопке отнести окно и чей значок на ней рисовать. Своей функцией, а не
+/// строчкой на месте, потому что `set_window_icon_for_profile` целиком под
+/// `#[cfg(windows)]` и на Linux не собирается — а правила тут строгие, и без
+/// отдельной функции сторожу не за что взяться. Сторож —
+/// `the_task_id_fits_the_shell_limit`.
+///
+/// Идентификатор обязан быть без пробелов и не длиннее ста двадцати восьми
+/// знаков. Лишнее шелл не обрезает, а отказывается принимать целиком — и
+/// молча: ошибку `SetValue` наверху глотает `let _`, так что длинное имя
+/// профиля отправило бы окно в общую кнопку Chrome вместе со значком, ради
+/// которого всё и затевалось. Неалфавитно-цифровое становится дефисом,
+/// заодно уходят пробелы и слэши. Режем по символам, а не по байтам: срез
+/// посреди кириллицы уронил бы поток. Длину считаем в UTF-16 — меряет её
+/// буфер шелла, а не Rust.
+///
+/// Два имени, разошедшиеся после сто четвёртого знака, склеятся в одну
+/// кнопку. Это цена обрезки, и чинится она хешем в хвосте — если такие
+/// имена вообще у кого-нибудь заведутся.
+///
+/// Вне Windows её зовёт только сторож — отсюда и `cfg`.
+#[cfg(any(windows, test))]
+fn app_user_model_id(profile: &str) -> String {
+    const PREFIX: &str = "Gerrux.ProxyBox.Browser";
+    let safe: String = profile.chars().map(|c| if c.is_alphanumeric() { c } else { '-' }).collect();
+    let mut room = 128 - PREFIX.len() - 1; // минус точка-разделитель
+    let mut tail = String::new();
+    for c in safe.trim_matches('-').chars() {
+        let Some(left) = room.checked_sub(c.len_utf16()) else { break };
+        room = left;
+        tail.push(c);
+    }
+    // Второй trim: обрезка могла кончиться ровно на разделителе, а
+    // идентификатор с дефисом на хвосте потом никто не опознает.
+    let tail = tail.trim_matches('-');
+    if tail.is_empty() {
+        PREFIX.to_string()
+    } else {
+        format!("{PREFIX}.{tail}")
+    }
 }
 
 #[cfg(windows)]
@@ -1156,6 +1189,19 @@ mod tests {
         // 256 кодируется нулём
         assert_eq!(ico[6 + 3 * 16], 0, "256×256 кодируется 0");
         assert_ne!(icon_bytes((0x4c, 0x8d, 0xff)), icon_bytes((0x2e, 0xb8, 0x72)), "цвет доезжает до пикселей");
+    }
+
+    /// Идентификатор задачи обязан влезать в предел шелла и быть без
+    /// пробелов: длиннее — и `SetValue` откажет молча, окно уедет в общую
+    /// кнопку Chrome, то есть ровно туда, откуда его этим полем и уводят.
+    #[test]
+    fn the_task_id_fits_the_shell_limit() {
+        let long = app_user_model_id(&"Длинное имя профиля ".repeat(30));
+        assert!(long.encode_utf16().count() <= 128, "{} знаков в UTF-16: {long}", long.encode_utf16().count());
+        assert!(!long.ends_with('-'), "обрезка оставила разделитель на хвосте: {long}");
+        assert!(!app_user_model_id("Работа / дом").contains(' '), "пробелов в идентификаторе быть не может");
+        assert_eq!(app_user_model_id(" / "), "Gerrux.ProxyBox.Browser", "имя без букв — общий идентификатор");
+        assert_ne!(app_user_model_id("дом"), app_user_model_id("работа"), "разные профили — разные кнопки");
     }
 
     /// Каждый загруженный значок обязан быть освобождён. Проверить это
