@@ -476,7 +476,7 @@ export function Browsers({
               return (
                 <li
                   key={item.name}
-                  className="enter smooth flex items-center gap-2 rounded-md py-1.5 pl-3 pr-1 hover:bg-surface-2"
+                  className="enter smooth flex items-center gap-2 rounded-md py-1.5 ps-3 pe-1 hover:bg-surface-2"
                 >
                   {/* Та же картинка, что человек выбрал в форме: по ней профиль
                       и находят в списке, а её цвет — цвет значка окна в панели

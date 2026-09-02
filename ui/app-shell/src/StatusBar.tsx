@@ -482,7 +482,7 @@ function Metric({
   return (
     // Разделители только там, где линейка стоит одной строкой: в две колонки
     // левая граница второго ряда висела бы посреди пустоты.
-    <div className="m-cell min-w-0 md:border-l md:border-edge md:px-3 md:first:border-l-0 md:first:pl-0">
+    <div className="m-cell min-w-0 md:border-l md:border-edge md:px-3 md:first:border-s-0 md:first:ps-0">
       {spark}
       <dt className="m-label engraved text-muted">{name}</dt>
       {/* tabular-nums обязателен именно из-за доезда: цифры разной ширины

@@ -16,6 +16,8 @@
 #[cfg(windows)]
 mod windows_pipe;
 
+pub mod dict;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -59,6 +61,7 @@ pub enum Lang {
     #[default]
     Ru,
     En,
+    Fa,
 }
 
 static LANG: AtomicU8 = AtomicU8::new(0);
@@ -70,18 +73,75 @@ pub fn set_lang(lang: Lang) {
 pub fn lang() -> Lang {
     match LANG.load(Ordering::Relaxed) {
         0 => Lang::Ru,
-        _ => Lang::En,
+        1 => Lang::En,
+        _ => Lang::Fa,
     }
 }
 
-/// Строка на текущем языке. Оба варианта стоят рядом в коде: словарь с ключами
-/// прятал бы текст от того, кто его пишет и читает.
-pub fn t(ru: &str, en: &str) -> String {
-    match lang() {
-        Lang::Ru => ru,
-        Lang::En => en,
+/// Строка на текущем языке. Ключ — русский текст: он же и перевод на русский,
+/// поэтому таблицы RU не существует, а ненайденный ключ отдаётся как есть.
+///
+/// Раньше оба варианта стояли рядом в вызове (`t(ru, en)`), и это было честнее
+/// к читателю кода — но третий язык означал правку всех полутора сотен мест.
+/// Фраза в роли ключа — размен: текст в коде остался человеческим, а языки
+/// уехали в `dict`. Полноту таблиц стережёт `every_line_has_its_translation`.
+pub fn t(ru: &str) -> String {
+    translate(ru).to_string()
+}
+
+/// Перевод без копии — им же пользуется `tf!` перед подстановкой.
+fn translate(ru: &str) -> &str {
+    // Персидский откатывается на английский, а не на русский: пришедшему за
+    // фарси латиница ближе кириллицы.
+    let table = match lang() {
+        Lang::Ru => return ru,
+        Lang::En => dict::EN,
+        Lang::Fa => match find(dict::FA, ru) {
+            Some(fa) => return fa,
+            None => dict::EN,
+        },
+    };
+    find(table, ru).unwrap_or(ru)
+}
+
+/// Перебором, а не поиском по отсортированному: таблица в полторы сотни строк,
+/// а зовут её на строку журнала и на ошибку — не в цикле и не на пакет.
+fn find(table: &[(&'static str, &'static str)], key: &str) -> Option<&'static str> {
+    table.iter().find(|(ru, _)| *ru == key).map(|(_, tr)| *tr)
+}
+
+/// Подстановка в переведённую строку. `format!` требует литерал на этапе
+/// компиляции, а перевод приезжает из таблицы в рантайме — поэтому подстановка
+/// своя: только `{}` и только по порядку. Форматов вроде `{:>8}` тут нет и не
+/// нужно: это строки для человека, а не колонки отчёта.
+///
+/// Лишнее место оставляется как есть, а не съедается: расхождение ключа и
+/// перевода ловит сторож, но если оно всё-таки доехало, шов виднее пропажи.
+pub fn fill(pattern: &str, args: &[String]) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    let mut rest = pattern;
+    let mut args = args.iter();
+    while let Some(at) = rest.find("{}") {
+        out.push_str(&rest[..at]);
+        match args.next() {
+            Some(arg) => out.push_str(arg),
+            None => out.push_str("{}"),
+        }
+        rest = &rest[at + 2..];
     }
-    .to_string()
+    out.push_str(rest);
+    out
+}
+
+/// Строка с подстановкой: `tf!("нет профиля «{}»", name)`.
+///
+/// Ключом остаётся русский литерал целиком, поэтому переводчик видит фразу, а
+/// не огрызки вокруг дырок.
+#[macro_export]
+macro_rules! tf {
+    ($ru:literal $(, $arg:expr)* $(,)?) => {
+        $crate::fill(&$crate::t($ru), &[$(format!("{}", $arg)),*])
+    };
 }
 
 /// Имя каталога под сеанс браузера. Нужно обоим клиентам сразу: службе — под
@@ -132,8 +192,14 @@ pub fn whoami() -> BTreeMap<String, String> {
 pub fn lang_from_env() -> Lang {
     let vars = ["PG_LANG", "LC_ALL", "LC_MESSAGES", "LANG"];
     let value = vars.iter().find_map(|v| std::env::var(v).ok()).unwrap_or_default();
-    if value.is_empty() || value.to_lowercase().starts_with("ru") {
+    let value = value.to_lowercase();
+    // Русский — и на пустое окружение, и на всё непонятое: продукт
+    // русскоязычный, а гадать по чужой локали значит показать доктора на
+    // языке, которого в таблицах нет.
+    if value.is_empty() || value.starts_with("ru") {
         Lang::Ru
+    } else if value.starts_with("fa") || value.starts_with("pe") {
+        Lang::Fa
     } else {
         Lang::En
     }
@@ -743,7 +809,7 @@ impl Listener {
             if connect().is_ok() {
                 return Err(io::Error::new(
                     io::ErrorKind::AddrInUse,
-                    t("служба уже запущена: второй её экземпляр не нужен", "the service is already running: a second instance is not needed"),
+                    t("служба уже запущена: второй её экземпляр не нужен"),
                 ));
             }
             windows_pipe::probe()?;
@@ -994,10 +1060,29 @@ mod tests {
     #[test]
     fn language_switches_strings() {
         set_lang(Lang::Ru);
-        assert_eq!(t("да", "yes"), "да");
+        assert_eq!(t("да"), "да");
         set_lang(Lang::En);
-        assert_eq!(t("да", "yes"), "yes");
+        assert_eq!(t("да"), "yes");
+        set_lang(Lang::Fa);
+        assert_eq!(t("да"), "بله");
+        // Ключа нет ни в одной таблице — отдаётся русский, а не пустота и не
+        // паника: незаполненный перевод обязан быть читаемым. Спрашиваем
+        // `translate`, а не `t`: сторож полноты требует у `t` литерал, и
+        // заведомо отсутствующий ключ он бы завернул.
+        let missing = "такой строки в коде нет";
+        assert_eq!(translate(missing), missing);
         set_lang(Lang::Ru);
+    }
+
+    /// `format!` требует литерал на этапе компиляции, перевод приходит в
+    /// рантайме — подстановка своя, и края у неё свои.
+    #[test]
+    fn filling_a_pattern_keeps_the_seams_visible() {
+        assert_eq!(fill("нет профиля «{}»", &["узел".into()]), "нет профиля «узел»");
+        assert_eq!(fill("{} из {}", &["1".into(), "2".into()]), "1 из 2");
+        assert_eq!(fill("без мест", &["лишний".into()]), "без мест");
+        // Перевод с лишним местом показывает шов, а не съедает значение молча.
+        assert_eq!(fill("{} и {}", &["раз".into()]), "раз и {}");
     }
 
     #[test]
@@ -1009,7 +1094,103 @@ mod tests {
         assert_eq!(lang_from_env(), Lang::En);
         std::env::set_var("PG_LANG", "ru_RU.UTF-8");
         assert_eq!(lang_from_env(), Lang::Ru);
+        std::env::set_var("PG_LANG", "fa_IR.UTF-8");
+        assert_eq!(lang_from_env(), Lang::Fa);
+        // Непонятое — английский, а не паника и не пустая локаль.
+        std::env::set_var("PG_LANG", "de_DE.UTF-8");
+        assert_eq!(lang_from_env(), Lang::En);
         std::env::remove_var("PG_LANG");
+    }
+
+    /// Строки службы переехали из вызова (`t(ru, en)`) в таблицы `dict`, и
+    /// вместе с ними ушёл компилятор в роли редактора: раньше вызов без
+    /// английского просто не собирался, теперь он молча покажет русский —
+    /// причём покажет его тому, кто русского не знает. Сторож возвращает это
+    /// свойство текстом: вычитывает ключи из всех исходников и требует каждый
+    /// в обеих таблицах.
+    ///
+    /// Он же ловит вызов, у которого первым аргументом стоит не литерал:
+    /// собранная в рантайме строка ключом быть не может, для подстановки есть
+    /// `tf!`.
+    #[test]
+    fn every_line_has_its_translation() {
+        // `dict.rs` не читаем: он и есть ответ на этот вопрос.
+        let sources = [
+            ("core-ipc/src/lib.rs", include_str!("lib.rs")),
+            ("core-apps/src/lib.rs", include_str!("../../core-apps/src/lib.rs")),
+            ("core-config/src/lib.rs", include_str!("../../core-config/src/lib.rs")),
+            ("core-filter/src/lib.rs", include_str!("../../core-filter/src/lib.rs")),
+            ("core-tunnel/src/lib.rs", include_str!("../../core-tunnel/src/lib.rs")),
+            ("core-wfp/src/lib.rs", include_str!("../../core-wfp/src/lib.rs")),
+            ("pg-cli/src/main.rs", include_str!("../../pg-cli/src/main.rs")),
+            ("pg-cli/src/doctor.rs", include_str!("../../pg-cli/src/doctor.rs")),
+            ("pg-service/src/main.rs", include_str!("../../pg-service/src/main.rs")),
+            ("pg-service/src/service.rs", include_str!("../../pg-service/src/service.rs")),
+            // Оболочка тут нужнее всех: она вне воркспейса, и `cargo check
+            // --workspace` её не собирает вовсе. Пропущенный перевод в ней не
+            // всплыл бы до сборки на Windows.
+            ("src-tauri/src/main.rs", include_str!("../../../src-tauri/src/main.rs")),
+        ];
+
+        let mut found = 0;
+        for (name, src) in sources {
+            for (n, line) in src.lines().enumerate() {
+                let at = format!("{name}:{}", n + 1);
+                // Само определение и тело макроса переводить нечего, а в
+                // комментариях `t(ru, en)` поминается как история — она тут
+                // и написана.
+                let head = line.trim_start();
+                if head.starts_with("//") || head.starts_with('*') {
+                    continue;
+                }
+                if line.contains("fn t(") || line.contains("$crate::") {
+                    continue;
+                }
+                for (i, _) in line.match_indices('(') {
+                    let head = &line[..i];
+                    let Some(before) = head.strip_suffix("tf!").or_else(|| head.strip_suffix('t'))
+                    else {
+                        continue;
+                    };
+                    // Отсекает `insert(`, `split(`, `format!(` и прочий хвост
+                    // чужого имени: наш `t` стоит отдельным словом.
+                    if before.ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == '.') {
+                        continue;
+                    }
+                    let rest = &line[i + 1..];
+                    let key = rest
+                        .strip_prefix('"')
+                        .unwrap_or_else(|| panic!("{at}: перевод берут только у литерала: {line}"));
+                    let end = key.find('"').unwrap_or_else(|| {
+                        panic!("{at}: литерал не закрыт на строке — ключ обязан быть однострочным")
+                    });
+                    let key = &key[..end];
+                    // Ключ читает и человек, и этот сторож; экранирование
+                    // сделало бы вторым читателем разбор кавычек.
+                    assert!(!key.contains('\\'), "{at}: экранирование в ключе: {key}");
+                    assert!(find(dict::EN, key).is_some(), "{at}: нет английского: {key}");
+                    assert!(find(dict::FA, key).is_some(), "{at}: нет персидского: {key}");
+                    found += 1;
+                }
+            }
+        }
+        assert!(found > 100, "ключей нашлось {found} — сторож перестал их видеть");
+
+        // Обратная сторона: таблица без строки в коде — мусор, который
+        // переводят зря и правят вечно.
+        let code: String = sources.iter().map(|(_, s)| *s).collect();
+        for (key, _) in dict::EN {
+            assert!(code.contains(key), "ключ есть в таблице, но не в коде: {key}");
+        }
+        assert_eq!(dict::EN.len(), dict::FA.len(), "таблицы разошлись длиной");
+        for ((key, en), (fa_key, fa)) in dict::EN.iter().zip(dict::FA) {
+            assert_eq!(key, fa_key, "таблицы разошлись порядком ключей");
+            // Мест подстановки обязано быть поровну: `fill` лишнее покажет
+            // швом, а недостающее проглотит вместе со значением.
+            let places = key.matches("{}").count();
+            assert_eq!(places, en.matches("{}").count(), "разное число мест в английском: {key}");
+            assert_eq!(places, fa.matches("{}").count(), "разное число мест в персидском: {key}");
+        }
     }
 
     /// Каталог сеанса — это его `singbox.pid`: совпали каталоги — второй сеанс
@@ -1064,6 +1245,31 @@ mod tests {
             assert!(line.contains(&name), "охвата {name} нет в platform.ts: {line}");
         }
         assert_eq!(line.matches('"').count() / 2, 2, "охватов ровно два, и оба обязаны быть живыми: {line}");
+    }
+
+    /// То же и по той же причине про языки: строки `"ru"`/`"en"`/`"fa"` окно
+    /// пишет само, и язык, известный службе и неизвестный окну, — это пункт,
+    /// которого нет в списке настройки. Сборка на этом не ломается: `SetLang`
+    /// уйдёт, служба переключится, а выбрать обратно будет нечем.
+    #[test]
+    fn the_frontend_knows_the_same_languages() {
+        let ts = include_str!("../../../ui/app-shell/src/platform.ts");
+        let line = ts.lines().find(|l| l.starts_with("export type Lang")).expect("тип языка в platform.ts");
+        for lang in [Lang::Ru, Lang::En, Lang::Fa] {
+            let name = serde_json::to_string(&lang).unwrap();
+            assert!(line.contains(&name), "языка {name} нет в platform.ts: {line}");
+        }
+        assert_eq!(line.matches('"').count() / 2, 3, "языков ровно три, и все обязаны быть живыми: {line}");
+        // Названия языков живут своим словарём, и молчащий пропуск здесь —
+        // пункт настройки без подписи.
+        let i18n = include_str!("../../../ui/app-shell/src/i18n.ts");
+        for label in ["langRu", "langEn", "langFa"] {
+            assert_eq!(
+                i18n.matches(&format!("{label}:")).count(),
+                3,
+                "{label} обязан быть во всех трёх словарях окна"
+            );
+        }
     }
 
     /// Аватарка браузерного профиля и цвет значка его окна в панели задач

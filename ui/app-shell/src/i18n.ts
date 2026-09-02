@@ -1,7 +1,11 @@
-/** Строки интерфейса. Два полных словаря вместо ключей с подстановкой: EN
+/** Строки интерфейса. Полные словари вместо ключей с подстановкой: каждый
  *  типизирован как RU, поэтому забытый перевод — ошибка сборки, а не пропажа
- *  надписи в окне. */
-import type { Lang } from "./platform";
+ *  надписи в окне. Запасного языка тут нет и не нужно: `tsc` не даст завести
+ *  словарь с дыркой, в отличие от службы, где полноту стережёт тест
+ *  (`every_line_has_its_translation`).
+ *
+ *  RU остаётся первым: с него пишут, на него ссылается тип. */
+import { RTL, type Lang } from "./platform";
 
 const RU = {
   serviceDown: "Служба не отвечает",
@@ -167,6 +171,7 @@ const RU = {
   confirmRemoveOpen: "Окно открыто — куки останутся. Всё равно убрать?",
   langRu: "Русский",
   langEn: "Английский",
+  langFa: "Персидский",
   trafficHint: "За текущее подключение: счётчики начинаются заново с каждым запуском туннеля",
   fateUp: "Идёт через туннель",
   fateClosed: "Без сети: туннель не подтверждён",
@@ -420,6 +425,7 @@ const EN: typeof RU = {
   confirmRemoveOpen: "The window is open — cookies will stay. Remove anyway?",
   langRu: "Russian",
   langEn: "English",
+  langFa: "Persian",
   trafficHint: "For the current connection: the counters start over with every tunnel start",
   fateUp: "Goes through the tunnel",
   fateClosed: "No network: the tunnel is not confirmed",
@@ -528,10 +534,270 @@ const EN: typeof RU = {
   allReleases: (n: number) => `All releases (${n})`,
 };
 
+const FA: typeof RU = {
+  serviceDown: "سرویس پاسخ نمی‌دهد",
+  serviceDownHint: "PrivacyGateway را با دسترسی مدیر اجرا کنید — بدون سرویس هیچ‌چیز کار نمی‌کند",
+  off: "حالت خصوصی خاموش است",
+  offHintWhitelist: "تا وقتی حالت خاموش است، همه به شبکه می‌روند — چه انتخاب‌شده، چه نه",
+  offNoProfiles: "نخست یک پروفایل بیفزایید — فعلاً چیزی برای روشن کردن نیست",
+  offHintAll: "رایانه مستقیم به شبکه می‌رود",
+  connecting: "در حال اتصال…",
+  connectingHintWhitelist: "تا تأیید تونل، هیچ‌کس شبکه ندارد — چه انتخاب‌شده، چه نه",
+  connectingHintAll: "تا تأیید تونل، رایانه بدون شبکه می‌ماند",
+  up: "محافظت‌شده",
+  upHintWhitelist: (n: number) => `برنامه‌های دارای شبکه: ${n}. بقیه شبکه ندارند`,
+  upHintAll: "همهٔ ترافیک رایانه از تونل می‌گذرد",
+  noAppsLocked: "هیچ برنامه‌ای انتخاب نشده — هیچ‌کس شبکه ندارد",
+  noAppsAhead: "هیچ برنامه‌ای انتخاب نشده — در این دامنه هیچ‌کس شبکه نخواهد داشت",
+  down: "تونلی نیست — دسترسی بسته است",
+  downHintWhitelist: "همین‌طور طراحی شده: بدون تونل، همهٔ رایانه بدون شبکه می‌ماند",
+  downHintAll: "همین‌طور طراحی شده: بدون تونل، رایانه بدون شبکه می‌ماند",
+  retryIn: (n: number) => `تلاش بعدی تا ${n} ثانیه دیگر`,
+  turnOn: "روشن کردن",
+  turnOff: "خاموش کردن",
+  conduitTo: "شبکه",
+  profile: "پروفایل",
+  noProfile: "انتخاب نشده",
+  sniffSub: "نشانی اشتراک",
+  sniffJson: "JSON گره",
+  sniffLink: "پیوند گره",
+  sniffList: (n: number) => `${n} خط — یک‌جا وارد می‌شوند`,
+  profileFirst: "پروفایلی انتخاب نشده — «روشن کردن» همین یکی را بالا می‌آورد، نخستین به ترتیب الفبا",
+  latency: "تأخیر",
+  exit: "نقطهٔ خروج",
+  received: "دریافت‌شده",
+  sent: "ارسال‌شده",
+  profiles: "پروفایل‌ها",
+  importLink: "وارد کردن",
+  importing: "در حال وارد کردن…",
+  linkPlaceholder: "share-link، نشانی اشتراک یا JSON گره",
+  noProfiles: "هنوز پروفایلی نیست. یک share-link، نشانی اشتراک یا پیکربندی JSON بچسبانید — خودش تشخیص می‌دهد.",
+  ownProfiles: "خودی",
+  refreshSubscription: (url: string) => `به‌روزرسانی اشتراک ${url}`,
+  quotaOf: (used: string, total: string) => `${used} از ${total}`,
+  quotaUntil: (date: string) => `تا ${date}`,
+  quotaExpired: "اشتراک به پایان رسید",
+  quotaHint: "باقی‌ماندهٔ اشتراک، همان‌طور که پنل در آخرین همگام‌سازی فرستاد.",
+  tabMain: "اصلی",
+  tabBrowsers: "مرورگرها",
+  browsers: "مرورگرها",
+  browserNeedsNode: "نخست یک پروفایل گره بسازید — پنجرهٔ مرورگر از همان می‌گذرد.",
+  browserEmpty:
+    "هنوز پروفایل مرورگری نیست. نخستین را بسازید: نام و گره لازم‌اند، هویت می‌تواند همین‌طور بماند.",
+  browserNew: "پروفایل تازه",
+  browserName: "نام",
+  browserNamePlaceholder: "کار، شخصی، فروشگاه",
+  browserNameHint: "پوشهٔ کوکی‌ها و ورودهای این پنجره هم به همین نام است.",
+  browserNameLocked: "نام تغییر نمی‌کند: پوشهٔ کوکی‌ها و ورودها به همین نام است. نام دیگر یعنی پروفایل دیگر، از صفر.",
+  browserNameTaken: "پروفایلی با این نام از پیش هست — ذخیره آن را بازنویسی می‌کند.",
+  browserNode: "گره",
+  browserNodePick: "یک گره برگزینید",
+  browserNodeHint: "ترافیک پنجره از آن می‌گذرد. حالت عمومی دست نمی‌خورد.",
+  browserIdentity: "هویت",
+  browserPlatform: "سکو",
+  browserPlatformReal: "واقعی — جعل نکن",
+  browserPlatformCustom: "رشتهٔ دلخواه",
+  browserVersion: "نسخهٔ کروم",
+  browserRandom: "تصادفی",
+  browserRandomHint: "نسخهٔ تصادفی کروم روی همین سکو",
+  browserIcon: "تصویر پروفایل",
+  browserIconHint: "برای گرداندن تصویر کلیک کنید",
+  browserMismatch: (real: string) =>
+    `Sec-CH-UA باز هم می‌گوید «${real}»: سایتی که client hints را می‌خواند، ناهمخوانی با این رشته را می‌بیند.`,
+  browserUa: "user-agent — خالی یعنی واقعی",
+  browserUaField: "رشتهٔ user-agent",
+  browserUaSet: "این رشته به ‎--user-agent و navigator.userAgent می‌رود.",
+  browserUaRealNow: (platform: string, major: number) =>
+    `چیزی جایگزین نمی‌شود — مرورگر با رشتهٔ خودش می‌رود. اینجا یعنی ${platform}، کروم ${major}.`,
+  browserUaHint:
+    "سربرگ درخواست و navigator.userAgent را عوض می‌کند. Sec-CH-UA، منطقهٔ زمانی، canvas، WebGL، صفحه و شمار هسته‌ها واقعی می‌مانند و میان همهٔ پروفایل‌های این رایانه مشترک‌اند: این جدا کردن حساب‌هاست، نه ضدشناسایی.",
+  browserUaReal: "واقعی",
+  browserLang: "زبان",
+  browserLangHint: "فهرستی مانند nl-NL,nl,en-US,en — به همان ترتیبی که مرورگر می‌فرستد",
+  browserLangAuto: "زبان: بر پایهٔ کشور گره",
+  browserLangSystem: "زبان: سیستمی",
+  browserLangCustom: "زبان: دلخواه",
+  browserLangAutoNow: (country: string, value: string) => `گره اکنون در کشور «${country}» است ← ${value}`,
+  browserLangAutoUnknown: (value: string) =>
+    `کشور گره هنوز سنجیده نشده — آزمون پروفایل‌ها آن را می‌یابد. تا آن‌گاه ← ${value}`,
+  browserCancel: "انصراف",
+  browserSave: "ذخیره",
+  browserCreate: "ساختن",
+  browserOpen: "باز کردن",
+  browserOpenHint: (node: string) =>
+    `باز کردن پنجرهٔ مرورگر از راه «${node}». پنجره از آنِ خودش است: نشانک‌ها و ورودهای شما در آن پیدا نمی‌شوند و ورودهای خودش تا دفعهٔ بعد می‌مانند. حالت عمومی دست نمی‌خورد.`,
+  browserEdit: (name: string) => `ویرایش «${name}»`,
+  browserRemove: (name: string) => `برداشتن «${name}» همراه با ورودها و کوکی‌هایش`,
+  browserNodeGone: "گره دیگر نیست — برای این پروفایل یکی دیگر برگزینید",
+  removeSubscription: (url: string) => `لغو اشتراک ${url}`,
+  renameSubscription: "نام‌گذاری اشتراک",
+  subName: "نام اشتراک",
+  refreshAll: "به‌روزرسانی همه",
+  refreshAllHint: "همگام‌سازی همهٔ اشتراک‌ها یک‌جا — همان فشردن ⟳ روی تک‌تک آن‌ها",
+  imported: (added: number, kept: number, gone: number) =>
+    `افزوده: ${added}` + (kept > 0 ? `، از پیش موجود: ${kept}` : "") + (gone > 0 ? `، برداشته: ${gone}` : ""),
+  skipped: (n: number) => `خط‌های نادیده‌گرفته: ${n}`,
+  fromFile: "پرونده",
+  fromFileHint: "متن را از پرونده بگیر: پیکربندی ذخیره‌شده، برون‌ریز اشتراک، فهرست پیوندها",
+  editProfile: (name: string) => `ویرایش «${name}»`,
+  editName: "نام",
+  editNode: "گره",
+  editNodeHint:
+    "JSON گره sing-box یا یک share-link — همان چیزی که وارد کردن می‌پذیرد. خالی یعنی فقط نام عوض می‌شود.",
+  editFromSub: "گره از اشتراک آمده است: همگام‌سازی ویرایش را برمی‌گرداند. تنها گره‌های خودی ویرایش‌پذیرند.",
+  save: "ذخیره",
+  cancel: "انصراف",
+  testOne: "بررسی",
+  testOneHint: "تنها همین پروفایل را بررسی کن، بقیه دست نخورند",
+  testingProgress: (done: number, total: number) => `آزمون ${done}/${total}`,
+  fastest: "روشن کردن سریع‌ترین",
+  fastestHint: "بالا آوردن تونل روی پروفایلی که کمترین تأخیر سنجیده‌شده را دارد",
+  active: "فعال",
+  browserOn: "مرورگر",
+  browserOpenState: "باز",
+  browserOnHint: "از این گره پنجرهٔ مرورگری باز است. پنجره را ببندید و نشست خودش خاموش می‌شود",
+  testProfiles: "آزمودن",
+  testing: "در حال آزمودن…",
+  byLatency: "بر پایهٔ تأخیر",
+  byLatencyHint: "چیدن دوبارهٔ فهرست بر پایهٔ تأخیر سنجیده‌شده. نسنجیده‌ها و مرده‌ها به پایین می‌روند. این ترتیب فقط در همین پنجره زنده است.",
+  latencyThroughTunnel: "از راه تونلِ بالا سنجیده شده — RTT خودش هم در عدد هست",
+  testProfilesHint: "آزمودن هر پروفایل با اتصالی جداگانه، بی‌آنکه اتصال کنونی دست بخورد",
+  probeFailed: "پاسخ نمی‌دهد",
+  measured: (ago: string) => `سنجیده‌شده ${ago}`,
+  logged: (ago: string) => `ثبت‌شده ${ago}`,
+  yesterday: "دیروز",
+  synced: (ago: string) => `همگام‌شده ${ago}`,
+  neverSynced: "هرگز همگام نشده",
+  agoNow: "همین حالا",
+  agoMin: (n: number) => `${n} دقیقه پیش`,
+  agoHour: (n: number) => `${n} ساعت پیش`,
+  agoDay: (n: number) => `${n} روز پیش`,
+  remove: "حذف",
+  confirmRemove: "حذف شود؟",
+  confirmRemoveOpen: "پنجره باز است — کوکی‌ها می‌مانند. باز هم برداشته شود؟",
+  langRu: "روسی",
+  langEn: "انگلیسی",
+  langFa: "فارسی",
+  trafficHint: "برای اتصال کنونی: شمارنده‌ها با هر بار بالا آمدن تونل از نو آغاز می‌شوند",
+  fateUp: "از تونل می‌گذرد",
+  fateClosed: "بدون شبکه: تونل تأیید نشده",
+  fateDirect: "مستقیم می‌رود، بیرون از تونل",
+  fateFenced: "بدون شبکه: برنامه انتخاب نشده",
+  apps: "برنامه‌ها",
+  appsCount: (on: number, all: number) => `${on} از ${all} در تونل`,
+  discover: "یافتن نصب‌شده‌ها",
+  searching: "در حال جست‌وجو…",
+  addApp: "افزودن",
+  adding: "در حال افزودن…",
+  appPlaceholder: "C:\\Program Files\\…\\app.exe",
+  noApps: "فهرست خالی است — ترافیک هیچ‌کس گرفته نمی‌شود.",
+  scopeWhitelist: "فهرست سفید",
+  scopeHintWhitelist: "برنامه‌های انتخاب‌شده از تونل می‌گذرند، بقیه اصلاً شبکه ندارند",
+  scopeAll: "همهٔ رایانه",
+  scopeAllNote: "همهٔ ترافیک رایانه از تونل می‌گذرد — برنامه‌ها گزینش نمی‌شوند و این فهرست هم‌اکنون اعمال نمی‌شود. دامنه در سربرگ پنجره، کنار سر چپ کانال، جابه‌جا می‌شود.",
+  whatIsCheck: "تیک یعنی چه",
+  whitelistNote: "تیک به برنامه شبکه می‌دهد، نه اینکه آن را به تونل ببرد: نبودِ تیک یعنی برنامه اصلاً اینترنت ندارد، نه اینکه به شبکهٔ باز برگردد.",
+  searchApps: "جست‌وجو بر پایهٔ نام یا مسیر",
+  searchProfiles: "جست‌وجوی پروفایل بر پایهٔ نام",
+  appsShown: (shown: number) => `${shown} یافت شد`,
+  noMatches: "چیزی جور در نیامد — بخشی از نام یا پوشه را بیازمایید.",
+  journal: "دفتر رویدادها",
+  emptyJournal: "هنوز چیزی رخ نداده است.",
+  copyLog: "رونوشت",
+  copied: "رونوشت شد",
+  tabConns: "اتصال‌ها",
+  conns: "اتصال‌ها",
+  connsNote: (shown: number, total: number) =>
+    shown < total ? `${shown} از ${total} — پرگوترین‌ها` : `${total}`,
+  connsHint:
+    "هم‌اکنون چه چیزی از تونل می‌گذرد. فهرست تا وقتی این پنجره باز است پرسیده می‌شود و هیچ‌جا ذخیره نمی‌شود: نه در دفتر رویدادها، نه روی دیسک و به‌هیچ‌روی بیرون.",
+  connsOff: "تونلی نیست — اتصالی هم نیست.",
+  connsEmpty: "تونل بالاست، اما هنوز کسی از آن نمی‌گذرد.",
+  connsDirect: "مستقیم",
+  connsDirectHint:
+    "برنامهٔ انتخاب‌شده جایی جز تونل رفته است. در پیکربندی هیچ مسیر دورزننده‌ای نیست، پس این خرابی است، نه راهی که خواسته شده باشد.",
+  connsAsideHint:
+    "نه به تونل — اما نه به شبکهٔ باز هم: در پیکربندی مسیر دورزننده نیست. این همان چیزی است که sing-box خودش سروسامان داده: پرس‌وجوی ردشدهٔ دروازه، DNS ربوده‌شده. اتصالی که واقعاً بیرون رفته باشد اصلاً اینجا دیده نمی‌شود — sing-box آن را نمی‌بیند.",
+  connsNoProcess: "بدون فرایند",
+  connsNoProcessHint:
+    "سرویس صاحب اتصال را از روی درگاه محلی آن می‌یابد. وقتی اتصال بسته شده باشد، دو سوکت درگاه را شریک باشند یا ترافیک از آنِ درایور، سرویس و DNS باشد، نامی در کار نیست.",
+  connsEmptyFenced:
+    "برنامه‌های انتخاب‌نشده را دیوارهٔ آتش بسته است و اتصال‌هایشان هرگز اینجا پیدا نمی‌شود: فهرست خالی خودْ نشانهٔ کار کردن گزینش است.",
+  rateHint: (peak: string) =>
+    `سرعت کانال: ↓ دریافت، ↑ ارسال. مقیاس شناور است و اوج پنجره ${peak} است. از شمارنده‌های تونل همین‌جا در پنجره حساب می‌شود و هیچ‌جا ذخیره نمی‌شود؛ سرویس آن‌ها را با ضرب‌آهنگ خودش برمی‌دارد، پس نمودار هم با همان گام پیش می‌رود، نه با گام پرس‌وجو.`,
+  perSecond: "/ث",
+  hideMessage: "پنهان کردن پیام",
+  minimizeWindow: "کوچک کردن پنجره",
+  maximizeWindow: "بزرگ کردن پنجره",
+  restoreWindow: "بازگرداندن پنجره",
+  closeWindow: "بستن پنجره",
+  removeProfile: (name: string) => `حذف پروفایل ${name}`,
+  removeApp: (name: string) => `برداشتن ${name}`,
+  switchOn: "روشن",
+  switchOff: "خاموش",
+  apply: "اعمال",
+  scope: "دامنه",
+  scopeHint:
+    "«همهٔ رایانه» یعنی «همهٔ برنامه‌ها را انتخاب کن» نیست: ترافیکی که فرایندی پشتش نیست — سرویس، درایور، DNS — هم به تونل می‌رود. تفاوت دو دامنه فقط در سرنوشت انتخاب‌نشده‌هاست، برای همین جابه‌جایی، اتصال‌های زنده را پاره نمی‌کند.",
+  refreshSubs: "همگام‌سازی اشتراک‌ها",
+  refreshSubsHint:
+    "سرویس هر شش ساعت اشتراک‌ها را دوباره می‌خواند و گره‌ها را جایگزین می‌کند. مهلت از آخرین همگام‌سازی شمرده می‌شود، نه از راه‌اندازی سرویس. گره فعال در این میان خاموش نمی‌شود و گرهی که ناپدید شود حالت خصوصی را خاموش نمی‌کند.",
+  refreshHoursPlaceholder: "ساعت",
+  geoTitle: "پرسیدن کشور",
+  geoHint:
+    "تنها درخواست سرویس به بیرون: کشور گره از سرویسی بیرونی پرسیده می‌شود — و تنها از راه تونل؛ از نشانی واقعی شما درخواستی بیرون نمی‌رود. خاموشش کنید و کشوری در پنجره نخواهد بود.",
+  probeTitle: "هدف آزمون",
+  probeHint:
+    "کجا در بزنیم تا تونل بالا شمرده شود. خالی — سرور خود گره: محصول به‌طور پیش‌فرض به نشانی بیگانه دست نمی‌زند.",
+  probePlaceholder: "host:port — خالی یعنی سرور گره",
+  singboxTitle: "مسیر sing-box",
+  singboxHint:
+    "خالی — کنار سرویس، وگرنه از PATH. مسیر تازه از راه‌اندازی بعدی تونل کار می‌کند: تونل زنده برای یک تنظیم خاموش نمی‌شود.",
+  singboxPlaceholder: "C:\\Program Files\\sing-box\\sing-box.exe",
+  autostartTitle: "اجرا همراه ویندوز",
+  autostartHint:
+    "پنجره همراه سیستم بالا می‌آید و یک‌راست به سینی می‌رود. به سرویس ربطی ندارد: او در SCM است و تونل را بی‌هیچ پنجره‌ای بالا می‌آورد — اجرای خودکار برای نشان سینی است، وگرنه از رایانهٔ قفل‌شده هیچ ردی در رابط نمی‌ماند.",
+  autostartWindowsOnly: "فقط در ویندوز",
+  envOverride: "با متغیر محیطی بازنویسی شده — سرویس در دفتر رویدادها گفته است",
+  exitUnknown: "نقطهٔ خروج تا وقتی تونل بالاست دانسته می‌شود",
+  closeTitle: "پنجره بسته شود؟",
+  closeHint:
+    "سرویس تونل و قواعد دیوارهٔ آتش را بی‌هیچ پنجره‌ای نگه می‌دارد: این پنجره است که بسته می‌شود، نه محصول.",
+  closeWarn:
+    "اگر یکسره ببندید، نشانی در سینی نمی‌ماند، اما تونل و قواعد می‌مانند. آن‌گاه پنجره را تنها با میان‌بُر می‌توان بازگرداند.",
+  closeToTray: "بردن به سینی",
+  closeQuit: "بستن کامل",
+  closeRemember: "دیگر نپرس",
+  settings: "تنظیمات",
+  settingsHint: "تنظیمات: زبان، به‌روزرسانی‌ها",
+  done: "انجام شد",
+  language: "زبان",
+  languageHint:
+    "زبان را سرویس نگه می‌دارد: پیام‌های دفتر رویدادها را او می‌نویسد، و جدا کردن آن‌ها از رابط بی‌معناست.",
+  versionAndUpdates: "نسخه و به‌روزرسانی‌ها",
+  updatesHint: "پنجره تنها با فشردن دکمه سراغ به‌روزرسانی می‌رود.",
+  updateTo: (tag: string) => `به‌روزرسانی به ${tag}`,
+  version: "نسخه",
+  checkUpdates: "بررسی به‌روزرسانی",
+  checking: "در حال پرسیدن از GitHub…",
+  upToDate: "این آخرین نسخه است",
+  updateAvailable: (tag: string) => `${tag} بیرون آمد`,
+  download: "دانلود",
+  allReleases: (n: number) => `همهٔ انتشارها (${n})`,
+};
+
 export type Strings = typeof RU;
 
+const DICT: Record<Lang, Strings> = { ru: RU, en: EN, fa: FA };
+
 export function strings(lang: Lang | undefined): Strings {
-  return lang === "en" ? EN : RU;
+  return (lang && DICT[lang]) ?? RU;
+}
+
+/** Направление письма. Персидский — единственный язык справа налево, но
+ *  спрашивают его в двух местах, поэтому ответ один и живёт здесь. */
+export function dir(lang: Lang | undefined): "rtl" | "ltr" {
+  return lang && RTL.includes(lang) ? "rtl" : "ltr";
 }
 
 /** Возраст события словами. Точность крупная нарочно: важно «сейчас или

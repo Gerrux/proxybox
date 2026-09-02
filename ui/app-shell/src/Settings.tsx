@@ -147,6 +147,7 @@ export function Settings({
             options={[
               ["ru", "ru", s.langRu],
               ["en", "en", s.langEn],
+              ["fa", "fa", s.langFa],
             ]}
             value={lang ?? "ru"}
             onPick={(v) => void act({ cmd: "set-lang", arg: { lang: v as Lang } })}

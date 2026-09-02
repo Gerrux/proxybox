@@ -98,7 +98,7 @@ export function TitleBar({
   return (
     <header
       data-tauri-drag-region
-      className="flex h-8 shrink-0 items-center gap-2 overflow-hidden border-b border-edge bg-surface pl-3"
+      className="flex h-8 shrink-0 items-center gap-2 overflow-hidden border-b border-edge bg-surface ps-3"
     >
       {/* Знак остаётся, когда имя и версия уже ушли (`.tb-name` на узкой
           ширине): 16 px не мешают кнопкам, а без него полоса перестаёт
