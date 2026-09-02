@@ -863,6 +863,45 @@ fn free_name(taken: &BTreeMap<String, Value>, want: &str) -> String {
     (2..).map(|n| format!("{want} ({n})")).find(|name| !taken.contains_key(name)).expect("номер найдётся")
 }
 
+/// Что вышло из вставленного: одна ссылка, пачка или отказ с причиной.
+///
+/// Вставляют не только одну ссылку — из канала приходит десяток строк разом, из
+/// панели сохранённый base64-блоб, из чужого клиента Clash-YAML. Всё это уже
+/// умеет `parse_many`, и до сих пор он был доступен только через адрес
+/// подписки.
+///
+/// Пачка узнаётся по переносу строки, и решается это **до** `parse`, а не после
+/// его отказа: отказа не будет. Перенос `parse` не замечает вовсе — всё после
+/// `#` в ссылке это фрагмент, то есть имя узла, — и десяток ссылок он принимает
+/// за одну, названную всеми остальными. Ровно так пачка и импортировалась:
+/// молча, одним профилем с именем в три экрана.
+///
+/// Одна строка идёт наоборот — сначала `parse`, и только на его отказе
+/// `parse_many`: на битой одиночной ссылке тот вернул бы пустой список, то есть
+/// «ничего не нашлось» вместо причины, а причина — единственное, чем человек
+/// чинит опечатку в один символ. Сторож — `a_pasted_batch_is_imported_whole`.
+fn parse_pasted(text: &str) -> Result<Vec<core_config::Profile>, String> {
+    if text.lines().filter(|line| !line.trim().is_empty()).count() > 1 {
+        let many = core_config::parse_many(text);
+        if many.is_empty() {
+            return Err(t("ни одной ссылки не разобрано", "no links could be parsed"));
+        }
+        return Ok(many);
+    }
+    match core_config::parse(text) {
+        Ok(one) => Ok(vec![one]),
+        // Одна строка, а ссылкой не оказалась: так выглядит base64-блоб
+        // подписки, сохранённый в файл и вставленный телом.
+        Err(why) => {
+            let many = core_config::parse_many(text);
+            if many.is_empty() {
+                return Err(why);
+            }
+            Ok(many)
+        }
+    }
+}
+
 /// Импорт и обновление подписки — одно и то же действие: скачать и заменить
 /// набор профилей целиком. Узла, которого в подписке больше нет, не должно
 /// остаться и в списке.
@@ -1325,15 +1364,33 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             });
             Response::Done
         }
-        Request::AddProfile { link } => match core_config::parse(&link) {
-            Ok(p) => {
-                s.profiles.insert(p.name.clone(), p.node);
-                s.log(t(&format!("профиль «{}» импортирован", p.name), &format!("profile \"{}\" imported", p.name)));
-                s.save();
-                Response::Done
-            }
-            Err(e) => Response::Error { message: e },
-        },
+        Request::AddProfile { link } => {
+            let found = match parse_pasted(&link) {
+                Ok(found) => found,
+                Err(why) => return Response::Error { message: why },
+            };
+            // Занятое имя получает номер — ровно как в подписке. Голый `insert`
+            // молча заменял узел под уже существующим именем, и если это имя
+            // было активным профилем, оно начинало показывать на другой сервер
+            // при живом sing-box от прежнего.
+            let names: Vec<String> = found
+                .into_iter()
+                .map(|profile| {
+                    let name = free_name(&s.profiles, &profile.name);
+                    s.profiles.insert(name.clone(), profile.node);
+                    name
+                })
+                .collect();
+            s.log(match names.as_slice() {
+                [one] => t(&format!("профиль «{one}» импортирован"), &format!("profile \"{one}\" imported")),
+                many => t(
+                    &format!("импортировано профилей: {}", many.len()),
+                    &format!("profiles imported: {}", many.len()),
+                ),
+            });
+            s.save();
+            Response::Done
+        }
         Request::SetLang { lang } => {
             // Язык переключает и журнал службы: сообщения пишет она, а читает
             // их пользователь в окне.
@@ -2350,6 +2407,44 @@ mod tests {
         assert!(
             include_str!("main.rs").contains(&needle),
             "load() обязана чистить список приложений, пришедший с диска"
+        );
+    }
+
+    /// Вставленное разбирается целиком, а не первой строкой: из канала ссылки
+    /// приходят пачкой. И наоборот — одиночная битая ссылка обязана остаться
+    /// отказом с причиной, а не превратиться в «ничего не нашлось»: причина
+    /// тут единственное, чем чинят опечатку в один символ.
+    #[test]
+    fn a_pasted_batch_is_imported_whole() {
+        const A: &str = "vless://b831381d-6324-4d53-ad4f-8cda48b30811@a.com:443?type=tcp#A";
+        const B: &str = "vless://b831381d-6324-4d53-ad4f-8cda48b30811@b.com:443?type=tcp#B";
+
+        assert_eq!(parse_pasted(A).unwrap().len(), 1, "одна ссылка так и остаётся одной");
+        let both = parse_pasted(&format!("{A}\n{B}")).unwrap();
+        let names: Vec<&str> = both.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(both.len(), 2, "пачка разбирается целиком, а не первой строкой: {names:?}");
+        // Имена — то самое место, где ломался прежний путь: `parse` утаскивал
+        // вторую ссылку во фрагмент первой и звал это именем узла.
+        assert_eq!(names, ["A", "B"], "у каждого узла своё имя, а не хвост из соседней строки");
+
+        let why = parse_pasted("это вообще не ссылка").unwrap_err();
+        assert!(!why.is_empty(), "у битой одиночной ссылки остаётся причина отказа");
+    }
+
+    /// Занятое имя получает номер на обоих путях импорта. Голый `insert` в
+    /// ручной вставке молча забирал чужое имя: старый узел исчезал без слова, а
+    /// активный профиль начинал показывать на другой сервер — при живом
+    /// sing-box от прежнего.
+    ///
+    /// Сверяется текстом: подменить тут нечего, а забыть вызов — легко, ровно
+    /// так эта дыра и появилась.
+    #[test]
+    fn a_hand_imported_profile_never_steals_a_taken_name() {
+        let needle = format!("{}(&s.profiles", "free_name");
+        assert_eq!(
+            include_str!("main.rs").matches(&needle).count(),
+            2,
+            "free_name зовут оба пути импорта: и подписка, и ручная вставка",
         );
     }
 

@@ -164,50 +164,77 @@ export function Icon({ name, className = "" }: { name: IconName; className?: str
 export const FIELD =
   "selectable h-8 w-full min-w-0 flex-1 rounded-md border border-edge bg-surface-2 px-3 text-[13px] outline-none transition-colors placeholder:text-muted focus:border-accent";
 
+/** То же поле, но многострочное: высоту задаёт `rows`, а не `h-8`. */
+const FIELD_MULTI = `${FIELD.replace("h-8", "h-auto")} resize-none py-[5px] leading-[22px]`;
+
 /** Поле «ввести и добавить»: своё состояние держит само — снаружи оно не нужно.
  *
  *  Чистится только на «приняли». Разобрать ссылку служба может отказаться — и
  *  тогда очищенное поле означало бы, что вставленный share-link надо искать
- *  заново, хотя в нём чаще всего опечатка в один символ. */
+ *  заново, хотя в нём чаще всего опечатка в один символ.
+ *
+ *  Поле многострочное, и это не про удобство набора: ссылки приходят пачкой из
+ *  канала, а `<input>` при вставке склеивает строки в одну — разобрать её потом
+ *  нечем, разделителя не осталось. Набирают сюда всё равно одну строку, поэтому
+ *  Enter отправляет, а перенос остаётся на Shift+Enter.
+ *
+ *  Фокус берётся сразу: поле не стоит в панели всегда, его открывают кнопкой —
+ *  и второй клик, чтобы начать печатать, здесь лишний. */
 export function AddField({
   placeholder,
   label,
   onSubmit,
+  hint,
   className = "",
 }: {
   placeholder: string;
   label: string;
   onSubmit: (value: string) => Promise<boolean>;
+  /** Чем окажется набранное — подписью под полем. Одно поле принимает три
+   *  разные вещи, и до отправки об этом не говорило ничего. */
+  hint?: (value: string) => string | undefined;
   className?: string;
 }) {
   const [value, setValue] = useState("");
   // Подписка выкачивается секундами: без этого второй Enter уходил бы службе
   // вдогонку первому.
   const [busy, setBusy] = useState(false);
+  const said = hint?.(value);
   return (
-    <form
-      className={`flex gap-2 ${className}`}
-      onSubmit={(e) => {
-        e.preventDefault();
-        const trimmed = value.trim();
-        if (!trimmed || busy) return;
-        setBusy(true);
-        void onSubmit(trimmed)
-          .then((accepted) => accepted && setValue(""))
-          .finally(() => setBusy(false));
-      }}
-    >
-      <input
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        placeholder={placeholder}
-        spellCheck={false}
-        className={FIELD}
-      />
-      <Button type="submit" variant="primary" disabled={busy || !value.trim()}>
-        {label}
-      </Button>
-    </form>
+    <div className={`flex min-w-0 flex-col gap-1 ${className}`}>
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const trimmed = value.trim();
+          if (!trimmed || busy) return;
+          setBusy(true);
+          void onSubmit(trimmed)
+            .then((accepted) => accepted && setValue(""))
+            .finally(() => setBusy(false));
+        }}
+      >
+        <textarea
+          autoFocus
+          value={value}
+          rows={Math.min(6, value.split("\n").length)}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              e.currentTarget.form?.requestSubmit();
+            }
+          }}
+          placeholder={placeholder}
+          spellCheck={false}
+          className={FIELD_MULTI}
+        />
+        <Button type="submit" variant="primary" disabled={busy || !value.trim()}>
+          {label}
+        </Button>
+      </form>
+      {said && <span className="text-[11px] text-muted">{said}</span>}
+    </div>
   );
 }
 
