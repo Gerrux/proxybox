@@ -965,7 +965,7 @@ pub fn set_window_icon_for_profile(pid: u32, icon: &Path, profile: &str) -> bool
         // индексом — канонично для шелла.
         let icon_str = icon.to_string_lossy().into_owned();
         let icon_res = format!("{},0", icon_str);
-        let display = format!("Privacy Gateway — {}", profile);
+        let display = format!("proxybox — {}", profile);
         (app_user_model_id(profile), display, icon_res)
     };
 

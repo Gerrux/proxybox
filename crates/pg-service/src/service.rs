@@ -19,7 +19,7 @@ use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use windows_service::{define_windows_service, service_dispatcher};
 
 pub use core_ipc::SERVICE_NAME as NAME;
-const DISPLAY: &str = "Privacy Gateway";
+const DISPLAY: &str = "proxybox";
 const DESCRIPTION: &str = "Пускает выбранные приложения в сеть только через туннель пользователя \
                            и отказывает им в доступе, когда туннеля нет.";
 /// Аргумент, с которым службу запускает SCM. Без него бинарник работает

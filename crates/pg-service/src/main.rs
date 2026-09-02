@@ -1,4 +1,4 @@
-//! Служба Privacy Gateway: единственный владелец состояния, процесса sing-box и
+//! Служба proxybox: единственный владелец состояния, процесса sing-box и
 //! правил брандмауэра. Клиенты (GUI, CLI) только шлют команды и читают статус.
 //!
 //! ponytail: пока обычный консольный бинарник. Регистрация Windows Service нужна
@@ -90,7 +90,28 @@ fn dir() -> PathBuf {
         .or_else(|_| std::env::var("XDG_CONFIG_HOME"))
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"));
-    base.join("privacy-gateway")
+    settle(base)
+}
+
+/// Каталог состояния под именем продукта — и переезд из каталога под прошлым
+/// именем, если он ещё лежит рядом.
+///
+/// Переименование не имеет права стоить человеку профилей, подписок и списка
+/// приложений: всё это лежит в одном `state.json`, и оставленный на прежнем
+/// месте он выглядит как «продукт забыл всё» — при целых, никуда не девшихся
+/// файлах.
+///
+/// Переезжаем только когда нового каталога ещё нет: иначе переезд затёр бы уже
+/// нажитое на новом имени. А если переехать не вышло — каталог занят, прав не
+/// хватило, — работаем там, где данные, а не там, где красивее. Пустой новый
+/// каталог рядом с полным старым хуже несостоявшегося переименования.
+fn settle(base: PathBuf) -> PathBuf {
+    let dir = base.join("proxybox");
+    let legacy = base.join("privacy-gateway");
+    if !dir.exists() && legacy.exists() && std::fs::rename(&legacy, &dir).is_err() {
+        return legacy;
+    }
+    dir
 }
 
 /// TUN — только на целевой платформе; в разработке хватает локального SOCKS.
@@ -830,7 +851,7 @@ fn get(url: &str, proxy: Option<&str>) -> Result<String, String> {
         // Панели отдают формат по User-Agent, и на незнакомое имя почти все
         // выдают список ссылок. Clash-YAML разбирается тоже, так что промах
         // с форматом здесь больше не отказ импорта.
-        .user_agent(concat!("privacy-gateway/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("proxybox/", env!("CARGO_PKG_VERSION")))
         .build()
         .into();
     agent.get(url).call().map_err(|e| fail(&e))?.body_mut().read_to_string().map_err(|e| fail(&e))
@@ -1835,6 +1856,52 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Свой пустой каталог на каждый прогон: тесты бегут в одном процессе, и
+    /// общий временный каталог давал бы им ронять друг друга через диск.
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("pg-settle-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Переименование продукта не имеет права стоить человеку состояния.
+    /// Профили, подписки и список приложений лежат в одном `state.json`, и
+    /// служба, начавшая с чистого каталога, выглядит как продукт, забывший всё
+    /// — при целых файлах на прежнем месте.
+    ///
+    /// Три случая, и каждый ломается по-своему: обычный переезд; переезд, когда
+    /// новый каталог уже нажит (затереть его — та же потеря, только наоборот);
+    /// и чистая установка, где переносить нечего и выдумывать каталог не надо.
+    #[test]
+    fn the_rename_never_loses_what_the_service_remembered() {
+        let base = scratch("moves");
+        std::fs::create_dir_all(base.join("privacy-gateway")).unwrap();
+        std::fs::write(base.join("privacy-gateway").join("state.json"), "{\"profiles\":[]}").unwrap();
+        let dir = settle(base.clone());
+        assert_eq!(dir, base.join("proxybox"), "каталог обязан переехать под новое имя");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("state.json")).unwrap(),
+            "{\"profiles\":[]}",
+            "состояние обязано доехать вместе с каталогом"
+        );
+        assert!(!base.join("privacy-gateway").exists(), "старый каталог обязан исчезнуть, а не раздвоиться");
+
+        // Нажитое под новым именем сильнее старого: переезд поверх — это потеря
+        // ровно того состояния, которым человек пользуется прямо сейчас.
+        let base = scratch("keeps");
+        std::fs::create_dir_all(base.join("privacy-gateway")).unwrap();
+        std::fs::write(base.join("privacy-gateway").join("state.json"), "старое").unwrap();
+        std::fs::create_dir_all(base.join("proxybox")).unwrap();
+        std::fs::write(base.join("proxybox").join("state.json"), "новое").unwrap();
+        let dir = settle(base.clone());
+        assert_eq!(std::fs::read_to_string(dir.join("state.json")).unwrap(), "новое", "переезд затёр нажитое");
+
+        // Чистая установка: каталога нет вовсе, и выдумывать переезд не из чего.
+        let base = scratch("fresh");
+        assert_eq!(settle(base.clone()), base.join("proxybox"));
+    }
+
     fn conn(process: &str, tunneled: bool, bytes: u64) -> Conn {
         Conn {
             process: process.into(),
@@ -2603,7 +2670,7 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
     Ok(())
 }
 
-const USAGE: &str = "pg-service — служба Privacy Gateway
+const USAGE: &str = "pg-service — служба proxybox
 
   (без аргументов)  работать консольным процессом (разработка)
   install           зарегистрировать службу Windows и включить автозапуск

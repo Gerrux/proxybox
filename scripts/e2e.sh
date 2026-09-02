@@ -17,7 +17,7 @@ export XDG_CONFIG_HOME="$WORK/cfg"
 # добивает reap_orphan при следующем старте, здесь это делает уборщик скрипта.
 cleanup() {
   kill $(jobs -p) 2>/dev/null || true
-  kill -9 "$(cat "$XDG_CONFIG_HOME/privacy-gateway/singbox.pid" 2>/dev/null)" 2>/dev/null || true
+  kill -9 "$(cat "$XDG_CONFIG_HOME/proxybox/singbox.pid" 2>/dev/null)" 2>/dev/null || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -47,12 +47,12 @@ step "служба"
 sleep 1
 
 step "импорт share-link и включение"
-./target/debug/privacy-gateway add-profile --link "vless://$UUID@127.0.0.1:10443?type=tcp#e2e"
-./target/debug/privacy-gateway profiles | grep -q e2e || fail "профиль не импортировался"
-./target/debug/privacy-gateway on --profile e2e
+./target/debug/proxybox add-profile --link "vless://$UUID@127.0.0.1:10443?type=tcp#e2e"
+./target/debug/proxybox profiles | grep -q e2e || fail "профиль не импортировался"
+./target/debug/proxybox on --profile e2e
 sleep 5
-./target/debug/privacy-gateway status
-./target/debug/privacy-gateway status | grep -q "поднят" || fail "туннель не поднялся"
+./target/debug/proxybox status
+./target/debug/proxybox status | grep -q "поднят" || fail "туннель не поднялся"
 
 step "трафик действительно идёт через туннель"
 BODY=$(curl -s --socks5-hostname 127.0.0.1:48292 http://127.0.0.1:18080/)
@@ -62,10 +62,10 @@ BODY=$(curl -s --socks5-hostname 127.0.0.1:48292 http://127.0.0.1:18080/)
 # врёт (так и было — `sleep 4` пережил ту правку и валил скрипт), а длиннее
 # периода удлиняет прогон на ровном месте.
 for _ in $(seq 25); do
-  if ./target/debug/privacy-gateway status | grep -qE 'трафик: +↓[1-9]'; then break; fi
+  if ./target/debug/proxybox status | grep -qE 'трафик: +↓[1-9]'; then break; fi
   sleep 1
 done
-./target/debug/privacy-gateway status | grep -qE 'трафик: +↓[1-9]' || fail "счётчики трафика пусты"
+./target/debug/proxybox status | grep -qE 'трафик: +↓[1-9]' || fail "счётчики трафика пусты"
 
 step "соединения видны и подписаны маршрутом"
 # Список показывает открытые прямо сейчас соединения, а curl из прошлого шага
@@ -80,23 +80,23 @@ while True: held.append(s.accept())' &
 sleep 1
 curl -s -m 20 --socks5-hostname 127.0.0.1:48292 http://127.0.0.1:18081/ >/dev/null &
 sleep 2
-./target/debug/privacy-gateway conns
-./target/debug/privacy-gateway conns | grep -q "18081" || fail "живое соединение не попало в список"
-./target/debug/privacy-gateway conns | grep -q "туннель" || fail "соединение не подписано маршрутом"
+./target/debug/proxybox conns
+./target/debug/proxybox conns | grep -q "18081" || fail "живое соединение не попало в список"
+./target/debug/proxybox conns | grep -q "туннель" || fail "соединение не подписано маршрутом"
 
 step "перезапуск службы: приватный режим восстанавливается сам"
 SVC=$(ss -ltnp 2>/dev/null | grep ':48291 ' | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
 kill "$SVC"; sleep 1
 ./target/debug/pg-service >>"$WORK/service.log" 2>&1 &
 sleep 6
-./target/debug/privacy-gateway status
-./target/debug/privacy-gateway status | grep -q "поднят" || fail "после перезапуска туннель не поднялся сам"
+./target/debug/proxybox status
+./target/debug/proxybox status | grep -q "поднят" || fail "после перезапуска туннель не поднялся сам"
 
 step "fail-closed: сервер убит"
 kill $SERVER; wait $SERVER 2>/dev/null || true
 sleep 5
-./target/debug/privacy-gateway status
-./target/debug/privacy-gateway status | grep -q "без сети" || fail "падение сервера не переведено в DROP"
+./target/debug/proxybox status
+./target/debug/proxybox status | grep -q "без сети" || fail "падение сервера не переведено в DROP"
 curl -s -m 5 --socks5-hostname 127.0.0.1:48292 http://127.0.0.1:18080/ && fail "через мёртвый туннель что-то прошло"
 
 printf '\nВСЁ ПРОШЛО\n'

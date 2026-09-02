@@ -12,8 +12,8 @@ export XDG_CONFIG_HOME="$WORK/cfg"
 export PG_TUN=0
 # Язык фиксируем: скрипт сверяет строки, а не смысл.
 export PG_LANG=ru
-STATE="$XDG_CONFIG_HOME/privacy-gateway/state.json"
-CLI=target/debug/privacy-gateway
+STATE="$XDG_CONFIG_HOME/proxybox/state.json"
+CLI=target/debug/proxybox
 
 cleanup() { kill $(jobs -p) 2>/dev/null || true; rm -rf "$WORK"; }
 trap cleanup EXIT

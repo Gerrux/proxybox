@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 pub const TAG_PROXY: &str = "proxy";
 /// Имя нашего TUN-адаптера: по нему его видно в системе и не спутать с чужим.
-pub const TUN_NAME: &str = "Privacy Gateway";
+pub const TUN_NAME: &str = "proxybox";
 /// Наш адрес на TUN — он же источник пакетов, вышедших из туннеля, и по нему
 /// брандмауэр отличает их от прямых (`core_filter::set_fence`). Оттого и `pub`.
 ///

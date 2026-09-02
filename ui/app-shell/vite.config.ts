@@ -13,7 +13,7 @@ const VERSION = JSON.parse(
 /** Куда стучаться в службу (core_ipc::ADDR и core_ipc::PIPE). Дублируется
  *  здесь только ради разработки. */
 const SERVICE_PORT = 48291;
-const SERVICE_PIPE = "\\\\.\\pipe\\privacy-gateway";
+const SERVICE_PIPE = "\\\\.\\pipe\\proxybox";
 
 /**
  * Мост «браузер → служба» для разработки. Служба говорит построчным JSON по
