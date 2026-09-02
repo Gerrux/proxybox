@@ -296,8 +296,12 @@ function Rows({ names, status, act, s }: { names: string[]; status: Status | nul
             )}
             {/* У активного профиля удаление гасит туннель, и выбранные
                 приложения остаются без сети — такое по одному клику мимо
-                случаться не должно. Неактивный уходит сразу. */}
-            {live ? (
+                случаться не должно. То же и у узла, на который смотрит открытое
+                окно браузера: `forget_profile` зовёт `stop_sessions_on`, то есть
+                промах мыши оставляет это окно без сети. Признак уже посчитан
+                строкой выше — спрашиваем. Неактивный и никем не занятый уходит
+                сразу. */}
+            {live || browsing ? (
               <ConfirmButton label={s.removeProfile(name)} ask={s.confirmRemove} onConfirm={remove} />
             ) : (
               <Button variant="danger" aria-label={s.removeProfile(name)} onClick={remove}>
