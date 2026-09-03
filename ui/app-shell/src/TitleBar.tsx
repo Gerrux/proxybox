@@ -111,9 +111,11 @@ export function TitleBar({
   return (
     <header
       onContextMenu={(e) => {
-        // Меню окна — только за саму полосу: правый клик по кнопке или по
-        // версии открыл бы его вместо того, чего человек ждёт от кнопки.
-        if (e.target !== e.currentTarget) return;
+        // Меню окна — только за то, за что окно и таскают: за пустые места
+        // полосы, знак и имя. Правый клик по кнопке открыл бы его вместо того,
+        // чего человек ждёт от кнопки, поэтому признак тут тот же, что и у
+        // перетаскивания, — он и стоит ровно на тех местах.
+        if (!(e.target as HTMLElement).hasAttribute("data-tauri-drag-region")) return;
         e.preventDefault();
         void systemMenu(true);
       }}
