@@ -353,21 +353,33 @@ fn is_own_process(path: &str, system: &str) -> bool {
     is_exe(path) && (system.is_empty() || !path.to_lowercase().starts_with(&system.to_lowercase()))
 }
 
-/// ponytail: список процессов берётся одним заходом в буфер на 4096 записей —
-/// столько их не бывает даже на сервере. Потолок: хвост сверх этого не увидим;
-/// апгрейд — повторять с растущим буфером, пока заполнен целиком.
+/// Все номера процессов машины.
+///
+/// Буфер растёт, пока не окажется свободного места: «сколько не влезло»
+/// `EnumProcesses` не сообщает вовсе, и полностью заполненный буфер — это и
+/// есть «может быть, влезло не всё». Начинаем с 4096: столько процессов не
+/// бывает даже на сервере, так что второй заход — случай почти теоретический,
+/// а вот молча потерянный хвост списка означал бы приложение, которое человек
+/// не нашёл и потому оставил без туннеля.
 #[cfg(windows)]
 fn pids() -> Vec<u32> {
     use windows::Win32::System::ProcessStatus::EnumProcesses;
 
-    let mut pids = [0u32; 4096];
-    let mut filled = 0u32;
-    // SAFETY: размер передаётся в байтах, ответ — сколько байт заполнено.
-    let ok = unsafe { EnumProcesses(pids.as_mut_ptr(), std::mem::size_of_val(&pids) as u32, &mut filled) };
-    if ok.is_err() {
-        return Vec::new();
+    let mut pids = vec![0u32; 4096];
+    loop {
+        let mut filled = 0u32;
+        let size = std::mem::size_of_val(&pids[..]) as u32;
+        // SAFETY: размер передаётся в байтах, ответ — сколько байт заполнено.
+        if unsafe { EnumProcesses(pids.as_mut_ptr(), size, &mut filled) }.is_err() {
+            return Vec::new();
+        }
+        let count = filled as usize / std::mem::size_of::<u32>();
+        if count < pids.len() {
+            pids.truncate(count);
+            return pids;
+        }
+        pids.resize(pids.len() * 2, 0);
     }
-    pids[..filled as usize / std::mem::size_of::<u32>()].to_vec()
 }
 
 /// Кто владеет локальным портом: `(протокол, порт)` → путь к его exe.
