@@ -62,6 +62,9 @@ pub enum Lang {
     Ru,
     En,
     Fa,
+    Zh,
+    Tr,
+    Id,
 }
 
 static LANG: AtomicU8 = AtomicU8::new(0);
@@ -70,13 +73,23 @@ pub fn set_lang(lang: Lang) {
     LANG.store(lang as u8, Ordering::Relaxed);
 }
 
+/// Число обратно в вариант. Пары `as u8` и этой таблицы держатся на порядке
+/// объявления, а порядок глазом не проверить — сверяет `every_language_survives_a_round_trip`.
 pub fn lang() -> Lang {
     match LANG.load(Ordering::Relaxed) {
         0 => Lang::Ru,
         1 => Lang::En,
-        _ => Lang::Fa,
+        2 => Lang::Fa,
+        3 => Lang::Zh,
+        4 => Lang::Tr,
+        _ => Lang::Id,
     }
 }
+
+/// Все языки — для перебора в сторожах и в клиентах. Забыть тут вариант нельзя:
+/// исчерпывающий `match` ниже в `translate` требует ветку каждому, а длину
+/// списка сверяет тот же сторож.
+pub const LANGS: [Lang; 6] = [Lang::Ru, Lang::En, Lang::Fa, Lang::Zh, Lang::Tr, Lang::Id];
 
 /// Строка на текущем языке. Ключ — русский текст: он же и перевод на русский,
 /// поэтому таблицы RU не существует, а ненайденный ключ отдаётся как есть.
@@ -91,17 +104,25 @@ pub fn t(ru: &str) -> String {
 
 /// Перевод без копии — им же пользуется `tf!` перед подстановкой.
 fn translate(ru: &str) -> &str {
-    // Персидский откатывается на английский, а не на русский: пришедшему за
-    // фарси латиница ближе кириллицы.
+    // Всё, кроме английского, откатывается на английский, а не сразу на ключ:
+    // пришедшему за китайским латиница ближе кириллицы. Английский отступает
+    // на ключ — дальше отступать некуда, ключ и есть русский.
     let table = match lang() {
         Lang::Ru => return ru,
         Lang::En => dict::EN,
-        Lang::Fa => match find(dict::FA, ru) {
-            Some(fa) => return fa,
-            None => dict::EN,
-        },
+        Lang::Fa => dict::FA,
+        Lang::Zh => dict::ZH,
+        Lang::Tr => dict::TR,
+        Lang::Id => dict::ID,
     };
-    find(table, ru).unwrap_or(ru)
+    lookup(table, ru)
+}
+
+/// Откат отдельной функцией, а не строкой внутри `translate`: со статическими
+/// таблицами дырку для проверки не завести (сторож полноты её не пустит), а
+/// сюда достаточно передать пустую.
+fn lookup<'a>(table: &[(&'static str, &'static str)], ru: &'a str) -> &'a str {
+    find(table, ru).or_else(|| find(dict::EN, ru)).unwrap_or(ru)
 }
 
 /// Перебором, а не поиском по отсортированному: таблица в полторы сотни строк,
@@ -193,16 +214,26 @@ pub fn lang_from_env() -> Lang {
     let vars = ["PG_LANG", "LC_ALL", "LC_MESSAGES", "LANG"];
     let value = vars.iter().find_map(|v| std::env::var(v).ok()).unwrap_or_default();
     let value = value.to_lowercase();
-    // Русский — и на пустое окружение, и на всё непонятое: продукт
-    // русскоязычный, а гадать по чужой локали значит показать доктора на
-    // языке, которого в таблицах нет.
-    if value.is_empty() || value.starts_with("ru") {
-        Lang::Ru
-    } else if value.starts_with("fa") || value.starts_with("pe") {
-        Lang::Fa
-    } else {
-        Lang::En
+    // Пустое окружение — русский: продукт русскоязычный. Всё непонятое —
+    // английский: гадать по чужой локали значит показать доктора на языке,
+    // которого в таблицах нет.
+    if value.is_empty() {
+        return Lang::Ru;
     }
+    // `pe` — старое обозначение персидского, встречается в чужих скриптах.
+    for (prefix, lang) in [
+        ("ru", Lang::Ru),
+        ("fa", Lang::Fa),
+        ("pe", Lang::Fa),
+        ("zh", Lang::Zh),
+        ("tr", Lang::Tr),
+        ("id", Lang::Id),
+    ] {
+        if value.starts_with(prefix) {
+            return lang;
+        }
+    }
+    Lang::En
 }
 
 /// Браузерный профиль — личность окна, и она не то же самое, что узел. Узел
@@ -1065,6 +1096,12 @@ mod tests {
         assert_eq!(t("да"), "yes");
         set_lang(Lang::Fa);
         assert_eq!(t("да"), "بله");
+        set_lang(Lang::Zh);
+        assert_eq!(t("да"), "是");
+        set_lang(Lang::Tr);
+        assert_eq!(t("да"), "evet");
+        set_lang(Lang::Id);
+        assert_eq!(t("да"), "ya");
         // Ключа нет ни в одной таблице — отдаётся русский, а не пустота и не
         // паника: незаполненный перевод обязан быть читаемым. Спрашиваем
         // `translate`, а не `t`: сторож полноты требует у `t` литерал, и
@@ -1072,6 +1109,19 @@ mod tests {
         let missing = "такой строки в коде нет";
         assert_eq!(translate(missing), missing);
         set_lang(Lang::Ru);
+    }
+
+    /// Откат идёт на английский, а не сразу на ключ: пришедшему за китайским
+    /// латиница ближе кириллицы. Ступеней две, и обе тут видны — пустая
+    /// таблица отдаёт английский, а несуществующий ключ отдаёт сам себя.
+    #[test]
+    fn a_hole_in_a_table_falls_back_to_english() {
+        assert_eq!(lookup(&[], "да"), "yes", "дырка обязана падать на английский");
+        assert_eq!(
+            lookup(&[], "такой строки в коде нет"),
+            "такой строки в коде нет",
+            "дальше английского отступать некуда — ключ и есть русский"
+        );
     }
 
     /// `format!` требует литерал на этапе компиляции, перевод приходит в
@@ -1094,8 +1144,15 @@ mod tests {
         assert_eq!(lang_from_env(), Lang::En);
         std::env::set_var("PG_LANG", "ru_RU.UTF-8");
         assert_eq!(lang_from_env(), Lang::Ru);
-        std::env::set_var("PG_LANG", "fa_IR.UTF-8");
-        assert_eq!(lang_from_env(), Lang::Fa);
+        for (locale, expected) in [
+            ("fa_IR.UTF-8", Lang::Fa),
+            ("zh_CN.UTF-8", Lang::Zh),
+            ("tr_TR.UTF-8", Lang::Tr),
+            ("id_ID.UTF-8", Lang::Id),
+        ] {
+            std::env::set_var("PG_LANG", locale);
+            assert_eq!(lang_from_env(), expected, "локаль {locale}");
+        }
         // Непонятое — английский, а не паника и не пустая локаль.
         std::env::set_var("PG_LANG", "de_DE.UTF-8");
         assert_eq!(lang_from_env(), Lang::En);
@@ -1168,8 +1225,9 @@ mod tests {
                     // Ключ читает и человек, и этот сторож; экранирование
                     // сделало бы вторым читателем разбор кавычек.
                     assert!(!key.contains('\\'), "{at}: экранирование в ключе: {key}");
-                    assert!(find(dict::EN, key).is_some(), "{at}: нет английского: {key}");
-                    assert!(find(dict::FA, key).is_some(), "{at}: нет персидского: {key}");
+                    for (name, table) in dict::ALL {
+                        assert!(find(table, key).is_some(), "{at}: нет перевода ({name}): {key}");
+                    }
                     found += 1;
                 }
             }
@@ -1182,15 +1240,40 @@ mod tests {
         for (key, _) in dict::EN {
             assert!(code.contains(key), "ключ есть в таблице, но не в коде: {key}");
         }
-        assert_eq!(dict::EN.len(), dict::FA.len(), "таблицы разошлись длиной");
-        for ((key, en), (fa_key, fa)) in dict::EN.iter().zip(dict::FA) {
-            assert_eq!(key, fa_key, "таблицы разошлись порядком ключей");
-            // Мест подстановки обязано быть поровну: `fill` лишнее покажет
-            // швом, а недостающее проглотит вместе со значением.
-            let places = key.matches("{}").count();
-            assert_eq!(places, en.matches("{}").count(), "разное число мест в английском: {key}");
-            assert_eq!(places, fa.matches("{}").count(), "разное число мест в персидском: {key}");
+        // Таблиц столько же, сколько языков, минус русский: он и есть ключ.
+        assert_eq!(dict::ALL.len(), LANGS.len() - 1, "язык заведён без таблицы или наоборот");
+        for (name, table) in dict::ALL {
+            assert_eq!(table.len(), dict::EN.len(), "таблица {name} разошлась длиной с английской");
+            for ((key, _), (other, value)) in dict::EN.iter().zip(table.iter()) {
+                assert_eq!(key, other, "таблица {name} разошлась порядком ключей");
+                // Мест подстановки обязано быть поровну: `fill` лишнее покажет
+                // швом, а недостающее проглотит вместе со значением.
+                assert_eq!(
+                    key.matches("{}").count(),
+                    value.matches("{}").count(),
+                    "разное число мест в таблице {name}: {key}"
+                );
+            }
         }
+    }
+
+    /// `set_lang` кладёт вариант как число (`as u8`), а `lang()` разбирает его
+    /// таблицей — две записи одного порядка объявления, и разъезжаются они
+    /// молча: язык просто начинает означать соседний. Круг через атомик это и
+    /// ловит, он же следит, что `LANGS` не забыл вариант.
+    #[test]
+    fn every_language_survives_a_round_trip() {
+        let before = lang();
+        for expected in LANGS {
+            set_lang(expected);
+            assert_eq!(lang(), expected, "язык не пережил круг через атомик");
+        }
+        set_lang(before);
+        let names: Vec<String> = LANGS.iter().map(|l| serde_json::to_string(l).unwrap()).collect();
+        let mut unique = names.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "два языка под одним именем: {names:?}");
     }
 
     /// Каталог сеанса — это его `singbox.pid`: совпали каталоги — второй сеанс
@@ -1255,19 +1338,27 @@ mod tests {
     fn the_frontend_knows_the_same_languages() {
         let ts = include_str!("../../../ui/app-shell/src/platform.ts");
         let line = ts.lines().find(|l| l.starts_with("export type Lang")).expect("тип языка в platform.ts");
-        for lang in [Lang::Ru, Lang::En, Lang::Fa] {
+        for lang in LANGS {
             let name = serde_json::to_string(&lang).unwrap();
             assert!(line.contains(&name), "языка {name} нет в platform.ts: {line}");
         }
-        assert_eq!(line.matches('"').count() / 2, 3, "языков ровно три, и все обязаны быть живыми: {line}");
+        assert_eq!(
+            line.matches('"').count() / 2,
+            LANGS.len(),
+            "языков в окне столько же, сколько у службы, и все обязаны быть живыми: {line}"
+        );
         // Названия языков живут своим словарём, и молчащий пропуск здесь —
-        // пункт настройки без подписи.
+        // пункт настройки без подписи. Каждое имя обязано встретиться в каждом
+        // словаре окна, то есть ровно столько раз, сколько словарей.
         let i18n = include_str!("../../../ui/app-shell/src/i18n.ts");
-        for label in ["langRu", "langEn", "langFa"] {
+        for lang in LANGS {
+            let code = serde_json::to_string(&lang).unwrap();
+            let code = code.trim_matches('"');
+            let label = format!("lang{}{}:", code[..1].to_uppercase(), &code[1..]);
             assert_eq!(
-                i18n.matches(&format!("{label}:")).count(),
-                3,
-                "{label} обязан быть во всех трёх словарях окна"
+                i18n.matches(&label).count(),
+                LANGS.len(),
+                "{label} обязан быть во всех словарях окна"
             );
         }
     }
