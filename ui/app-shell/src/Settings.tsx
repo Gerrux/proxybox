@@ -25,6 +25,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   autostart as readAutostart,
   isTauri,
+  openLogs,
   openUrl,
   setAutostart,
   VERSION,
@@ -216,6 +217,24 @@ export function Settings({
             disabled={!settings}
             onSubmit={(singbox) => patch({ singbox })}
           />
+        </Row>
+
+        <Line />
+
+        {/* Единственный путь из окна к настоящей причине отказа: лента говорит,
+            что туннель отвалился, а словами это объясняет только `singbox.log`.
+            Открывает каталог оболочка — в браузере при разработке Проводника
+            нет, поэтому там кнопка заперта. */}
+        <Row title={s.logsTitle} note={s.logsHint}>
+          <Button
+            variant="quiet"
+            disabled={!isTauri()}
+            onClick={() => {
+              void openLogs().catch((e: unknown) => onError(e instanceof Error ? e.message : String(e)));
+            }}
+          >
+            {s.logsOpen}
+          </Button>
         </Row>
 
         <Line />
