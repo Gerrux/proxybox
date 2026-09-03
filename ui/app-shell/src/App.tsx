@@ -19,7 +19,7 @@ import { Browsers } from "./Browsers";
 import { Conns } from "./Conns";
 import { Journal } from "./Journal";
 import { Profiles } from "./Profiles";
-import { Settings, useReleases } from "./Settings";
+import { Settings, useReleases, useTheme } from "./Settings";
 import { StatusBar, tunnelState } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
 import { Button, Icon, type IconName } from "./ui";
@@ -69,6 +69,9 @@ export function App() {
   // Про вышедшую версию говорит кнопка в титульной полосе, и знать о ней надо
   // с закрытыми настройками тоже — значит, состояние проверки живёт здесь.
   const rel = useReleases();
+  // Тема красит всё окно, а не панель настроек, и стоять обязана с первого
+  // рендера — задолго до того, как настройки вообще откроют.
+  const theme = useTheme();
   // Крестик спрашивает, а не решает: свернуть в трей или закрыть совсем — это
   // выбор человека, и один раз сделанный он запоминается.
   const [closing, setClosing] = useState(false);
@@ -251,6 +254,7 @@ export function App() {
             onClose={() => setSettings(false)}
             onError={setError}
             rel={rel}
+            theme={theme}
           />
         ) : (
           <>

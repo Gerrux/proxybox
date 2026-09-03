@@ -20,7 +20,15 @@
  *  Ставит обновление человек: приложение живёт в Program Files и переустанавливает
  *  службу под LocalSystem, а сертификата у проекта пока нет — тихо подменять
  *  собственную привилегированную часть скачанным файлом без подписи нельзя.
- *  Поэтому окно доводит до установщика и останавливается. */
+ *  Поэтому окно доводит до установщика и останавливается.
+ *
+ *  Строки собраны в группы, а не в один список через линейку. Список был
+ *  ровный: девять одинаковых полос, у каждой подпись тем же гравированным
+ *  шрифтом, что и у панели, — и найти в нём глазом «путь к sing-box» стоило
+ *  чтения всех девяти. Теперь гравировкой подписана группа, а строка внутри —
+ *  обычным текстом: разного размера подписи и есть то, чем список читается не
+ *  подряд. Группы утоплены в плиту тем же пазом, что списки и поля, — новой
+ *  поверхности ради настроек не заводится. */
 import { useEffect, useState, type ReactNode } from "react";
 import {
   autostart as readAutostart,
@@ -125,12 +133,55 @@ export function useReleases() {
 
 export type Releases = ReturnType<typeof useReleases>;
 
+/** Тема окна. Живёт в localStorage, а не в настройках службы: это привычка к
+ *  окну, а не свойство туннеля, — как и запомненный выбор для крестика. Служба
+ *  про цвета не знает ничего, и делить их с CLI не с кем.
+ *
+ *  «Системная» — это отсутствие атрибута, а не третье значение в CSS: пока его
+ *  нет, `light-dark()` в `tokens.css` берёт то, что рисует Windows. Поэтому
+ *  выбранная тема доезжает до окна одним атрибутом на корне документа, и ни
+ *  одно правило стилей о ней не знает.
+ *
+ *  Мусор в ключе (правили руками, старая версия) читается как «системная»:
+ *  неизвестное значение в `data-theme` попало бы мимо обоих правил и оставило
+ *  бы то же самое, только молча.
+ *
+ *  Плашка из трея — отдельный документ, и localStorage у них общий, но
+ *  прочитан он на её запуске: тему она подхватит следующим показом. */
+const THEME = "pg.theme";
+
+export type Theme = "system" | "light" | "dark";
+
+export function useTheme() {
+  const [theme, remember] = useState<Theme>(() => {
+    const saved = localStorage.getItem(THEME);
+    return saved === "light" || saved === "dark" ? saved : "system";
+  });
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === "system") delete root.dataset.theme;
+    else root.dataset.theme = theme;
+  }, [theme]);
+
+  return {
+    theme,
+    pick: (next: Theme) => {
+      localStorage.setItem(THEME, next);
+      remember(next);
+    },
+  };
+}
+
+export type Themed = ReturnType<typeof useTheme>;
+
 export function Settings({
   status,
   act,
   onClose,
   onError,
   rel,
+  theme,
   className,
 }: {
   status: Status | null;
@@ -140,6 +191,9 @@ export function Settings({
    *  достаётся, и рассказать о нём больше нечем. */
   onError: (message: string) => void;
   rel: Releases;
+  /** Тема живёт выше настроек: она красит всё окно, а не только эту панель, и
+   *  обязана стоять и с закрытыми настройками. */
+  theme: Themed;
   className?: string;
 }) {
   const lang = status?.lang;
@@ -165,174 +219,197 @@ export function Settings({
         </Button>
       }
     >
-      <div className="flex flex-col gap-4">
-        <Row title={s.language} note={s.languageHint}>
-          <Segmented
-            options={[
-              ["ru", "ru", s.langRu],
-              ["en", "en", s.langEn],
-              ["fa", "fa", s.langFa],
-              ["zh", "zh", s.langZh],
-              ["tr", "tr", s.langTr],
-              ["id", "id", s.langId],
-            ]}
-            value={lang ?? "ru"}
-            onPick={(v) => void act({ cmd: "set-lang", arg: { lang: v as Lang } })}
-          />
-        </Row>
+      <div className="flex flex-col gap-5">
+        <Group title={s.groupLook}>
+          <Row title={s.language} note={s.languageHint}>
+            <Segmented
+              options={[
+                ["ru", "ru", s.langRu],
+                ["en", "en", s.langEn],
+                ["fa", "fa", s.langFa],
+                ["zh", "zh", s.langZh],
+                ["tr", "tr", s.langTr],
+                ["id", "id", s.langId],
+              ]}
+              value={lang ?? "ru"}
+              className="well"
+              onPick={(v) => void act({ cmd: "set-lang", arg: { lang: v as Lang } })}
+            />
+          </Row>
 
-        <Line />
+          <Row title={s.themeTitle} note={s.themeHint}>
+            <Segmented
+              options={[
+                ["system", s.themeSystem],
+                ["light", s.themeLight],
+                ["dark", s.themeDark],
+              ]}
+              value={theme.theme}
+              className="well"
+              onPick={(v) => theme.pick(v as Theme)}
+            />
+          </Row>
+        </Group>
 
-        <Row title={s.autostartTitle} note={s.autostartHint}>
-          <Autostart lang={lang} onError={onError} />
-        </Row>
+        <Group title={s.groupStartup}>
+          <Row title={s.autostartTitle} note={s.autostartHint}>
+            <Autostart lang={lang} onError={onError} />
+          </Row>
+        </Group>
 
-        <Line />
+        <Group title={s.groupNodes}>
+          <Row title={s.refreshSubs} note={s.refreshSubsHint}>
+            <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+              {/* Срок показывается только при включённой сверке: выключенной он
+                  не значит ничего, а поле рядом с «выкл» читается как «а вот
+                  через столько всё-таки сходим». */}
+              {settings?.refresh && (
+                <TextSetting
+                  lang={lang}
+                  value={String(settings.refresh_hours)}
+                  placeholder={s.refreshHoursPlaceholder}
+                  onSubmit={(hours) => {
+                    // Мусор и ноль не отправляем вовсе: служба их всё равно
+                    // подожмёт, но поле, вернувшееся другим числом без единого
+                    // слова, читается как «не сохранилось».
+                    const n = Number.parseInt(hours, 10);
+                    patch({ refresh_hours: Number.isFinite(n) ? Math.min(720, Math.max(1, n)) : 6 });
+                  }}
+                />
+              )}
+              <OnOff lang={lang} value={settings?.refresh ?? true} disabled={!settings} onPick={(refresh) => patch({ refresh })} />
+            </div>
+          </Row>
 
-        <Row title={s.refreshSubs} note={s.refreshSubsHint}>
-          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
-            {/* Срок показывается только при включённой сверке: выключенной он
-                не значит ничего, а поле рядом с «выкл» читается как «а вот
-                через столько всё-таки сходим». */}
-            {settings?.refresh && (
-              <TextSetting
-                lang={lang}
-                value={String(settings.refresh_hours)}
-                placeholder={s.refreshHoursPlaceholder}
-                onSubmit={(hours) => {
-                  // Мусор и ноль не отправляем вовсе: служба их всё равно
-                  // подожмёт, но поле, вернувшееся другим числом без единого
-                  // слова, читается как «не сохранилось».
-                  const n = Number.parseInt(hours, 10);
-                  patch({ refresh_hours: Number.isFinite(n) ? Math.min(720, Math.max(1, n)) : 6 });
-                }}
-              />
-            )}
-            <OnOff lang={lang} value={settings?.refresh ?? true} disabled={!settings} onPick={(refresh) => patch({ refresh })} />
-          </div>
-        </Row>
+          <Row title={s.geoTitle} note={s.geoHint}>
+            <OnOff lang={lang} value={settings?.geo ?? true} disabled={!settings} onPick={(geo) => patch({ geo })} />
+          </Row>
+        </Group>
 
-        <Line />
+        <Group title={s.groupTunnel}>
+          <Row title={s.probeTitle} note={s.probeHint}>
+            <TextSetting
+              lang={lang}
+              value={settings?.probe ?? ""}
+              placeholder={s.probePlaceholder}
+              disabled={!settings}
+              onSubmit={(probe) => patch({ probe })}
+            />
+          </Row>
 
-        <Row title={s.geoTitle} note={s.geoHint}>
-          <OnOff lang={lang} value={settings?.geo ?? true} disabled={!settings} onPick={(geo) => patch({ geo })} />
-        </Row>
+          <Row title={s.singboxTitle} note={s.singboxHint}>
+            <TextSetting
+              lang={lang}
+              value={settings?.singbox ?? ""}
+              placeholder={s.singboxPlaceholder}
+              disabled={!settings}
+              onSubmit={(singbox) => patch({ singbox })}
+            />
+          </Row>
 
-        <Line />
+          {/* Единственный путь из окна к настоящей причине отказа: лента говорит,
+              что туннель отвалился, а словами это объясняет только `singbox.log`.
+              Открывает каталог оболочка — в браузере при разработке Проводника
+              нет, поэтому там кнопка заперта. */}
+          <Row title={s.logsTitle} note={s.logsHint}>
+            <Button
+              variant="ghost"
+              disabled={!isTauri()}
+              onClick={() => {
+                void openLogs().catch((e: unknown) => onError(e instanceof Error ? e.message : String(e)));
+              }}
+            >
+              {s.logsOpen}
+            </Button>
+          </Row>
+        </Group>
 
-        <Row title={s.probeTitle} note={s.probeHint}>
-          <TextSetting
-            lang={lang}
-            value={settings?.probe ?? ""}
-            placeholder={s.probePlaceholder}
-            disabled={!settings}
-            onSubmit={(probe) => patch({ probe })}
-          />
-        </Row>
-
-        <Line />
-
-        <Row title={s.singboxTitle} note={s.singboxHint}>
-          <TextSetting
-            lang={lang}
-            value={settings?.singbox ?? ""}
-            placeholder={s.singboxPlaceholder}
-            disabled={!settings}
-            onSubmit={(singbox) => patch({ singbox })}
-          />
-        </Row>
-
-        <Line />
-
-        {/* Единственный путь из окна к настоящей причине отказа: лента говорит,
-            что туннель отвалился, а словами это объясняет только `singbox.log`.
-            Открывает каталог оболочка — в браузере при разработке Проводника
-            нет, поэтому там кнопка заперта. */}
-        <Row title={s.logsTitle} note={s.logsHint}>
-          <Button
-            variant="quiet"
-            disabled={!isTauri()}
-            onClick={() => {
-              void openLogs().catch((e: unknown) => onError(e instanceof Error ? e.message : String(e)));
-            }}
+        <Group title={s.groupAbout}>
+          <Row
+            title={s.versionAndUpdates}
+            note={
+              <>
+                {s.version} <span className="font-mono text-[12px] text-ink">{VERSION}</span>
+                {latest && fresh && <span className="text-accent"> · {s.updateAvailable(latest.tag_name)}</span>}
+                {releases != null && !fresh && <span> · {s.upToDate}</span>}
+                {/* Не дозвонились до GitHub — это поломка, а не запертый канал:
+                    янтарь тут значил бы сработавшую защиту, которой здесь нет. */}
+                {error != null && <span className="selectable text-fault"> · {error}</span>}
+                <br />
+                {s.updatesHint}
+              </>
+            }
           >
-            {s.logsOpen}
-          </Button>
-        </Row>
-
-        <Line />
-
-        <Row
-          title={s.versionAndUpdates}
-          note={
-            <>
-              {s.version} <span className="font-mono text-[12px] text-ink">{VERSION}</span>
-              {latest && fresh && <span className="text-accent"> · {s.updateAvailable(latest.tag_name)}</span>}
-              {releases != null && !fresh && <span> · {s.upToDate}</span>}
-              {/* Не дозвонились до GitHub — это поломка, а не запертый канал:
-                  янтарь тут значил бы сработавшую защиту, которой здесь нет. */}
-              {error != null && <span className="selectable text-fault"> · {error}</span>}
-              <br />
-              {s.updatesHint}
-            </>
-          }
-        >
-          {latest && fresh && (
-            <Button variant="primary" onClick={rel.openUpdate}>
-              {s.download}
+            {latest && fresh && (
+              <Button variant="primary" onClick={rel.openUpdate}>
+                {s.download}
+              </Button>
+            )}
+            {releases != null && releases.length > 0 && (
+              <Button variant="quiet" onClick={() => setExpanded((v) => !v)}>
+                {s.allReleases(releases.length)}
+              </Button>
+            )}
+            <Button variant="ghost" disabled={busy} onClick={() => void check()}>
+              {busy ? s.checking : s.checkUpdates}
             </Button>
-          )}
-          {releases != null && releases.length > 0 && (
-            <Button variant="quiet" onClick={() => setExpanded((v) => !v)}>
-              {s.allReleases(releases.length)}
-            </Button>
-          )}
-          <Button variant="ghost" disabled={busy} onClick={() => void check()}>
-            {busy ? s.checking : s.checkUpdates}
-          </Button>
-        </Row>
+          </Row>
 
-        {expanded && releases != null && (
-          <ul className="scroll enter max-h-40 overflow-y-auto border-t border-edge pt-2 text-[13px]">
-            {releases.map((r) => (
-              <li key={r.tag_name} className="flex items-center gap-3 py-1">
-                <span
-                  className={`font-mono text-[12px] tabular-nums ${r.tag_name.replace(/^v/, "") === VERSION ? "text-accent" : ""}`}
-                >
-                  {r.tag_name}
-                </span>
-                <span className="font-mono text-[11px] text-muted">
-                  {r.published_at ? new Date(r.published_at).toLocaleDateString(lang ?? "ru") : ""}
-                </span>
-                <span className="flex-1" />
-                <Button variant="quiet" onClick={() => void openUrl(target(r))}>
-                  {s.download}
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
+          {expanded && releases != null && (
+            <ul className="scroll enter max-h-40 overflow-y-auto border-t border-edge px-3.5 py-1.5 text-[13px]">
+              {releases.map((r) => (
+                <li key={r.tag_name} className="flex items-center gap-3 py-1">
+                  <span
+                    className={`font-mono text-[12px] tabular-nums ${r.tag_name.replace(/^v/, "") === VERSION ? "text-accent" : ""}`}
+                  >
+                    {r.tag_name}
+                  </span>
+                  <span className="font-mono text-[11px] text-muted">
+                    {r.published_at ? new Date(r.published_at).toLocaleDateString(lang ?? "ru") : ""}
+                  </span>
+                  <span className="flex-1" />
+                  <Button variant="quiet" onClick={() => void openUrl(target(r))}>
+                    {s.download}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Group>
       </div>
     </Panel>
   );
 }
 
+/** Группа настроек: гравированная подпись снаружи, сами строки — в утопленной
+ *  плите, той же, в какой лежат списки и поля. Подпись стоит над плитой, а не
+ *  внутри неё: внутри она стала бы ещё одной строкой и снова сравнялась бы с
+ *  настройками, от которых её и отделяют. */
+function Group({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section>
+      <h3 className="engraved mb-1.5 ps-1 text-muted">{title}</h3>
+      <div className="overflow-hidden rounded-lg border border-edge bg-surface-2">{children}</div>
+    </section>
+  );
+}
+
 /** Строка настройки: слева — что это и почему, справа — чем этим управляют.
- *  В узком окне управление уезжает под подпись, а не сплющивает её. */
+ *  В узком окне управление уезжает под подпись, а не сплющивает её.
+ *
+ *  Разделяет строки кромка самой строки, а не отдельная линейка между ними:
+ *  первой она не нужна, и вычесть её из разметки — значит помнить про это в
+ *  каждой группе. */
 function Row({ title, note, children }: { title: string; note: ReactNode; children: ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center gap-2.5">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2.5 border-t border-edge px-3.5 py-3 first:border-t-0">
       <div className="min-w-[200px] flex-1">
-        <h3 className="engraved text-muted">{title}</h3>
-        <p className="mt-1 text-[12.5px] text-muted">{note}</p>
+        <h4 className="text-[13px] font-medium text-ink">{title}</h4>
+        <p className="mt-1 text-[12.5px] leading-[1.5] text-muted">{note}</p>
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-2">{children}</div>
     </div>
   );
-}
-
-function Line() {
-  return <div className="h-px bg-edge" />;
 }
 
 /** Да/нет той же полоской, что и остальные развилки: галочка и тумблер — ещё
@@ -356,6 +433,7 @@ function OnOff({
         ["off", s.switchOff],
       ]}
       value={value ? "on" : "off"}
+      className="well"
       disabled={disabled}
       onPick={(v) => onPick(v === "on")}
     />
@@ -400,7 +478,7 @@ function TextSetting({
         placeholder={placeholder}
         spellCheck={false}
         disabled={disabled}
-        className={`${FIELD} font-mono text-[11px]`}
+        className={`${FIELD} well font-mono text-[11px]`}
       />
       <Button type="submit" variant="primary" disabled={disabled || !changed}>
         {s.apply}
