@@ -81,6 +81,28 @@ fn ipc(req: Request) -> Result<Response, String> {
     })
 }
 
+/// Системное меню окна — то, что у окна с рамкой даёт правый клик по титульной
+/// полосе и Alt+Space. У безрамочного полоса лежит в клиентской области, и меню
+/// туда не приносит никто: жест перестаёт работать, а окно, которое нельзя
+/// подвинуть с клавиатуры, для человека без мыши заперто там, где оказалось.
+///
+/// Рисует его Windows (`core_apps::system_menu`) — здесь только хэндл окна и
+/// поток. Поток обязателен: меню живёт в очереди сообщений того потока,
+/// которому окно принадлежит, а `command(async)` уводит вызов в задачу
+/// рантайма — оттуда `TrackPopupMenu` просто ничего не покажет.
+/// `run_on_main_thread` возвращает вызов туда, где окно, и очередь при этом
+/// продолжает разбираться: меню её и крутит.
+#[tauri::command(async)]
+fn system_menu(window: tauri::Window, at_cursor: bool) {
+    #[cfg(windows)]
+    if let Ok(hwnd) = window.hwnd() {
+        let at = hwnd.0 as isize;
+        let _ = window.run_on_main_thread(move || core_apps::system_menu(at, at_cursor));
+    }
+    #[cfg(not(windows))]
+    let _ = (window, at_cursor);
+}
+
 /// Процесс из окна запускается только так. Без `CREATE_NO_WINDOW` Windows
 /// заводит консольной программе собственное окно: `reg`, которым панель
 /// настроек читает автозапуск, мелькает чёрным прямоугольником поверх всего на
@@ -1074,6 +1096,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             ipc,
+            system_menu,
             open_url,
             open_browser,
             forget_browser,

@@ -1097,6 +1097,80 @@ thread_local! {
     static PREV: std::cell::Cell<(isize, isize)> = const { std::cell::Cell::new((0, 0)) };
 }
 
+/// Системное меню окна — «Переместить», «Размер», «Свернуть», «Закрыть».
+///
+/// У окна с рамкой его приносит Windows: правый клик по титульной полосе и
+/// Alt+Space. У безрамочного полоса лежит в клиентской области, куда меню не
+/// приносит никто, и привычный жест перестаёт работать — окно, которое нельзя
+/// подвинуть с клавиатуры, для человека без мыши просто заперто там, где
+/// оказалось.
+///
+/// Меню берётся у самой Windows (`GetSystemMenu`), а не собирается своё: там уже
+/// и правильные названия на языке системы, и правильные запреты (у
+/// развёрнутого окна «Размер» серый). Выбранный пункт уезжает обратно окну
+/// `WM_SYSCOMMAND` — обрабатывает его тоже Windows, нам разбирать нечего.
+///
+/// `at_cursor` — правый клик: меню встаёт под указателем. Иначе Alt+Space, и
+/// меню встаёт у левого верхнего угла окна, как у обычного окна Windows.
+/// Координаты берутся здесь, а не приезжают из окна: у вебвью они логические,
+/// и на HiDPI их пришлось бы делить на масштаб — лишняя арифметика ради того,
+/// что Windows и так знает точнее.
+///
+/// Живёт в этом крейте, а не в оболочке, по той же причине, что и значок окна
+/// браузера: `src-tauri` вне воркспейса, и `cargo check --target
+/// x86_64-pc-windows-msvc` его не трогает вовсе. Небезопасные вызовы, которые
+/// нигде не компилируются, кроме живой Windows, — плохая сделка.
+///
+/// Звать обязательно из потока, которому принадлежит окно: меню в Windows
+/// живёт в очереди сообщений своего потока, и с чужого `TrackPopupMenu` просто
+/// ничего не покажет. В оболочке это `run_on_main_thread`.
+#[cfg(windows)]
+pub fn system_menu(window: isize, at_cursor: bool) {
+    use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetCursorPos, GetSystemMenu, GetWindowRect, PostMessageW, SetForegroundWindow, TrackPopupMenu,
+        TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_NULL, WM_SYSCOMMAND,
+    };
+
+    let hwnd = HWND(window as *mut std::ffi::c_void);
+    // SAFETY: окно живо — хэндл приехал от оболочки, которая его и держит.
+    unsafe {
+        let menu = GetSystemMenu(hwnd, false);
+        if menu.is_invalid() {
+            return;
+        }
+        let at = match at_cursor {
+            true => {
+                let mut point = POINT::default();
+                GetCursorPos(&mut point).ok().map(|()| point)
+            }
+            false => {
+                let mut rect = RECT::default();
+                GetWindowRect(hwnd, &mut rect).ok().map(|()| POINT { x: rect.left, y: rect.top })
+            }
+        };
+        let Some(at) = at else { return };
+        // Меню закрывается по клику мимо себя, только когда его окно на
+        // переднем плане: без этого оно остаётся висеть, пока по нему не
+        // попадут. Кликнули по нашей же полосе — значит окно уже впереди, и
+        // вызов ничего не меняет; Alt+Space — тем более.
+        let _ = SetForegroundWindow(hwnd);
+        let chosen = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, at.x, at.y, None, hwnd, None);
+        // Пустое сообщение следом — старое требование самой Windows
+        // (KB135788): без него меню, закрытое кликом мимо, остаётся висеть до
+        // следующего попадания по нему.
+        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        if chosen.as_bool() {
+            let _ = PostMessageW(Some(hwnd), WM_SYSCOMMAND, WPARAM(chosen.0 as usize), LPARAM(0));
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn system_menu(_window: isize, _at_cursor: bool) {
+    // Системное меню есть только на целевой платформе.
+}
+
 /// Значок профиля: круг заданного цвета. Байты `.ico` собираются руками —
 /// формат тривиален (заголовок, `BITMAPINFOHEADER`, пиксели снизу вверх, пустая
 /// маска), а декодер PNG ради одного круга был бы дороже всего остального.

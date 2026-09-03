@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { isTauri, VERSION, type Lang } from "./platform";
+import { isTauri, systemMenu, VERSION, type Lang } from "./platform";
 import { strings } from "./i18n";
 import { Mark } from "./ui";
 
@@ -43,11 +43,11 @@ import { Mark } from "./ui";
  * Остальное у неё уже есть без полосы: «открыть окно» и «настройки» — в меню
  * значка, а прячут её Esc, потеря фокуса и повторный клик по значку.
  *
- * ponytail: системного меню окна по правому клику нет. У безрамочного окна
- * полоса лежит в клиентской области, куда Windows своё меню не приносит; чтобы
- * оно появилось, нужна команда в `src-tauri` с `TrackPopupMenu`. Потолок —
- * привычный жест не работает; апгрейд — по образцу Арбогео
- * (`src-tauri/src/window_menu.rs`).
+ *  - системное меню («Переместить», «Размер», «Свернуть», «Закрыть») — правый
+ *    клик по полосе и Alt+Space. Рисует его Windows, а мы только зовём
+ *    (`systemMenu`): свои пункты пришлось бы и переводить, и запрещать по
+ *    состоянию окна — оба раза хуже, чем у системы. Alt+Space слушается на
+ *    документе, потому что фокус в этот момент почти никогда не на полосе.
  */
 export function TitleBar({
   title,
@@ -93,10 +93,30 @@ export function TitleBar({
     };
   }, [desktop]);
 
+  // Alt+Space — жест всего окна, а не полосы: фокус в этот момент стоит там,
+  // где человек работал, и повесить его на полосу значило бы не завести вовсе.
+  useEffect(() => {
+    if (!desktop) return;
+    const key = (e: KeyboardEvent) => {
+      if (!e.altKey || e.code !== "Space") return;
+      e.preventDefault();
+      void systemMenu(false);
+    };
+    document.addEventListener("keydown", key);
+    return () => document.removeEventListener("keydown", key);
+  }, [desktop]);
+
   const run = (action: "minimize" | "toggleMaximize" | "close") => void getCurrentWindow()[action]();
 
   return (
     <header
+      onContextMenu={(e) => {
+        // Меню окна — только за саму полосу: правый клик по кнопке или по
+        // версии открыл бы его вместо того, чего человек ждёт от кнопки.
+        if (e.target !== e.currentTarget) return;
+        e.preventDefault();
+        void systemMenu(true);
+      }}
       data-tauri-drag-region
       className="flex h-8 shrink-0 items-center gap-2 overflow-hidden border-b border-edge bg-surface ps-3"
     >
