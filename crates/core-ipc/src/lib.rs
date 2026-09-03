@@ -1436,6 +1436,145 @@ mod tests {
         }
     }
 
+    /// И то же про установщик: он единственное место продукта, которое человек
+    /// видит раньше окна, и до сих пор говорил только по-русски. Языков там
+    /// обязано быть столько же, сколько у службы, — язык, до которого
+    /// установщик не доехал, это первый экран продукта на чужом языке.
+    ///
+    /// Проверяется текстом по трём файлам сразу, потому что список языков
+    /// установщика лежит в трёх местах и компилятора у двух из них нет:
+    /// `tauri.conf.json` перечисляет их для NSIS, `hooks.nsh` выбирает по ним
+    /// свою строку, а двум языкам (Farsi, Indonesian) своих строк у Tauri нет
+    /// вовсе и они приезжают файлами из `installer/languages/`.
+    ///
+    /// Имена тут не совпадают с кодами и совпасть не могут: NSIS зовёт языки
+    /// своими именами файлов (`SimpChinese.nlf`, `Farsi.nlf`), и таблица —
+    /// единственное место, где эти два списка встречаются.
+    #[test]
+    fn the_installer_speaks_the_same_languages() {
+        // Порядок здесь не важен, важна полнота: NSIS выбирает язык по системе,
+        // а не по позиции. Английский в конфиге стоит первым по другой причине —
+        // незнакомая система получает его, а не русский.
+        const NSIS: [(&str, &str); 6] = [
+            ("ru", "Russian"),
+            ("en", "English"),
+            ("fa", "Farsi"),
+            ("zh", "SimpChinese"),
+            ("tr", "Turkish"),
+            ("id", "Indonesian"),
+        ];
+        assert_eq!(NSIS.len(), LANGS.len(), "таблица имён NSIS разошлась с LANGS");
+        for lang in LANGS {
+            let code = serde_json::to_string(&lang).unwrap();
+            let code = code.trim_matches('"').to_string();
+            assert!(NSIS.iter().any(|(c, _)| *c == code), "языку {code} не сопоставлено имя NSIS");
+        }
+
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../../../src-tauri/tauri.conf.json")).expect("tauri.conf.json");
+        let nsis = &conf["bundle"]["windows"]["nsis"];
+        let listed = nsis["languages"].as_array().expect("nsis.languages");
+        assert_eq!(listed.len(), NSIS.len(), "языков в установщике не столько же, сколько у службы: {listed:?}");
+        for (_, name) in NSIS {
+            assert!(listed.iter().any(|l| l == name), "языка {name} нет в bundle.windows.nsis.languages");
+        }
+
+        // Свои строки установщика (остановка службы, регистрация, отказ) выбирает
+        // макрос PB_SAY. Английский там до всех проверок, поэтому ветки у него
+        // нет; у остальных пяти она обязана быть, иначе язык молча покажет
+        // английский текст на всех пяти строках.
+        let hooks = include_str!("../../../installer/hooks.nsh");
+        for (_, name) in NSIS {
+            if name == "English" {
+                continue;
+            }
+            let branch = format!("${{LANG_{}}}", name.to_uppercase());
+            assert!(hooks.contains(&branch), "в hooks.nsh нет ветки {branch}");
+        }
+
+        // Своих строк для этих двух у Tauri нет: под именем Persian его перевод
+        // не подхватится (в NSIS язык зовётся Farsi), а индонезийского у него
+        // нет вовсе. Без файла неопределённая LangString — не ошибка сборки, а
+        // пустое место в окне установщика.
+        let custom = &nsis["customLanguageFiles"];
+        let files = [
+            ("Farsi", include_str!("../../../installer/languages/Farsi.nsh")),
+            ("Indonesian", include_str!("../../../installer/languages/Indonesian.nsh")),
+        ];
+        let names = |src: &str| -> Vec<String> {
+            src.lines()
+                .filter_map(|l| l.strip_prefix("LangString "))
+                .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+                .collect()
+        };
+        let mut first: Option<Vec<String>> = None;
+        for (name, src) in files {
+            assert!(custom[name].is_string(), "{name} не подключён через customLanguageFiles");
+            assert!(
+                src.contains(&format!("${{LANG_{}}}", name.to_uppercase())),
+                "{name}.nsh написан не под свой язык"
+            );
+            let got = names(src);
+            assert!(!got.is_empty(), "{name}.nsh не содержит ни одной LangString");
+            match &first {
+                None => first = Some(got),
+                // Сверяются файлы между собой, а не с Tauri: его набор строк нам
+                // при тесте не виден, а вот забытая строка в одном из двух —
+                // ровно та ошибка, которую здесь и ловят.
+                Some(want) => assert_eq!(&got, want, "наборы строк в {name}.nsh и в соседнем файле разошлись"),
+            }
+        }
+    }
+
+    /// И про сайт то же самое. Он статический, GitHub Pages отдаёт его как есть,
+    /// собирать его нечем — а значит и компилятора у него нет вовсе: словарь
+    /// лежит прямо в странице, и ключ, забытый в одной из пяти таблиц, покажет
+    /// пришедшему за китайским русскую фразу. Молча.
+    ///
+    /// Русский тут исходный и таблицы не имеет: он стоит в самой разметке, как
+    /// и в `dict`. Поэтому проверяются пять таблиц, а шестая обязана
+    /// отсутствовать — заведись она, у русского появилось бы два источника, и
+    /// правили бы по очереди то один, то другой.
+    #[test]
+    fn the_site_speaks_the_same_languages() {
+        let html = include_str!("../../../docs/index.html");
+
+        // Ключи разметки: `data-i18n="…"` у текста и `data-i18n-alt="…"` у
+        // подписей к картинкам — их читает вслух программа чтения с экрана, и
+        // непереведённые они хуже видимых.
+        let mut keys: Vec<&str> = html
+            .match_indices("data-i18n")
+            .map(|(i, _)| &html[i + "data-i18n".len()..])
+            .map(|tail| tail.strip_prefix("-alt").unwrap_or(tail))
+            .filter_map(|tail| tail.strip_prefix("=\""))
+            .filter_map(|tail| tail.split('"').next())
+            .collect();
+        keys.push("title");
+        keys.push("desc");
+        keys.sort_unstable();
+        keys.dedup();
+        assert!(keys.len() > 20, "ключей в разметке подозрительно мало: {}", keys.len());
+
+        assert!(!html.contains("\n  ru: {"), "таблицы RU на сайте быть не должно: русский лежит в разметке");
+        for lang in LANGS {
+            let code = serde_json::to_string(&lang).unwrap();
+            let code = code.trim_matches('"');
+            // Список кнопок переключателя. Языка, которого в нём нет, на сайте
+            // не выбрать вовсе, даже если таблица для него полна.
+            assert!(html.contains(&format!("[\"{code}\", \"")), "языка {code} нет в переключателе сайта");
+            if code == "ru" {
+                continue;
+            }
+            let head = format!("\n  {code}: {{");
+            let from = html.find(&head).unwrap_or_else(|| panic!("нет таблицы {code} на сайте"));
+            let table = &html[from..];
+            let table = &table[..table.find("\n  },").expect("таблица не закрыта")];
+            for key in &keys {
+                assert!(table.contains(&format!("\n    {key}: ")), "{code}: на сайте нет ключа {key}");
+            }
+        }
+    }
+
     /// Аватарка браузерного профиля и цвет значка его окна в панели задач
     /// обязаны расти из одного зерна. Зерно — это `BrowserProfile::icon`, а имя
     /// только запасной вариант, когда поле пусто; вернуть сюда `item.name`

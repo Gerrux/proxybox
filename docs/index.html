@@ -38,10 +38,21 @@ body{
 .wrap{max-width:1060px;margin:0 auto;padding:0 24px}
 a{color:inherit}
 
+/* Переключатель языка. Отступы логические (padding-inline, margin-inline), как
+   и в самом окне продукта: страница переворачивается целиком под фарси, и
+   физический left тут разъехался бы молча. */
+.langs{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;padding-top:22px}
+.langs button{
+  font:inherit;font-size:13px;line-height:1;padding:7px 12px;border-radius:999px;
+  border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer;transition:.15s;
+}
+.langs button:hover{color:var(--text);background:rgba(255,255,255,.05)}
+.langs button[aria-pressed="true"]{color:var(--text);border-color:transparent;background:rgba(255,255,255,.1)}
+
 /* Шапка: локап прижат влево, над ним свободное поле — как на титульном слайде
    фирменного стиля. Полоса-акцент повторяет диагональ бренда. */
-header{padding:72px 0 56px;border-bottom:1px solid var(--line)}
-.lockup{display:flex;align-items:center;gap:16px}
+header{padding:0 0 56px;border-bottom:1px solid var(--line)}
+.lockup{display:flex;align-items:center;gap:16px;margin-top:50px}
 .lockup svg{display:block;width:56px;height:56px;flex:none}
 .wordmark{font-family:var(--condensed);font-size:44px;font-weight:600;line-height:1;letter-spacing:.01em}
 .tagline{margin:26px 0 0;font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
@@ -85,6 +96,7 @@ figcaption{margin-top:12px;font-size:13.5px;color:var(--muted)}
 footer{padding:44px 0 72px;color:var(--muted);font-size:13.5px}
 footer .lockup svg{width:22px;height:22px}
 footer .wordmark{font-size:17px}
+footer .lockup{margin-top:0}
 .foot-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px}
 </style>
 </head>
@@ -92,6 +104,11 @@ footer .wordmark{font-size:17px}
 
 <header>
   <div class="wrap">
+    <!-- Языков шесть, те же, что у продукта. Русский лежит прямо в разметке и
+         таблицы не имеет — он тут исходный, как и в `core-ipc::dict`; без
+         скрипта страница остаётся русской и целой. -->
+    <nav class="langs" id="langs" aria-label="Язык / Language"></nav>
+
     <!-- Знак крупный, поэтому несёт диагональ бренда: свечение принадлежит
          значку операционной системы и в макетах не появляется. Лаз вычитается
          через fill-rule, а не закрашивается — под ним обязан быть фон. -->
@@ -108,70 +125,60 @@ footer .wordmark{font-size:17px}
       <span class="wordmark">proxybox</span>
     </div>
 
-    <p class="tagline">частный шлюз для рабочего компьютера</p>
+    <p class="tagline" data-i18n="tagline">частный шлюз для рабочего компьютера</p>
     <span class="rule"></span>
 
-    <h1>Туннеля нет — сети нет.</h1>
-    <p class="lede">Выбранные вами программы ходят в сеть только через ваш туннель.
-      Промежуточных состояний с прямым доступом не существует: пока туннель не
-      подтверждён, у них просто нет сети. Трафик остальных не трогается вообще.</p>
+    <h1 data-i18n="h1">Туннеля нет — сети нет.</h1>
+    <p class="lede" data-i18n="lede">Выбранные вами программы ходят в сеть только через ваш туннель. Промежуточных состояний с прямым доступом не существует: пока туннель не подтверждён, у них просто нет сети. Трафик остальных не трогается вообще.</p>
 
     <div class="cta">
-      <a class="btn btn-main" href="https://github.com/Gerrux/proxybox/releases">Скачать для Windows</a>
-      <a class="btn btn-ghost" href="https://github.com/Gerrux/proxybox">Исходный код</a>
+      <a class="btn btn-main" href="https://github.com/Gerrux/proxybox/releases" data-i18n="dl">Скачать для Windows</a>
+      <a class="btn btn-ghost" href="https://github.com/Gerrux/proxybox" data-i18n="src">Исходный код</a>
     </div>
-    <p class="note">Windows 10 и 11. Своей сети у продукта нет: туннель — ваш собственный сервер.</p>
+    <p class="note" data-i18n="note">Windows 10 и 11. Своей сети у продукта нет: туннель — ваш собственный сервер.</p>
   </div>
 </header>
 
 <section>
   <div class="wrap">
-    <h2>Инвариант</h2>
-    <p class="claim">Отбор происходит в брандмауэре, до всякого туннеля.</p>
+    <h2 data-i18n="s1">Инвариант</h2>
+    <p class="claim" data-i18n="c1">Отбор происходит в брандмауэре, до всякого туннеля.</p>
     <div class="grid">
       <div class="card">
-        <h3>Запрещает политика, а не правило</h3>
-        <p>Пока приватный режим включён, в брандмауэре стоит запрет всего исходящего.
-          Выбранным программам при подтверждённом туннеле выдаётся пропуск сквозь него —
-          запрет не снимается, иначе сеть открылась бы всем сразу.</p>
+        <h3 data-i18n="k1h">Запрещает политика, а не правило</h3>
+        <p data-i18n="k1p">Пока приватный режим включён, в брандмауэре стоит запрет всего исходящего. Выбранным программам при подтверждённом туннеле выдаётся пропуск сквозь него — запрет не снимается, иначе сеть открылась бы всем сразу.</p>
       </div>
       <div class="card">
-        <h3>Уйти напрямую некуда</h3>
-        <p>В конфиге туннеля нет маршрута мимо него: ни правил по имени процесса,
-          ни выхода «напрямую». Пропуск привязан к адресу туннеля, поэтому пакет с
-          физического интерфейса под него не подпадает.</p>
+        <h3 data-i18n="k2h">Уйти напрямую некуда</h3>
+        <p data-i18n="k2p">В конфиге туннеля нет маршрута мимо него: ни правил по имени процесса, ни выхода «напрямую». Пропуск привязан к адресу туннеля, поэтому пакет с физического интерфейса под него не подпадает.</p>
       </div>
       <div class="card">
-        <h3>Список правится без обрыва</h3>
-        <p>Ни список программ, ни охват в конфиг не входят, поэтому их правка не
-          перезапускает туннель. Живые соединения — SSH, загрузки, звонки — её
-          переживают.</p>
+        <h3 data-i18n="k3h">Список правится без обрыва</h3>
+        <p data-i18n="k3p">Ни список программ, ни охват в конфиг не входят, поэтому их правка не перезапускает туннель. Живые соединения — SSH, загрузки, звонки — её переживают.</p>
       </div>
     </div>
 
     <ul class="states">
-      <li><span class="dot" style="background:var(--open)"></span>канал несёт трафик</li>
-      <li><span class="dot" style="background:var(--wait)"></span>подключаемся</li>
-      <li><span class="dot" style="background:#EBBD57"></span>заперто намеренно</li>
-      <li><span class="dot" style="background:var(--fault)"></span>сломано, нужен человек</li>
+      <li><span class="dot" style="background:var(--open)"></span><span data-i18n="st1">канал несёт трафик</span></li>
+      <li><span class="dot" style="background:var(--wait)"></span><span data-i18n="st2">подключаемся</span></li>
+      <li><span class="dot" style="background:#EBBD57"></span><span data-i18n="st3">заперто намеренно</span></li>
+      <li><span class="dot" style="background:var(--fault)"></span><span data-i18n="st4">сломано, нужен человек</span></li>
     </ul>
   </div>
 </section>
 
 <section>
   <div class="wrap">
-    <h2>Окно</h2>
-    <p class="claim">Состояние — главное, что показывает окно, поэтому оно занимает верх.</p>
+    <h2 data-i18n="s2">Окно</h2>
+    <p class="claim" data-i18n="c2">Состояние — главное, что показывает окно, поэтому оно занимает верх.</p>
     <div class="shots">
       <figure>
-        <img src="interface.png" alt="Окно в состоянии «защищено»: канал поднят, по нему идёт трафик" loading="lazy">
-        <figcaption>Под заголовком нарисован сам путь: от выбранных программ к сети.
-          Пока туннель поднят, по нему идут штрихи.</figcaption>
+        <img src="interface.png" data-i18n-alt="alt1" alt="Окно в состоянии «защищено»: канал поднят, по нему идёт трафик" loading="lazy">
+        <figcaption data-i18n="cap1">Под заголовком нарисован сам путь: от выбранных программ к сети. Пока туннель поднят, по нему идут штрихи.</figcaption>
       </figure>
       <figure>
-        <img src="interface-failclosed.png" alt="Окно в состоянии «доступ закрыт»: канал перерублен" loading="lazy">
-        <figcaption>Туннеля нет — канал перерублен и стоит. Янтарный, а не красный:
-          сработавшая защита не поломка.</figcaption>
+        <img src="interface-failclosed.png" data-i18n-alt="alt2" alt="Окно в состоянии «доступ закрыт»: канал перерублен" loading="lazy">
+        <figcaption data-i18n="cap2">Туннеля нет — канал перерублен и стоит. Янтарный, а не красный: сработавшая защита не поломка.</figcaption>
       </figure>
     </div>
   </div>
@@ -179,28 +186,23 @@ footer .wordmark{font-size:17px}
 
 <section>
   <div class="wrap">
-    <h2>Ещё в коробке</h2>
+    <h2 data-i18n="s3">Ещё в коробке</h2>
     <div class="grid">
       <div class="card">
-        <h3>Два охвата</h3>
-        <p>Белый список — сеть только выбранным и только через туннель. Весь
-          компьютер — в туннель идёт всё. Инвариант один и тот же, меняется только
-          то, кого он касается.</p>
+        <h3 data-i18n="k4h">Два охвата</h3>
+        <p data-i18n="k4p">Белый список — сеть только выбранным и только через туннель. Весь компьютер — в туннель идёт всё. Инвариант один и тот же, меняется только то, кого он касается.</p>
       </div>
       <div class="card">
-        <h3>Браузерные профили</h3>
-        <p>Отдельные окна со своим узлом, User-Agent и языком. У каждого свой
-          каталог сеанса и свой цвет значка в панели задач.</p>
+        <h3 data-i18n="k5h">Браузерные профили</h3>
+        <p data-i18n="k5p">Отдельные окна со своим узлом, User-Agent и языком. У каждого свой каталог сеанса и свой цвет значка в панели задач.</p>
       </div>
       <div class="card">
-        <h3>Подписки и прогон</h3>
-        <p>Подписка обновляется по https и заменяет профили молча, не гася туннель.
-          Прогон меряет задержку по всем узлам сразу, на своём sing-box и своих портах.</p>
+        <h3 data-i18n="k6h">Подписки и прогон</h3>
+        <p data-i18n="k6p">Подписка обновляется по https и заменяет профили молча, не гася туннель. Прогон меряет задержку по всем узлам сразу, на своём sing-box и своих портах.</p>
       </div>
       <div class="card">
-        <h3>Ничего наружу</h3>
-        <p>Ни телеметрии, ни журналов трафика. Проба по умолчанию идёт на ваш
-          собственный сервер. Соответствие «адрес — имя» на диск не пишется.</p>
+        <h3 data-i18n="k7h">Ничего наружу</h3>
+        <p data-i18n="k7p">Ни телеметрии, ни журналов трафика. Проба по умолчанию идёт на ваш собственный сервер. Соответствие «адрес — имя» на диск не пишется.</p>
       </div>
     </div>
   </div>
@@ -215,9 +217,279 @@ footer .wordmark{font-size:17px}
       </svg>
       <span class="wordmark">proxybox</span>
     </div>
-    <span>Исходный код на <a href="https://github.com/Gerrux/proxybox">GitHub</a></span>
+    <span><span data-i18n="foot">Исходный код на</span> <a href="https://github.com/Gerrux/proxybox">GitHub</a></span>
   </div>
 </footer>
+
+<script>
+// Словарь лежит в самой странице, а не отдельным файлом: страница статическая,
+// GitHub Pages отдаёт её как есть, и второй запрос ради тридцати строк — это
+// ещё один способ не показать текст. Таблицы RU тут нет по той же причине, что
+// и в `core-ipc::dict`: русский — исходный язык, он стоит прямо в разметке, и
+// без скрипта страница остаётся целой.
+const LANGS = [
+  ["ru", "Русский"],
+  ["en", "English"],
+  ["fa", "فارسی"],
+  ["zh", "简体中文"],
+  ["tr", "Türkçe"],
+  ["id", "Bahasa Indonesia"],
+];
+
+const DICT = {
+  en: {
+    title: "proxybox — a private gateway for the work machine",
+    desc: "Fail-closed control over outbound traffic: the programs you pick reach the network only through your tunnel; no tunnel, no network.",
+    tagline: "a private gateway for the work machine",
+    h1: "No tunnel — no network.",
+    lede: "The programs you pick reach the network only through your tunnel. Intermediate states with direct access do not exist: until the tunnel is confirmed, they simply have no network. Everyone else's traffic is left alone entirely.",
+    dl: "Download for Windows",
+    src: "Source code",
+    note: "Windows 10 and 11. The product has no network of its own: the tunnel is your own server.",
+    s1: "The invariant",
+    c1: "The selection happens in the firewall, before any tunnel.",
+    k1h: "The policy forbids, not a rule",
+    k1p: "While private mode is on, the firewall holds a block on everything outbound. Selected programs get a pass through it once the tunnel is confirmed — the block itself is never lifted, or the network would open for everyone at once.",
+    k2h: "There is nowhere to go direct",
+    k2p: "The tunnel config holds no route past it: no rules by process name, no direct outbound at all. The pass is bound to the tunnel address, so a packet from a physical interface does not match it.",
+    k3h: "The list is edited without a break",
+    k3p: "Neither the program list nor the scope goes into the config, so editing them does not restart the tunnel. Live connections — SSH, downloads, calls — survive it.",
+    st1: "the conduit is carrying traffic",
+    st2: "connecting",
+    st3: "locked on purpose",
+    st4: "broken, a human is needed",
+    s2: "The window",
+    c2: "State is the main thing the window shows, so it takes the top.",
+    alt1: "The window in the \"protected\" state: the conduit is up and carrying traffic",
+    cap1: "Below the heading the path itself is drawn: from the selected programs to the network. While the tunnel is up, dashes travel along it.",
+    alt2: "The window in the \"access closed\" state: the conduit is cut",
+    cap2: "No tunnel — the conduit is cut and still. Amber, not red: a defence that fired is not a breakage.",
+    s3: "Also in the box",
+    k4h: "Two scopes",
+    k4p: "Whitelist — network for the selected only, and only through the tunnel. Whole machine — everything goes into the tunnel. The invariant is the same, only who it applies to changes.",
+    k5h: "Browser profiles",
+    k5p: "Separate windows with their own node, User-Agent and language. Each has its own session directory and its own icon colour in the taskbar.",
+    k6h: "Subscriptions and testing",
+    k6p: "A subscription refreshes over https and replaces profiles quietly, without dropping the tunnel. Testing measures latency across every node at once, on its own sing-box and its own ports.",
+    k7h: "Nothing goes out",
+    k7p: "No telemetry, no traffic logs. By default the probe goes to your own server. The address-to-name mapping is never written to disk.",
+    foot: "Source code on",
+  },
+
+  fa: {
+    title: "proxybox — دروازهٔ خصوصی برای رایانهٔ کاری",
+    desc: "کنترل ترافیک خروجی بر پایهٔ fail-closed: برنامه‌های انتخاب‌شده فقط از راه تونل شما به شبکه می‌روند؛ تونل نباشد، شبکه هم نیست.",
+    tagline: "دروازهٔ خصوصی برای رایانهٔ کاری",
+    h1: "تونلی نیست — شبکه‌ای هم نیست.",
+    lede: "برنامه‌هایی که خودتان انتخاب می‌کنید فقط از راه تونل شما به شبکه می‌روند. حالت میانی با دسترسی مستقیم وجود ندارد: تا وقتی تونل تأیید نشده، آن‌ها به‌سادگی شبکه ندارند. به ترافیک بقیه اصلاً دست زده نمی‌شود.",
+    dl: "دانلود برای ویندوز",
+    src: "کد منبع",
+    note: "ویندوز ۱۰ و ۱۱. این محصول شبکهٔ خودش را ندارد: تونل، سرور خودِ شماست.",
+    s1: "ناوردا",
+    c1: "گزینش در دیوارهٔ آتش رخ می‌دهد، پیش از هر تونلی.",
+    k1h: "سیاست منع می‌کند، نه یک قاعده",
+    k1p: "تا وقتی حالت خصوصی روشن است، در دیوارهٔ آتش منعِ همهٔ ترافیک خروجی برقرار است. برنامه‌های انتخاب‌شده پس از تأیید تونل از آن عبور داده می‌شوند — خودِ منع هرگز برداشته نمی‌شود، وگرنه شبکه یک‌باره برای همه باز می‌شد.",
+    k2h: "جایی برای رفتن مستقیم نیست",
+    k2p: "در پیکربندی تونل مسیری که از کنار آن رد شود وجود ندارد: نه قاعده‌ای بر پایهٔ نام پروسه، نه خروجی مستقیم. اجازه به نشانی تونل گره خورده، پس بسته‌ای که از رابط فیزیکی بیاید با آن جور درنمی‌آید.",
+    k3h: "فهرست بدون قطعی ویرایش می‌شود",
+    k3p: "نه فهرست برنامه‌ها و نه دامنه وارد پیکربندی نمی‌شوند، پس ویرایششان تونل را از نو راه نمی‌اندازد. اتصال‌های زنده — SSH، دانلودها، تماس‌ها — از آن جان سالم به در می‌برند.",
+    st1: "مجرا ترافیک می‌برد",
+    st2: "در حال اتصال",
+    st3: "عمداً قفل شده",
+    st4: "خراب است، آدم لازم است",
+    s2: "پنجره",
+    c2: "وضعیت مهم‌ترین چیزی است که پنجره نشان می‌دهد، پس بالای پنجره را می‌گیرد.",
+    alt1: "پنجره در وضعیت «محافظت‌شده»: مجرا بالاست و ترافیک از آن می‌گذرد",
+    cap1: "زیر عنوان، خودِ مسیر کشیده شده است: از برنامه‌های انتخاب‌شده تا شبکه. تا وقتی تونل بالاست، خط‌چین‌ها روی آن حرکت می‌کنند.",
+    alt2: "پنجره در وضعیت «دسترسی بسته»: مجرا بریده است",
+    cap2: "تونلی نیست — مجرا بریده و ساکن است. کهربایی، نه قرمز: دفاعی که کار کرده خرابی نیست.",
+    s3: "چیز دیگر در جعبه",
+    k4h: "دو دامنه",
+    k4p: "فهرست سفید — شبکه فقط برای انتخاب‌شده‌ها و فقط از راه تونل. همهٔ رایانه — همه‌چیز وارد تونل می‌شود. ناوردا همان است، فقط اینکه شامل چه کسی می‌شود فرق می‌کند.",
+    k5h: "پروفایل‌های مرورگر",
+    k5p: "پنجره‌های جدا با گره، User-Agent و زبان خودشان. هرکدام پوشهٔ نشست خودش و رنگ نشان خودش را در نوار وظیفه دارد.",
+    k6h: "اشتراک‌ها و سنجش",
+    k6p: "اشتراک از راه https به‌روز می‌شود و پروفایل‌ها را بی‌سروصدا جایگزین می‌کند، بدون خاموش کردن تونل. سنجش تأخیر همهٔ گره‌ها را یک‌باره اندازه می‌گیرد، روی sing-box و پورت‌های خودش.",
+    k7h: "هیچ‌چیز به بیرون نمی‌رود",
+    k7p: "نه تله‌متری، نه گزارش ترافیک. کاوش به‌طور پیش‌فرض به سرور خودِ شما می‌رود. تناظر «نشانی — نام» هرگز روی دیسک نوشته نمی‌شود.",
+    foot: "کد منبع در",
+  },
+
+  zh: {
+    title: "proxybox — 工作电脑的私人网关",
+    desc: "按 fail-closed 原则控制出站流量：所选程序只能经由你自己的隧道访问网络；没有隧道，就没有网络。",
+    tagline: "工作电脑的私人网关",
+    h1: "没有隧道，就没有网络。",
+    lede: "你选中的程序只能经由你自己的隧道访问网络。不存在带直连的中间状态：在隧道被确认之前，它们就是没有网络。其他程序的流量完全不受干预。",
+    dl: "下载 Windows 版",
+    src: "源代码",
+    note: "Windows 10 和 11。本产品没有自己的网络：隧道是你自己的服务器。",
+    s1: "不变式",
+    c1: "筛选发生在防火墙里，早于任何隧道。",
+    k1h: "禁止的是策略，不是规则",
+    k1p: "只要隐私模式开着，防火墙里就立着对全部出站流量的禁止。隧道被确认后，所选程序会获得穿过它的放行——禁止本身从不撤除，否则网络会一下子对所有人打开。",
+    k2h: "无处可以直连",
+    k2p: "隧道配置里没有绕过它的路由：既没有按进程名的规则，也根本没有「直连」出口。放行绑定在隧道地址上，所以来自物理网卡的数据包与它对不上。",
+    k3h: "改列表不会断线",
+    k3p: "程序列表和范围都不进入配置，所以修改它们不会重启隧道。正在进行的连接——SSH、下载、通话——都能安然度过。",
+    st1: "管道正在传输流量",
+    st2: "连接中",
+    st3: "有意锁闭",
+    st4: "坏了，需要人来处理",
+    s2: "窗口",
+    c2: "窗口首先要显示的就是状态，所以它占据顶部。",
+    alt1: "处于「已保护」状态的窗口：管道已开启，流量正在通过",
+    cap1: "标题下方画的是通路本身：从所选程序到网络。隧道开启时，短划会沿着它移动。",
+    alt2: "处于「访问已关闭」状态的窗口：管道被切断",
+    cap2: "没有隧道——管道被切断并静止。琥珀色而不是红色：生效的防护不是故障。",
+    s3: "盒子里还有",
+    k4h: "两种范围",
+    k4p: "白名单——只有所选程序有网络，并且只能经由隧道。整台计算机——一切都进入隧道。不变式是同一个，改变的只是它作用于谁。",
+    k5h: "浏览器配置",
+    k5p: "各自独立的窗口，有自己的节点、User-Agent 和语言。每个都有自己的会话目录和任务栏图标颜色。",
+    k6h: "订阅与测速",
+    k6p: "订阅经由 https 更新，静默替换配置，不会关掉隧道。测速一次性测量所有节点的延迟，使用自己的 sing-box 和自己的端口。",
+    k7h: "什么都不往外发",
+    k7p: "没有遥测，没有流量日志。探测默认发往你自己的服务器。「地址—名称」的对应关系从不写入磁盘。",
+    foot: "源代码在",
+  },
+
+  tr: {
+    title: "proxybox — iş bilgisayarı için özel geçit",
+    desc: "Giden trafiğin fail-closed denetimi: seçili programlar ağa yalnızca sizin tünelinizden çıkar; tünel yoksa ağ da yoktur.",
+    tagline: "iş bilgisayarı için özel geçit",
+    h1: "Tünel yoksa ağ da yok.",
+    lede: "Seçtiğiniz programlar ağa yalnızca sizin tünelinizden çıkar. Doğrudan erişimli ara durumlar yoktur: tünel doğrulanana kadar onların ağı yoktur, o kadar. Diğerlerinin trafiğine hiç dokunulmaz.",
+    dl: "Windows için indir",
+    src: "Kaynak kodu",
+    note: "Windows 10 ve 11. Ürünün kendi ağı yoktur: tünel sizin kendi sunucunuzdur.",
+    s1: "Değişmez",
+    c1: "Ayıklama güvenlik duvarında olur, herhangi bir tünelden önce.",
+    k1h: "Kuralı değil, ilkeyi yasaklar",
+    k1p: "Gizli kip açık olduğu sürece güvenlik duvarında tüm giden trafiğe yasak durur. Tünel doğrulandığında seçili programlara oradan geçiş izni verilir — yasağın kendisi asla kaldırılmaz, yoksa ağ herkese birden açılırdı.",
+    k2h: "Doğrudan gidilecek yer yok",
+    k2p: "Tünel yapılandırmasında onu atlayan bir rota yoktur: ne süreç adına göre kural, ne de hiçbir doğrudan çıkış. İzin tünel adresine bağlıdır, bu yüzden fiziksel arabirimden gelen bir paket ona uymaz.",
+    k3h: "Liste kopukluk olmadan düzenlenir",
+    k3p: "Ne program listesi ne de kapsam yapılandırmaya girer, bu yüzden düzenlemeleri tüneli yeniden başlatmaz. Canlı bağlantılar — SSH, indirmeler, aramalar — bunu atlatır.",
+    st1: "kanal trafik taşıyor",
+    st2: "bağlanılıyor",
+    st3: "bilerek kilitli",
+    st4: "bozuk, insan gerekiyor",
+    s2: "Pencere",
+    c2: "Pencerenin gösterdiği en önemli şey durumdur, bu yüzden üstü o kaplar.",
+    alt1: "«korumada» durumundaki pencere: kanal ayakta ve trafik taşıyor",
+    cap1: "Başlığın altında yolun kendisi çizilidir: seçili programlardan ağa. Tünel ayaktayken üzerinde çizgiler ilerler.",
+    alt2: "«erişim kapalı» durumundaki pencere: kanal kesilmiş",
+    cap2: "Tünel yok — kanal kesilmiş ve hareketsiz. Kırmızı değil kehribar: iş görmüş bir savunma arıza değildir.",
+    s3: "Kutuda dahası",
+    k4h: "İki kapsam",
+    k4p: "Beyaz liste — ağ yalnızca seçililere ve yalnızca tünel üzerinden. Tüm bilgisayar — her şey tünele girer. Değişmez aynıdır, yalnızca kimi kapsadığı değişir.",
+    k5h: "Tarayıcı profilleri",
+    k5p: "Kendi düğümü, User-Agent'ı ve dili olan ayrı pencereler. Her birinin kendi oturum dizini ve görev çubuğunda kendi simge rengi vardır.",
+    k6h: "Abonelikler ve ölçüm",
+    k6p: "Abonelik https üzerinden yenilenir ve profilleri sessizce değiştirir, tüneli düşürmeden. Ölçüm gecikmeyi tüm düğümlerde birden ölçer, kendi sing-box'ı ve kendi bağlantı noktalarıyla.",
+    k7h: "Dışarıya hiçbir şey gitmez",
+    k7p: "Ne telemetri var ne trafik günlüğü. Yoklama öntanımlı olarak kendi sunucunuza gider. «Adres — ad» eşleşmesi diske hiç yazılmaz.",
+    foot: "Kaynak kodu",
+  },
+
+  id: {
+    title: "proxybox — gerbang privat untuk komputer kerja",
+    desc: "Kendali lalu lintas keluar dengan prinsip fail-closed: program terpilih hanya menjangkau jaringan lewat terowongan Anda; tidak ada terowongan, tidak ada jaringan.",
+    tagline: "gerbang privat untuk komputer kerja",
+    h1: "Tidak ada terowongan — tidak ada jaringan.",
+    lede: "Program yang Anda pilih hanya menjangkau jaringan lewat terowongan Anda sendiri. Keadaan antara dengan akses langsung tidak ada: selama terowongan belum terkonfirmasi, mereka memang tanpa jaringan. Lalu lintas yang lain sama sekali tidak disentuh.",
+    dl: "Unduh untuk Windows",
+    src: "Kode sumber",
+    note: "Windows 10 dan 11. Produk ini tidak punya jaringan sendiri: terowongannya adalah server Anda sendiri.",
+    s1: "Invarian",
+    c1: "Penyaringan terjadi di firewall, sebelum terowongan apa pun.",
+    k1h: "Yang melarang adalah kebijakan, bukan aturan",
+    k1p: "Selama mode privat menyala, di firewall berdiri larangan atas seluruh lalu lintas keluar. Program terpilih diberi izin menembusnya setelah terowongan terkonfirmasi — larangannya sendiri tidak pernah dicabut, sebab jaringan akan terbuka untuk semua orang sekaligus.",
+    k2h: "Tidak ada tempat untuk pergi langsung",
+    k2p: "Di konfigurasi terowongan tidak ada rute yang melewatinya: tidak ada aturan berdasarkan nama proses, dan tidak ada keluaran «langsung» sama sekali. Izinnya terikat pada alamat terowongan, jadi paket dari antarmuka fisik tidak cocok dengannya.",
+    k3h: "Daftar disunting tanpa terputus",
+    k3p: "Baik daftar program maupun cakupan tidak masuk ke konfigurasi, jadi menyuntingnya tidak memulai ulang terowongan. Koneksi yang sedang hidup — SSH, unduhan, panggilan — selamat melaluinya.",
+    st1: "saluran sedang membawa lalu lintas",
+    st2: "sedang menyambung",
+    st3: "terkunci dengan sengaja",
+    st4: "rusak, butuh orang",
+    s2: "Jendela",
+    c2: "Status adalah hal utama yang ditampilkan jendela, karena itu ia menempati bagian atas.",
+    alt1: "Jendela dalam keadaan «terlindungi»: saluran hidup dan dilalui lalu lintas",
+    cap1: "Di bawah judul tergambar jalurnya sendiri: dari program terpilih menuju jaringan. Selama terowongan hidup, garis-garis berjalan di sepanjangnya.",
+    alt2: "Jendela dalam keadaan «akses tertutup»: saluran terputus",
+    cap2: "Tidak ada terowongan — saluran terputus dan diam. Kuning ambar, bukan merah: pertahanan yang bekerja bukanlah kerusakan.",
+    s3: "Ada lagi dalam kotak",
+    k4h: "Dua cakupan",
+    k4p: "Daftar putih — jaringan hanya untuk yang terpilih dan hanya lewat terowongan. Seluruh komputer — semuanya masuk ke terowongan. Invariannya sama, yang berubah hanya siapa yang terkena.",
+    k5h: "Profil peramban",
+    k5p: "Jendela terpisah dengan node, User-Agent, dan bahasanya sendiri. Masing-masing punya direktori sesi sendiri dan warna ikonnya sendiri di bilah tugas.",
+    k6h: "Langganan dan pengujian",
+    k6p: "Langganan diperbarui lewat https dan mengganti profil tanpa suara, tanpa mematikan terowongan. Pengujian mengukur latensi seluruh node sekaligus, di sing-box dan porta miliknya sendiri.",
+    k7h: "Tidak ada yang keluar",
+    k7p: "Tidak ada telemetri, tidak ada log lalu lintas. Secara bawaan uji koneksi menuju server Anda sendiri. Pemetaan «alamat — nama» tidak pernah ditulis ke disk.",
+    foot: "Kode sumber di",
+  },
+};
+
+// Русский текст остаётся в разметке, поэтому исходники запоминаются один раз в
+// память, а не в data-атрибуты: переключение туда-обратно иначе теряло бы их на
+// первом же круге.
+const base = new Map();
+for (const el of document.querySelectorAll("[data-i18n]")) base.set(el, el.textContent);
+for (const el of document.querySelectorAll("[data-i18n-alt]")) base.set(el, el.alt);
+const baseTitle = document.title;
+const baseDesc = document.querySelector('meta[name="description"]');
+
+// Справа налево пишется только фарси; направление ставится один раз на корне
+// документа, а раскладка тут вся на flex и grid и переворачивается сама.
+function apply(code) {
+  const t = DICT[code];
+  document.documentElement.lang = code;
+  document.documentElement.dir = code === "fa" ? "rtl" : "ltr";
+  for (const el of document.querySelectorAll("[data-i18n]")) {
+    el.textContent = (t && t[el.dataset.i18n]) || base.get(el);
+  }
+  for (const el of document.querySelectorAll("[data-i18n-alt]")) {
+    el.alt = (t && t[el.dataset.i18nAlt]) || base.get(el);
+  }
+  document.title = (t && t.title) || baseTitle;
+  if (baseDesc && t && t.desc) baseDesc.content = t.desc;
+  for (const b of document.querySelectorAll("#langs button")) {
+    b.setAttribute("aria-pressed", String(b.dataset.lang === code));
+  }
+  try { localStorage.setItem("pg-lang", code); } catch (e) { /* приватное окно */ }
+  // Адрес переписывается вместе с выбором, иначе `?lang=en` в строке пережил бы
+  // нажатие на «Русский» и вернул бы английский первой же перезагрузкой.
+  const url = new URL(location.href);
+  url.searchParams.set("lang", code);
+  history.replaceState(null, "", url);
+}
+
+const nav = document.getElementById("langs");
+for (const [code, label] of LANGS) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.dataset.lang = code;
+  b.textContent = label;
+  b.lang = code;
+  b.addEventListener("click", () => apply(code));
+  nav.append(b);
+}
+
+// Порядок: адрес сильнее сохранённого, сохранённое сильнее браузера. Ссылка на
+// конкретный язык обязана открываться на нём, иначе ею нечем поделиться.
+const known = (c) => LANGS.some(([code]) => code === c) ? c : null;
+let stored = null;
+try { stored = localStorage.getItem("pg-lang"); } catch (e) { /* приватное окно */ }
+apply(
+  known(new URLSearchParams(location.search).get("lang")) ||
+  known(stored) ||
+  known((navigator.language || "").slice(0, 2).toLowerCase()) ||
+  "ru"
+);
+</script>
 
 </body>
 </html>
