@@ -341,6 +341,18 @@ pub enum Scope {
     /// `an_update_never_cuts_off_a_machine_that_was_not_asked`.
     #[default]
     All,
+    /// Туннель поднят, а в него никто не идёт: пропусков не выдаётся ни одному
+    /// приложению. То же самое, что белый список с пустым списком выбранных, —
+    /// правилами в конфиге это больше не заводится, конфиг об охватах не знает.
+    ///
+    /// Диагностический, и потому его нет в окне: продукт как раз убрал третий
+    /// охват за то, что человеку в нём нечего было выбирать, — а этот нужен для
+    /// замера тишины и для проверки, что замок держит, когда пропусков нет
+    /// вовсе. Ставится из CLI (`proxybox scope none`), рядом с `PG_STACK` и
+    /// `PG_PPROF`. Окно его показывает как есть: ни одна кнопка охвата не
+    /// подсвечена, а судьба каждого приложения — «доступ закрыт», потому что
+    /// так оно и есть. Сторож — `the_frontend_knows_the_same_scopes`.
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1323,11 +1335,22 @@ mod tests {
     fn the_frontend_knows_the_same_scopes() {
         let ts = include_str!("../../../ui/app-shell/src/platform.ts");
         let line = ts.lines().find(|l| l.starts_with("export type Scope")).expect("тип охвата в platform.ts");
-        for scope in [Scope::Whitelist, Scope::All] {
+        for scope in [Scope::Whitelist, Scope::All, Scope::None] {
             let name = serde_json::to_string(&scope).unwrap();
             assert!(line.contains(&name), "охвата {name} нет в platform.ts: {line}");
         }
-        assert_eq!(line.matches('"').count() / 2, 2, "охватов ровно два, и оба обязаны быть живыми: {line}");
+        assert_eq!(line.matches('"').count() / 2, 3, "охватов ровно три, и все обязаны быть живыми: {line}");
+
+        // Знать окно обязано все три, а предлагать — только два: `none`
+        // диагностический, выбирать в нём человеку нечего, и третья кнопка
+        // вернула бы ровно ту путаницу, ради которой третий охват убирали.
+        // Показывать состояние это не мешает: невыбранный переключатель и
+        // «доступ закрыт» у каждого приложения — правда про эту машину.
+        let bar = include_str!("../../../ui/app-shell/src/StatusBar.tsx");
+        for offered in ["[\"whitelist\",", "[\"all\","] {
+            assert!(bar.contains(offered), "переключатель охвата растерял варианты: нет {offered}");
+        }
+        assert!(!bar.contains("[\"none\","), "диагностическому охвату не место в переключателе окна");
     }
 
     /// То же и по той же причине про языки: строки `"ru"`/`"en"`/`"fa"` окно

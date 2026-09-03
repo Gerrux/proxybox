@@ -21,7 +21,11 @@ export const RTL: Lang[] = ["fa"];
  *  - `apps` — выбранные в туннель, остальные напрямую;
  *  - `whitelist` — выбранные в туннель, у остальных сети нет вовсе;
  *  - `all` — вся машина в туннель, список не участвует. */
-export type Scope = "whitelist" | "all";
+/** `none` — диагностический охват: туннель поднят, а пропусков нет ни у кого.
+ *  Ставится только из CLI, кнопки для него в окне нет (сторож —
+ *  `the_frontend_knows_the_same_scopes`), но знать его окно обязано: показать
+ *  состояние, которого не понимаешь, нечем. */
+export type Scope = "whitelist" | "all" | "none";
 
 export type App = { path: string; name: string; enabled: boolean };
 

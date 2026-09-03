@@ -177,6 +177,7 @@ pub static EN: &[(&str, &str)] = &[
     ("значок в трее не создан: {}", "tray icon not created: {}"),
     ("нужен язык: ru, en, fa, zh, tr или id", "a language is required: ru, en, fa, zh, tr or id"),
     ("права каталога состояния не выставлены — пароли профилей читает вся машина: {}", "the state directory permissions were not applied — every user on this machine can read the profile passwords: {}"),
+    ("никто: туннель поднят, но пропусков нет ни у кого", "nobody: the tunnel is up, but no one has a pass"),
 ];
 
 /// Персидские строки.
@@ -340,6 +341,7 @@ pub static FA: &[(&str, &str)] = &[
     ("значок в трее не создан: {}", "نشان سینی ساخته نشد: {}"),
     ("нужен язык: ru, en, fa, zh, tr или id", "زبان لازم است: ru، en، fa، zh، tr یا id"),
     ("права каталога состояния не выставлены — пароли профилей читает вся машина: {}", "دسترسی‌های پوشه وضعیت اعمال نشد — گذرواژه‌های پروفایل‌ها را همه کاربران این رایانه می‌خوانند: {}"),
+    ("никто: туннель поднят, но пропусков нет ни у кого", "هیچ‌کس: تونل بالاست، اما هیچ‌کس اجازهٔ عبور ندارد"),
 ];
 
 /// Китайские строки (упрощённое письмо).
@@ -503,6 +505,7 @@ pub static ZH: &[(&str, &str)] = &[
     ("значок в трее не создан: {}", "托盘图标未创建：{}"),
     ("нужен язык: ru, en, fa, zh, tr или id", "需要指定语言：ru、en、fa、zh、tr 或 id"),
     ("права каталога состояния не выставлены — пароли профилей читает вся машина: {}", "状态目录的权限没有设置 — 本机的任何用户都能读取配置文件里的密码：{}"),
+    ("никто: туннель поднят, но пропусков нет ни у кого", "无人：隧道已建立，但没有人拿到放行"),
 ];
 
 /// Турецкие строки.
@@ -666,6 +669,7 @@ pub static TR: &[(&str, &str)] = &[
     ("значок в трее не создан: {}", "tepsi simgesi oluşturulmadı: {}"),
     ("нужен язык: ru, en, fa, zh, tr или id", "dil gerekir: ru, en, fa, zh, tr ya da id"),
     ("права каталога состояния не выставлены — пароли профилей читает вся машина: {}", "durum dizininin izinleri uygulanmadı — profil şifrelerini makinedeki herkes okuyabilir: {}"),
+    ("никто: туннель поднят, но пропусков нет ни у кого", "kimse: tünel ayakta, ama kimsenin geçiş izni yok"),
 ];
 
 /// Индонезийские строки.
@@ -829,6 +833,7 @@ pub static ID: &[(&str, &str)] = &[
     ("значок в трее не создан: {}", "ikon baki tidak dibuat: {}"),
     ("нужен язык: ru, en, fa, zh, tr или id", "perlu bahasa: ru, en, fa, zh, tr atau id"),
     ("права каталога состояния не выставлены — пароли профилей читает вся машина: {}", "izin direktori status tidak diterapkan — kata sandi profil dapat dibaca semua pengguna mesin ini: {}"),
+    ("никто: туннель поднят, но пропусков нет ни у кого", "tak seorang pun: terowongan hidup, tetapi tidak ada yang punya izin lewat"),
 ];
 
 /// Все таблицы разом — для сторожа полноты. Русской тут нет: она и есть

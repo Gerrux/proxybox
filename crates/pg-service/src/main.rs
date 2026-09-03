@@ -607,6 +607,13 @@ impl Service {
     /// конфиге и одного правила брандмауэра, которое просто ни с чем не совпадёт.
     fn selected(status: &Status) -> Vec<String> {
         let mut out = Vec::new();
+        // Охват «ничего» — это и есть пустой список пропусков: галочки человек
+        // не терял, они просто никого не выпускают. Пусто отвечаем здесь, а не
+        // в `guard`, чтобы решение о том, кто получает пропуск, осталось в
+        // одном месте с решением о том, что такое «выбранное приложение».
+        if status.scope == Scope::None {
+            return out;
+        }
         for app in status.apps.iter().filter(|a| a.enabled) {
             let canonical = core_apps::canonical(&app.path);
             if canonical != app.path {
@@ -754,6 +761,7 @@ impl Service {
                 let scope = match self.status.scope {
                     Scope::All => t("весь трафик компьютера"),
                     Scope::Whitelist => tf!("приложений с сетью: {}, у остальных её нет", count),
+                    Scope::None => t("никто: туннель поднят, но пропусков нет ни у кого"),
                 };
                 self.log(tf!("профиль «{}»: sing-box запущен, {}", profile, scope));
                 Ok(())
@@ -1604,6 +1612,12 @@ fn fencing(scope: Scope, blocked: bool, private: bool) -> (core_filter::Fence, b
         // окно, ради которого весь этот замок и заведён. И наоборот: снимать
         // ради него замок нельзя, это открыло бы сеть всем.
         Scope::Whitelist => (if private && !blocked { Fence::Allow } else { Fence::Off }, private),
+        // Ничего: тот же белый список, только выбранных в нём нет. Замок стоит
+        // всё время приватного режима, а пропуска выдаются пустым списком —
+        // остаётся щель для имён, и в туннель не идёт никто. Отдельной ветки с
+        // другим ответом тут быть не должно: разойдись она с белым списком, и
+        // «никто не идёт» стало бы «идут все».
+        Scope::None => (if private && !blocked { Fence::Allow } else { Fence::Off }, private),
     }
 }
 
@@ -1780,6 +1794,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                     s.log(match scope {
                         Scope::All => t("охват: весь трафик компьютера"),
                         Scope::Whitelist => t("охват: только выбранные приложения, остальным сеть закрыта"),
+                        Scope::None => t("никто: туннель поднят, но пропусков нет ни у кого"),
                     });
                     s.save();
                 });
@@ -2404,6 +2419,34 @@ mod tests {
     /// осталось вовсе (сторож `the_pass_is_bound_to_the_tunnel_address` в
     /// `core-filter` следит и за этим).
     #[test]
+    /// Охват «ничего» — это белый список с пустым списком пропусков, и обе
+    /// половины этого обязаны держаться вместе. Разойдись `fencing` с белым
+    /// списком — и «в туннель не идёт никто» стало бы «идут все»; не опустей
+    /// список выбранных — охват вообще ничего бы не менял.
+    ///
+    /// Замок при этом обязан стоять: тишину меряют под ним, а не вместо него.
+    #[test]
+    fn nobody_gets_a_pass_in_the_diagnostic_scope() {
+        use core_filter::Fence;
+        for blocked in [true, false] {
+            for private in [true, false] {
+                assert_eq!(
+                    fencing(Scope::None, blocked, private),
+                    fencing(Scope::Whitelist, blocked, private),
+                    "охват «ничего» разошёлся с белым списком: заперто={blocked}, режим={private}"
+                );
+            }
+        }
+        assert_eq!(fencing(Scope::None, false, true), (Fence::Allow, true), "замок обязан стоять и тут");
+
+        let mut st = Status::default();
+        st.apps.push(App { path: "/bin/true".into(), name: "true".into(), enabled: true });
+        st.scope = Scope::Whitelist;
+        assert!(!Service::selected(&st).is_empty(), "в белом списке отмеченное получает пропуск");
+        st.scope = Scope::None;
+        assert!(Service::selected(&st).is_empty(), "в охвате «ничего» пропуск не получает никто");
+    }
+
     fn the_whitelist_locks_the_door_and_hands_out_passes() {
         use core_filter::Fence;
         // Приватный режим включён, туннель не подтверждён.
