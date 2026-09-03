@@ -38,3 +38,34 @@ jobs:
       # службы за `cfg(windows)`, и разъезжается она молча до самой сборки.
       - run: rustup target add x86_64-pc-windows-msvc
       - run: cargo check --workspace --target x86_64-pc-windows-msvc
+      # Оболочка — отдельный Cargo-проект (`exclude` в воркспейсе), и строкой
+      # выше она не проверяется вовсе. Собиралась она до сих пор только на
+      # Windows, и это стоило ровно того, чего и должно было: новый вариант
+      # `Scope` не сломал ни одного теста, а `cargo tauri build` у человека
+      # упал на невычерпанном `match`. Здесь она компилируется тоже.
+      #
+      # `llvm-rc` нужен её build.rs (ресурс версии и значок). Линковки при
+      # `cargo check` нет, но build.rs обязан пройти, поэтому компилятор
+      # ресурсов ставим настоящий — молча пропустить эту проверку хуже, чем не
+      # заводить её вовсе.
+      - name: чем собрать build.rs оболочки
+        run: |
+          # `llvm-rc` — компилятор ресурсов, его зовёт build.rs за значком и
+          # версией. Ищем установленный, а не ставим вслепую: на образе он уже
+          # есть, и лишняя установка — это минута на каждый прогон.
+          rc=$(ls /usr/lib/llvm-*/bin/llvm-rc 2>/dev/null | tail -1)
+          if [ -z "$rc" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y llvm
+            rc=$(ls /usr/lib/llvm-*/bin/llvm-rc | tail -1)
+          fi
+          echo "llvm-rc: $rc"
+          dirname "$rc" >> "$GITHUB_PATH"
+          # Пустышки вместо вложенных бинарников: их существование build.rs
+          # проверяет, а содержимое читает только упаковщик, которого здесь не
+          # зовут. Настоящие кладёт `installer/build.ps1` на Windows.
+          mkdir -p src-tauri/binaries
+          for f in pg-service proxybox sing-box; do
+            : > "src-tauri/binaries/$f-x86_64-pc-windows-msvc.exe"
+          done
+          : > src-tauri/binaries/LICENSE-sing-box.txt
+      - run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
