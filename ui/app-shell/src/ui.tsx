@@ -1,6 +1,6 @@
 /** Примитивы интерфейса. Пока живут в оболочке: второго потребителя нет, а
  *  отдельный пакет ui-kit ради одного — лишний слой. */
-import { useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 /** Панель — плита с гравированной подписью. Содержимое утоплено в неё
  *  (`surface-2` темнее `surface`), а не лежит карточкой сверху. */
@@ -342,6 +342,144 @@ export function ConfirmButton({
     >
       {ask}
     </Button>
+  );
+}
+
+/** Пункт меню строки. Действия строки живут в меню, а не кнопками справа: их
+ *  у профиля пять, и все пять в строке не помещаются даже в широком окне —
+ *  первым обрубается имя, единственное, чем строки различаются. */
+export type MenuItem = {
+  label: string;
+  onPick: () => void;
+  /** Разрушающее — в два клика, как у `ConfirmButton`: первый подменяет
+   *  надпись вопросом, второй делает. В меню промахнуться легче, чем по
+   *  отдельной кнопке: пункты стоят вплотную. */
+  ask?: string;
+  hint?: string;
+  danger?: boolean;
+  /** Пункт-переключатель во включённом положении. Галочкой слева, а не цветом:
+   *  меню читают глазами, а не наводят на него курсор. */
+  mark?: boolean;
+  disabled?: boolean;
+};
+
+/** Меню по правой кнопке (и по «⋯» — с клавиатуры и на сенсоре правой кнопки
+ *  нет). Своё, а не системное: системное окно рисует Windows по `contextmenu`,
+ *  которого в вебвью нет вовсе.
+ *
+ *  Координаты физические (`clientX`), и логическими они быть не могут: это
+ *  место курсора, а не отступ в раскладке. Упирается в край экрана — сдвигаем;
+ *  до первого замера меню спрятано, иначе оно мигало бы на прежнем месте. */
+export function Menu({
+  at,
+  items,
+  onClose,
+}: {
+  at: [number, number];
+  items: MenuItem[];
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [armed, setArmed] = useState<string | null>(null);
+  const [box, setBox] = useState<{ left: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const rect = ref.current?.getBoundingClientRect();
+    if (!rect) return;
+    setBox({
+      left: Math.max(8, Math.min(at[0], window.innerWidth - rect.width - 8)),
+      top: Math.max(8, Math.min(at[1], window.innerHeight - rect.height - 8)),
+    });
+  }, [at]);
+  useEffect(() => {
+    const away = (e: PointerEvent) => {
+      if (!ref.current?.contains(e.target as Node)) onClose();
+    };
+    const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    // Прокрутка списка уводит строку из-под меню, а меню остаётся висеть на
+    // месте: ловим её на всплытии из любого контейнера (`true`).
+    window.addEventListener("pointerdown", away);
+    window.addEventListener("keydown", key);
+    window.addEventListener("scroll", onClose, true);
+    window.addEventListener("resize", onClose);
+    return () => {
+      window.removeEventListener("pointerdown", away);
+      window.removeEventListener("keydown", key);
+      window.removeEventListener("scroll", onClose, true);
+      window.removeEventListener("resize", onClose);
+    };
+  }, [onClose]);
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      style={{ left: box?.left ?? at[0], top: box?.top ?? at[1], visibility: box ? undefined : "hidden" }}
+      className="enter fixed z-20 min-w-40 rounded-md border border-edge bg-surface p-1 shadow-lg"
+    >
+      {items.map((item) => (
+        <button
+          key={item.label}
+          type="button"
+          role="menuitem"
+          disabled={item.disabled}
+          title={item.hint}
+          onClick={() => {
+            if (item.ask && armed !== item.label) return setArmed(item.label);
+            onClose();
+            item.onPick();
+          }}
+          className={`smooth flex w-full items-center gap-2 rounded-[3px] px-2.5 py-1.5 text-start text-[13px] disabled:opacity-40 hover:bg-surface-2 ${
+            item.danger ? "text-muted hover:text-fault" : ""
+          } ${armed === item.label ? "text-fault" : ""}`}
+        >
+          <span className="w-3 shrink-0 text-center text-accent">{item.mark ? "★" : ""}</span>
+          <span className="min-w-0 flex-1 truncate">{armed === item.label ? item.ask : item.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Форма поверх окна. Родной `<dialog>`, а не свой слой: он сам держит фокус
+ *  внутри, сам закрывается по Esc и сам лежит выше всего остального — своего
+ *  кода на это ушло бы втрое больше, чем на разметку.
+ *
+ *  Заведена ради того, чтобы поле ввода перестало раздвигать список: поле
+ *  импорта открывалось прямо в панели, и всё под ним съезжало вниз — вместе с
+ *  той строкой, ради которой панель и открывали. */
+export function Modal({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = ref.current;
+    dialog?.showModal();
+    return () => dialog?.close();
+  }, []);
+  return (
+    <dialog
+      ref={ref}
+      onClose={onClose}
+      // Клик мимо содержимого — это клик по самому <dialog>: его поле целиком
+      // занимает вложенный блок.
+      onClick={(e) => e.target === ref.current && onClose()}
+      className="m-auto w-[min(34rem,calc(100vw-2rem))] rounded-lg border border-edge bg-surface p-0 text-ink shadow-lg backdrop:bg-bg/70"
+    >
+      <div className="flex max-h-[85vh] flex-col gap-3 overflow-y-auto p-5">
+        <header className="flex items-center gap-3">
+          <h2 className="engraved min-w-0 flex-1 truncate text-muted">{title}</h2>
+          <Button variant="quiet" aria-label={title} onClick={onClose}>
+            ✕
+          </Button>
+        </header>
+        {children}
+      </div>
+    </dialog>
   );
 }
 
