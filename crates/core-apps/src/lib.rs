@@ -865,13 +865,44 @@ fn package_name(manifest: &str, dir: &Path) -> String {
         })
 }
 
+/// Комментарии и CDATA — единственные места, где `<Application` стоит, ничего
+/// не объявляя: закомментированный блок в манифесте бывает и у хороших пакетов,
+/// а разбор подстрокой видел бы там приложение и заводил бы человеку exe,
+/// которого в пакете нет.
+///
+/// Незакрытый комментарий — это обрубленный манифест: остаток выбрасывается
+/// целиком, потому что разобрать его наполовину значит соврать половиной.
+fn strip_noise(xml: &str) -> String {
+    const PAIRS: [(&str, &str); 2] = [("<!--", "-->"), ("<![CDATA[", "]]>")];
+
+    let mut out = String::with_capacity(xml.len());
+    let mut rest = xml;
+    loop {
+        let next = PAIRS
+            .iter()
+            .filter_map(|(open, close)| rest.find(open).map(|at| (at, *open, *close)))
+            .min_by_key(|(at, _, _)| *at);
+        let Some((at, open, close)) = next else { break };
+        out.push_str(&rest[..at]);
+        let after = &rest[at + open.len()..];
+        match after.find(close) {
+            Some(end) => rest = &after[end + close.len()..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Из манифеста нужен ровно один атрибут — `Executable` у `<Application>`.
 ///
-/// ponytail: разбор подстрокой вместо XML. Потолок — манифест, где `<Application`
-/// встретится внутри комментария или CDATA; апгрейд — `quick-xml`, если такой
-/// однажды попадётся. Полноценный разбор ради одного атрибута не окупается.
+/// ponytail: разбор подстрокой вместо XML. Комментарии и CDATA вырезаны
+/// (`strip_noise`), но остаётся сам способ: `Executable="…"` внутри чужого
+/// значения атрибута будет прочитан как настоящий. Апгрейд — `quick-xml`, если
+/// такой манифест однажды попадётся; полноценный разбор ради одного атрибута не
+/// окупается.
 fn package_exes(manifest: &str, dir: &Path) -> Vec<String> {
-    manifest
+    strip_noise(manifest)
         .split("<Application ")
         .skip(1)
         .filter_map(|app| {
@@ -1571,6 +1602,23 @@ mod tests {
         let vclibs = root.join("Microsoft.VCLibs.140.00_14.0.33728.0_x64__8wekyb3d8bbwe");
         std::fs::create_dir_all(&vclibs).unwrap();
         std::fs::write(vclibs.join("AppxManifest.xml"), "<Package><Properties/></Package>").unwrap();
+        // Закомментированный блок в манифесте — обычное дело, и приложением он
+        // не является: разбор подстрокой видел бы там `<Application` и заводил
+        // человеку exe, которого в пакете нет вовсе. То же и с CDATA.
+        let noisy = root.join("Noisy_1.0.0.0_x64__pzs8sxrjxfjjc");
+        std::fs::create_dir_all(&noisy).unwrap();
+        std::fs::write(noisy.join("Real.exe"), b"").unwrap();
+        std::fs::write(noisy.join("Ghost.exe"), b"").unwrap();
+        std::fs::write(
+            noisy.join("AppxManifest.xml"),
+            r#"<Package><Properties><DisplayName>Noisy</DisplayName></Properties><Applications>
+               <!-- <Application Id="Old" Executable="Ghost.exe"/> -->
+               <Application Id="App" Executable="Real.exe"/>
+               <Description><![CDATA[ <Application Id="Doc" Executable="Ghost.exe"/> ]]></Description>
+               </Applications></Package>"#,
+        )
+        .unwrap();
+
         // Пакет с человеческим именем в манифесте — оно и должно победить папку.
         let tg = root.join("TelegramMessengerLLP.TelegramDesktop_5.1.0_x64__t4vj0pshhgkwm");
         std::fs::create_dir_all(&tg).unwrap();
@@ -1584,10 +1632,12 @@ mod tests {
 
         let mut found = packages_in(&root);
         found.sort_by(|a, b| a.name.cmp(&b.name));
-        assert_eq!(found.len(), 2, "служебное приложение и фреймворк не берутся: {found:?}");
+        assert_eq!(found.len(), 3, "служебное приложение и фреймворк не берутся: {found:?}");
         assert_eq!(found[0].name, "Claude", "имя-ресурс не разрешить — берётся первое поле папки");
         assert!(found[0].path.ends_with(&native("app/Claude.exe".into())), "{:?}", found[0].path);
-        assert_eq!(found[1].name, "Telegram Desktop", "имя из манифеста лучше имени папки");
+        assert_eq!(found[1].name, "Noisy");
+        assert!(found[1].path.ends_with("Real.exe"), "закомментированное приложение — не приложение: {:?}", found[1].path);
+        assert_eq!(found[2].name, "Telegram Desktop", "имя из манифеста лучше имени папки");
         assert!(packages_in(&root.join("нет")).is_empty(), "нет каталога — нет и пакетов");
     }
 
