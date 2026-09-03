@@ -304,6 +304,13 @@ struct Saved {
     /// переживать ту сессию, в которой переменная стояла.
     #[serde(default)]
     settings: Settings,
+    /// Порядок профилей, расставленный руками: имена в том порядке, в каком их
+    /// перетащили. Пусто — не расставляли, и список идёт как лёг.
+    #[serde(default)]
+    order: Vec<String>,
+    /// То же про подписки: адреса в порядке групп.
+    #[serde(default)]
+    sub_order: Vec<String>,
 }
 
 /// Секунды с эпохи. Часы могли прыгнуть назад — тогда измерение выглядит
@@ -364,6 +371,10 @@ struct Service {
     /// Профили со звёздочкой. Держит служба, а не окно: на второй машине
     /// человек отмечает те же три узла из сотни.
     favorites: BTreeSet<String>,
+    /// Порядок, расставленный руками: имена профилей и адреса подписок. Тут же
+    /// и по той же причине, что звёздочка, — см. `arrange`.
+    order: Vec<String>,
+    sub_order: Vec<String>,
     /// Политика брандмауэра до нашего замка — её и вернём, снимая его.
     /// Спрашивается один раз за запуск и только пока замка нет: под своим
     /// замком служба прочитала бы свой же `blockoutbound`. Снимается вместе с
@@ -471,6 +482,8 @@ impl Service {
             quotas: saved.quotas,
             private: saved.private,
             favorites: saved.favorites,
+            order: saved.order,
+            sub_order: saved.sub_order,
             policy: saved.policy,
             tunnel: None,
             probe_target: (String::new(), 0),
@@ -481,6 +494,7 @@ impl Service {
             browsers: BTreeMap::new(),
             generation: 0,
         };
+        arrange(&mut me.status, &me.order, &me.sub_order);
         me.apply_settings();
         if migrated {
             // Молчать тут нельзя: человек выбирал одно, а работать будет
@@ -531,9 +545,15 @@ impl Service {
         // `state.json`, которая переживёт и его, и подписку, откуда он пришёл:
         // прополку делаем здесь же, где и прополку измерений.
         self.favorites.retain(|name| self.profiles.contains_key(name));
+        // И место в порядке — тоже: имя, которого больше нет, держало бы за
+        // собой строку, а вернувшийся под тем же именем чужой узел встал бы на
+        // чужое место. Правило то же, что у звёздочки.
+        self.order.retain(|name| self.profiles.contains_key(name));
+        self.sub_order.retain(|url| self.subscriptions.contains_key(url));
         self.status.profiles = profiles_of(&self.profiles, &self.favorites);
         self.status.subscriptions =
             subscriptions_of(&self.subscriptions, &self.sub_names, &self.profiles, &self.quotas);
+        arrange(&mut self.status, &self.order, &self.sub_order);
         // Профиля больше нет — и мерить нечего: без этой прополки кэш измерений
         // рос бы вечно, а подписка на сотню узлов переписывает их именами раз в
         // сутки. Здесь, а не в каждом месте удаления: через save() проходят все.
@@ -556,6 +576,8 @@ impl Service {
             lang: self.status.lang,
             private: self.private,
             favorites: self.favorites.clone(),
+            order: self.order.clone(),
+            sub_order: self.sub_order.clone(),
             policy: self.policy.clone(),
             // Обратно тем же именем, каким читаем: перечисление знает своё имя
             // само, и дублировать его строкой значило бы разъехаться на первом
@@ -1086,6 +1108,44 @@ fn profiles_of(profiles: &BTreeMap<String, Value>, favorites: &BTreeSet<String>)
             ProfileInfo { favorite: favorites.contains(name), name: name.clone(), kind, server }
         })
         .collect()
+}
+
+/// Порядок списков в окне: как расставил человек, а не как легло в `BTreeMap`.
+///
+/// Порядок держит служба, а не окно, и это не то же самое, что порядок по
+/// задержке: тот — способ посмотреть, он живёт в окне и умирает вместе с ним, а
+/// «этот узел у меня первый» — свойство самого списка, за которым человек не
+/// пойдёт второй раз на второй машине. Та же причина, по которой в службе живёт
+/// звёздочка.
+///
+/// Не расставляли — вперёд идут отмеченные звёздочкой, дальше как пришло: у
+/// профилей это алфавит `BTreeMap`, у узлов подписки — порядок панели.
+/// Расставили — звёздочка не поднимает больше никого: она поднимала наверх за
+/// неимением другого способа сказать «этот важнее», а перетаскивание и есть тот
+/// способ, сказанный прямо, и спорить с ним значило бы возвращать строку на
+/// место сразу после того, как её туда перенесли.
+///
+/// Имя, которого в порядке нет (новый профиль, новый узел из сверки), уходит в
+/// хвост: сортировка устойчива, поэтому «в хвост» и означает «как пришло».
+/// Сторож — `a_hand_made_order_outranks_the_star`.
+fn arrange(status: &mut Status, order: &[String], sub_order: &[String]) {
+    let seats: BTreeMap<&str, usize> = order.iter().enumerate().map(|(i, n)| (n.as_str(), i)).collect();
+    if seats.is_empty() {
+        let starred: BTreeSet<String> =
+            status.profiles.iter().filter(|p| p.favorite).map(|p| p.name.clone()).collect();
+        status.profiles.sort_by_key(|p| !p.favorite);
+        for sub in &mut status.subscriptions {
+            sub.nodes.sort_by_key(|name| !starred.contains(name));
+        }
+    } else {
+        let seat = |name: &str| seats.get(name).copied().unwrap_or(usize::MAX);
+        status.profiles.sort_by_key(|p| seat(&p.name));
+        for sub in &mut status.subscriptions {
+            sub.nodes.sort_by_key(|name| seat(name));
+        }
+    }
+    let groups: BTreeMap<&str, usize> = sub_order.iter().enumerate().map(|(i, u)| (u.as_str(), i)).collect();
+    status.subscriptions.sort_by_key(|sub| groups.get(sub.url.as_str()).copied().unwrap_or(usize::MAX));
 }
 
 /// Занятое имя получает номер: в подписках узлы сплошь и рядом называются
@@ -1859,6 +1919,26 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             },
         },
         Request::EditProfile { name, rename, node } => edit_profile(&mut s, &name, &rename, &node),
+        Request::SetOrder { profiles, subscriptions } => {
+            // Приезжает список целиком, и служба его не сверяет с текущим:
+            // имена, которых больше нет, всё равно отсеет `save()`, а новые
+            // уйдут в хвост сами. Ни туннеля, ни правил это не касается —
+            // порядок строк не меняет судьбу ни одного пакета.
+            //
+            // Пустое — «не трогать»: перенесли подписку, и порядок профилей
+            // приезжает пустым, потому что его никто не расставлял. Записав
+            // сюда показанное окном, служба заморозила бы в ручной порядок
+            // расстановку по звёздочке — и следующая отметка уже никого бы не
+            // подняла.
+            if !profiles.is_empty() {
+                s.order = profiles;
+            }
+            if !subscriptions.is_empty() {
+                s.sub_order = subscriptions;
+            }
+            s.save();
+            Response::Done
+        }
         Request::SetFavorite { name, on } => {
             if !s.profiles.contains_key(&name) {
                 return Response::Error {
@@ -3223,6 +3303,61 @@ mod tests {
         assert!(s.favorites.is_empty(), "профиля нет — и звезде висеть не на чем: {:?}", s.favorites);
     }
 
+    /// Порядок, расставленный руками, сильнее звёздочки — и это единственное
+    /// место, где два способа поднять строку наверх спорят.
+    ///
+    /// Пока порядка нет, наверх поднимает звёздочка: три узла из сотни, и в
+    /// подписке тоже. Расставили руками — список идёт ровно так, как прислало
+    /// окно, отмеченные вместе со всеми: звёздочка поднимала за неимением
+    /// другого способа сказать «этот важнее», а перетаскивание и есть тот
+    /// способ. Разъедься эти двое, и строка возвращалась бы на место сразу
+    /// после того, как её туда перенесли.
+    ///
+    /// Третья половина правила — про имя, которого в порядке нет: новый профиль
+    /// и новый узел из сверки уходят в хвост, а не наверх, и не теряются вовсе.
+    #[test]
+    fn a_hand_made_order_outranks_the_star() {
+        let _state = scratch("pg-order-test");
+        let mut s = Service::load();
+        for name in ["NL-01", "NL-02", "NL-03"] {
+            s.profiles.insert(name.into(), json!({"type": "vless", "server": "a.com"}));
+        }
+        s.subscriptions.insert("https://panel/sub".into(), vec!["NL-01".into(), "NL-02".into()]);
+        s.favorites.insert("NL-03".into());
+        s.save();
+        let names = |s: &Service| s.status.profiles.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&s), ["NL-03", "NL-01", "NL-02"], "без порядка наверх поднимает звёздочка");
+
+        s.order = vec!["NL-02".into(), "NL-01".into()];
+        s.sub_order = vec!["https://panel/sub".into()];
+        s.save();
+        assert_eq!(names(&s), ["NL-02", "NL-01", "NL-03"], "расставленное руками сильнее звезды");
+        assert_eq!(
+            s.status.subscriptions[0].nodes,
+            ["NL-02", "NL-01"],
+            "узлы подписки идут тем же порядком, что и весь список"
+        );
+
+        // Новый узел приехал сверкой — его в порядке нет, и место ему в хвосте.
+        s.profiles.insert("NL-04".into(), json!({"type": "vless", "server": "a.com"}));
+        s.save();
+        assert_eq!(names(&s), ["NL-02", "NL-01", "NL-03", "NL-04"], "новый профиль встаёт в хвост");
+
+        // Пустой список — «не трогать»: так приезжает перенос подписки, и
+        // порядок профилей от него не должен ни стираться, ни замораживаться.
+        let svc = Mutex::new(s);
+        let out = handle(&svc, Request::SetOrder { profiles: vec![], subscriptions: vec![] });
+        assert!(matches!(out, Response::Done), "{out:?}");
+        let mut s = svc.into_inner().expect("замок цел");
+        assert_eq!(s.order, ["NL-02", "NL-01"], "пустой список стёр порядок: {:?}", s.order);
+
+        // Профиля не стало — и место в порядке уходит с ним, иначе вернувшийся
+        // под тем же именем чужой узел встал бы на чужое.
+        s.forget_profile("NL-02");
+        s.save();
+        assert_eq!(s.order, ["NL-01"], "порядок держит имена, которых больше нет: {:?}", s.order);
+    }
+
     /// Разрушающая команда называет того, кто её прислал.
     ///
     /// Список доступа канала различает пользователя, а не программу: от имени
@@ -3425,6 +3560,7 @@ fn changes_the_machine(req: &Request) -> bool {
         | Request::ProfileNode { .. }
         | Request::RenameSubscription { .. }
         | Request::SetFavorite { .. }
+        | Request::SetOrder { .. }
         | Request::SetLang { .. }
         | Request::TestProfiles { .. }
         | Request::Connections => false,
