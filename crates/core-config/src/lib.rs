@@ -563,10 +563,11 @@ fn wireguard(link: &str) -> Result<Profile, String> {
 /// share-link — дальше его разбирает ровно тот же код, что и обычную подписку.
 ///
 /// ponytail: из YAML понимается подмножество, которым и написан `proxies:` —
-/// вложенные отображения блоком и в фигурных скобках, списки в квадратных,
-/// кавычки. Якоря, ссылки на них, многострочные скаляры и списки блоком за
-/// границей: узел, записанный так, потеряет поле или пропадёт целиком. Потолок
-/// виден по числу узлов в подписке, апгрейд — взять saphyr.
+/// вложенные отображения блоком и в фигурных скобках, списки в квадратных и
+/// блоком, кавычки, метка якоря на узле. За границей остались ссылки на якорь
+/// (`*node`), слияние отображений (`<<:`) и многострочные скаляры: узел,
+/// записанный так, потеряет поле или пропадёт целиком. Потолок виден по числу
+/// узлов в подписке, апгрейд — взять saphyr.
 fn clash(body: &str) -> Vec<Profile> {
     proxies(body).iter().filter_map(|node| parse(&link_of(node)?).ok()).collect()
 }
@@ -577,6 +578,11 @@ fn clash(body: &str) -> Vec<Profile> {
 fn proxies(body: &str) -> Vec<HashMap<String, String>> {
     let mut items: Vec<Vec<String>> = Vec::new();
     let mut inside = false;
+    // Столбец, в котором стоят дефисы самих узлов. Дефис глубже — это список
+    // внутри узла (`alpn:` и строки `- h3` под ним), и новым узлом он не
+    // становится: пока столбец не запоминался, такой список расщеплял узел на
+    // столько пустых, сколько в нём было значений.
+    let mut dash = usize::MAX;
     for line in body.lines() {
         let text = line.trim_end();
         let bare = text.trim_start();
@@ -591,10 +597,18 @@ fn proxies(body: &str) -> Vec<HashMap<String, String>> {
         if indent == 0 {
             break; // начался следующий раздел конфига
         }
-        match bare.strip_prefix("- ") {
+        match bare.strip_prefix("- ").filter(|_| indent <= dash) {
             // Дефис заменяем пробелами: тогда ключи первой строки узла стоят в
             // том же столбце, что и остальные, и вложенность считается отступом.
-            Some(rest) => items.push(vec![format!("{}  {rest}", " ".repeat(indent))]),
+            //
+            // От метки якоря на своей строке (`- &hk`, поля ниже) остаётся
+            // строка из одних пробелов — её и не заводим: столбец у неё свой, и
+            // разбор принял бы его за отступ всего узла, а поля — за чужие.
+            Some(rest) => {
+                dash = indent;
+                let head = format!("{}  {}", " ".repeat(indent), unanchor(rest));
+                items.push(if head.trim().is_empty() { Vec::new() } else { vec![head] });
+            }
             None => {
                 if let Some(item) = items.last_mut() {
                     item.push(text.to_string());
@@ -618,8 +632,46 @@ fn proxies(body: &str) -> Vec<HashMap<String, String>> {
         .collect()
 }
 
+/// Метка якоря в начале узла (`- &hk {server: …}`). Панели ставят её, чтобы
+/// ссылаться на узел из `proxy-groups`, а тот раздел мы не читаем вовсе, —
+/// значит метка тут лишняя, и узел из-за неё пропадал целиком.
+///
+/// Заменяется пробелами, а не выбрасывается: столбцы первой строки узла обязаны
+/// совпадать со столбцами остальных — на них и держится вложенность.
+///
+/// Ссылку на якорь (`- *hk`) снимать нечем и не надо: узел она не описывает, а
+/// повторяет соседний, и разбор без полей отбросит её сам.
+fn unanchor(rest: &str) -> String {
+    let Some(tail) = rest.strip_prefix('&') else { return rest.to_string() };
+    let end = tail.find(char::is_whitespace).unwrap_or(tail.len());
+    format!("{}{}", " ".repeat(end + 1), &tail[end..])
+}
+
 fn indent(line: &str) -> usize {
     line.len() - line.trim_start().len()
+}
+
+/// Список блоком (`alpn:`, а ниже строки `- h3`) → строка через запятую, ровно
+/// та же, что выходит из списка в квадратных скобках: дальше их разбирают
+/// одинаково. Так панели пишут `alpn` и `dns` не реже, чем скобками, а
+/// вложенный разбор терял их целиком — в строке `- h3` нет двоеточия, и она
+/// проходила мимо.
+///
+/// `None` — это не список, а вложенное отображение. Список отображений
+/// (`- name: x`) тоже считается отображением: в `proxies:` его не бывает, а
+/// склеить его в скаляр значило бы соврать значением вместо пропажи.
+fn sequence(lines: &[&str]) -> Option<String> {
+    let mut items = Vec::new();
+    for line in lines {
+        let item = line.trim().strip_prefix('-')?.trim();
+        if item.contains(": ") || item.ends_with(':') {
+            return None;
+        }
+        if !item.is_empty() {
+            items.push(unquote(item));
+        }
+    }
+    (!items.is_empty()).then(|| items.join(","))
 }
 
 fn block(lines: &[&str], prefix: &str, out: &mut HashMap<String, String>) {
@@ -640,7 +692,13 @@ fn block(lines: &[&str], prefix: &str, out: &mut HashMap<String, String>) {
             while i < lines.len() && indent(lines[i]) > base {
                 i += 1;
             }
-            block(&lines[start..i], &format!("{key}."), out);
+            let nested = &lines[start..i];
+            match sequence(nested) {
+                Some(list) => {
+                    out.insert(key, list);
+                }
+                None => block(nested, &format!("{key}."), out),
+            }
         } else if value.starts_with('{') {
             flow(value, &format!("{key}."), out);
         } else {
@@ -1090,6 +1148,17 @@ proxies:
     ip: 10.0.0.2
     mtu: 1408
     reserved: [1, 2, 3]
+  - &anchored
+    name: TR
+    type: trojan
+    server: tr.example.com
+    port: 443
+    password: trpass
+    sni: tr.example.com
+    alpn:
+      - h2
+      - http/1.1
+  - *anchored
   - name: SSR
     type: ssr
     server: x.example.com
@@ -1100,7 +1169,11 @@ proxy-groups:
 ";
         let found = parse_many(body).found;
         let names: Vec<&str> = found.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["Узел ①", "SS", "VM", "HY", "WG"], "ssr не наш протокол — узел пропускается");
+        assert_eq!(
+            names,
+            ["Узел ①", "SS", "VM", "HY", "WG", "TR"],
+            "ssr не наш протокол, а ссылка на якорь узла не описывает — оба пропускаются"
+        );
 
         let vless = &found[0].node;
         assert_eq!(vless["type"], "vless");
@@ -1133,6 +1206,15 @@ proxy-groups:
         assert_eq!(wg["address"][0], "10.0.0.2/32", "маску Clash не пишет, а sing-box ждёт");
         assert_eq!(wg["peers"][0]["reserved"], serde_json::json!([1, 2, 3]));
         assert_eq!(wg["mtu"], 1408);
+
+        // Метка якоря — это ссылка для `proxy-groups`, которых мы не читаем.
+        // Узел с ней раньше пропадал целиком, а список блоком (так панели
+        // пишут alpn не реже, чем скобками) терялся полем.
+        let tr = &found[5].node;
+        assert_eq!(tr["type"], "trojan");
+        assert_eq!(tr["server"], "tr.example.com");
+        assert_eq!(tr["password"], "trpass");
+        assert_eq!(tr["tls"]["alpn"], serde_json::json!(["h2", "http/1.1"]), "список блоком");
     }
 
     /// Разбор YAML — запасной путь, и включаться он должен только вместо ссылок.
