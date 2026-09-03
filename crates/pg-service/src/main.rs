@@ -239,6 +239,15 @@ struct Saved {
     refreshed_at: Option<u64>,
     #[serde(default)]
     lang: core_ipc::Lang,
+    /// Политика брандмауэра, какой она была до нашего замка, — непрозрачной
+    /// строкой от `core_filter::policy_now()`.
+    ///
+    /// На диске потому, что замок переживает падение службы, а вернуть
+    /// политику после него надо той же, какой взяли: в памяти процесса она
+    /// умерла бы вместе с ним, и следующий старт вернул бы умолчание Windows,
+    /// то есть молча снял бы чужой kill-switch или потерял чужую настройку.
+    #[serde(default)]
+    policy: Option<String>,
     /// Был ли включён приватный режим. Переживает перезапуск намеренно: иначе
     /// после перезагрузки машины выбранные приложения молча оказались бы в
     /// сети напрямую — ровно то, чего продукт обещает не допускать.
@@ -336,6 +345,11 @@ struct Service {
     /// Приватный режим включён пользователем. Не то же самое, что «туннель жив»:
     /// именно расхождение этих двух флагов и означает DROP.
     private: bool,
+    /// Политика брандмауэра до нашего замка — её и вернём, снимая его.
+    /// Спрашивается один раз за запуск и только пока замка нет: под своим
+    /// замком служба прочитала бы свой же `blockoutbound`. Снимается вместе с
+    /// замком, иначе следующий вернул бы политику месячной давности.
+    policy: Option<String>,
     tunnel: Option<Process>,
     probe_target: (String, u16),
     retry_at: Option<Instant>,
@@ -437,6 +451,7 @@ impl Service {
             sub_names: saved.sub_names,
             quotas: saved.quotas,
             private: saved.private,
+            policy: saved.policy,
             tunnel: None,
             probe_target: (String::new(), 0),
             retry_at: None,
@@ -516,6 +531,7 @@ impl Service {
             refreshed_at: self.status.refreshed_at,
             lang: self.status.lang,
             private: self.private,
+            policy: self.policy.clone(),
             // Обратно тем же именем, каким читаем: перечисление знает своё имя
             // само, и дублировать его строкой значило бы разъехаться на первом
             // же переименовании.
@@ -672,14 +688,24 @@ impl Service {
             return;
         }
         let touch = touch_policy(killswitch, self.applied.as_ref().map(|a| a.killswitch), core_filter::locked_by_us);
+        let before = self.policy.clone();
         let outcome =
             core_filter::set_fence(fence, self.applied.as_ref().map(|a| a.fence), core_tunnel::TUN_ADDR, &want.apps, want.browser.as_deref())
                 .and_then(|()| match touch {
-                    true => core_filter::set_killswitch(killswitch, &core_tunnel::binary()),
+                    true => core_filter::set_killswitch(killswitch, &core_tunnel::binary(), before.as_deref()),
                     false => Ok(()),
                 });
         match outcome {
-            Ok(()) => self.applied = Some(want),
+            Ok(()) => {
+                // Замок снят — сохранённая политика больше не про машину:
+                // оставленная лежать, она вернулась бы в следующий раз, а
+                // человек за это время мог поменять её сам.
+                if touch && !killswitch && self.policy.is_some() {
+                    self.policy = None;
+                    self.save();
+                }
+                self.applied = Some(want)
+            }
             Err(e) => {
                 // Неудачу не запоминаем: на следующей смене состояния попробуем снова.
                 self.applied = None;
@@ -3233,6 +3259,19 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
                 let private = s.private;
                 s.guard(private);
             }
+        }
+        // Политику надо запомнить, пока она ещё не наша: снимая замок, служба
+        // обязана вернуть ту, которую взяла, а взять её потом уже негде.
+        //
+        // Здесь, а не в `guard`, по двум причинам. Вопрос идёт через PowerShell
+        // (модуль NetSecurity), а `guard(true)` обязан быть быстрым: это то
+        // самое окно, в котором выбранные приложения ещё ходят напрямую. И под
+        // собственным замком читать нечего — вышел бы наш же `blockoutbound`,
+        // поэтому спрашиваем только когда замка нет, а под замком верим
+        // `state.json`: он и заведён ради падения службы.
+        if s.policy.is_none() && s.applied.as_ref().map(|a| a.killswitch) != Some(true) {
+            s.policy = core_filter::policy_now();
+            s.save();
         }
         // Обход каталога — уже после того, как приватный режим восстановлен:
         // до `guard` выше выбранные приложения ходят напрямую, и растить это

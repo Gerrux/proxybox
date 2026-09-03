@@ -293,21 +293,97 @@ fn allow_args(singbox: &Path) -> Vec<String> {
 /// туннелю нечем было бы подняться. Поэтому меняется политика по умолчанию:
 /// её разрешающие правила как раз перекрывают.
 ///
-/// ponytail: политика возвращается в умолчание Windows
-/// (`blockinbound,allowoutbound`), а не в то, что стояло у пользователя, — свою
-/// настройку исходящего он потеряет. Потолок снимается разбором вывода
-/// `netsh advfirewall show allprofiles` перед первым включением.
-pub fn set_killswitch(on: bool, singbox: &Path) -> io::Result<()> {
+/// `before` — политика, какой она была до нашего замка (`policy_now()`), чтобы
+/// вернуть её, а не умолчание Windows: своя настройка исходящего у человека
+/// вполне бывает, и молча заменить её нашей — это потеря, о которой он узнает
+/// сильно позже. `None` значит «вернуть нечего»: не спросили, не разобрали,
+/// правили руками — тогда остаётся умолчание.
+pub fn set_killswitch(on: bool, singbox: &Path, before: Option<&str>) -> io::Result<()> {
     let delete = delete_args(ALLOW_RULE);
     if !on {
         // Сначала политика, потом снятие правила: в обратном порядке sing-box
         // на мгновение остался бы без сети под ещё действующим запретом.
-        run(&policy_args("allowoutbound"))?;
+        //
+        // Запасной путь обязателен и обязан быть именно таким: машина с
+        // запертым исходящим — это машина без сети вообще, и потерянная
+        // настройка рядом с этим ничего не стоит. Поэтому не вышло вернуть
+        // сохранённое — возвращаем умолчание Windows, как и раньше.
+        if !before.and_then(restore_command).is_some_and(|c| powershell_ok(&c)) {
+            run(&policy_args("allowoutbound"))?;
+        }
         return run(&delete);
     }
     run(&delete)?;
     run(&allow_args(singbox))?;
     run(&policy_args("blockoutbound"))
+}
+
+/// Профили брандмауэра и действия политики — списками, и списки закрытые.
+/// Это не педантизм: строка политики уезжает в `state.json`, а его правят
+/// руками, а обратно она приезжает в команду PowerShell. Незакрытый список
+/// означал бы, что в неё подставляется что угодно.
+const PROFILES: [&str; 3] = ["Domain", "Private", "Public"];
+const ACTIONS: [&str; 3] = ["Allow", "Block", "NotConfigured"];
+
+/// Политика брандмауэра, какая она сейчас, — одной непрозрачной строкой
+/// (`Domain=Block/Allow;…`, то есть входящее/исходящее по профилю). Собирает и
+/// разбирает её этот крейт, служба только хранит её у себя: политика обязана
+/// пережить перезапуск службы, иначе после падения с запертым исходящим
+/// возвращать было бы уже нечего.
+///
+/// Спрашивает PowerShell, а не `netsh advfirewall show allprofiles`, и по двум
+/// причинам сразу: вывод netsh локализован — на русской Windows там «Политика
+/// брандмауэра», — и профили в нём не разведены, `set allprofiles` пишет во все
+/// три одно и то же. У человека с доменным профилем настройки как раз разные.
+///
+/// Своей цены у вопроса нет только потому, что задаётся он один раз за запуск
+/// службы и не на пути `guard(true)`: PowerShell тянет модуль NetSecurity, и
+/// на замке это были бы те самые сотни миллисекунд, за которые выбранные
+/// приложения успевают уйти напрямую.
+pub fn policy_now() -> Option<String> {
+    remember(&powershell(
+        "Get-NetFirewallProfile | ForEach-Object \
+         {\"$($_.Name)=$($_.DefaultInboundAction)/$($_.DefaultOutboundAction)\"}",
+    ))
+}
+
+/// Разбор одной записи «профиль=входящее/исходящее». `None` — запись не наша.
+fn entry(line: &str) -> Option<(&str, &str, &str)> {
+    let (name, actions) = line.split_once('=')?;
+    let (inbound, outbound) = actions.split_once('/')?;
+    let known = PROFILES.contains(&name) && ACTIONS.contains(&inbound) && ACTIONS.contains(&outbound);
+    known.then_some((name, inbound, outbound))
+}
+
+/// Вывод PowerShell → строка для `state.json`. Всё или ничего: половина
+/// запомненной политики хуже незапомненной — вернув два профиля из трёх, мы
+/// оставили бы третий с нашим `Block`, то есть без сети навсегда.
+fn remember(out: &str) -> Option<String> {
+    let kept = parse(out.lines())?;
+    Some(kept.into_iter().map(|(n, i, o)| format!("{n}={i}/{o}")).collect::<Vec<_>>().join(";"))
+}
+
+fn parse<'a>(lines: impl Iterator<Item = &'a str>) -> Option<Vec<(&'a str, &'a str, &'a str)>> {
+    let mut out = Vec::new();
+    for line in lines.map(str::trim).filter(|l| !l.is_empty()) {
+        out.push(entry(line)?);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Команда, возвращающая политику к тому, что стояло до нас. Профили порознь —
+/// ровно то, чего не умеет `netsh set allprofiles`.
+fn restore_command(saved: &str) -> Option<String> {
+    let parts = parse(saved.split(';'))?;
+    Some(
+        parts
+            .into_iter()
+            .map(|(name, inbound, outbound)| {
+                format!("Set-NetFirewallProfile -Name {name} -DefaultInboundAction {inbound} -DefaultOutboundAction {outbound}")
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+    )
 }
 
 /// Наш ли сейчас замок на машине. Спрашиваем не политику, а своё разрешение для
@@ -418,6 +494,22 @@ fn powershell(_command: &str) -> String {
     String::new()
 }
 
+/// То же, но с ответом «получилось ли». Нужен ровно на возврате политики: там
+/// молчание вместо ошибки означает машину, оставшуюся с запертым исходящим.
+#[cfg(windows)]
+fn powershell_ok(command: &str) -> bool {
+    std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", command])
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+#[cfg(not(windows))]
+fn powershell_ok(_command: &str) -> bool {
+    // Возвращать нечего: политики вне Windows нет, и запасной путь тут пустой.
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,6 +521,51 @@ mod tests {
         assert_eq!(policy(false, true), Policy::Direct);
         assert_eq!(policy(true, true), Policy::Tunnel);
         assert_eq!(policy(true, false), Policy::Drop);
+    }
+
+    /// Замок меняет политику всей машины, а значит обязан вернуть её такой,
+    /// какой взял: своя настройка исходящего у человека вполне бывает, и
+    /// заменить её умолчанием Windows — это потеря, которую он заметит месяцем
+    /// позже и не свяжет с нами.
+    ///
+    /// Три вещи здесь важнее круга: половину политики возвращать нельзя (два
+    /// профиля из трёх означают третий, оставшийся без сети), непонятую строку
+    /// возвращать нельзя вовсе (она едет в команду PowerShell, а лежит в
+    /// `state.json`, который правят руками), и профили обязаны возвращаться
+    /// порознь — `netsh set allprofiles` пишет во все три одно и то же.
+    #[test]
+    fn the_lock_gives_back_the_policy_it_found() {
+        // Так это и приходит из PowerShell: строка на профиль, порядок его.
+        let out = "Domain=Block/Allow\nPrivate=Block/Allow\nPublic=Block/Block\n";
+        let saved = remember(out).expect("политику обязаны запомнить");
+        assert_eq!(saved, "Domain=Block/Allow;Private=Block/Allow;Public=Block/Block");
+
+        let command = restore_command(&saved).expect("политику обязаны вернуть");
+        for profile in PROFILES {
+            assert!(command.contains(&format!("-Name {profile} ")), "профиль {profile} не возвращается");
+        }
+        assert!(
+            command.contains("-Name Public -DefaultInboundAction Block -DefaultOutboundAction Block"),
+            "профили обязаны возвращаться порознь, а не все одним значением: {command}"
+        );
+
+        // Своя настройка человека — тот же `Block` на исходящем. Круг обязан
+        // её сохранить: иначе замок «возвращает как было», а на деле снимает
+        // чужой kill-switch.
+        let mine = remember("Domain=Block/Block\nPrivate=Block/Block\nPublic=Block/Block").unwrap();
+        assert!(restore_command(&mine).unwrap().contains("-DefaultOutboundAction Block"));
+
+        // Всё или ничего: одна непонятая строка — и возвращаем умолчание, а не
+        // две трети политики.
+        assert_eq!(remember("Domain=Block/Allow\nЗона=Блок/Разрешить"), None, "половина политики хуже никакой");
+        assert_eq!(remember(""), None, "пустой ответ PowerShell — это не политика");
+        assert_eq!(restore_command("Domain=Block/Allow;мусор"), None);
+        assert_eq!(restore_command("Domain=Block/Wide-Open"), None, "действие не из списка");
+
+        // И то, ради чего список закрыт: строка из `state.json` попадает в
+        // команду PowerShell целиком.
+        assert_eq!(restore_command("Domain=Block/Allow; Remove-Item C:\\ -Recurse"), None, "подстановка в команду");
+        assert_eq!(restore_command("Domain=Block/Allow`; calc"), None);
     }
 
     const OURS: &str = "proxybox";
