@@ -23,7 +23,7 @@
 
 use core_ipc::{t, tf, Conn};
 use serde_json::{json, Value};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -59,7 +59,30 @@ const TUN_GATEWAY: &str = "172.27.234.2";
 /// отвергает эту ручку фатально.
 /// Сторож — `fake_addresses_are_handed_out_locally`.
 const FAKE_RANGE: &str = "198.18.0.0/15";
-const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Столько ждёт дозвона наружу сам sing-box, прежде чем ответить пробе отказом.
+/// Замерено по его же журналу на живой машине: строки `dial tcp …: i/o timeout`
+/// приходят с длительностью ровно `5.0s`.
+const SINGBOX_DIAL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Проба обязана пережить sing-box, а не наоборот, и разница тут не в вежливости.
+///
+/// Пока оба ждали по пять секунд, это была фотофиниш-гонка двух таймеров: свой
+/// отсчёт проба начинает, отправив запрос, а sing-box — получив его, то есть
+/// микросекундами позже. Кто успел первым, тот и назвал причину, и в ленте одно
+/// и то же событие показывалось двумя разными лицами — то «не пропустил
+/// соединение (код 1)» от sing-box, то голое `os error 10060` от нашего сокета,
+/// непереведённое, потому что это строка Windows, а не наша.
+///
+/// Хуже, что у выигранной нами гонки нет причины вовсе: оборвав дозвон на
+/// середине, мы не даём sing-box досчитать и записать `outbound/…: i/o timeout`,
+/// а `last_failure` тянет в ленту именно эту строку. То есть выигрыш пробы
+/// стоил ровно того объяснения, ради которого её и читают.
+///
+/// Сторож — `the_probe_outwaits_singbox`. Плата — до трёх секунд задержки, с
+/// которой замечен уже мёртвый туннель; утечки в них нет, маршрута мимо
+/// туннеля в конфиге не осталось, а смерть самого процесса ловит не проба, а
+/// `DEATH_EVERY`.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 /// Столько ждём, прежде чем поверить, что sing-box действительно поднялся.
 const STARTUP_GRACE: Duration = Duration::from_millis(400);
 
@@ -492,6 +515,41 @@ impl Tunnel {
     }
 }
 
+/// Сколько хвоста лога sing-box читать в поисках причины. Файл живёт весь срок
+/// процесса, а на болтливом узле растёт мегабайтами: нужна из него одна
+/// последняя строка, и читать под неё всё целиком незачем.
+const LOG_TAIL: u64 = 16 * 1024;
+
+/// Причина отказа исходящего соединения — словами самого sing-box.
+///
+/// Проба выносит наружу только код SOCKS, и «не пропустил соединение (код 1)»
+/// одинаково выглядит и когда до сервера не доходит SYN, и когда сервер отказал
+/// в рукопожатии, и когда узел отвечает, но не пропускает. Настоящая строка
+/// есть, но лежит в другом файле, и свести её с лентой можно было только
+/// сложив секунды аптайма из `ERROR[3129]` со временем запуска — руками.
+///
+/// Ищется последняя строка с `outbound/`, и это не «любая ошибка»: тот же лог
+/// полон обрывов со стороны TUN (`raw-read tcp4 172.27.234.1:… forcibly
+/// closed`) — там местное приложение закрыло свою половину, и к отказу туннеля
+/// это отношения не имеет. Дозвон наружу sing-box пишет всегда через тег
+/// исходящего, поэтому `outbound/` их и разводит. Сторож —
+/// `the_reason_skips_the_noise_from_the_tun_side`.
+pub fn last_failure(dir: &Path) -> Option<String> {
+    let mut file = std::fs::File::open(dir.join("singbox.log")).ok()?;
+    let from = file.metadata().ok()?.len().saturating_sub(LOG_TAIL);
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail).ok()?;
+    // Хвост отрезан по байтам, а не по строкам: и границу UTF-8 это ломает, и
+    // первую строку — поэтому `lossy` и пропуск первой, когда резали.
+    let text = String::from_utf8_lossy(&tail);
+    let mut lines = text.lines();
+    if from > 0 {
+        lines.next();
+    }
+    lines.rev().find(|l| l.contains("outbound/")).map(strip_ansi)
+}
+
 /// Последняя содержательная строка лога sing-box — она объясняет отказ запуска.
 fn last_line(path: &Path) -> String {
     std::fs::read_to_string(path)
@@ -879,6 +937,64 @@ fn socks5_connect(port: u16, (host, target_port): (&str, u16)) -> io::Result<Tcp
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    /// Проба ждёт дольше, чем сам sing-box ждёт дозвона. Сравняются — вернётся
+    /// гонка двух таймеров: половина отказов приедет в ленту голым `os error
+    /// 10060` вместо причины, а `last_failure` не найдёт строки про исходящее,
+    /// потому что оборванный на середине дозвон её не пишет.
+    #[test]
+    fn the_probe_outwaits_singbox() {
+        assert!(
+            PROBE_TIMEOUT > SINGBOX_DIAL_TIMEOUT,
+            "проба {PROBE_TIMEOUT:?} обязана пережить дозвон sing-box {SINGBOX_DIAL_TIMEOUT:?}"
+        );
+        // И пережить с запасом: секунда разницы — это всё та же гонка, только
+        // реже. Замер на живой машине давал разброс в сотни миллисекунд.
+        assert!(PROBE_TIMEOUT - SINGBOX_DIAL_TIMEOUT >= Duration::from_secs(2));
+    }
+
+    /// Причина отказа берётся из лога sing-box — и именно та, что про дозвон
+    /// наружу. Тот же лог полон обрывов со стороны TUN, где свою половину
+    /// закрыло местное приложение; взять последнюю строку без разбора значило
+    /// бы писать в ленту «raw-read … forcibly closed» на каждое падение, то
+    /// есть заменить бесполезный код SOCKS бесполезным шумом. Строки в тесте
+    /// сняты с живой машины вместе с их красящими последовательностями.
+    #[test]
+    fn the_reason_skips_the_noise_from_the_tun_side() {
+        let dir = std::env::temp_dir().join("pg-last-failure");
+        std::fs::create_dir_all(&dir).expect("каталог");
+        let path = dir.join("singbox.log");
+
+        // Файла нет — туннель не запускался ни разу, и добавлять в ленту нечего.
+        let _ = std::fs::remove_file(&path);
+        assert!(last_failure(&dir).is_none());
+
+        let dial = "\u{1b}[31mERROR\u{1b}[0m[3129] [\u{1b}[38;5;105m2477178201\u{1b}[0m 5.0s] connection: open connection to api.github.com:443 using outbound/vmess[proxy]: dial tcp 138.124.69.172:8443: i/o timeout";
+        let noise = "\u{1b}[31mERROR\u{1b}[0m[3152] [\u{1b}[38;5;175m1848236959\u{1b}[0m 30m13s] connection: connection upload closed: raw-read tcp4 172.27.234.1:63095->172.27.234.2:10378: An existing connection was forcibly closed by the remote host.";
+        std::fs::write(&path, format!("{dial}\n{noise}\n")).expect("лог");
+
+        let why = last_failure(&dir).expect("причина");
+        assert!(why.contains("i/o timeout"), "{why}");
+        assert!(why.contains("138.124.69.172:8443"), "{why}");
+        assert!(!why.contains("forcibly closed"), "{why}");
+        // Краску логгер ставит и в файл, а в ленте это мусор.
+        assert!(!why.contains('\u{1b}'), "{why}");
+
+        // Про исходящее не сказано ничего — значит и в ленту добавить нечего:
+        // «причина не записана» рядом с кодом SOCKS не объясняет ровно так же.
+        std::fs::write(&path, "INFO[0001] router: started\n").expect("лог");
+        assert!(last_failure(&dir).is_none());
+
+        // Хвост режется по байтам, и первая строка в нём обрублена. Свежая
+        // строка про дозвон лежит в самом конце — до неё это доехать обязано,
+        // а обрубок начала не должен ни ломать разбор, ни попадать в ленту.
+        let long = format!("{}{dial}\n", format!("{noise}\n").repeat(400));
+        assert!(long.len() as u64 > LOG_TAIL, "хвост должен быть меньше файла");
+        std::fs::write(&path, &long).expect("лог");
+        let why = last_failure(&dir).expect("причина из хвоста");
+        assert!(why.contains("i/o timeout"), "{why}");
+        assert!(!why.contains("forcibly closed"), "{why}");
+    }
 
     /// Остановленный туннель уносит `singbox.pid` с собой.
     ///

@@ -257,6 +257,10 @@ const RU = {
   singboxHint:
     "Пусто — рядом со службой, иначе из PATH. Новый путь действует со следующего запуска туннеля: ради настройки живой туннель не гасится.",
   singboxPlaceholder: "C:\\Program Files\\sing-box\\sing-box.exe",
+  logsTitle: "Журнал sing-box",
+  logsHint:
+    "Лента рядом говорит, что туннель отвалился; почему — пишет сам sing-box в singbox.log. Там же конфиг, с которым он запущен, и состояние службы. Файл переписывается с каждым запуском туннеля: снимите копию, пока не перезапустили.",
+  logsOpen: "Открыть каталог",
   autostartTitle: "Запускать с Windows",
   autostartHint:
     "Окно стартует вместе с системой и сразу уходит в трей. Службы это не касается: она в SCM и поднимает туннель без всякого окна — автозапуск нужен значку, иначе о запертой машине в интерфейсе ни следа.",
@@ -510,6 +514,10 @@ const EN: typeof RU = {
   singboxHint:
     "Empty — next to the service, otherwise from PATH. A new path takes effect on the next tunnel start: a live tunnel is not dropped for a setting.",
   singboxPlaceholder: "C:\\Program Files\\sing-box\\sing-box.exe",
+  logsTitle: "sing-box log",
+  logsHint:
+    "The journal next door says the tunnel went down; why it did is written by sing-box itself into singbox.log. The config it runs with and the service state are in the same folder. The file is rewritten on every tunnel start: take a copy before restarting.",
+  logsOpen: "Open folder",
   autostartTitle: "Start with Windows",
   autostartHint:
     "The window starts with the system and goes straight to the tray. The service is unaffected: it lives in the SCM and brings the tunnel up with no window at all — autostart is for the tray icon, without which a locked machine leaves no trace in the interface.",
@@ -766,6 +774,10 @@ const FA: typeof RU = {
   singboxHint:
     "خالی — کنار سرویس، وگرنه از PATH. مسیر تازه از راه‌اندازی بعدی تونل کار می‌کند: تونل زنده برای یک تنظیم خاموش نمی‌شود.",
   singboxPlaceholder: "C:\\Program Files\\sing-box\\sing-box.exe",
+  logsTitle: "گزارش sing-box",
+  logsHint:
+    "فهرست کنار فقط می‌گوید تونل افتاد؛ دلیلش را خود sing-box در singbox.log می‌نویسد. پیکربندی در حال اجرا و وضعیت سرویس هم در همان پوشه است. این فایل با هر راه‌اندازی تونل بازنویسی می‌شود: پیش از راه‌اندازی مجدد یک نسخه بردارید.",
+  logsOpen: "باز کردن پوشه",
   autostartTitle: "اجرا همراه ویندوز",
   autostartHint:
     "پنجره همراه سیستم بالا می‌آید و یک‌راست به سینی می‌رود. به سرویس ربطی ندارد: او در SCM است و تونل را بی‌هیچ پنجره‌ای بالا می‌آورد — اجرای خودکار برای نشان سینی است، وگرنه از رایانهٔ قفل‌شده هیچ ردی در رابط نمی‌ماند.",
@@ -1023,6 +1035,10 @@ const ZH: typeof RU = {
   singboxHint:
     "留空即服务旁边，否则从 PATH 找。新路径在下次启动隧道时生效：不会为了一项设置就断开正在用的隧道。",
   singboxPlaceholder: "C:\\Program Files\\sing-box\\sing-box.exe",
+  logsTitle: "sing-box 日志",
+  logsHint:
+    "旁边的日志只说隧道断了，原因由 sing-box 自己写入 singbox.log。它运行所用的配置和服务状态也在同一目录。该文件在每次启动隧道时都会重写：重启之前请先复制一份。",
+  logsOpen: "打开目录",
   autostartTitle: "随 Windows 启动",
   autostartHint:
     "窗口随系统启动并直接进入托盘。这与服务无关：它在 SCM 里，没有窗口也照样把隧道拉起来 — 自启是为了托盘图标，没有它，被锁住的电脑在界面上不留一点痕迹。",
@@ -1280,6 +1296,10 @@ const TR: typeof RU = {
   singboxHint:
     "Boş — hizmetin yanında, değilse PATH'ten. Yeni yol bir sonraki tünel açılışında geçerli olur: bir ayar uğruna açık tünel düşürülmez.",
   singboxPlaceholder: "C:\\Program Files\\sing-box\\sing-box.exe",
+  logsTitle: "sing-box günlüğü",
+  logsHint:
+    "Yandaki akış yalnızca tünelin düştüğünü söyler; nedenini sing-box kendi singbox.log dosyasına yazar. Çalıştığı yapılandırma ve servis durumu da aynı klasördedir. Dosya her tünel başlatmada yeniden yazılır: yeniden başlatmadan önce bir kopya alın.",
+  logsOpen: "Klasörü aç",
   autostartTitle: "Windows ile başlat",
   autostartHint:
     "Pencere sistemle birlikte açılır ve doğruca tepsiye iner. Hizmeti ilgilendirmez: o SCM içindedir ve hiç pencere olmadan tüneli açar — otomatik başlatma tepsi simgesi içindir, o olmazsa kilitli makine arayüzde hiç iz bırakmaz.",
@@ -1537,6 +1557,10 @@ const ID: typeof RU = {
   singboxHint:
     "Kosong — di samping layanan, kalau tidak dari PATH. Jalur baru berlaku pada penyalaan terowongan berikutnya: terowongan yang hidup tidak diputus demi sebuah pengaturan.",
   singboxPlaceholder: "C:\\Program Files\\sing-box\\sing-box.exe",
+  logsTitle: "Log sing-box",
+  logsHint:
+    "Jurnal di sebelah hanya mengatakan tunnel terputus; alasannya ditulis sing-box sendiri ke singbox.log. Konfigurasi yang dipakainya dan keadaan layanan ada di folder yang sama. Berkas ini ditulis ulang setiap tunnel dijalankan: salin dulu sebelum memulai ulang.",
+  logsOpen: "Buka folder",
   autostartTitle: "Jalankan bersama Windows",
   autostartHint:
     "Jendela ikut menyala bersama sistem dan langsung masuk baki. Layanan tidak terpengaruh: ia ada di SCM dan menyalakan terowongan tanpa jendela sama sekali — jalan otomatis diperlukan ikon baki, tanpanya komputer yang terkunci tidak meninggalkan jejak apa pun di antarmuka.",
