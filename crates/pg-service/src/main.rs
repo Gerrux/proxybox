@@ -2239,7 +2239,7 @@ mod tests {
 
     /// Свой пустой каталог на каждый прогон: тесты бегут в одном процессе, и
     /// общий временный каталог давал бы им ронять друг друга через диск.
-    fn scratch(tag: &str) -> PathBuf {
+    fn settle_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("pg-settle-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -2256,7 +2256,7 @@ mod tests {
     /// и чистая установка, где переносить нечего и выдумывать каталог не надо.
     #[test]
     fn the_rename_never_loses_what_the_service_remembered() {
-        let base = scratch("moves");
+        let base = settle_dir("moves");
         std::fs::create_dir_all(base.join("privacy-gateway")).unwrap();
         std::fs::write(base.join("privacy-gateway").join("state.json"), "{\"profiles\":[]}").unwrap();
         let dir = settle(base.clone());
@@ -2270,7 +2270,7 @@ mod tests {
 
         // Нажитое под новым именем сильнее старого: переезд поверх — это потеря
         // ровно того состояния, которым человек пользуется прямо сейчас.
-        let base = scratch("keeps");
+        let base = settle_dir("keeps");
         std::fs::create_dir_all(base.join("privacy-gateway")).unwrap();
         std::fs::write(base.join("privacy-gateway").join("state.json"), "старое").unwrap();
         std::fs::create_dir_all(base.join("proxybox")).unwrap();
@@ -2279,7 +2279,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("state.json")).unwrap(), "новое", "переезд затёр нажитое");
 
         // Чистая установка: каталога нет вовсе, и выдумывать переезд не из чего.
-        let base = scratch("fresh");
+        let base = settle_dir("fresh");
         assert_eq!(settle(base.clone()), base.join("proxybox"));
     }
 
