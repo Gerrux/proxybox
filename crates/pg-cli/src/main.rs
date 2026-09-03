@@ -5,7 +5,7 @@
 #[cfg_attr(not(windows), allow(dead_code))]
 mod doctor;
 
-use core_ipc::{call, t, Request, Response, Scope};
+use core_ipc::{call, t, tf, Request, Response, Scope};
 
 const USAGE_RU: &str = "proxybox <команда>
 
@@ -37,7 +37,7 @@ const USAGE_RU: &str = "proxybox <команда>
                          адрес: браузер с --proxy-server пойдёт в него; сеансов
                          бывает несколько, по одному на браузерный профиль
   browse --stop --profile <имя>  погасить этот сеанс браузера
-  lang ru|en             язык сообщений службы и окна
+  lang <код>             язык сообщений службы и окна: ru, en, fa, zh, tr, id
   settings               настройки службы: что действует прямо сейчас
   settings [--refresh on|off] [--geo on|off] [--probe host:port]
            [--singbox <путь>]
@@ -75,7 +75,7 @@ const USAGE_EN: &str = "proxybox <command>
                          its address: a browser with --proxy-server goes there;
                          sessions are per browser profile, several at once
   browse --stop --profile <name>  close that browser session
-  lang ru|en             language of service and window messages
+  lang <code>            language of service and window messages: ru, en, fa, zh, tr, id
   settings               service settings: what is in force right now
   settings [--refresh on|off] [--geo on|off] [--probe host:port]
            [--singbox <path>]
@@ -83,8 +83,175 @@ const USAGE_EN: &str = "proxybox <command>
                          (empty — the node's own server) and the sing-box path.
                          Environment variables win over settings";
 
+const USAGE_FA: &str = "proxybox <فرمان>
+
+  status                 وضعیت تونل و فهرست برنامه‌ها
+  doctor                 بررسی محیط: چرا ممکن است کار نکند
+  on --profile <نام>     روشن کردن حالت خصوصی
+  off                    خاموش کردن حالت خصوصی
+  list-apps              برنامه‌های زیر کنترل
+  discover               یافتن برنامه‌های نصب‌شده و افزودن آن‌ها به‌صورت خاموش
+  add-app --path <exe>   افزودن برنامه با مسیر فایل .exe
+  enable --path <exe>    راه دادن برنامه به تونل
+  disable --path <exe>   بیرون بردن برنامه از کنترل
+  scope whitelist|all    دامنه: شبکه فقط برای برنامه‌های انتخاب‌شده و فقط از
+                         راه تونل؛ یا همهٔ ترافیک رایانه در تونل
+  add-profile --link <l> وارد کردن share-link (vless/vmess/trojan/ss/hy2/wg)،
+                         پیکربندی JSON سینگ‌باکس یا اشتراک با نشانی https؛
+                         همان نشانی برای بار دوم — به‌روزرسانی اشتراک
+  profiles               فهرست پروفایل‌ها: نام، نوع گره و مقصد آن
+  test [--profile <نام>] آزمودن پروفایل‌ها: کدام پاسخ می‌دهد و در چه زمانی.
+                         بدون --profile — همه، و هر کدام چند ثانیه
+  conns                  اتصال‌های زندهٔ تونل: که، به کجا، از کدام مسیر.
+                         چیزی ذخیره نمی‌شود — فهرست برای هر درخواست ساخته می‌شود
+  browsers               فهرست پروفایل‌های مرورگر
+  add-browser --name <نام> --node <پروفایل> [--ua <رشته>] [--lang <زبان‌ها>]
+                         ساختن پروفایل مرورگر یا بازنویسی همان: گره نشانی را
+                         می‌دهد، ua و lang همان چیزی است که سایت می‌بیند
+  remove-browser --name <نام>    برداشتن پروفایل مرورگر
+  browse --profile <نام> بالا آوردن پراکسی برای پروفایل مرورگر و چاپ نشانی آن:
+                         مرورگر با --proxy-server به آن می‌رود؛ نشست‌ها چندتایی
+                         هستند، یکی برای هر پروفایل مرورگر
+  browse --stop --profile <نام>  بستن این نشست مرورگر
+  lang <کد>              زبان پیام‌های سرویس و پنجره: ru, en, fa, zh, tr, id
+  settings               تنظیمات سرویس: هم‌اکنون چه چیزی برقرار است
+  settings [--refresh on|off] [--geo on|off] [--probe host:port]
+           [--singbox <مسیر>]
+                         به‌روزرسانی اشتراک‌ها، پرسیدن کشور از سرویس بیرونی،
+                         هدف آزمون (خالی — سرور خود گره) و مسیر sing-box.
+                         متغیرهای محیطی بر تنظیمات چیره‌اند";
+
+const USAGE_ZH: &str = "proxybox <命令>
+
+  status                 隧道状态与应用列表
+  doctor                 环境检查：为什么可能无法工作
+  on --profile <名称>    开启隐私模式
+  off                    关闭隐私模式
+  list-apps              受管理的应用
+  discover               查找已安装的应用并以关闭状态加入
+  add-app --path <exe>   按 .exe 路径添加应用
+  enable --path <exe>    放行应用进入隧道
+  disable --path <exe>   将应用移出管理
+  scope whitelist|all    范围：仅所选应用联网且只能走隧道；
+                         或整机流量进入隧道
+  add-profile --link <l> 导入 share-link（vless/vmess/trojan/ss/hy2/wg）、
+                         sing-box 的 JSON 配置，或 https 订阅地址；
+                         同一地址再来一次即更新订阅
+  profiles               配置列表：名称、节点类型及去向
+  test [--profile <名称>] 检测配置：谁有响应、用时多少。
+                         不带 --profile 即全部，每个都要几秒
+  conns                  隧道的活动连接：谁、去哪、走哪条路。
+                         不做保存 — 列表按请求现场生成
+  browsers               浏览器配置列表
+  add-browser --name <名称> --node <配置> [--ua <字符串>] [--lang <语言>]
+                         新建或覆盖浏览器配置：节点给出地址，
+                         ua 与 lang 是网站看到的内容
+  remove-browser --name <名称>   移除浏览器配置
+  browse --profile <名称> 为该浏览器配置启动代理并打印地址：
+                         带 --proxy-server 的浏览器会走它；会话可有多个，
+                         每个浏览器配置一个
+  browse --stop --profile <名称>  关闭该浏览器会话
+  lang <代码>            服务与窗口消息的语言：ru, en, fa, zh, tr, id
+  settings               服务设置：此刻实际生效的内容
+  settings [--refresh on|off] [--geo on|off] [--probe host:port]
+           [--singbox <路径>]
+                         订阅同步、向外部服务查询国家、探测目标
+                         （留空即节点自身的服务器）以及 sing-box 路径。
+                         环境变量优先于设置";
+
+const USAGE_TR: &str = "proxybox <komut>
+
+  status                 tünel durumu ve uygulama listesi
+  doctor                 ortam denetimi: neden çalışmıyor olabilir
+  on --profile <ad>      gizli kipi aç
+  off                    gizli kipi kapat
+  list-apps              yönetim altındaki uygulamalar
+  discover               kurulu uygulamaları bul ve kapalı olarak ekle
+  add-app --path <exe>   uygulamayı .exe yoluyla ekle
+  enable --path <exe>    uygulamayı tünele al
+  disable --path <exe>   uygulamayı yönetimden çıkar
+  scope whitelist|all    kapsam: ağ yalnızca seçili uygulamalara ve yalnızca
+                         tünel üzerinden; ya da makinenin tüm trafiği tünele
+  add-profile --link <l> share-link (vless/vmess/trojan/ss/hy2/wg),
+                         sing-box JSON yapılandırması ya da https abonelik
+                         adresi içe aktar; aynı adres yeniden — aboneliği tazeler
+  profiles               profil listesi: ad, düğüm türü ve nereye gittiği
+  test [--profile <ad>]  profilleri dene: kim yanıt veriyor, ne kadar sürede.
+                         --profile olmadan hepsi, her biri saniyeler sürer
+  conns                  tünelin canlı bağlantıları: kim, nereye, hangi rotayla.
+                         Hiçbir şey saklanmaz — liste istek başına toplanır
+  browsers               tarayıcı profilleri listesi
+  add-browser --name <ad> --node <profil> [--ua <metin>] [--lang <diller>]
+                         tarayıcı profili oluştur ya da aynısını üzerine yaz:
+                         düğüm adresi verir, ua ve lang sitenin gördüğüdür
+  remove-browser --name <ad>     tarayıcı profilini kaldır
+  browse --profile <ad>  bu tarayıcı profili için vekil aç ve adresini yazdır:
+                         --proxy-server ile açılan tarayıcı oraya gider;
+                         oturumlar tarayıcı profili başına, birkaç tane olabilir
+  browse --stop --profile <ad>   bu tarayıcı oturumunu kapat
+  lang <kod>             hizmet ve pencere iletilerinin dili: ru, en, fa, zh, tr, id
+  settings               hizmet ayarları: şu anda neyin geçerli olduğu
+  settings [--refresh on|off] [--geo on|off] [--probe host:port]
+           [--singbox <yol>]
+                         abonelik eşitlemesi, dış hizmetten çıkış ülkesi sorgusu,
+                         ölçüm hedefi (boş — düğümün kendi sunucusu) ve sing-box
+                         yolu. Ortam değişkenleri ayarlara üstün gelir";
+
+const USAGE_ID: &str = "proxybox <perintah>
+
+  status                 status terowongan dan daftar aplikasi
+  doctor                 pemeriksaan lingkungan: mengapa mungkin tidak jalan
+  on --profile <nama>    nyalakan mode privat
+  off                    matikan mode privat
+  list-apps              aplikasi yang dikelola
+  discover               cari aplikasi terpasang dan tambahkan dalam keadaan mati
+  add-app --path <exe>   tambahkan aplikasi lewat jalur .exe
+  enable --path <exe>    izinkan aplikasi masuk terowongan
+  disable --path <exe>   keluarkan aplikasi dari pengelolaan
+  scope whitelist|all    cakupan: jaringan hanya untuk aplikasi terpilih dan
+                         hanya lewat terowongan; atau seluruh lalu lintas mesin
+  add-profile --link <l> impor share-link (vless/vmess/trojan/ss/hy2/wg),
+                         konfigurasi JSON sing-box, atau alamat langganan https;
+                         alamat yang sama sekali lagi — menyegarkan langganan
+  profiles               daftar profil: nama, jenis node, dan tujuannya
+  test [--profile <nama>] uji profil: siapa yang menjawab dan seberapa cepat.
+                         Tanpa --profile berarti semua, tiap satu makan detik
+  conns                  koneksi hidup terowongan: siapa, ke mana, lewat rute apa.
+                         Tidak ada yang disimpan — daftar dirakit per permintaan
+  browsers               daftar profil peramban
+  add-browser --name <nama> --node <profil> [--ua <teks>] [--lang <bahasa>]
+                         buat profil peramban atau timpa yang sama: node memberi
+                         alamat, ua dan lang adalah yang dilihat situs
+  remove-browser --name <nama>   hapus profil peramban
+  browse --profile <nama> jalankan proksi untuk profil peramban itu dan cetak
+                         alamatnya: peramban dengan --proxy-server menuju ke sana;
+                         sesi bisa beberapa, satu per profil peramban
+  browse --stop --profile <nama> tutup sesi peramban itu
+  lang <kode>            bahasa pesan layanan dan jendela: ru, en, fa, zh, tr, id
+  settings               pengaturan layanan: apa yang berlaku sekarang
+  settings [--refresh on|off] [--geo on|off] [--probe host:port]
+           [--singbox <jalur>]
+                         penyelarasan langganan, permintaan negara ke layanan
+                         luar, sasaran uji (kosong — server node itu sendiri) dan
+                         jalur sing-box. Variabel lingkungan mengalahkan pengaturan";
+
+/// Экран помощи — не строка, а вёрстка: колонка команд, колонка пояснений.
+/// Ключом в словаре он был бы сорокастрочным литералом, поэтому лежит
+/// константами, а `match` без запасной ветки требует написать его на новом
+/// языке осознанно — забыть здесь молча нельзя.
+///
+/// В консоли с фарси колонки поедут: команды латиницей идут слева направо,
+/// пояснения — справа налево, и раскладывает это терминал, а не мы.
 fn usage() -> String {
-    t(USAGE_RU, USAGE_EN)
+    match core_ipc::lang() {
+        core_ipc::Lang::Ru => USAGE_RU,
+        core_ipc::Lang::En => USAGE_EN,
+        core_ipc::Lang::Fa => USAGE_FA,
+        core_ipc::Lang::Zh => USAGE_ZH,
+        core_ipc::Lang::Tr => USAGE_TR,
+        core_ipc::Lang::Id => USAGE_ID,
+    }
+    .to_string()
 }
 
 /// Байты человеку, ровно как в окне: `12.4 MB` вместо тринадцати цифр подряд.
@@ -117,10 +284,7 @@ fn onoff(args: &[String], name: &str) -> Result<Option<bool>, String> {
         None => Ok(None),
         Some("on") => Ok(Some(true)),
         Some("off") => Ok(Some(false)),
-        Some(v) => Err(t(
-            &format!("{name}: нужно on или off, а не «{v}»"),
-            &format!("{name}: expected on or off, not \"{v}\""),
-        )),
+        Some(v) => Err(tf!("{}: нужно on или off, а не «{}»", name, v)),
     }
 }
 
@@ -135,10 +299,7 @@ fn onoff(args: &[String], name: &str) -> Result<Option<bool>, String> {
 /// перебивку говорит в журнале при старте.
 fn patch_settings(args: &[String]) -> Result<Request, String> {
     let Ok(Response::Status(status)) = call(&Request::Status) else {
-        return Err(t(
-            "служба недоступна: настройки хранит она",
-            "service unavailable: it is the one keeping the settings",
-        ));
+        return Err(t("служба недоступна: настройки хранит она"));
     };
     let mut settings = status.settings;
     if let Some(v) = onoff(args, "--refresh")? {
@@ -165,20 +326,20 @@ fn parse(args: &[String]) -> Result<Request, String> {
         Some("discover") => Ok(Request::Discover { env: core_ipc::whoami() }),
         Some("on") => flag(args, "--profile")
             .map(|profile| Request::On { profile })
-            .ok_or_else(|| t("нужен --profile <имя>", "needs --profile <name>")),
+            .ok_or_else(|| t("нужен --profile <имя>")),
         Some("add-app") => flag(args, "--path")
             .map(|path| Request::AddApp { path })
-            .ok_or_else(|| t("нужен --path <путь к .exe>", "needs --path <path to .exe>")),
+            .ok_or_else(|| t("нужен --path <путь к .exe>")),
         Some(cmd @ ("enable" | "disable")) => flag(args, "--path")
             .map(|path| Request::SetApp { path, enabled: cmd == "enable" })
-            .ok_or_else(|| t("нужен --path <путь к .exe>", "needs --path <path to .exe>")),
+            .ok_or_else(|| t("нужен --path <путь к .exe>")),
         Some("add-profile") => flag(args, "--link")
             .map(|link| Request::AddProfile { link })
-            .ok_or_else(|| t("нужен --link <share-link>", "needs --link <share-link>")),
+            .ok_or_else(|| t("нужен --link <share-link>")),
         Some("scope") => match args.get(1).map(String::as_str) {
             Some("all") => Ok(Request::SetScope { scope: Scope::All }),
             Some("whitelist") => Ok(Request::SetScope { scope: Scope::Whitelist }),
-            _ => Err(t("нужен охват: whitelist или all", "pick a scope: whitelist or all")),
+            _ => Err(t("нужен охват: whitelist или all")),
         },
         Some("profiles") => Ok(Request::Status),
         Some("settings") => Ok(Request::Status),
@@ -189,7 +350,7 @@ fn parse(args: &[String]) -> Result<Request, String> {
                 true => Request::BrowseStop { profile },
                 false => Request::Browse { profile },
             })
-            .ok_or_else(|| t("нужен --profile <имя>", "needs --profile <name>")),
+            .ok_or_else(|| t("нужен --profile <имя>")),
         Some("browsers") => Ok(Request::Status),
         Some("add-browser") => match (flag(args, "--name"), flag(args, "--node")) {
             (Some(name), Some(node)) => Ok(Request::SetBrowserProfile {
@@ -203,15 +364,19 @@ fn parse(args: &[String]) -> Result<Request, String> {
                     icon: String::new(),
                 },
             }),
-            _ => Err(t("нужны --name <имя> и --node <профиль>", "needs --name <name> and --node <profile>")),
+            _ => Err(t("нужны --name <имя> и --node <профиль>")),
         },
         Some("remove-browser") => flag(args, "--name")
             .map(|name| Request::RemoveBrowserProfile { name })
-            .ok_or_else(|| t("нужно --name <имя>", "needs --name <name>")),
+            .ok_or_else(|| t("нужно --name <имя>")),
         Some("lang") => match args.get(1).map(String::as_str) {
             Some("ru") => Ok(Request::SetLang { lang: core_ipc::Lang::Ru }),
             Some("en") => Ok(Request::SetLang { lang: core_ipc::Lang::En }),
-            _ => Err(t("нужен язык: ru или en", "pick a language: ru or en")),
+            Some("fa") => Ok(Request::SetLang { lang: core_ipc::Lang::Fa }),
+            Some("zh") => Ok(Request::SetLang { lang: core_ipc::Lang::Zh }),
+            Some("tr") => Ok(Request::SetLang { lang: core_ipc::Lang::Tr }),
+            Some("id") => Ok(Request::SetLang { lang: core_ipc::Lang::Id }),
+            _ => Err(t("нужен язык: ru, en, fa, zh, tr или id")),
         },
         _ => Err(usage()),
     }
@@ -274,7 +439,7 @@ fn main() -> std::process::ExitCode {
     };
     match call(&req) {
         Err(e) => {
-            eprintln!("{}", t(&format!("служба недоступна ({e}): запустите pg-service"), &format!("service unavailable ({e}): start pg-service")));
+            eprintln!("{}", tf!("служба недоступна ({}): запустите pg-service", e));
             std::process::ExitCode::FAILURE
         }
         Ok(Response::Error { message }) => {
@@ -291,10 +456,7 @@ fn main() -> std::process::ExitCode {
         Ok(Response::Imported { added, kept, gone, skipped, skipped_total }) => {
             println!(
                 "{}",
-                t(
-                    &format!("заведено {added}, уже было {kept}, убрано {gone}, пропущено {skipped_total}"),
-                    &format!("added {added}, already there {kept}, dropped {gone}, skipped {skipped_total}"),
-                )
+                tf!("заведено {}, уже было {}, убрано {}, пропущено {}", added, kept, gone, skipped_total)
             );
             for why in &skipped {
                 eprintln!("  {why}");
@@ -314,12 +476,12 @@ fn main() -> std::process::ExitCode {
                 // Маршрут первой колонкой: ради него список и спрашивают.
                 // Процесс — именем файла: путь целиком гонит строку за край, а
                 // отличать один chrome.exe от другого тут всё равно нечем.
-                let route = if c.tunneled { t("туннель", "tunnel") } else { t("напрямую", "direct") };
+                let route = if c.tunneled { t("туннель") } else { t("напрямую") };
                 let name = c.process.rsplit(['\\', '/']).next().unwrap_or("—");
                 println!("{route:<10} {:<24} {:<40} ↓{} ↑{}", if name.is_empty() { "—" } else { name }, c.host, bytes(c.rx), bytes(c.tx));
             }
             if total > conns.len() {
-                println!("{}", t(&format!("… и ещё {}", total - conns.len()), &format!("… and {} more", total - conns.len())));
+                println!("{}", tf!("… и ещё {}", total - conns.len()));
             }
             std::process::ExitCode::SUCCESS
         }
@@ -338,8 +500,8 @@ fn main() -> std::process::ExitCode {
             let or = |v: &str, empty: String| if v.is_empty() { empty } else { v.to_string() };
             println!("{:<10} {}", "refresh", onoff(s.settings.refresh));
             println!("{:<10} {}", "geo", onoff(s.settings.geo));
-            println!("{:<10} {}", "probe", or(&s.settings.probe, t("сервер узла", "the node's server")));
-            println!("{:<10} {}", "singbox", or(&s.settings.singbox, t("рядом со службой либо PATH", "next to the service or PATH")));
+            println!("{:<10} {}", "probe", or(&s.settings.probe, t("сервер узла")));
+            println!("{:<10} {}", "singbox", or(&s.settings.singbox, t("рядом со службой либо PATH")));
             std::process::ExitCode::SUCCESS
         }
         Ok(Response::Status(s)) if args[0] == "test" => {
@@ -347,11 +509,11 @@ fn main() -> std::process::ExitCode {
             for p in &s.probes {
                 let verdict = match (p.latency_ms, &p.error) {
                     (Some(ms), _) => match &p.country {
-                        Some(c) => t(&format!("{ms} мс — {c}"), &format!("{ms} ms — {c}")),
-                        None => t(&format!("{ms} мс"), &format!("{ms} ms")),
+                        Some(c) => tf!("{} мс — {}", ms, c),
+                        None => tf!("{} мс", ms),
                     },
                     (None, Some(e)) => e.clone(),
-                    (None, None) => t("не проверен", "not checked"),
+                    (None, None) => t("не проверен"),
                 };
                 println!("{:<20} {verdict}", p.name);
             }
@@ -365,8 +527,8 @@ fn main() -> std::process::ExitCode {
             adopt(s.lang);
             for b in &s.browser_profiles {
                 let open = match s.browsers.contains(&b.name) {
-                    true => t("открыт", "open"),
-                    false => t("закрыт", "closed"),
+                    true => t("открыт"),
+                    false => t("закрыт"),
                 };
                 println!("{:<20} {:<20} {open}", b.name, b.node);
                 if !b.ua.is_empty() {
@@ -397,39 +559,36 @@ fn main() -> std::process::ExitCode {
             adopt(s.lang);
             let latency = s.latency_ms.unwrap_or(0);
             let state = match s.tunnel {
-                core_ipc::Tunnel::Off => t("выключен", "off"),
-                core_ipc::Tunnel::Connecting => t("подключение", "connecting"),
-                core_ipc::Tunnel::Up => t(&format!("поднят, {latency} мс"), &format!("up, {latency} ms")),
-                core_ipc::Tunnel::Down => t(
-                    "недоступен — выбранные приложения без сети",
-                    "unavailable — selected apps have no network",
-                ),
+                core_ipc::Tunnel::Off => t("выключен"),
+                core_ipc::Tunnel::Connecting => t("подключение"),
+                core_ipc::Tunnel::Up => tf!("поднят, {} мс", latency),
+                core_ipc::Tunnel::Down => t("недоступен — выбранные приложения без сети"),
             };
             let on = s.apps.iter().filter(|a| a.enabled).count();
-            println!("{:<11} {state}", t("туннель:", "tunnel:"));
+            println!("{:<11} {state}", t("туннель:"));
             println!(
                 "{:<11} {}",
-                t("охват:", "scope:"),
+                t("охват:"),
                 match s.scope {
-                    Scope::All => t("весь трафик компьютера", "all computer traffic"),
-                    Scope::Whitelist => t("только выбранные приложения, остальным сеть закрыта", "selected apps only, everyone else cut off"),
+                    Scope::All => t("весь трафик компьютера"),
+                    Scope::Whitelist => t("только выбранные приложения, остальным сеть закрыта"),
                 }
             );
-            println!("{:<11} {}", t("профиль:", "profile:"), s.profile.unwrap_or_else(|| "—".into()));
-            println!("{:<11} {}", t("страна:", "exit:"), s.country.unwrap_or_else(|| "—".into()));
-            println!("{:<11} ↓{} ↑{}", t("трафик:", "traffic:"), bytes(s.rx), bytes(s.tx));
+            println!("{:<11} {}", t("профиль:"), s.profile.unwrap_or_else(|| "—".into()));
+            println!("{:<11} {}", t("страна:"), s.country.unwrap_or_else(|| "—".into()));
+            println!("{:<11} ↓{} ↑{}", t("трафик:"), bytes(s.rx), bytes(s.tx));
             println!(
                 "{:<11} {} ({} {})",
-                t("приложения:", "apps:"),
+                t("приложения:"),
                 s.apps.len(),
-                t("в туннеле", "in tunnel"),
+                t("в туннеле"),
                 on
             );
             if !s.browsers.is_empty() {
-                println!("{:<11} {}", t("браузер:", "browser:"), s.browsers.join(", "));
+                println!("{:<11} {}", t("браузер:"), s.browsers.join(", "));
             }
             if let Some(last) = s.log.first() {
-                println!("{:<11} {}", t("последнее:", "last:"), last.text);
+                println!("{:<11} {}", t("последнее:"), last.text);
             }
             std::process::ExitCode::SUCCESS
         }

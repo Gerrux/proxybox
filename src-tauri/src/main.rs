@@ -13,7 +13,7 @@
 //! таскать окно человека к трею и обратно, меняя ему размер и положение, —
 //! значит потерять и то и другое.
 
-use core_ipc::{call, Request, Response, Status};
+use core_ipc::{call, t, tf, Request, Response, Status};
 use std::collections::HashSet;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,11 +49,8 @@ fn ipc(req: Request) -> Result<Response, String> {
     call(&req).map_err(|e| match e.kind() {
         // Ни канала, ни сокета — служба не запущена. Код ошибки об этом не
         // говорит, а человеку нужно ровно одно действие.
-        io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound => core_ipc::t(
-            &format!("служба не запущена ({e}): запустите proxybox"),
-            &format!("the service is not running ({e}): start proxybox"),
-        ),
-        _ => core_ipc::t(&format!("служба недоступна: {e}"), &format!("service unavailable: {e}")),
+        io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound => tf!("служба не запущена ({}): запустите proxybox", e),
+        _ => tf!("служба недоступна: {}", e),
     })
 }
 
@@ -86,13 +83,13 @@ fn quiet(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
 #[tauri::command(async)]
 fn open_url(url: String) -> Result<(), String> {
     if !url.starts_with("https://github.com/") {
-        return Err(core_ipc::t(&format!("ссылка не с github.com: {url}"), &format!("link is not from github.com: {url}")));
+        return Err(tf!("ссылка не с github.com: {}", url));
     }
     quiet("rundll32")
         .args(["url.dll,FileProtocolHandler", &url])
         .spawn()
         .map(|_| ())
-        .map_err(|e| core_ipc::t(&format!("не удалось открыть браузер: {e}"), &format!("could not open the browser: {e}")))
+        .map_err(|e| tf!("не удалось открыть браузер: {}", e))
 }
 
 /// Каталог сеанса браузера: входы, куки и закладки этого профиля. Он же —
@@ -132,10 +129,7 @@ fn session_dir(profile: &str) -> std::path::PathBuf {
 #[tauri::command(async)]
 fn open_browser(port: u16, profile: String, ua: String, lang: String, color: String) -> Result<(), String> {
     let browser = core_apps::browser().ok_or_else(|| {
-        core_ipc::t(
-            "браузер на Chromium не найден: нужен Chrome, Edge, Brave или Яндекс",
-            "no Chromium browser found: install Chrome, Edge, Brave or Yandex",
-        )
+        t("браузер на Chromium не найден: нужен Chrome, Edge, Brave или Яндекс")
     })?;
     let data = session_dir(&profile);
     set_accept_language(&data, &lang);
@@ -366,10 +360,7 @@ fn forget_browser(profile: String) -> Result<(), String> {
         Ok(()) => Ok(()),
         // Сеанса просто не было: профиль в браузере ни разу не открывали.
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(core_ipc::t(
-            &format!("не удалось стереть сеанс браузера: {e}"),
-            &format!("could not erase the browser session: {e}"),
-        )),
+        Err(e) => Err(tf!("не удалось стереть сеанс браузера: {}", e)),
     }
 }
 
@@ -446,7 +437,7 @@ fn autostart() -> bool {
 #[tauri::command(async)]
 fn set_autostart(enabled: bool) -> Result<bool, String> {
     let exe = std::env::current_exe()
-        .map_err(|e| core_ipc::t(&format!("не найден свой путь: {e}"), &format!("own path not found: {e}")))?;
+        .map_err(|e| tf!("не найден свой путь: {}", e))?;
     let value = format!("\"{}\" --hidden", exe.display());
     let args: Vec<&str> = match enabled {
         true => vec!["add", RUN_KEY, "/v", RUN_NAME, "/t", "REG_SZ", "/d", &value, "/f"],
@@ -455,13 +446,10 @@ fn set_autostart(enabled: bool) -> Result<bool, String> {
     let out = quiet("reg")
         .args(&args)
         .output()
-        .map_err(|e| core_ipc::t(&format!("не удалось править реестр: {e}"), &format!("could not edit the registry: {e}")))?;
+        .map_err(|e| tf!("не удалось править реестр: {}", e))?;
     // Снятие того, чего нет, — не отказ: тумблер выключен и был выключен.
     if !out.status.success() && enabled {
-        return Err(core_ipc::t(
-            &format!("реестр не принял запись: {}", String::from_utf8_lossy(&out.stderr).trim()),
-            &format!("the registry refused the entry: {}", String::from_utf8_lossy(&out.stderr).trim()),
-        ));
+        return Err(tf!("реестр не принял запись: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
     Ok(enabled)
 }
@@ -477,7 +465,7 @@ fn autostart() -> bool {
 #[cfg(not(windows))]
 #[tauri::command(async)]
 fn set_autostart(_enabled: bool) -> Result<bool, String> {
-    Err(core_ipc::t("автозапуск есть только в Windows", "autostart exists on Windows only"))
+    Err(t("автозапуск есть только в Windows"))
 }
 
 /// Значок в трее живёт, пока живёт оболочка, и удался ли он — знать обязательно:
@@ -614,16 +602,16 @@ fn inside(x: f32, y: f32) -> bool {
 fn words(status: Option<&Status>) -> (String, String) {
     let Some(s) = status else {
         return (
-            core_ipc::t("Служба не отвечает", "Service is not responding"),
-            core_ipc::t("запустите proxybox", "start proxybox"),
+            t("Служба не отвечает"),
+            t("запустите proxybox"),
         );
     };
     let title = match s.tunnel {
-        core_ipc::Tunnel::Off => core_ipc::t("Приватный режим выключен", "Private mode is off"),
-        core_ipc::Tunnel::Connecting => core_ipc::t("Подключение…", "Connecting…"),
-        core_ipc::Tunnel::Up => core_ipc::t("Защищено", "Protected"),
+        core_ipc::Tunnel::Off => t("Приватный режим выключен"),
+        core_ipc::Tunnel::Connecting => t("Подключение…"),
+        core_ipc::Tunnel::Up => t("Защищено"),
         core_ipc::Tunnel::Down => {
-            core_ipc::t("Туннеля нет — доступ закрыт", "No tunnel — access is closed")
+            t("Туннеля нет — доступ закрыт")
         }
     };
     // Профиль, страна и задержка — то, ради чего в меню и заглядывают: «через
@@ -639,14 +627,14 @@ fn words(status: Option<&Status>) -> (String, String) {
         detail.push(format!("{ms} ms"));
     }
     if detail.is_empty() {
-        detail.push(core_ipc::t("узел не выбран", "no node selected"));
+        detail.push(t("узел не выбран"));
     }
     // Охват называем всегда: «весь компьютер» меняет не состояние, а того, о
     // ком оно, и молчать об этом в трее нельзя — окна может не быть вовсе.
     match s.scope {
-        core_ipc::Scope::All => detail.push(core_ipc::t("весь компьютер", "the whole computer")),
+        core_ipc::Scope::All => detail.push(t("весь компьютер")),
         core_ipc::Scope::Whitelist => {
-            detail.push(core_ipc::t("остальным сеть закрыта", "everyone else cut off"))
+            detail.push(t("остальным сеть закрыта"))
         }
     }
     (title, detail.join(" · "))
@@ -685,23 +673,17 @@ fn build_menu(app: &tauri::AppHandle, status: Option<&Status>) -> tauri::Result<
                 .collect::<tauri::Result<_>>()?;
             let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
                 items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
-            menu.append(&Submenu::with_items(app, core_ipc::t("Профиль", "Profile"), true, &refs)?)?;
+            menu.append(&Submenu::with_items(app, t("Профиль"), true, &refs)?)?;
         }
         let on = s.tunnel != core_ipc::Tunnel::Off;
         let label = match (on, s.scope) {
-            (true, core_ipc::Scope::All) => core_ipc::t(
-                "Выключить — компьютер пойдёт в сеть напрямую",
-                "Turn off — the computer goes online directly",
-            ),
+            (true, core_ipc::Scope::All) => t("Выключить — компьютер пойдёт в сеть напрямую"),
             // В белом списке выключение не только выпускает выбранных мимо
             // туннеля, но и открывает сеть всем остальным. Пункт обязан
             // говорить, что случится, — иначе цена клика тут вдвое больше
             // написанного.
-            (true, core_ipc::Scope::Whitelist) => core_ipc::t(
-                "Выключить — сеть откроется всем",
-                "Turn off — everyone goes online",
-            ),
-            (false, _) => core_ipc::t("Включить приватный режим", "Turn private mode on"),
+            (true, core_ipc::Scope::Whitelist) => t("Выключить — сеть откроется всем"),
+            (false, _) => t("Включить приватный режим"),
         };
         // Без профилей включать нечего, и гаснущий пункт говорит об этом лучше,
         // чем отказ после нажатия.
@@ -715,13 +697,13 @@ fn build_menu(app: &tauri::AppHandle, status: Option<&Status>) -> tauri::Result<
         menu.append(&PredefinedMenuItem::separator(app)?)?;
     }
 
-    menu.append(&MenuItem::with_id(app, "open", core_ipc::t("Открыть окно", "Open window"), true, None::<&str>)?)?;
-    menu.append(&MenuItem::with_id(app, "settings", core_ipc::t("Настройки", "Settings"), true, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "open", t("Открыть окно"), true, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "settings", t("Настройки"), true, None::<&str>)?)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(&MenuItem::with_id(
         app,
         "quit",
-        core_ipc::t("Выйти из окна", "Quit the window"),
+        t("Выйти из окна"),
         true,
         None::<&str>,
     )?)?;
@@ -1008,10 +990,7 @@ fn main() {
                     if let Err(e) = flyout(app) {
                         eprintln!(
                             "{}",
-                            core_ipc::t(
-                                &format!("плашка из трея не создана: {e}"),
-                                &format!("the tray panel was not created: {e}")
-                            )
+                            tf!("плашка из трея не создана: {}", e)
                         );
                     }
                     // Запуск из автозапуска: окна не показываем, продукт живёт
@@ -1026,7 +1005,7 @@ fn main() {
                 }
                 // Не удался значок — окно остаётся единственным интерфейсом, и
                 // прятать его тогда нельзя ни в коем случае.
-                Err(e) => eprintln!("{}", core_ipc::t(&format!("значок в трее не создан: {e}"), &format!("tray icon not created: {e}"))),
+                Err(e) => eprintln!("{}", tf!("значок в трее не создан: {}", e)),
             }
             Ok(())
         })

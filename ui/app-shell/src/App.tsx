@@ -13,7 +13,7 @@ import {
   type Response,
   type Status,
 } from "./platform";
-import { strings } from "./i18n";
+import { dir, strings } from "./i18n";
 import { Apps } from "./Apps";
 import { Browsers } from "./Browsers";
 import { Conns } from "./Conns";
@@ -129,6 +129,20 @@ export function App() {
 
   // Настройки из меню значка: оболочка поднимает окно и говорит, что показать.
   useEffect(() => onShell("open-settings", () => setSettings(true)), []);
+
+  // Направление письма ставится на корне документа, а не на панелях: с фарси
+  // зеркалить надо и раскладку, и прокрутку, и порядок слов внутри строки, а
+  // это умеет браузер — но только если сказать ему один раз и сверху.
+  // Раскладка тут вся на flex и grid, поэтому переворачивается сама; штучных
+  // отступов осталось меньше десятка, и все они логические (`ps-`/`pe-`).
+  //
+  // `lang` заодно чинит перенос строк и подбор шрифта: без него браузер
+  // считает персидский текст русским — так написано в index.html.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.lang = status?.lang ?? "ru";
+    root.dir = dir(status?.lang);
+  }, [status?.lang]);
 
   // Крестик главного окна. Оболочка закрытие остановила и спросила нас —
   // отвечаем либо запомненным выбором, либо вопросом.

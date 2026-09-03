@@ -607,9 +607,9 @@ function Rows({
         return (
           <li key={name} className="flex flex-col">
             <div
-              className={`enter smooth relative flex items-center gap-2 rounded-md py-1.5 pl-3 pr-1 hover:bg-surface-2 ${active ? "bg-surface-2" : ""}`}
+              className={`enter smooth relative flex items-center gap-2 rounded-md py-1.5 ps-3 pe-1 hover:bg-surface-2 ${active ? "bg-surface-2" : ""}`}
             >
-              <span className={`smooth absolute inset-y-1 left-0 w-[3px] rounded-full ${tone.rail}`} />
+              <span className={`smooth absolute inset-y-1 start-0 w-[3px] rounded-full ${tone.rail}`} />
               {/* Имя сверху, всё измеренное — строкой ниже, как в списке
                   приложений: в одну строку имя, состояние, страна, задержка
                   и кнопки не помещаются даже в окне минимальной ширины, и

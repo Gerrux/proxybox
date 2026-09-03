@@ -10,7 +10,7 @@
 //! net, Get-NetAdapter), а не WinAPI через FFI. Разбор вывода вынесен в чистые
 //! функции — они и покрыты тестами, запуск команд остаётся тонкой обёрткой.
 
-use core_ipc::t;
+use core_ipc::{t, tf};
 use std::path::PathBuf;
 
 pub enum Level {
@@ -103,80 +103,57 @@ fn windows_checks() -> Vec<Check> {
     let mut v = Vec::new();
 
     v.push(if elevated() {
-        check(&t("права", "rights"), Level::Ok, t("администратор", "administrator"))
+        check(&t("права"), Level::Ok, t("администратор"))
     } else {
         check(
-            &t("права", "rights"),
+            &t("права"),
             Level::Warn,
-            t(
-                "обычный пользователь — службе нужны права администратора для TUN и правил брандмауэра",
-                "ordinary user — the service needs administrator rights for TUN and firewall rules",
-            ),
+            t("обычный пользователь — службе нужны права администратора для TUN и правил брандмауэра"),
         )
     });
 
     v.push(match out("sc", &["query", core_ipc::SERVICE_NAME]) {
-        Some(o) if sc_running(&o) => check(&t("служба Windows", "Windows service"), Level::Ok, t("зарегистрирована и работает", "registered and running")),
+        Some(o) if sc_running(&o) => check(&t("служба Windows"), Level::Ok, t("зарегистрирована и работает")),
         Some(_) => check(
-            &t("служба Windows", "Windows service"),
+            &t("служба Windows"),
             Level::Warn,
-            t(
-                &format!("{} зарегистрирована, но остановлена — sc start {}", core_ipc::SERVICE_NAME, core_ipc::SERVICE_NAME),
-                &format!("{} is registered but stopped — sc start {}", core_ipc::SERVICE_NAME, core_ipc::SERVICE_NAME),
-            ),
+            tf!("{} зарегистрирована, но остановлена — sc start {}", core_ipc::SERVICE_NAME, core_ipc::SERVICE_NAME),
         ),
         None => check(
-            &t("служба Windows", "Windows service"),
+            &t("служба Windows"),
             Level::Warn,
-            t(
-                "не зарегистрирована — переустановите приложение или выполните pg-service.exe install",
-                "not registered — reinstall the app or run pg-service.exe install",
-            ),
+            t("не зарегистрирована — переустановите приложение или выполните pg-service.exe install"),
         ),
     });
 
     v.push(match out("sc", &["query", "BFE"]) {
-        Some(o) if sc_running(&o) => check(&t("брандмауэр", "firewall"), Level::Ok, t("Base Filtering Engine работает", "Base Filtering Engine is running")),
+        Some(o) if sc_running(&o) => check(&t("брандмауэр"), Level::Ok, t("Base Filtering Engine работает")),
         _ => check(
-            &t("брандмауэр", "firewall"),
+            &t("брандмауэр"),
             Level::Fail,
-            t(
-                "служба Base Filtering Engine не работает — без неё блокирующие правила не встают, \
-                 и при падении туннеля выбранные приложения уйдут напрямую",
-                "the Base Filtering Engine service is not running — without it blocking rules do not apply, \
-                 and selected apps will go direct when the tunnel drops",
-            ),
+            t("служба Base Filtering Engine не работает — без неё блокирующие правила не встают, и при падении туннеля выбранные приложения уйдут напрямую"),
         ),
     });
 
     const PROXY_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
     v.push(match out("reg", &["query", PROXY_KEY, "/v", "ProxyEnable"]) {
         Some(o) if proxy_enabled(&o) => check(
-            &t("системный прокси", "system proxy"),
+            &t("системный прокси"),
             Level::Warn,
-            t(
-                "включён — трафик уходит в него до туннеля, проба может врать; выключите, если он не ваш",
-                "on — traffic goes there before the tunnel and the probe may lie; turn it off if it is not yours",
-            ),
+            t("включён — трафик уходит в него до туннеля, проба может врать; выключите, если он не ваш"),
         ),
-        _ => check(&t("системный прокси", "system proxy"), Level::Ok, t("выключен", "off")),
+        _ => check(&t("системный прокси"), Level::Ok, t("выключен")),
     });
 
     // Разбор и запуск — в core-filter: тем же списком пользуется служба.
     let foreign = core_filter::foreign_tunnels(core_tunnel::TUN_NAME);
     v.push(if foreign.is_empty() {
-        check(&t("чужие туннели", "foreign tunnels"), Level::Ok, t("поднятых TUN/VPN-адаптеров нет", "no TUN/VPN adapters are up"))
+        check(&t("чужие туннели"), Level::Ok, t("поднятых TUN/VPN-адаптеров нет"))
     } else {
         check(
-            &t("чужие туннели", "foreign tunnels"),
+            &t("чужие туннели"),
             Level::Warn,
-            t(
-                &format!(
-                    "подняты: {} — они спорят за маршруты с нашим strict_route, выключите на время проверки",
-                    foreign.join(", ")
-                ),
-                &format!("up: {} — they fight our strict_route for routes, turn them off while testing", foreign.join(", ")),
-            ),
+            tf!("подняты: {} — они спорят за маршруты с нашим strict_route, выключите на время проверки", foreign.join(", ")),
         )
     });
 
@@ -186,27 +163,24 @@ fn windows_checks() -> Vec<Check> {
 #[cfg(not(windows))]
 fn windows_checks() -> Vec<Check> {
     [
-        t("права", "rights"),
-        t("служба Windows", "Windows service"),
-        t("брандмауэр", "firewall"),
-        t("системный прокси", "system proxy"),
-        t("чужие туннели", "foreign tunnels"),
+        t("права"),
+        t("служба Windows"),
+        t("брандмауэр"),
+        t("системный прокси"),
+        t("чужие туннели"),
     ]
     .into_iter()
-    .map(|n| check(&n, Level::Skip, t("только для Windows", "Windows only")))
+    .map(|n| check(&n, Level::Skip, t("только для Windows")))
     .collect()
 }
 
 pub fn run() -> Vec<Check> {
     let mut v = vec![match core_ipc::call(&core_ipc::Request::Status) {
-        Ok(_) => check(&t("служба", "service"), Level::Ok, t("отвечает", "responding")),
+        Ok(_) => check(&t("служба"), Level::Ok, t("отвечает")),
         Err(e) => check(
-            &t("служба", "service"),
+            &t("служба"),
             Level::Fail,
-            t(
-                &format!("не отвечает ({e}) — запустите pg-service от администратора"),
-                &format!("not responding ({e}) — start pg-service as administrator"),
-            ),
+            tf!("не отвечает ({}) — запустите pg-service от администратора", e),
         ),
     }];
 
@@ -215,10 +189,7 @@ pub fn run() -> Vec<Check> {
         None => check(
             "sing-box",
             Level::Fail,
-            t(
-                "не найден: ни в PG_SINGBOX, ни рядом с бинарником службы, ни в PATH",
-                "not found: neither in PG_SINGBOX, nor next to the service binary, nor in PATH",
-            ),
+            t("не найден: ни в PG_SINGBOX, ни рядом с бинарником службы, ни в PATH"),
         ),
     });
 
