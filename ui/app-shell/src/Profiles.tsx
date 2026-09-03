@@ -1,9 +1,21 @@
 import { useEffect, useState } from "react";
-import type { Act, Lang, ProfileInfo, Probe, Quota, Response, Status } from "./platform";
+import type { Act, Lang, ProfileInfo, Probe, Quota, Response, Status, Subscription } from "./platform";
 import type { Strings } from "./i18n";
 import { measuredAgo, strings, syncedAgo } from "./i18n";
 import { bytes } from "./StatusBar";
-import { AddField, Button, ConfirmButton, Empty, FIELD, flag, type Outcome, Panel, SearchField } from "./ui";
+import {
+  AddField,
+  Button,
+  Empty,
+  FIELD,
+  flag,
+  Menu,
+  type MenuItem,
+  Modal,
+  type Outcome,
+  Panel,
+  SearchField,
+} from "./ui";
 
 /** Чем окажется набранное в поле импорта — по одному лишь префиксу и до
  *  отправки. Это подпись, а не разбор: разбирает служба, и спорить с ней
@@ -123,12 +135,46 @@ const TONE = {
   off: { rail: "bg-transparent", text: "text-muted" },
 } as const;
 
-/** Где окно помнит порядок списка. Порядок остаётся способом посмотреть, а не
- *  свойством списка, — поэтому он в браузерном хранилище окна, а не в службе:
- *  на другой машине с той же службой список снова придёт как есть. Помнить его
- *  всё же надо: прогон затевают ровно ради выбора узла, а список после каждого
- *  открытия окна возвращался к порядку панели. */
+/** Где окно помнит порядок по задержке. Он остаётся способом посмотреть, а не
+ *  свойством списка, — поэтому он в браузерном хранилище окна, а не в службе (в
+ *  отличие от порядка, расставленного руками: тот про сам список, и держит его
+ *  служба). Помнить его всё же надо: прогон затевают ровно ради выбора узла, а
+ *  список после каждого открытия окна возвращался к порядку панели. */
 const BY_LATENCY = "pg.profiles.byLatency";
+
+/** Порядок, расставленный руками, в окне не живёт вовсе: его помнит служба
+ *  (`Request::SetOrder`, `arrange` в службе), и список приезжает уже
+ *  разложенным. Здесь остаётся только то, что видно на время самого
+ *  перетаскивания: пока тянут строку, порядок обязан меняться под курсором, а
+ *  служба узнаёт о нём один раз — когда строку отпустили. Слать команду на
+ *  каждое `dragover` значило бы писать `state.json` на диск десятки раз за один
+ *  перенос.
+ *
+ *  Расставить по этому временному порядку: известные — по своим местам,
+ *  остальные — следом, в том порядке, в каком приехали. Сортировка устойчива,
+ *  поэтому «следом» и означает «как пришли». */
+function seated<T>(items: T[], name: (item: T) => string, order: string[] | undefined): T[] {
+  if (!order?.length) return items;
+  const seat = new Map(order.map((n, i) => [n, i] as const));
+  return [...items].sort((a, b) => (seat.get(name(a)) ?? Infinity) - (seat.get(name(b)) ?? Infinity));
+}
+
+/** Перетащенное встаёт на место того, над кем его держат. Тащат вниз — встаёт
+ *  под него, вверх — над ним: иначе строка на последнем месте недостижима. */
+function moved(names: string[], from: string, to: string): string[] {
+  if (from === to) return names;
+  const out = names.filter((n) => n !== from);
+  out.splice(out.indexOf(to) + (names.indexOf(from) < names.indexOf(to) ? 1 : 0), 0, from);
+  return out;
+}
+
+/** Где открыть меню. Точка курсора, а если нажали с клавиатуры (координат нет)
+ *  — под самой кнопкой. */
+function spot(e: React.MouseEvent<HTMLElement>): [number, number] {
+  if (e.clientX || e.clientY) return [e.clientX, e.clientY];
+  const rect = e.currentTarget.getBoundingClientRect();
+  return [rect.left, rect.bottom];
+}
 
 export function Profiles({
   status,
@@ -145,34 +191,14 @@ export function Profiles({
   const profiles = status?.profiles ?? [];
   const subscriptions = status?.subscriptions ?? [];
   const [query, setQuery] = useState("");
-  // Поле импорта показывается по «+», а не стоит всегда: две строки под
-  // редчайшим действием — это две строки, которых нет у списка. Пока профилей
-  // нет вовсе, добавить их больше нечем, и поле открыто само — вместе с самой
-  // кнопкой, которой в этом состоянии нечего переключать.
-  const [importOpen, setImportOpen] = useState(false);
-  const adding = importOpen || profiles.length === 0;
+  // Импорт — отдельным окном поверх панели, а не полем внутри неё. Полем оно и
+  // было: две строки раздвигали список сверху, и всё, ради чего панель
+  // открывали, уезжало вниз — в том числе строка, на которую человек уже
+  // целился.
+  const [adding, setAdding] = useState(false);
   const needle = query.trim().toLowerCase();
   const match = (p: ProfileInfo) =>
     !needle || p.name.toLowerCase().includes(needle) || p.server.toLowerCase().includes(needle);
-  // Заведённое руками и пришедшее с панели — разные вещи, и в одном списке
-  // десяток своих узлов тонет в сотне чужих. Своё — то, чего нет ни в одной
-  // подписке: связь знает служба, окно её только показывает.
-  const fromSubs = new Set(subscriptions.flatMap((sub) => sub.nodes));
-  const byName = new Map(profiles.map((p) => [p.name, p]));
-  const groups = [
-    { sub: null, items: profiles.filter((p) => !fromSubs.has(p.name) && match(p)) },
-    ...subscriptions.map((sub) => ({
-      sub,
-      items: sub.nodes.flatMap((name) => {
-        const p = byName.get(name);
-        return p && match(p) ? [p] : [];
-      }),
-    })),
-  ];
-  const shown = groups.reduce((n, g) => n + g.items.length, 0);
-  // Группы заводит только подписка: с одними своими узлами заголовок «Свои»
-  // говорил бы о делении, которого нет.
-  const grouped = subscriptions.length > 0;
   // Свёрнутые группы — здесь, а не в атрибуте <details>: статус приходит раз в
   // секунду, и открытое состояние, живущее только в DOM, спорило бы с каждой
   // перерисовкой. Имя группы — её адрес, поэтому переживает и подмену узлов.
@@ -188,6 +214,15 @@ export function Profiles({
     void act({ cmd: "profile-node", arg: { name } }).then((r) => {
       if (r?.reply === "profile-node") setEditing({ name, json: r.data.json });
     });
+  // Открытое меню — одно на панель: второе, оставшееся от прошлой строки,
+  // делало бы вид, что относится к этой.
+  const [menu, setMenu] = useState<{ at: [number, number]; items: MenuItem[] } | null>(null);
+  const openMenu = (e: React.MouseEvent<HTMLElement>, items: MenuItem[]) => {
+    e.preventDefault();
+    // Клик по «⋯» внутри <summary> иначе сворачивал бы заодно и группу.
+    e.stopPropagation();
+    setMenu({ at: spot(e), items });
+  };
   // Поле не прячем, пока в нём что-то есть: иначе фильтр остался бы включённым
   // и невидимым, а строки просто пропали бы.
   const searchable = profiles.length > SEARCH_FROM || query !== "";
@@ -210,15 +245,115 @@ export function Profiles({
       // см. выше: порядок — украшение, а не состояние продукта.
     }
   }, [byLatency]);
+  // Порядок на время переноса: пока строку тянут, список переставляется здесь,
+  // а служба узнаёт о нём один раз — на `commit`. Пусто — показываем то, что
+  // приехало от службы.
+  const [pending, setPending] = useState<string[] | null>(null);
+  const [pendingSubs, setPendingSubs] = useState<string[] | null>(null);
+  // Что тащат прямо сейчас: подписку — здесь, профиль — внутри своего списка.
+  const [dragged, setDragged] = useState<string | null>(null);
   const probes = status?.probes ?? [];
   const measured = probes.some((p) => p.latency_ms != null);
+  const testing = status?.testing ?? null;
+  const latency = (name: string) => probes.find((p) => p.name === name)?.latency_ms ?? Infinity;
+  // Порядков три, и они не складываются друг с другом.
+  //
+  // По задержке — пока включён переключатель; там звёздочка по-прежнему
+  // сильнее числа: отмечают ровно те три узла из сотни, которыми пользуются, и
+  // уехать вниз из-за чужого замера они не должны.
+  //
+  // Расставленный руками — если эту группу тащили. Он перевешивает и
+  // звёздочку, и это намеренно: звёздочка поднимает узел наверх за неимением
+  // другого способа сказать «этот важнее», а перетаскивание и есть тот способ,
+  // сказанный прямо. Возвращать строку на место сразу после того, как её туда
+  // перенесли, — худшее, что может сделать список.
+  //
+  // Не мерили и не тащат прямо сейчас — как отдала служба: она же и держит
+  // порядок, расставленный руками, и звёздочку.
+  const arrange = (items: ProfileInfo[]): ProfileInfo[] => {
+    if (byLatency)
+      return [...items].sort(
+        (a, b) => Number(b.favorite) - Number(a.favorite) || latency(a.name) - latency(b.name),
+      );
+    return pending ? seated(items, (p) => p.name, pending) : items;
+  };
+  // Тащить можно, только когда порядок и вправду принадлежит человеку. По
+  // задержке список переставляет число, и перенесённая строка уехала бы
+  // обратно тем же кадром. Под поиском видна половина списка, и записанный
+  // порядок из половины имён смёл бы вторую половину в хвост.
+  const draggable = !byLatency && needle === "";
+  // Заведённое руками и пришедшее с панели — разные вещи, и в одном списке
+  // десяток своих узлов тонет в сотне чужих. Своё — то, чего нет ни в одной
+  // подписке: связь знает служба, окно её только показывает.
+  const fromSubs = new Set(subscriptions.flatMap((sub) => sub.nodes));
+  const byName = new Map(profiles.map((p) => [p.name, p]));
+  // Подписки тоже переставляются, а своя группа остаётся первой: она не
+  // подписка, и меняться местами ей не с кем.
+  const subs = pendingSubs ? seated(subscriptions, (sub) => sub.url, pendingSubs) : subscriptions;
+  const groups = [
+    { sub: null, items: arrange(profiles.filter((p) => !fromSubs.has(p.name) && match(p))) },
+    ...subs.map((sub) => ({
+      sub,
+      items: arrange(
+        sub.nodes.flatMap((name) => {
+          const p = byName.get(name);
+          return p && match(p) ? [p] : [];
+        }),
+      ),
+    })),
+  ];
+  const shown = groups.reduce((n, g) => n + g.items.length, 0);
+  // Перенос внутри группы — это новый порядок всего списка: службе он уезжает
+  // одной строкой имён, а группы в ней лежат подряд, поэтому чужие остаются
+  // как есть.
+  const reorder = (key: string, names: string[]) =>
+    setPending(groups.flatMap((g) => ((g.sub?.url ?? "") === key ? names : g.items.map((i) => i.name))));
+  // Строку отпустили — служба узнаёт порядок. Уезжает только то, что и вправду
+  // переставляли: пустой список служба понимает как «этот порядок не трогать»,
+  // и перенос подписки не замораживает в ручной порядок расстановку по
+  // звёздочке. Временный порядок снимается только после того, как вернулся
+  // статус: сними его раньше, и список моргнул бы прежним порядком.
+  const commit = () => {
+    if (pending === null && pendingSubs === null) return;
+    void act({
+      cmd: "set-order",
+      arg: { profiles: pending ?? [], subscriptions: pendingSubs ?? [] },
+    }).finally(() => {
+      setPending(null);
+      setPendingSubs(null);
+    });
+  };
+  // Группы заводит только подписка: с одними своими узлами заголовок «Свои»
+  // говорил бы о делении, которого нет.
+  const grouped = subscriptions.length > 0;
   // Самый быстрый из измеренных и всё ещё живущих в списке. Прогон затевают
   // ради этого выбора, а делать его глазами по сотне строк — то же самое, что
   // не делать вовсе.
   const fastest = probes
     .filter((p) => p.latency_ms != null && byName.has(p.name))
     .sort((a, b) => (a.latency_ms ?? 0) - (b.latency_ms ?? 0))[0];
-  const testing = status?.testing ?? null;
+  // Действия подписки — тем же меню, что и у профиля: у неё их три, и три
+  // значка в заголовке группы съедали ту самую ширину, в которой не помещался
+  // адрес.
+  const subMenu = (sub: Subscription): MenuItem[] => [
+    {
+      label: s.refresh,
+      hint: s.refreshSubscription(sub.url),
+      // Обновление — тот же импорт: служба сама узнаёт адрес и заменяет
+      // пришедшие с него профили.
+      onPick: () => void act({ cmd: "add-profile", arg: { link: sub.url } }),
+    },
+    { label: s.renameSubscription, onPick: () => setRenaming(sub.url) },
+    {
+      label: s.unsubscribe,
+      hint: s.removeSubscription(sub.url),
+      danger: true,
+      // Отписка уносит с собой десятки профилей разом — по одному клику мимо
+      // такое случаться не должно.
+      ask: s.confirmRemove,
+      onPick: () => void act({ cmd: "remove-subscription", arg: { url: sub.url } }),
+    },
+  ];
   return (
     <Panel
       className={className}
@@ -239,13 +374,17 @@ export function Profiles({
       action={
         <>
           {measured && (
+            // Включённый порядок по задержке снимается той же кнопкой, и она
+            // об этом говорит прямо: «сбросить» вместо «по задержке». Пока она
+            // об этом молчала, порядок выглядел свойством списка, а не
+            // включённым переключателем, — и вернуть свой человек не мог.
             <Button
               variant="quiet"
               aria-pressed={byLatency}
               title={s.byLatencyHint}
               onClick={() => setByLatency((v) => !v)}
             >
-              {s.byLatency}
+              {byLatency ? s.byLatencyOff : s.byLatency}
             </Button>
           )}
           {fastest && status?.profile !== fastest.name && (
@@ -291,34 +430,45 @@ export function Profiles({
               {testing ? s.testingProgress(testing.done, testing.total) : busy ? s.testing : s.testProfiles}
             </Button>
           )}
-          {profiles.length > 0 && (
-            <Button
-              aria-pressed={adding}
-              aria-label={s.importLink}
-              title={s.linkPlaceholder}
-              onClick={() => setImportOpen((v) => !v)}
-              className="w-8 px-0 text-[15px] leading-none"
-            >
-              +
-            </Button>
-          )}
+          <Button
+            aria-haspopup="dialog"
+            aria-label={s.importLink}
+            title={s.linkPlaceholder}
+            onClick={() => setAdding(true)}
+            className="w-8 px-0 text-[15px] leading-none"
+          >
+            +
+          </Button>
         </>
       }
     >
       <div className="flex flex-col gap-3">
         {adding && (
-          <AddField
-            placeholder={s.linkPlaceholder}
-            label={s.importLink}
-            busyLabel={s.importing}
-            fileLabel={s.fromFile}
-            hint={(value) => sniff(s, value)}
-            onSubmit={(link) => act({ cmd: "add-profile", arg: { link } }).then((r) => imported(s, r))}
-          />
+          <Modal title={s.importLink} onClose={() => setAdding(false)}>
+            {/* Окно не закрывается на удачный импорт: ответом приезжает счёт
+                («заведено 12, пропущено 38»), и закрыть его вместе с окном
+                значило бы снова не сказать, куда делись остальные. */}
+            <AddField
+              placeholder={s.linkPlaceholder}
+              label={s.importLink}
+              busyLabel={s.importing}
+              fileLabel={s.fromFile}
+              hint={(value) => sniff(s, value)}
+              onSubmit={(link) => act({ cmd: "add-profile", arg: { link } }).then((r) => imported(s, r))}
+            />
+          </Modal>
         )}
         {searchable && <SearchField value={query} onChange={setQuery} placeholder={s.searchProfiles} />}
         {!grouped && profiles.length === 0 ? (
-          <Empty>{s.noProfiles}</Empty>
+          // Пустому списку нужна не подпись, а дверь: поле импорта больше не
+          // открыто само, и «+» в шапке — единственное, чем этот список
+          // заводят.
+          <div className="flex flex-col items-center gap-2">
+            <Empty>{s.noProfiles}</Empty>
+            <Button variant="primary" onClick={() => setAdding(true)}>
+              {s.importLink}
+            </Button>
+          </div>
         ) : shown === 0 && needle !== "" ? (
           <Empty>{s.noMatches}</Empty>
         ) : !grouped ? (
@@ -328,10 +478,12 @@ export function Profiles({
             act={act}
             s={s}
             busy={busy}
-            byLatency={byLatency}
             editing={editing}
             onEdit={openEditor}
             onDone={() => setEditing(null)}
+            onMenu={openMenu}
+            onReorder={draggable ? (names) => reorder("", names) : undefined}
+            onCommit={commit}
           />
         ) : (
           // Подписка показывается даже пустой: она могла не отдать ни одного
@@ -359,7 +511,36 @@ export function Profiles({
                   }}
                   className="group/sub"
                 >
-                  <summary className="engraved flex cursor-pointer list-none items-center gap-2 rounded-md px-2.5 py-1.5 text-muted hover:bg-surface-2 [&::-webkit-details-marker]:hidden">
+                  <summary
+                    // Тащат подписку за её заголовок; своя группа не тащится
+                    // вовсе — она всегда первая. Перетаскивание не кликает, и
+                    // группа от него не сворачивается.
+                    draggable={draggable && sub !== null}
+                    onDragStart={(e) => {
+                      if (sub === null) return;
+                      setDragged(sub.url);
+                      e.dataTransfer.effectAllowed = "move";
+                      // Без полезной нагрузки Firefox не начинает перетаскивание
+                      // вовсе; вебвью хватило бы и пустого.
+                      e.dataTransfer.setData("text/plain", sub.url);
+                    }}
+                    onDragOver={(e) => {
+                      if (sub === null || dragged === null || dragged === sub.url) return;
+                      // Без preventDefault браузер считает, что бросать сюда
+                      // нельзя, и возвращает строку на место.
+                      e.preventDefault();
+                      setPendingSubs(moved(subs.map((x) => x.url), dragged, sub.url));
+                    }}
+                    onDrop={(e) => e.preventDefault()}
+                    onDragEnd={() => {
+                      setDragged(null);
+                      commit();
+                    }}
+                    onContextMenu={(e) => sub !== null && openMenu(e, subMenu(sub))}
+                    className={`engraved flex cursor-pointer list-none items-center gap-2 rounded-md px-2.5 py-1.5 text-muted hover:bg-surface-2 [&::-webkit-details-marker]:hidden ${
+                      dragged === sub?.url ? "opacity-40" : ""
+                    }`}
+                  >
                     {/* .smooth возит только цвет — повороту нужен свой переход, и он же
                         обязан замирать при prefers-reduced-motion. */}
                     <span className="shrink-0 text-[9px] motion-safe:transition group-open/sub:rotate-90">▶</span>
@@ -423,31 +604,14 @@ export function Profiles({
                       {items.length}
                     </span>
                     {sub !== null && renaming !== sub.url && (
-                      // Клик по кнопке иначе сворачивал бы группу заодно: <summary>
-                      // переключает <details> по любому клику внутри себя.
-                      <span className="flex shrink-0 items-center" onClick={(e) => e.stopPropagation()}>
-                        <Button
-                          variant="quiet"
-                          aria-label={s.renameSubscription}
-                          onClick={() => setRenaming(sub.url)}
-                        >
-                          ✎
-                        </Button>
-                        {/* Обновление — тот же импорт: служба сама узнаёт адрес и
-                            заменяет пришедшие с него профили. */}
-                        <Button
-                          variant="quiet"
-                          aria-label={s.refreshSubscription(sub.url)}
-                          onClick={() => void act({ cmd: "add-profile", arg: { link: sub.url } })}
-                        >
-                          ⟳
-                        </Button>
-                        <ConfirmButton
-                          label={s.removeSubscription(sub.url)}
-                          ask={s.confirmRemove}
-                          onConfirm={() => void act({ cmd: "remove-subscription", arg: { url: sub.url } })}
-                        />
-                      </span>
+                      <Button
+                        variant="quiet"
+                        aria-label={s.actions}
+                        aria-haspopup="menu"
+                        onClick={(e) => openMenu(e, subMenu(sub))}
+                      >
+                        ⋯
+                      </Button>
                     )}
                   </summary>
                   <Rows
@@ -456,10 +620,12 @@ export function Profiles({
                     act={act}
                     s={s}
                     busy={busy}
-                    byLatency={byLatency}
                     editing={editing}
                     onEdit={openEditor}
                     onDone={() => setEditing(null)}
+                    onMenu={openMenu}
+                    onReorder={draggable ? (names) => reorder(sub?.url ?? "", names) : undefined}
+                    onCommit={commit}
                     fromSub={sub !== null}
                   />
                 </details>
@@ -467,10 +633,10 @@ export function Profiles({
           )
         )}
       </div>
+      {menu && <Menu at={menu.at} items={menu.items} onClose={() => setMenu(null)} />}
     </Panel>
   );
 }
-
 /** Форма правки: имя и узел. Узел — тем же текстом, что принимает импорт, и
  *  разбирает его тот же разбор: второму парсеру взяться неоткуда, а поля по
  *  протоколам — это десяток форм, которые расходятся с sing-box на каждой его
@@ -543,18 +709,25 @@ function Editor({
   );
 }
 
+
 /** Строки списка. Отдельно от групп: под каждой подпиской и над ними лежит один
- *  и тот же список, и второй его копии быть не должно. */
+ *  и тот же список, и второй его копии быть не должно.
+ *
+ *  Порядок строк считают не здесь: он один на все группы (по задержке, руками
+ *  или как отдала служба) и живёт там же, где память о нём. Сюда список
+ *  приезжает готовым. */
 function Rows({
   items,
   status,
   act,
   s,
   busy,
-  byLatency,
   editing,
   onEdit,
   onDone,
+  onMenu,
+  onReorder,
+  onCommit,
   fromSub,
 }: {
   items: ProfileInfo[];
@@ -562,35 +735,30 @@ function Rows({
   act: Act;
   s: Strings;
   busy?: boolean;
-  /** Переставить по измеренной задержке. Неизмеренные и мёртвые уходят вниз
-   *  общей кучей в том порядке, в каком пришли: «не знаем» и «не отвечает» —
-   *  не числа, и делать вид, что они сравнимы, незачем. */
-  byLatency?: boolean;
   editing: { name: string; json: string } | null;
   onEdit: (name: string) => void;
   onDone: () => void;
-  /** Узлы пришли из подписки. Тогда у строки нет ни `✕`, ни правки: набор здесь
-   *  заменяет сверка целиком (`subscribe` вычищает прежние имена и кладёт
-   *  найденные заново), и удалённый или переименованный вручную узел вернулся
-   *  бы ближайшим же кругом — то есть кнопка обещала бы то, чего не делает.
-   *  Уходят они с отпиской. */
+  onMenu: (e: React.MouseEvent<HTMLElement>, items: MenuItem[]) => void;
+  /** Переставили строки — сюда приезжает новый порядок имён этой группы.
+   *  Не задан — тащить нельзя: список сейчас переставляет не человек. */
+  onReorder?: (names: string[]) => void;
+  /** Строку отпустили: пора рассказать порядок службе. */
+  onCommit: () => void;
+  /** Узлы пришли из подписки. Тогда у строки нет правки: сверка заменяет набор
+   *  целиком, и переименованный вручную узел вернулся бы ближайшим же кругом —
+   *  то есть кнопка обещала бы то, чего не делает. Удалить, в отличие от
+   *  правки, можно: строка уходит сразу, а вернётся — только со следующей
+   *  сверкой, и меню об этом говорит прямо. */
   fromSub?: boolean;
 }) {
   const probes = status?.probes ?? [];
-  const at = (name: string) => probes.find((p) => p.name === name)?.latency_ms ?? Infinity;
-  // Сортировка устойчива, поэтому внутри «неизмеренных» порядок остаётся тем,
-  // каким пришёл, — а пришёл он от службы и от подписки.
-  //
-  // Звёздочка сильнее задержки и стоит первой: отмечают ровно те три узла из
-  // сотни, которыми пользуются, и уехать вниз из-за чужого замера они не
-  // должны. Внутри отмеченных порядок тот же самый, что и у остальных, —
-  // сортировка одна и та же, просто в два ключа.
-  const order = (a: ProfileInfo, b: ProfileInfo) =>
-    Number(b.favorite) - Number(a.favorite) || (byLatency ? at(a.name) - at(b.name) : 0);
-  const shown = items.some((i) => i.favorite) || byLatency ? [...items].sort(order) : items;
+  // Что тащат прямо сейчас. Своё на каждый список: строку из чужой группы
+  // сюда не переносят — узел подписки в «Свои» не переезжает.
+  const [dragged, setDragged] = useState<string | null>(null);
+  const names = items.map((i) => i.name);
   return (
     <ul className="flex flex-col gap-1">
-      {shown.map((item) => {
+      {items.map((item) => {
         const name = item.name;
         const active = status?.profile === name;
         const probe = probes.find((p) => p.name === name);
@@ -611,10 +779,80 @@ function Rows({
         // переживают намеренно — в их каталогах входы человека, и починка
         // это выбрать другой узел, а не заводить всё заново.
         const remove = () => void act({ cmd: "remove-profile", arg: { name } });
+        // Включает строка сама, по нажатию: кнопки «Включить» у неё больше
+        // нет. Выбор узла — единственное, ради чего в этот список ходят, и
+        // отдельная кнопка под него означала лишь то, что попасть по строке
+        // мало.
+        const pick = () => !live && void act({ cmd: "on", arg: { profile: name } });
+        // Всё, что строка умеет, — в меню по правой кнопке и по «⋯». Пять
+        // кнопок в строке не помещались даже в широком окне: первым
+        // обрубалось имя, единственное, чем строки и различаются.
+        const rowMenu = (): MenuItem[] => [
+          ...(live ? [] : [{ label: s.turnOn, onPick: pick }]),
+          {
+            // Прогон идёт по узлу за раз и стоит секунд на каждый, так что на
+            // подписке в сотню «вот этот» — это минуты разницы. Заперт он тем
+            // же прогоном, что и кнопка панели: каталог проверки у них общий.
+            label: s.testOne,
+            hint: s.testOneHint,
+            disabled: busy,
+            onPick: () => void act({ cmd: "test-profiles", arg: { only: name } }),
+          },
+          {
+            // Звёздочка есть и у узла подписки: сверка заменяет её набор
+            // целиком, но отметку не трогает — та про выбор человека, а не про
+            // узел. Помнит её служба, а не окно.
+            label: s.favoriteItem,
+            hint: s.favorite,
+            mark: item.favorite,
+            onPick: () => void act({ cmd: "set-favorite", arg: { name, on: !item.favorite } }),
+          },
+          ...(fromSub ? [] : [{ label: s.edit, hint: s.editProfile(name), onPick: () => onEdit(name) }]),
+          {
+            label: s.remove,
+            // У узла подписки удаление честное, но недолгое: ближайшая сверка
+            // принесёт его обратно. Про это и пишет само меню — иначе
+            // вернувшаяся строка выглядит поломкой.
+            hint: fromSub ? s.removeFromSubHint : s.removeProfile(name),
+            danger: true,
+            // У активного профиля удаление гасит туннель, и выбранные
+            // приложения остаются без сети. То же и у узла, на который смотрит
+            // открытое окно браузера: `forget_profile` зовёт `stop_sessions_on`.
+            // Остальные уходят сразу — их человек вернёт вставкой за секунду.
+            ask: live || browsing ? s.confirmRemove : undefined,
+            onPick: remove,
+          },
+        ];
         return (
-          <li key={name} className="flex flex-col">
+          <li
+            key={name}
+            className="flex flex-col"
+            draggable={onReorder != null}
+            onDragStart={(e) => {
+              setDragged(name);
+              e.dataTransfer.effectAllowed = "move";
+              // Без полезной нагрузки Firefox не начинает перетаскивание вовсе.
+              e.dataTransfer.setData("text/plain", name);
+            }}
+            onDragOver={(e) => {
+              if (onReorder == null || dragged === null || dragged === name) return;
+              // Без preventDefault браузер считает, что бросать сюда нельзя.
+              e.preventDefault();
+              onReorder(moved(names, dragged, name));
+            }}
+            onDrop={(e) => e.preventDefault()}
+            onDragEnd={() => {
+              setDragged(null);
+              onCommit();
+            }}
+          >
             <div
-              className={`enter smooth relative flex items-center gap-2 rounded-md py-1.5 ps-3 pe-1 hover:bg-surface-2 ${active ? "bg-surface-2" : ""}`}
+              // Правая кнопка открывает меню по всей строке, включая её поля и
+              // значки: целиться в «⋯» ради этого не нужно.
+              onContextMenu={(e) => onMenu(e, rowMenu())}
+              className={`enter smooth relative flex items-center gap-2 rounded-md py-1.5 ps-3 pe-1 hover:bg-surface-2 ${
+                active ? "bg-surface-2" : ""
+              } ${dragged === name ? "opacity-40" : ""}`}
             >
               <span className={`smooth absolute inset-y-1 start-0 w-[3px] rounded-full ${tone.rail}`} />
               {/* Имя сверху, всё измеренное — строкой ниже, как в списке
@@ -622,7 +860,17 @@ function Rows({
                   и кнопки не помещаются даже в окне минимальной ширины, и
                   первым обрубается имя — единственное, чем строки и
                   различаются. */}
-              <div className="min-w-0 flex-1 leading-tight">
+              {/* Само поле строки и есть кнопка «включить»: настоящий <button>,
+                  а не строка с ролью, — иначе клавиатура до профиля не
+                  добирается, а кнопка меню внутри роли ей же и мешает. Заняло
+                  оно всё, кроме звёздочки и «⋯»: промахнуться мимо профиля в
+                  строке профиля больше негде. */}
+              <button
+                type="button"
+                aria-pressed={active}
+                onClick={pick}
+                className={`min-w-0 flex-1 text-start leading-tight ${live ? "" : "cursor-pointer"}`}
+              >
                 <span
                   className={`block truncate text-[13px] ${active ? "font-medium" : "text-muted"}`}
                   title={name}
@@ -677,65 +925,23 @@ function Rows({
                     }
                   />
                 </span>
-              </div>
-              {/* Звёздочка есть и у узла подписки, в отличие от правки и `✕`:
-                  сверка заменяет её набор целиком, но отметку она не трогает —
-                  та про выбор человека, а не про узел. Помнит её служба, а не
-                  окно: на второй машине человек отметит те же три узла. */}
+              </button>
+              {/* Звёздочка осталась в строке знаком, а не кнопкой: переключают
+                  её теперь в меню, а видеть отмеченные надо, не открывая
+                  ничего, — ради этого её и ставят. */}
+              {item.favorite && (
+                <span className="shrink-0 text-accent" title={s.favorite} aria-label={s.favoriteItem}>
+                  ★
+                </span>
+              )}
               <Button
                 variant="quiet"
-                aria-label={s.favorite}
-                aria-pressed={item.favorite}
-                title={s.favorite}
-                onClick={() => void act({ cmd: "set-favorite", arg: { name, on: !item.favorite } })}
+                aria-label={s.actions}
+                aria-haspopup="menu"
+                onClick={(e) => onMenu(e, rowMenu())}
               >
-                <span className={item.favorite ? "text-accent" : "text-muted"}>{item.favorite ? "★" : "☆"}</span>
+                ⋯
               </Button>
-              {/* Проверить один узел: прогон идёт по узлу за раз и стоит секунд
-                  на каждый, так что на подписке в сотню «вот этот» — это минуты
-                  разницы. Заперта та же кнопка тем же прогоном: каталог
-                  проверки у них общий. */}
-              <Button
-                variant="quiet"
-                disabled={busy}
-                aria-label={s.testOne}
-                title={s.testOneHint}
-                onClick={() => void act({ cmd: "test-profiles", arg: { only: name } })}
-              >
-                ⏱
-              </Button>
-              {!live && (
-                <Button variant="quiet" onClick={() => void act({ cmd: "on", arg: { profile: name } })}>
-                  {s.turnOn}
-                </Button>
-              )}
-              {/* Правка своего узла: имя из подписки или опечатка в ссылке
-                  чинились только удалением и вставкой заново. У узла подписки
-                  кнопки нет по той же причине, что и `✕`. */}
-              {!fromSub && (
-                <Button
-                  variant="quiet"
-                  aria-label={s.editProfile(name)}
-                  aria-pressed={editing?.name === name}
-                  onClick={() => (editing?.name === name ? onDone() : onEdit(name))}
-                >
-                  ✎
-                </Button>
-              )}
-              {/* У активного профиля удаление гасит туннель, и выбранные
-                  приложения остаются без сети — такое по одному клику мимо
-                  случаться не должно. То же и у узла, на который смотрит открытое
-                  окно браузера: `forget_profile` зовёт `stop_sessions_on`, то есть
-                  промах мыши оставляет это окно без сети. Признак уже посчитан
-                  строкой выше — спрашиваем. Неактивный и никем не занятый уходит
-                  сразу. */}
-              {fromSub ? null : live || browsing ? (
-                <ConfirmButton label={s.removeProfile(name)} ask={s.confirmRemove} onConfirm={remove} />
-              ) : (
-                <Button variant="danger" aria-label={s.removeProfile(name)} onClick={remove}>
-                  ✕
-                </Button>
-              )}
             </div>
             {editing?.name === name && (
               <Editor s={s} name={name} json={editing.json} act={act} onDone={onDone} />

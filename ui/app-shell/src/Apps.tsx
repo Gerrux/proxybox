@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { call, type Act, type App, type Scope, type Status, type Tunnel } from "./platform";
 import { strings } from "./i18n";
-import { AddField, Button, Empty, Panel, SearchField } from "./ui";
+import { AddField, Button, Empty, Modal, Panel, SearchField } from "./ui";
 
 /** `id` для связки галочки с подписью. Путь к .exe в `id` класть нельзя: там
  *  пробелы, а `id` с пробелом невалиден — сейчас это сходит с рук только
@@ -97,13 +97,13 @@ export function Apps({
   const on = apps.filter((a) => a.enabled).length;
   const icons = useIcons(apps);
   const [query, setQuery] = useState("");
-  // Поле пути показывается по «+»: путь к .exe вписывают руками раз в жизни, а
-  // строку у списка оно отнимало бы всегда. Пустому списку поле нужно сразу.
-  const [importOpen, setImportOpen] = useState(false);
+  // Путь вписывают отдельным окном, а не полем внутри панели: поле раздвигало
+  // список сверху, и всё, ради чего панель открывали, уезжало вниз. Раз в жизни
+  // вписанный путь такой цены не стоит.
+  const [adding, setAdding] = useState(false);
   // Абзац про галочку прячется под «?»: читают его один раз, а строку у списка
   // он отнимал всегда. Судьба конкретной строки остаётся в её подсказке.
   const [noteOpen, setNoteOpen] = useState(false);
-  const adding = importOpen || apps.length === 0;
   const shown = matching(ordered(apps), query);
   // Поле не прячем, пока в нём что-то есть: иначе фильтр остался бы включённым
   // и невидимым, а строки просто пропали бы.
@@ -150,10 +150,10 @@ export function Apps({
             ?
           </Button>
           <Button
-            aria-pressed={adding}
+            aria-haspopup="dialog"
             aria-label={s.addApp}
             title={s.appPlaceholder}
-            onClick={() => setImportOpen((v) => !v)}
+            onClick={() => setAdding(true)}
             className="w-8 px-0 text-[15px] leading-none"
           >
             +
@@ -180,26 +180,27 @@ export function Apps({
         {!all && (noteOpen || on === 0) && (
           <p className="enter text-[13px] leading-snug text-muted">{s.whitelistNote}</p>
         )}
-        {/* Поле пути и поиск стоят в одной строке, а в узкой панели
-            переносятся: два поля по полширины — это два обрубка. */}
-        {(adding || searchable) && (
-          <div className="flex flex-wrap gap-2">
-            {adding && (
-              <AddField
-                className="min-w-[16rem] flex-1"
-                placeholder={s.appPlaceholder}
-                label={s.addApp}
-                busyLabel={s.adding}
-                onSubmit={(path) =>
-                  act({ cmd: "add-app", arg: { path } }).then((r) => ({ ok: r != null && r.reply !== "error" }))
-                }
-              />
-            )}
-            {searchable && <SearchField value={query} onChange={setQuery} placeholder={s.searchApps} />}
-          </div>
+        {adding && (
+          <Modal title={s.addApp} onClose={() => setAdding(false)}>
+            <AddField
+              placeholder={s.appPlaceholder}
+              label={s.addApp}
+              busyLabel={s.adding}
+              onSubmit={(path) =>
+                act({ cmd: "add-app", arg: { path } }).then((r) => ({ ok: r != null && r.reply !== "error" }))
+              }
+            />
+          </Modal>
         )}
+        {searchable && <SearchField value={query} onChange={setQuery} placeholder={s.searchApps} />}
         {apps.length === 0 ? (
-          <Empty>{s.noApps}</Empty>
+          // Тот же случай, что и у профилей: поле пути больше не открыто само.
+          <div className="flex flex-col items-center gap-2">
+            <Empty>{s.noApps}</Empty>
+            <Button variant="primary" onClick={() => setAdding(true)}>
+              {s.addApp}
+            </Button>
+          </div>
         ) : shown.length === 0 ? (
           <Empty>{s.noMatches}</Empty>
         ) : (
