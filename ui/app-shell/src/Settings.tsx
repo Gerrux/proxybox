@@ -44,8 +44,24 @@ type Release = {
   html_url: string;
   published_at: string | null;
   draft: boolean;
+  prerelease: boolean;
   assets: { name: string; browser_download_url: string }[];
 };
+
+/** Версия тега без `v`: тег `vX.Y.Z` собирает release.yml, а рядом с ним лежит
+ *  та же версия из `tauri.conf.json` — уже без буквы. */
+function version(tag: string): string {
+  return tag.replace(/^v/, "");
+}
+
+/** Сравнение версий числами, а не строками: `0.10.0` больше `0.9.0`, хотя
+ *  строкой меньше. Считает numeric-коллатор — свой разбор semver тут был бы
+ *  тремя `parseInt` и одной ошибкой на ровном месте. */
+const order = new Intl.Collator(undefined, { numeric: true });
+
+function newer(tag: string, than: string): boolean {
+  return order.compare(version(tag), version(than)) > 0;
+}
 
 /** Установщик из релиза, а если его не приложили — страница релиза: там
  *  разберётся человек, а окно не должно врать ссылкой в никуда. */
@@ -72,7 +88,15 @@ export function useReleases() {
       });
       if (!r.ok) throw new Error(`GitHub: ${r.status}`);
       const all = (await r.json()) as Release[];
-      setReleases(all.filter((x) => !x.draft));
+      // Порядок GitHub — по дате, и это не порядок версий: патч к старой ветке,
+      // выпущенный после новой минорной, лежит в списке сверху. Переставляем по
+      // версии сами, потому что верхний релиз и есть то, что окно предлагает.
+      //
+      // Черновики и предрелизы не показываются вовсе: предлагать бету тому, кто
+      // нажал «проверить обновления», — это предлагать её всем.
+      const out = all.filter((x) => !x.draft && !x.prerelease);
+      out.sort((a, b) => order.compare(version(b.tag_name), version(a.tag_name)));
+      setReleases(out);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setReleases(null);
@@ -81,12 +105,11 @@ export function useReleases() {
     }
   };
 
-  // ponytail: «новее» = верхний релиз в списке отличается от нашей версии,
-  // semver не разбираем. Потолок — патч к старой ветке, выпущенный после новой
-  // минорной: он окажется сверху, и окно предложит уйти назад. Понадобится —
-  // сравнивать разобранным semver, это единственное место.
+  // «Новее» — это именно больше нашей версии, а не «не равно ей»: на неравенстве
+  // окно предлагало уйти назад, стоило выйти патчу к старой ветке. Список уже
+  // переставлен по версии, поэтому наибольшая версия и есть верхний релиз.
   const latest = releases?.[0] ?? null;
-  const fresh = latest != null && latest.tag_name.replace(/^v/, "") !== VERSION;
+  const fresh = latest != null && newer(latest.tag_name, VERSION);
 
   /** Само обновление — одно действие на оба места, где его предлагают: кнопку
    *  в титульной полосе и кнопку в настройках. Живёт здесь, рядом с `target`:

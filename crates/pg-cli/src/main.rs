@@ -339,6 +339,10 @@ fn parse(args: &[String]) -> Result<Request, String> {
         Some("scope") => match args.get(1).map(String::as_str) {
             Some("all") => Ok(Request::SetScope { scope: Scope::All }),
             Some("whitelist") => Ok(Request::SetScope { scope: Scope::Whitelist }),
+            // `none` в экране помощи не значится намеренно: он диагностический,
+            // как `PG_STACK` и `PG_PPROF`, и человеку выбирать в нём нечего.
+            // Описан в README, рядом с остальной диагностикой.
+            Some("none") => Ok(Request::SetScope { scope: Scope::None }),
             _ => Err(t("нужен охват: whitelist или all")),
         },
         Some("profiles") => Ok(Request::Status),
@@ -572,6 +576,7 @@ fn main() -> std::process::ExitCode {
                 match s.scope {
                     Scope::All => t("весь трафик компьютера"),
                     Scope::Whitelist => t("только выбранные приложения, остальным сеть закрыта"),
+                    Scope::None => t("никто: туннель поднят, но пропусков нет ни у кого"),
                 }
             );
             println!("{:<11} {}", t("профиль:"), s.profile.unwrap_or_else(|| "—".into()));

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -110,6 +110,113 @@ fn settle(base: PathBuf) -> PathBuf {
     dir
 }
 
+/// SID, а не имена групп: «Администраторы» на локализованной Windows пишется
+/// по-своему, и правило, собранное из английских имён, там просто не встанет.
+/// `S-1-5-18` — LocalSystem, `S-1-5-32-544` — встроенные администраторы.
+const SID_SYSTEM: &str = "*S-1-5-18";
+const SID_ADMINS: &str = "*S-1-5-32-544";
+
+/// Что делается с самим каталогом состояния — и делается до первой записи в
+/// него.
+///
+/// В `state.json` лежат пароли и ключи всех профилей, а каталог создаётся под
+/// `%ProgramData%`, который раздаёт наследуемое чтение всем пользователям
+/// машины. Значит одного создания каталога мало: наследование обрывается
+/// (`/inheritance:r`), и внутри остаются ровно двое — SYSTEM и администраторы.
+///
+/// Владелец переставляется, а не проверяется. Каталог, созданный обычным
+/// пользователем раньше службы, остаётся в его власти, а владелец всегда может
+/// переписать DACL обратно — отчётом «каталог чужой» эту дыру закрыть нечем, а
+/// `/setowner` закрывает. Порядок из-за этого обязателен: сначала владелец,
+/// потом права.
+fn seal_args(dir: &Path) -> Vec<Vec<String>> {
+    let at = dir.display().to_string();
+    vec![
+        vec![at.clone(), "/setowner".into(), SID_ADMINS.into(), "/Q".into()],
+        vec![
+            at,
+            "/inheritance:r".into(),
+            "/grant:r".into(),
+            format!("{SID_SYSTEM}:(OI)(CI)F"),
+            format!("{SID_ADMINS}:(OI)(CI)F"),
+            "/Q".into(),
+        ],
+    ]
+}
+
+/// …и что делается с тем, что в каталоге уже лежало. Права файла копируются от
+/// родителя в момент создания, поэтому `state.json`, заведённый прошлой версией
+/// продукта, остаётся читаемым всей машиной и после `seal_args`. `/reset`
+/// возвращает его к наследованию, а наследовать после `seal_args` можно только
+/// нас двоих.
+///
+/// Целью `/reset` стоит `каталог\*`, а не сам каталог, и это не мелочь:
+/// «сбросить к наследуемому» для самого каталога означает вернуть ему
+/// наследование от `%ProgramData%` — то есть снять то, что `seal_args` только
+/// что поставил. Звёздочка оставляет каталог в покое и берёт то, что внутри.
+/// `/setowner` таких хлопот не доставляет: DACL он не трогает вовсе.
+///
+/// Обход отделён от первой половины по одной причине: он идёт по каталогу
+/// целиком, вместе с профилями браузера, и стоит времени. Держать на нём
+/// восстановление приватного режима нельзя — до `guard` в `run()` выбранные
+/// приложения ходят напрямую, и это окно нельзя расширять обходом диска.
+/// `/C` — не останавливаться на файле, занятом чужим процессом.
+fn reseal_args(dir: &Path) -> Vec<Vec<String>> {
+    let at = dir.display().to_string();
+    vec![
+        vec![at.clone(), "/setowner".into(), SID_ADMINS.into(), "/T".into(), "/C".into(), "/Q".into()],
+        vec![format!("{at}\\*"), "/reset".into(), "/T".into(), "/C".into(), "/Q".into()],
+    ]
+}
+
+/// Каталог состояния и права на него. Зовётся до `Service::load()`: журнал и
+/// `singbox.json` с ключом узла пишутся уже после, а созданный файл берёт права
+/// от каталога — значит каталог обязан быть заперт раньше.
+fn secure_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        // Каталог без права входа закрывает и всё, что внутри: обходить его
+        // содержимое, как на Windows, не нужно вовсе.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    icacls(seal_args(dir))
+}
+
+/// То же для файлов, которые лежали в каталоге до нас. На Windows и только:
+/// правами каталога `0o700` этот вопрос уже решён.
+fn secure_tree(dir: &Path) -> std::io::Result<()> {
+    if cfg!(unix) {
+        return Ok(());
+    }
+    // Пустой каталог обходить нечего, а звёздочка по нему — это отказ icacls и
+    // пугающая строка в журнале ровно на чистой установке.
+    if std::fs::read_dir(dir)?.next().is_none() {
+        return Ok(());
+    }
+    icacls(reseal_args(dir))
+}
+
+#[cfg(windows)]
+fn icacls(batches: Vec<Vec<String>>) -> std::io::Result<()> {
+    for args in batches {
+        let out = std::process::Command::new("icacls").args(&args).output()?;
+        if !out.status.success() {
+            // Наружу идёт вывод самой утилиты: он говорит, на чём именно она
+            // остановилась, а строка вызова в журнале только мешает.
+            return Err(std::io::Error::other(String::from_utf8_lossy(&out.stdout).trim().to_string()));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn icacls(_batches: Vec<Vec<String>>) -> std::io::Result<()> {
+    // Списки доступа есть только на целевой платформе.
+    Ok(())
+}
+
 /// TUN — только на целевой платформе; в разработке хватает локального SOCKS.
 fn tun_enabled() -> bool {
     cfg!(windows) && std::env::var("PG_TUN").as_deref() != Ok("0")
@@ -143,6 +250,15 @@ struct Saved {
     refreshed_at: Option<u64>,
     #[serde(default)]
     lang: core_ipc::Lang,
+    /// Политика брандмауэра, какой она была до нашего замка, — непрозрачной
+    /// строкой от `core_filter::policy_now()`.
+    ///
+    /// На диске потому, что замок переживает падение службы, а вернуть
+    /// политику после него надо той же, какой взяли: в памяти процесса она
+    /// умерла бы вместе с ним, и следующий старт вернул бы умолчание Windows,
+    /// то есть молча снял бы чужой kill-switch или потерял чужую настройку.
+    #[serde(default)]
+    policy: Option<String>,
     /// Был ли включён приватный режим. Переживает перезапуск намеренно: иначе
     /// после перезагрузки машины выбранные приложения молча оказались бы в
     /// сети напрямую — ровно то, чего продукт обещает не допускать.
@@ -240,6 +356,11 @@ struct Service {
     /// Приватный режим включён пользователем. Не то же самое, что «туннель жив»:
     /// именно расхождение этих двух флагов и означает DROP.
     private: bool,
+    /// Политика брандмауэра до нашего замка — её и вернём, снимая его.
+    /// Спрашивается один раз за запуск и только пока замка нет: под своим
+    /// замком служба прочитала бы свой же `blockoutbound`. Снимается вместе с
+    /// замком, иначе следующий вернул бы политику месячной давности.
+    policy: Option<String>,
     tunnel: Option<Process>,
     probe_target: (String, u16),
     retry_at: Option<Instant>,
@@ -341,6 +462,7 @@ impl Service {
             sub_names: saved.sub_names,
             quotas: saved.quotas,
             private: saved.private,
+            policy: saved.policy,
             tunnel: None,
             probe_target: (String::new(), 0),
             retry_at: None,
@@ -420,6 +542,7 @@ impl Service {
             refreshed_at: self.status.refreshed_at,
             lang: self.status.lang,
             private: self.private,
+            policy: self.policy.clone(),
             // Обратно тем же именем, каким читаем: перечисление знает своё имя
             // само, и дублировать его строкой значило бы разъехаться на первом
             // же переименовании.
@@ -495,6 +618,13 @@ impl Service {
     /// конфиге и одного правила брандмауэра, которое просто ни с чем не совпадёт.
     fn selected(status: &Status) -> Vec<String> {
         let mut out = Vec::new();
+        // Охват «ничего» — это и есть пустой список пропусков: галочки человек
+        // не терял, они просто никого не выпускают. Пусто отвечаем здесь, а не
+        // в `guard`, чтобы решение о том, кто получает пропуск, осталось в
+        // одном месте с решением о том, что такое «выбранное приложение».
+        if status.scope == Scope::None {
+            return out;
+        }
         for app in status.apps.iter().filter(|a| a.enabled) {
             let canonical = core_apps::canonical(&app.path);
             if canonical != app.path {
@@ -576,14 +706,24 @@ impl Service {
             return;
         }
         let touch = touch_policy(killswitch, self.applied.as_ref().map(|a| a.killswitch), core_filter::locked_by_us);
+        let before = self.policy.clone();
         let outcome =
             core_filter::set_fence(fence, self.applied.as_ref().map(|a| a.fence), core_tunnel::TUN_ADDR, &want.apps, want.browser.as_deref())
                 .and_then(|()| match touch {
-                    true => core_filter::set_killswitch(killswitch, &core_tunnel::binary()),
+                    true => core_filter::set_killswitch(killswitch, &core_tunnel::binary(), before.as_deref()),
                     false => Ok(()),
                 });
         match outcome {
-            Ok(()) => self.applied = Some(want),
+            Ok(()) => {
+                // Замок снят — сохранённая политика больше не про машину:
+                // оставленная лежать, она вернулась бы в следующий раз, а
+                // человек за это время мог поменять её сам.
+                if touch && !killswitch && self.policy.is_some() {
+                    self.policy = None;
+                    self.save();
+                }
+                self.applied = Some(want)
+            }
             Err(e) => {
                 // Неудачу не запоминаем: на следующей смене состояния попробуем снова.
                 self.applied = None;
@@ -632,6 +772,7 @@ impl Service {
                 let scope = match self.status.scope {
                     Scope::All => t("весь трафик компьютера"),
                     Scope::Whitelist => tf!("приложений с сетью: {}, у остальных её нет", count),
+                    Scope::None => t("никто: туннель поднят, но пропусков нет ни у кого"),
                 };
                 self.log(tf!("профиль «{}»: sing-box запущен, {}", profile, scope));
                 Ok(())
@@ -1482,6 +1623,12 @@ fn fencing(scope: Scope, blocked: bool, private: bool) -> (core_filter::Fence, b
         // окно, ради которого весь этот замок и заведён. И наоборот: снимать
         // ради него замок нельзя, это открыло бы сеть всем.
         Scope::Whitelist => (if private && !blocked { Fence::Allow } else { Fence::Off }, private),
+        // Ничего: тот же белый список, только выбранных в нём нет. Замок стоит
+        // всё время приватного режима, а пропуска выдаются пустым списком —
+        // остаётся щель для имён, и в туннель не идёт никто. Отдельной ветки с
+        // другим ответом тут быть не должно: разойдись она с белым списком, и
+        // «никто не идёт» стало бы «идут все».
+        Scope::None => (if private && !blocked { Fence::Allow } else { Fence::Off }, private),
     }
 }
 
@@ -1658,6 +1805,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                     s.log(match scope {
                         Scope::All => t("охват: весь трафик компьютера"),
                         Scope::Whitelist => t("охват: только выбранные приложения, остальным сеть закрыта"),
+                        Scope::None => t("никто: туннель поднят, но пропусков нет ни у кого"),
                     });
                     s.save();
                 });
@@ -2188,6 +2336,65 @@ mod tests {
         dir
     }
 
+    /// `state.json` — это пароли и ключи всех профилей человека, и каталог под
+    /// них служба обязана запирать сама: `%ProgramData%` раздаёт наследуемое
+    /// чтение всей машине, а каталог, созданный кем-то раньше службы, остаётся
+    /// вдобавок в его власти.
+    ///
+    /// На разработке проверяется само поведение — режим каталога; на Windows
+    /// проверять нечем, кроме того, что просят у `icacls`, поэтому проверяются
+    /// три вещи, каждая из которых молча возвращает дыру: владелец
+    /// переставляется раньше прав (иначе прежний владелец перепишет их
+    /// обратно), группы названы SID-ами (по именам правило не встанет на
+    /// локализованной Windows), и обход каталога снимает наследованное с
+    /// файлов, которые в нём уже лежали.
+    #[test]
+    fn the_state_directory_is_locked_to_system_and_admins() {
+        let dir = settle_dir("acl").join("proxybox");
+        secure_dir(&dir).expect("каталог состояния");
+        assert!(dir.is_dir(), "каталог обязан создаваться вместе с правами");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "каталог с ключами профилей открыт лишним: {mode:o}");
+        }
+
+        let seal = seal_args(&dir);
+        assert!(seal[0].contains(&"/setowner".to_string()), "владелец обязан переставляться первым");
+        let grant = seal[1].join(" ");
+        assert!(grant.contains("/inheritance:r"), "без обрыва наследования каталог читает вся машина");
+        assert!(grant.contains("/grant:r"), "права обязаны заменяться, а не добавляться к унаследованным");
+        for sid in [SID_SYSTEM, SID_ADMINS] {
+            assert!(grant.contains(sid), "в правах нет {sid}");
+        }
+        let names = seal.iter().chain(reseal_args(&dir).iter()).flatten().any(|a| {
+            let low = a.to_lowercase();
+            low.contains("administrators") || low.contains("system:")
+        });
+        assert!(!names, "группа названа именем, а не SID — на локализованной Windows правило не встанет");
+
+        let reseal = reseal_args(&dir);
+        assert!(reseal[0].contains(&"/setowner".to_string()), "чужой владелец файла перепишет права обратно");
+        assert!(reseal[1].contains(&"/reset".to_string()), "файлы прошлой установки остаются с наследованным DACL");
+        for batch in &reseal {
+            assert!(batch.contains(&"/T".to_string()), "обход обязан идти по всему каталогу: {batch:?}");
+        }
+        // Самое коварное место всей затеи: `/reset` по самому каталогу вернул
+        // бы ему наследование от `%ProgramData%`, то есть снял бы права,
+        // поставленные строкой выше, — и снял бы молча.
+        assert!(
+            reseal[1][0].ends_with("\\*"),
+            "«сбросить к наследуемому» целит в сам каталог и расшивает его же: {:?}",
+            reseal[1]
+        );
+        // А обойти пустой каталог звёздочкой нечего: там отказ icacls и
+        // пугающая строка в журнале на чистой установке.
+        let empty = settle_dir("acl-empty").join("proxybox");
+        secure_dir(&empty).expect("каталог состояния");
+        secure_tree(&empty).expect("пустой каталог обходить нечего");
+    }
+
     /// Переименование продукта не имеет права стоить человеку состояния.
     /// Профили, подписки и список приложений лежат в одном `state.json`, и
     /// служба, начавшая с чистого каталога, выглядит как продукт, забывший всё
@@ -2248,6 +2455,34 @@ mod tests {
     /// осталось вовсе (сторож `the_pass_is_bound_to_the_tunnel_address` в
     /// `core-filter` следит и за этим).
     #[test]
+    /// Охват «ничего» — это белый список с пустым списком пропусков, и обе
+    /// половины этого обязаны держаться вместе. Разойдись `fencing` с белым
+    /// списком — и «в туннель не идёт никто» стало бы «идут все»; не опустей
+    /// список выбранных — охват вообще ничего бы не менял.
+    ///
+    /// Замок при этом обязан стоять: тишину меряют под ним, а не вместо него.
+    #[test]
+    fn nobody_gets_a_pass_in_the_diagnostic_scope() {
+        use core_filter::Fence;
+        for blocked in [true, false] {
+            for private in [true, false] {
+                assert_eq!(
+                    fencing(Scope::None, blocked, private),
+                    fencing(Scope::Whitelist, blocked, private),
+                    "охват «ничего» разошёлся с белым списком: заперто={blocked}, режим={private}"
+                );
+            }
+        }
+        assert_eq!(fencing(Scope::None, false, true), (Fence::Allow, true), "замок обязан стоять и тут");
+
+        let mut st = Status::default();
+        st.apps.push(App { path: "/bin/true".into(), name: "true".into(), enabled: true });
+        st.scope = Scope::Whitelist;
+        assert!(!Service::selected(&st).is_empty(), "в белом списке отмеченное получает пропуск");
+        st.scope = Scope::None;
+        assert!(Service::selected(&st).is_empty(), "в охвате «ничего» пропуск не получает никто");
+    }
+
     fn the_whitelist_locks_the_door_and_hands_out_passes() {
         use core_filter::Fence;
         // Приватный режим включён, туннель не подтверждён.
@@ -3061,6 +3296,13 @@ fn serve(svc: &Mutex<Service>, mut conn: Stream) {
 /// Тело службы. `stop` приходит от SCM; в консольном режиме его нет, и тогда
 /// функция не возвращается — работу заканчивает Ctrl+C.
 fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
+    // Права каталога — впереди всего, что в него пишет, и потому впереди
+    // `Service::load()`: первую же строку журнала служба положит на диск сама.
+    // Отказ не останавливает запуск: непрочитанный чужими `state.json` дороже
+    // прав на каталог, но машина без службы дороже обоих — там нет ни туннеля,
+    // ни правил. Поэтому не отказ, а строка в журнале, видная в окне.
+    let state = dir();
+    let sealed = secure_dir(&state);
     let svc = Arc::new(Mutex::new(Service::load()));
     // Отказ здесь — на Windows это несозданный канал. Служба не поднимается:
     // сокет вместо канала означал бы управление приватным режимом откуда угодно.
@@ -3075,6 +3317,9 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
         s.log(tf!("служба слушает {}; приложений: {}, профилей: {}", where_, apps, profiles));
         if !elevated() {
             s.warn(t("ВНИМАНИЕ: служба запущена без прав администратора — TUN и правила брандмауэра работать не будут"));
+        }
+        if let Err(e) = sealed {
+            s.warn(tf!("права каталога состояния не выставлены — пароли профилей читает вся машина: {}", e));
         }
         match (s.private, s.status.profile.clone()) {
             // Приватный режим пережил перезапуск — восстанавливаем его сами.
@@ -3093,6 +3338,25 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
                 let private = s.private;
                 s.guard(private);
             }
+        }
+        // Политику надо запомнить, пока она ещё не наша: снимая замок, служба
+        // обязана вернуть ту, которую взяла, а взять её потом уже негде.
+        //
+        // Здесь, а не в `guard`, по двум причинам. Вопрос идёт через PowerShell
+        // (модуль NetSecurity), а `guard(true)` обязан быть быстрым: это то
+        // самое окно, в котором выбранные приложения ещё ходят напрямую. И под
+        // собственным замком читать нечего — вышел бы наш же `blockoutbound`,
+        // поэтому спрашиваем только когда замка нет, а под замком верим
+        // `state.json`: он и заведён ради падения службы.
+        if s.policy.is_none() && s.applied.as_ref().map(|a| a.killswitch) != Some(true) {
+            s.policy = core_filter::policy_now();
+            s.save();
+        }
+        // Обход каталога — уже после того, как приватный режим восстановлен:
+        // до `guard` выше выбранные приложения ходят напрямую, и растить это
+        // окно обходом диска нельзя.
+        if let Err(e) = secure_tree(&state) {
+            s.warn(tf!("права каталога состояния не выставлены — пароли профилей читает вся машина: {}", e));
         }
     }
 
