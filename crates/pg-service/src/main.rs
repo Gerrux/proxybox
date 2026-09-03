@@ -3204,6 +3204,55 @@ mod tests {
         assert!(s.favorites.is_empty(), "профиля нет — и звезде висеть не на чем: {:?}", s.favorites);
     }
 
+    /// Разрушающая команда называет того, кто её прислал.
+    ///
+    /// Список доступа канала различает пользователя, а не программу: от имени
+    /// человека работает и окно, и всё, что он когда-либо запускал, — а
+    /// выключение приватного режима это одна строка JSON. Запретом это не
+    /// закрыть (чужая программа запустит нашу же консоль, и отбор по образу
+    /// пропустит её не глядя), поэтому остаётся след — и он не пустяк: до него
+    /// приватный режим выключался молча, а «молча» и есть всё отличие такого
+    /// выключения от нажатия человеком.
+    ///
+    /// Проверяются обе половины решения. Чтение следа не оставляет: статус
+    /// спрашивают каждые две секунды, и журнал в тридцать строк он вытеснил бы
+    /// целиком. А своим считается тот, кто лежит в одной папке со службой —
+    /// установщик кладёт туда окно, консоль и её саму.
+    #[test]
+    fn a_command_from_a_stranger_is_named_in_the_journal() {
+        // То, что меняет машину.
+        for req in [
+            Request::Off,
+            Request::On { profile: "myvpn".into() },
+            Request::SetScope { scope: Scope::Whitelist },
+            Request::SetApp { path: r"C:\app.exe".into(), enabled: true },
+            Request::RemoveProfile { name: "myvpn".into() },
+            Request::Browse { profile: "работа".into() },
+        ] {
+            assert!(changes_the_machine(&req), "{req:?} меняет машину, а следа не оставит");
+        }
+        // …и то, что её не меняет.
+        for req in [
+            Request::Status,
+            Request::Connections,
+            Request::TestProfiles { only: None },
+            Request::SetLang { lang: core_ipc::Lang::En },
+            Request::SetFavorite { name: "myvpn".into(), on: true },
+        ] {
+            assert!(!changes_the_machine(&req), "{req:?} ничего не меняет, а шумит в журнале");
+        }
+
+        // Свой — тот, кто рядом со службой; чужой — кто угодно ещё.
+        let ours = Some(r"C:\Program Files\proxybox\pg-service.exe");
+        assert!(!foreign(r"C:\Program Files\proxybox\proxybox.exe", ours), "консоль своя");
+        assert!(!foreign(r"c:\program files\proxybox\pg-desktop.exe", ours), "регистр пути не различие");
+        assert!(foreign(r"C:\Users\ilya\Downloads\helper.exe", ours), "постороннее приложение");
+        assert!(foreign(r"C:\Program Files\proxybox\bin\other.exe", ours), "соседняя папка — уже не наша");
+        // Своего каталога не знаем — молчим: обвинить всех подряд хуже, чем не
+        // обвинить никого.
+        assert!(!foreign(r"C:\Users\ilya\Downloads\helper.exe", None));
+    }
+
     /// Занятое имя получает номер на обоих путях импорта. Голый `insert` в
     /// ручной вставке молча забирал чужое имя: старый узел исчезал без слова, а
     /// активный профиль начинал показывать на другой сервер — при живом
@@ -3320,6 +3369,89 @@ mod tests {
     }
 }
 
+/// Меняет ли команда то, что делает машина. Разрушающие называют в журнале
+/// своего отправителя, остальные — нет: статус спрашивают каждые две секунды, и
+/// след от него был бы не следом, а шумом, в котором тонет всё остальное.
+///
+/// Список закрытый и без запасной ветки намеренно: новая команда обязана
+/// получить ответ на этот вопрос осознанно, а не унаследовать чужой. Сторож —
+/// `a_command_from_a_stranger_is_named_in_the_journal`.
+fn changes_the_machine(req: &Request) -> bool {
+    match req {
+        // Приватный режим, охват и список приложений — это и есть «что делает
+        // машина»; профили и подписки решают, куда уходит трафик; браузерный
+        // сеанс поднимает свой sing-box и получает пропуск в брандмауэре.
+        Request::On { .. }
+        | Request::Off
+        | Request::SetScope { .. }
+        | Request::AddApp { .. }
+        | Request::SetApp { .. }
+        | Request::RemoveApp { .. }
+        | Request::AddProfile { .. }
+        | Request::EditProfile { .. }
+        | Request::RemoveProfile { .. }
+        | Request::RemoveSubscription { .. }
+        | Request::SetSettings { .. }
+        | Request::Browse { .. }
+        | Request::BrowseStop { .. }
+        | Request::SetBrowserProfile { .. }
+        | Request::RemoveBrowserProfile { .. } => true,
+        // Чтение и то, что видно только в окне: язык, имя подписки, звёздочка.
+        // Прогон профилей сюда же — он ничего не переключает, только меряет, и
+        // хуже от него не станет никому, кроме терпения.
+        Request::Status
+        | Request::ListApps
+        | Request::Discover { .. }
+        | Request::Icon { .. }
+        | Request::ProfileNode { .. }
+        | Request::RenameSubscription { .. }
+        | Request::SetFavorite { .. }
+        | Request::SetLang { .. }
+        | Request::TestProfiles { .. }
+        | Request::Connections => false,
+    }
+}
+
+/// Каталог, в котором лежит файл. Режется по обоим разделителям, а не
+/// `Path::parent`: на Windows путь приходит с обратной косой, а разбирал бы его
+/// в тестах Unix, для которого обратная коса — обычный символ имени. Сторож,
+/// проверяющий не ту форму пути, не проверяет ничего.
+fn folder(path: &str) -> &str {
+    match path.rfind(['\\', '/']) {
+        Some(at) => &path[..at],
+        None => "",
+    }
+}
+
+/// Чужой ли отправитель. Свои — окно, консоль и сама служба: установщик кладёт
+/// их в одну папку, и путь к ней служба знает по себе.
+///
+/// Не знаем своего каталога — молчим: обвинить всех подряд хуже, чем не
+/// обвинить никого, а журнал в тридцать строк такая ошибка вытеснила бы
+/// целиком.
+fn foreign(caller: &str, ours: Option<&str>) -> bool {
+    let Some(ours) = ours else { return false };
+    !folder(caller).eq_ignore_ascii_case(folder(ours))
+}
+
+/// Кто прислал разрушающую команду — строкой в журнал, и только если это не
+/// наше же окно и не наша консоль.
+///
+/// Запретом это быть не может: список доступа канала различает пользователя, а
+/// не программу, и запусти чужая программа нашу же консоль — отбор по образу
+/// пропустил бы её не глядя. Значит остаётся след, и он не пустяк: до него
+/// приватный режим выключался молча, а «молча» — это единственное, чем такое
+/// выключение отличается от нажатия человеком.
+fn note_caller(svc: &Mutex<Service>, conn: &Stream, req: &Request) {
+    let Some(path) = conn.peer().and_then(core_apps::process_path) else { return };
+    let ours = std::env::current_exe().ok().map(|p| p.to_string_lossy().into_owned());
+    if !foreign(&path, ours.as_deref()) {
+        return;
+    }
+    let cmd = serde_json::to_value(req).ok().and_then(|v| v["cmd"].as_str().map(str::to_string)).unwrap_or_default();
+    lock(svc).warn(tf!("команду «{}» прислало постороннее приложение: {}", cmd, path));
+}
+
 fn serve(svc: &Mutex<Service>, mut conn: Stream) {
     let Ok(clone) = conn.try_clone() else { return };
     let mut reader = BufReader::new(clone);
@@ -3342,7 +3474,15 @@ fn serve(svc: &Mutex<Service>, mut conn: Stream) {
             Response::Error { message: t("запрос слишком длинный") }
         } else {
             match serde_json::from_str(&line) {
-                Ok(req) => handle(svc, req),
+                Ok(req) => {
+                    // След берётся до обработки: команда, которая гасит
+                    // туннель, отвечает уже из другого состояния, а сказать
+                    // надо о том, кто её прислал.
+                    if changes_the_machine(&req) {
+                        note_caller(svc, &conn, &req);
+                    }
+                    handle(svc, req)
+                }
                 Err(e) => Response::Error {
                     message: tf!("неразбираемый запрос: {}", e),
                 },

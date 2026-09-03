@@ -780,6 +780,23 @@ enum Inner {
 }
 
 impl Stream {
+    /// Кто на том конце — номером процесса. `None` вне Windows и на любой
+    /// осечке: это след для журнала, а не право доступа, и терять из-за него
+    /// команду нельзя.
+    ///
+    /// Права даёт список доступа канала, и различает он пользователя, а не
+    /// программу. Иначе и быть не может: свою же консоль (`proxybox off`)
+    /// запускает кто угодно от имени того же человека, так что отбор по образу
+    /// не защита, а видимость. Номер поэтому не запрещает — он называет.
+    pub fn peer(&self) -> Option<u32> {
+        match &self.0 {
+            #[cfg(not(windows))]
+            Inner::Tcp(_) => None,
+            #[cfg(windows)]
+            Inner::Pipe(pipe) => windows_pipe::client_pid(pipe),
+        }
+    }
+
     pub fn try_clone(&self) -> io::Result<Stream> {
         Ok(Stream(match &self.0 {
             #[cfg(not(windows))]

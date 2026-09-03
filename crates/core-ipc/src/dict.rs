@@ -179,6 +179,7 @@ pub static EN: &[(&str, &str)] = &[
     ("права каталога состояния не выставлены — пароли профилей читает вся машина: {}", "the state directory permissions were not applied — every user on this machine can read the profile passwords: {}"),
     ("никто: туннель поднят, но пропусков нет ни у кого", "nobody: the tunnel is up, but no one has a pass"),
     ("ссылка tuic: нужны UUID и пароль", "tuic link: a UUID and a password are required"),
+    ("команду «{}» прислало постороннее приложение: {}", "the «{}» command came from an outside application: {}"),
 ];
 
 /// Персидские строки.
@@ -344,6 +345,7 @@ pub static FA: &[(&str, &str)] = &[
     ("права каталога состояния не выставлены — пароли профилей читает вся машина: {}", "دسترسی‌های پوشه وضعیت اعمال نشد — گذرواژه‌های پروفایل‌ها را همه کاربران این رایانه می‌خوانند: {}"),
     ("никто: туннель поднят, но пропусков нет ни у кого", "هیچ‌کس: تونل بالاست، اما هیچ‌کس اجازهٔ عبور ندارد"),
     ("ссылка tuic: нужны UUID и пароль", "پیوند tuic: به UUID و گذرواژه نیاز است"),
+    ("команду «{}» прислало постороннее приложение: {}", "فرمان «{}» از یک برنامهٔ بیرونی آمد: {}"),
 ];
 
 /// Китайские строки (упрощённое письмо).
@@ -509,6 +511,7 @@ pub static ZH: &[(&str, &str)] = &[
     ("права каталога состояния не выставлены — пароли профилей читает вся машина: {}", "状态目录的权限没有设置 — 本机的任何用户都能读取配置文件里的密码：{}"),
     ("никто: туннель поднят, но пропусков нет ни у кого", "无人：隧道已建立，但没有人拿到放行"),
     ("ссылка tuic: нужны UUID и пароль", "tuic 链接：需要 UUID 和密码"),
+    ("команду «{}» прислало постороннее приложение: {}", "命令「{}」来自外部程序：{}"),
 ];
 
 /// Турецкие строки.
@@ -674,6 +677,7 @@ pub static TR: &[(&str, &str)] = &[
     ("права каталога состояния не выставлены — пароли профилей читает вся машина: {}", "durum dizininin izinleri uygulanmadı — profil şifrelerini makinedeki herkes okuyabilir: {}"),
     ("никто: туннель поднят, но пропусков нет ни у кого", "kimse: tünel ayakta, ama kimsenin geçiş izni yok"),
     ("ссылка tuic: нужны UUID и пароль", "tuic bağlantısı: UUID ve parola gerekir"),
+    ("команду «{}» прислало постороннее приложение: {}", "«{}» komutu dışarıdaki bir uygulamadan geldi: {}"),
 ];
 
 /// Индонезийские строки.
@@ -839,6 +843,7 @@ pub static ID: &[(&str, &str)] = &[
     ("права каталога состояния не выставлены — пароли профилей читает вся машина: {}", "izin direktori status tidak diterapkan — kata sandi profil dapat dibaca semua pengguna mesin ini: {}"),
     ("никто: туннель поднят, но пропусков нет ни у кого", "tak seorang pun: terowongan hidup, tetapi tidak ada yang punya izin lewat"),
     ("ссылка tuic: нужны UUID и пароль", "tautan tuic: perlu UUID dan kata sandi"),
+    ("команду «{}» прислало постороннее приложение: {}", "perintah «{}» datang dari aplikasi luar: {}"),
 ];
 
 /// Все таблицы разом — для сторожа полноты. Русской тут нет: она и есть
