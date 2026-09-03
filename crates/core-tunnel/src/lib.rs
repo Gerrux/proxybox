@@ -905,6 +905,7 @@ fn socks5_connect(port: u16, (host, target_port): (&str, u16)) -> io::Result<Tcp
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     /// Проба ждёт дольше, чем сам sing-box ждёт дозвона. Сравняются — вернётся
     /// гонка двух таймеров: половина отказов приедет в ленту голым `os error
@@ -963,7 +964,6 @@ mod tests {
         assert!(why.contains("i/o timeout"), "{why}");
         assert!(!why.contains("forcibly closed"), "{why}");
     }
-    use super::*;
 
     /// Остановленный туннель уносит `singbox.pid` с собой.
     ///
