@@ -23,7 +23,13 @@ scripts/settings.sh                        # настройки: правка, �
 ```
 
 `src-tauri` — отдельный Cargo-проект (`exclude` в воркспейсе): `cargo
-test/check --workspace` его не трогает, собирается он только на Windows.
+test/check --workspace` его не трогает. Компилятор до неё всё-таки дотягивается,
+но отдельной строкой и только в CI: `cargo check --manifest-path
+src-tauri/Cargo.toml --target x86_64-pc-windows-msvc`. Локально то же самое
+требует `llvm-rc` (его зовёт build.rs) и пустышек в `src-tauri/binaries/` —
+линковки при `check` нет, а существование вложенных бинарников build.rs
+проверяет. Пока этой строки не было, новый вариант `Scope` не сломал ни одного
+теста и всплыл только `cargo tauri build` на живой Windows.
 Тестов-файлов нет, всё в `#[cfg(test)] mod tests` внутри модуля.
 
 Переменные: `PG_SINGBOX` (путь к бинарнику), `PG_TUN=0` (не поднимать TUN),
