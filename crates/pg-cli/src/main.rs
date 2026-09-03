@@ -37,7 +37,7 @@ const USAGE_RU: &str = "proxybox <команда>
                          адрес: браузер с --proxy-server пойдёт в него; сеансов
                          бывает несколько, по одному на браузерный профиль
   browse --stop --profile <имя>  погасить этот сеанс браузера
-  lang ru|en|fa          язык сообщений службы и окна
+  lang <код>             язык сообщений службы и окна: ru, en, fa, zh, tr, id
   settings               настройки службы: что действует прямо сейчас
   settings [--refresh on|off] [--geo on|off] [--probe host:port]
            [--singbox <путь>]
@@ -75,7 +75,7 @@ const USAGE_EN: &str = "proxybox <command>
                          its address: a browser with --proxy-server goes there;
                          sessions are per browser profile, several at once
   browse --stop --profile <name>  close that browser session
-  lang ru|en|fa          language of service and window messages
+  lang <code>            language of service and window messages: ru, en, fa, zh, tr, id
   settings               service settings: what is in force right now
   settings [--refresh on|off] [--geo on|off] [--probe host:port]
            [--singbox <path>]
@@ -113,13 +113,127 @@ const USAGE_FA: &str = "proxybox <فرمان>
                          مرورگر با --proxy-server به آن می‌رود؛ نشست‌ها چندتایی
                          هستند، یکی برای هر پروفایل مرورگر
   browse --stop --profile <نام>  بستن این نشست مرورگر
-  lang ru|en|fa          زبان پیام‌های سرویس و پنجره
+  lang <کد>              زبان پیام‌های سرویس و پنجره: ru, en, fa, zh, tr, id
   settings               تنظیمات سرویس: هم‌اکنون چه چیزی برقرار است
   settings [--refresh on|off] [--geo on|off] [--probe host:port]
            [--singbox <مسیر>]
                          به‌روزرسانی اشتراک‌ها، پرسیدن کشور از سرویس بیرونی،
                          هدف آزمون (خالی — سرور خود گره) و مسیر sing-box.
                          متغیرهای محیطی بر تنظیمات چیره‌اند";
+
+const USAGE_ZH: &str = "proxybox <命令>
+
+  status                 隧道状态与应用列表
+  doctor                 环境检查：为什么可能无法工作
+  on --profile <名称>    开启隐私模式
+  off                    关闭隐私模式
+  list-apps              受管理的应用
+  discover               查找已安装的应用并以关闭状态加入
+  add-app --path <exe>   按 .exe 路径添加应用
+  enable --path <exe>    放行应用进入隧道
+  disable --path <exe>   将应用移出管理
+  scope whitelist|all    范围：仅所选应用联网且只能走隧道；
+                         或整机流量进入隧道
+  add-profile --link <l> 导入 share-link（vless/vmess/trojan/ss/hy2/wg）、
+                         sing-box 的 JSON 配置，或 https 订阅地址；
+                         同一地址再来一次即更新订阅
+  profiles               配置列表：名称、节点类型及去向
+  test [--profile <名称>] 检测配置：谁有响应、用时多少。
+                         不带 --profile 即全部，每个都要几秒
+  conns                  隧道的活动连接：谁、去哪、走哪条路。
+                         不做保存 — 列表按请求现场生成
+  browsers               浏览器配置列表
+  add-browser --name <名称> --node <配置> [--ua <字符串>] [--lang <语言>]
+                         新建或覆盖浏览器配置：节点给出地址，
+                         ua 与 lang 是网站看到的内容
+  remove-browser --name <名称>   移除浏览器配置
+  browse --profile <名称> 为该浏览器配置启动代理并打印地址：
+                         带 --proxy-server 的浏览器会走它；会话可有多个，
+                         每个浏览器配置一个
+  browse --stop --profile <名称>  关闭该浏览器会话
+  lang <代码>            服务与窗口消息的语言：ru, en, fa, zh, tr, id
+  settings               服务设置：此刻实际生效的内容
+  settings [--refresh on|off] [--geo on|off] [--probe host:port]
+           [--singbox <路径>]
+                         订阅同步、向外部服务查询国家、探测目标
+                         （留空即节点自身的服务器）以及 sing-box 路径。
+                         环境变量优先于设置";
+
+const USAGE_TR: &str = "proxybox <komut>
+
+  status                 tünel durumu ve uygulama listesi
+  doctor                 ortam denetimi: neden çalışmıyor olabilir
+  on --profile <ad>      gizli kipi aç
+  off                    gizli kipi kapat
+  list-apps              yönetim altındaki uygulamalar
+  discover               kurulu uygulamaları bul ve kapalı olarak ekle
+  add-app --path <exe>   uygulamayı .exe yoluyla ekle
+  enable --path <exe>    uygulamayı tünele al
+  disable --path <exe>   uygulamayı yönetimden çıkar
+  scope whitelist|all    kapsam: ağ yalnızca seçili uygulamalara ve yalnızca
+                         tünel üzerinden; ya da makinenin tüm trafiği tünele
+  add-profile --link <l> share-link (vless/vmess/trojan/ss/hy2/wg),
+                         sing-box JSON yapılandırması ya da https abonelik
+                         adresi içe aktar; aynı adres yeniden — aboneliği tazeler
+  profiles               profil listesi: ad, düğüm türü ve nereye gittiği
+  test [--profile <ad>]  profilleri dene: kim yanıt veriyor, ne kadar sürede.
+                         --profile olmadan hepsi, her biri saniyeler sürer
+  conns                  tünelin canlı bağlantıları: kim, nereye, hangi rotayla.
+                         Hiçbir şey saklanmaz — liste istek başına toplanır
+  browsers               tarayıcı profilleri listesi
+  add-browser --name <ad> --node <profil> [--ua <metin>] [--lang <diller>]
+                         tarayıcı profili oluştur ya da aynısını üzerine yaz:
+                         düğüm adresi verir, ua ve lang sitenin gördüğüdür
+  remove-browser --name <ad>     tarayıcı profilini kaldır
+  browse --profile <ad>  bu tarayıcı profili için vekil aç ve adresini yazdır:
+                         --proxy-server ile açılan tarayıcı oraya gider;
+                         oturumlar tarayıcı profili başına, birkaç tane olabilir
+  browse --stop --profile <ad>   bu tarayıcı oturumunu kapat
+  lang <kod>             hizmet ve pencere iletilerinin dili: ru, en, fa, zh, tr, id
+  settings               hizmet ayarları: şu anda neyin geçerli olduğu
+  settings [--refresh on|off] [--geo on|off] [--probe host:port]
+           [--singbox <yol>]
+                         abonelik eşitlemesi, dış hizmetten çıkış ülkesi sorgusu,
+                         ölçüm hedefi (boş — düğümün kendi sunucusu) ve sing-box
+                         yolu. Ortam değişkenleri ayarlara üstün gelir";
+
+const USAGE_ID: &str = "proxybox <perintah>
+
+  status                 status terowongan dan daftar aplikasi
+  doctor                 pemeriksaan lingkungan: mengapa mungkin tidak jalan
+  on --profile <nama>    nyalakan mode privat
+  off                    matikan mode privat
+  list-apps              aplikasi yang dikelola
+  discover               cari aplikasi terpasang dan tambahkan dalam keadaan mati
+  add-app --path <exe>   tambahkan aplikasi lewat jalur .exe
+  enable --path <exe>    izinkan aplikasi masuk terowongan
+  disable --path <exe>   keluarkan aplikasi dari pengelolaan
+  scope whitelist|all    cakupan: jaringan hanya untuk aplikasi terpilih dan
+                         hanya lewat terowongan; atau seluruh lalu lintas mesin
+  add-profile --link <l> impor share-link (vless/vmess/trojan/ss/hy2/wg),
+                         konfigurasi JSON sing-box, atau alamat langganan https;
+                         alamat yang sama sekali lagi — menyegarkan langganan
+  profiles               daftar profil: nama, jenis node, dan tujuannya
+  test [--profile <nama>] uji profil: siapa yang menjawab dan seberapa cepat.
+                         Tanpa --profile berarti semua, tiap satu makan detik
+  conns                  koneksi hidup terowongan: siapa, ke mana, lewat rute apa.
+                         Tidak ada yang disimpan — daftar dirakit per permintaan
+  browsers               daftar profil peramban
+  add-browser --name <nama> --node <profil> [--ua <teks>] [--lang <bahasa>]
+                         buat profil peramban atau timpa yang sama: node memberi
+                         alamat, ua dan lang adalah yang dilihat situs
+  remove-browser --name <nama>   hapus profil peramban
+  browse --profile <nama> jalankan proksi untuk profil peramban itu dan cetak
+                         alamatnya: peramban dengan --proxy-server menuju ke sana;
+                         sesi bisa beberapa, satu per profil peramban
+  browse --stop --profile <nama> tutup sesi peramban itu
+  lang <kode>            bahasa pesan layanan dan jendela: ru, en, fa, zh, tr, id
+  settings               pengaturan layanan: apa yang berlaku sekarang
+  settings [--refresh on|off] [--geo on|off] [--probe host:port]
+           [--singbox <jalur>]
+                         penyelarasan langganan, permintaan negara ke layanan
+                         luar, sasaran uji (kosong — server node itu sendiri) dan
+                         jalur sing-box. Variabel lingkungan mengalahkan pengaturan";
 
 /// Экран помощи — не строка, а вёрстка: колонка команд, колонка пояснений.
 /// Ключом в словаре он был бы сорокастрочным литералом, поэтому лежит
@@ -133,6 +247,9 @@ fn usage() -> String {
         core_ipc::Lang::Ru => USAGE_RU,
         core_ipc::Lang::En => USAGE_EN,
         core_ipc::Lang::Fa => USAGE_FA,
+        core_ipc::Lang::Zh => USAGE_ZH,
+        core_ipc::Lang::Tr => USAGE_TR,
+        core_ipc::Lang::Id => USAGE_ID,
     }
     .to_string()
 }
@@ -256,7 +373,10 @@ fn parse(args: &[String]) -> Result<Request, String> {
             Some("ru") => Ok(Request::SetLang { lang: core_ipc::Lang::Ru }),
             Some("en") => Ok(Request::SetLang { lang: core_ipc::Lang::En }),
             Some("fa") => Ok(Request::SetLang { lang: core_ipc::Lang::Fa }),
-            _ => Err(t("нужен язык: ru, en или fa")),
+            Some("zh") => Ok(Request::SetLang { lang: core_ipc::Lang::Zh }),
+            Some("tr") => Ok(Request::SetLang { lang: core_ipc::Lang::Tr }),
+            Some("id") => Ok(Request::SetLang { lang: core_ipc::Lang::Id }),
+            _ => Err(t("нужен язык: ru, en, fa, zh, tr или id")),
         },
         _ => Err(usage()),
     }
