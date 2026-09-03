@@ -620,11 +620,11 @@ fn wireguard(link: &str) -> Result<Profile, String> {
 ///
 /// ponytail: из YAML понимается подмножество, которым и написан `proxies:` —
 /// вложенные отображения блоком и в фигурных скобках, списки в квадратных и
-/// блоком, кавычки, метка якоря на узле и слияние по ней (`<<: *base`). За
-/// границей остались якорь, объявленный вне `proxies:`, узел целиком из ссылки
-/// (`- *node`) и многострочные скаляры: записанный так узел потеряет поле или
-/// пропадёт целиком. Потолок виден по числу узлов в подписке, апгрейд — взять
-/// saphyr.
+/// блоком, кавычки, метка якоря на узле и слияние по ней (`<<: *base`) —
+/// включая якорь, объявленный вне `proxies:`. За границей остались узел целиком
+/// из ссылки (`- *node`) и многострочные скаляры: записанный так узел потеряет
+/// поле или пропадёт целиком. Потолок виден по числу узлов в подписке,
+/// апгрейд — взять saphyr.
 fn clash(body: &str) -> Vec<Profile> {
     proxies(body).iter().filter_map(|node| parse(&link_of(node)?).ok()).collect()
 }
@@ -694,11 +694,10 @@ fn proxies(body: &str) -> Vec<HashMap<String, String>> {
     // Слияние — вторым проходом, а не по дороге: якорь по правилам YAML стоит
     // раньше ссылки на него, но проверять это построчно значило бы разбирать
     // документ дважды и здесь же. Дешевле собрать всё, а потом дополнить.
-    let anchors: HashMap<String, HashMap<String, String>> = labels
-        .iter()
-        .zip(nodes.iter())
-        .filter_map(|(label, node)| Some((label.clone()?, node.clone())))
-        .collect();
+    // Якоря всего документа, а поверх них — якоря самих узлов: имя одно и то
+    // же, но узел собран уже с учётом дефиса и столбцов, и он точнее.
+    let mut anchors = anchors_of(body);
+    anchors.extend(labels.iter().zip(nodes.iter()).filter_map(|(label, node)| Some((label.clone()?, node.clone()))));
     for node in &mut nodes {
         merge(node, &anchors);
     }
@@ -725,6 +724,53 @@ fn merge(node: &mut HashMap<String, String>, anchors: &HashMap<String, HashMap<S
             node.entry(key.clone()).or_insert_with(|| value.clone());
         }
     }
+}
+
+/// Якоря, объявленные вне `proxies:`. Панели выносят общий кусок узла — TLS,
+/// транспорт, обфускацию — в отдельный раздел и ссылаются на него из каждого
+/// узла; без этого прохода `<<: *base` не находил бы ничего, и узел заводился бы
+/// недособранным, то есть молча не соединялся бы.
+///
+/// Раздел не назван никак специально: годится любой ключ, лишь бы за ним стоял
+/// якорь. Лишнего это не берёт — то, на что никто не сослался, просто лежит в
+/// карте и умирает вместе с ней.
+///
+/// Амперсанд в значении (пароль, запрос в ссылке) якорем не считается: якорь
+/// стоит сразу за `ключ:` или за дефисом списка, и только там его и ищем.
+fn anchors_of(body: &str) -> HashMap<String, HashMap<String, String>> {
+    let lines: Vec<&str> = body.lines().map(str::trim_end).collect();
+    let mut out = HashMap::new();
+    for (i, line) in lines.iter().enumerate() {
+        let bare = line.trim_start();
+        let Some(at) = bare.find('&') else { continue };
+        let head = bare[..at].trim_end();
+        if !(head.ends_with(':') || head == "-" || head.is_empty()) {
+            continue;
+        }
+        let tail = &bare[at + 1..];
+        let end = tail.find(char::is_whitespace).unwrap_or(tail.len());
+        let (name, rest) = (&tail[..end], tail[end..].trim());
+        if name.is_empty() {
+            continue;
+        }
+        let mut node = HashMap::new();
+        if rest.starts_with('{') {
+            flow(rest, "", &mut node);
+        } else {
+            // Тело якоря — всё, что ниже и глубже. Пустые строки и комментарии
+            // блок не обрывают: в конфигах панелей они стоят между полями.
+            let depth = line.len() - bare.len();
+            let body: Vec<&str> = lines[i + 1..]
+                .iter()
+                .take_while(|l| l.trim().is_empty() || indent(l) > depth)
+                .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+                .copied()
+                .collect();
+            block(&body, "", &mut node);
+        }
+        out.insert(name.to_string(), node);
+    }
+    out
 }
 
 /// Имя якоря узла, если оно есть: по нему на узел ссылается `<<:` соседа.
@@ -1255,6 +1301,12 @@ mod tests {
         let body = "\
 port: 7890
 mode: rule
+common: &shared
+  type: trojan
+  server: sh.example.com
+  port: 443
+  password: shpass
+  sni: sh.example.com
 proxies:
   - name: \"Узел ①\"
     type: vless
@@ -1335,6 +1387,8 @@ proxies:
       - h2
       - http/1.1
   - *anchored
+  - <<: *shared
+    name: OUTSIDE
   - name: SSR
     type: ssr
     server: x.example.com
@@ -1347,7 +1401,7 @@ proxy-groups:
         let names: Vec<&str> = found.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
-            ["Узел ①", "SS", "VM", "HY", "WG", "trojan-tr.example.com", "MERGED", "TU", "TR"],
+            ["Узел ①", "SS", "VM", "HY", "WG", "trojan-tr.example.com", "MERGED", "TU", "TR", "OUTSIDE"],
             "ssr не наш, tuic v4 с одним token — половина узла, ссылка на якорь узла не описывает"
         );
 
@@ -1413,6 +1467,14 @@ proxy-groups:
         assert_eq!(tr["server"], "tr.example.com");
         assert_eq!(tr["password"], "trpass");
         assert_eq!(tr["tls"]["alpn"], serde_json::json!(["h2", "http/1.1"]), "список блоком");
+
+        // Якорь, объявленный вне `proxies:`: панели выносят туда общий кусок
+        // узла и ссылаются на него из каждого. Без этого прохода узел заводился
+        // бы недособранным, то есть молча не соединялся бы.
+        let outside = &found[9].node;
+        assert_eq!(outside["type"], "trojan");
+        assert_eq!(outside["server"], "sh.example.com");
+        assert_eq!(outside["password"], "shpass");
     }
 
     /// Разбор YAML — запасной путь, и включаться он должен только вместо ссылок.
