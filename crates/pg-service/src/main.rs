@@ -1990,7 +1990,13 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             // пока панель открыта, — sing-box за то же платил снимком на
             // каждое соединение машины.
             let owners = core_apps::port_owners();
-            match core_tunnel::connections(port, &owners) {
+            // Разводит спорный порт по локальному адресу сама карта: разбору
+            // соединения знать про устройство снимка незачем, а `core-tunnel`
+            // не должен из-за одной колонки зависеть от `core-apps`.
+            let owner_of = |proto: &'static str, port: u16, addr: &str| {
+                owners.get(&(proto, port)).and_then(|owner| owner.path(addr)).map(str::to_string)
+            };
+            match core_tunnel::connections(port, &owner_of) {
                 Ok(mut conns) => {
                     let total = conns.len();
                     // Обрезаем осознанно: в охвате «весь компьютер» соединений
@@ -2443,6 +2449,24 @@ mod tests {
     /// осталось вовсе (сторож `the_pass_is_bound_to_the_tunnel_address` в
     /// `core-filter` следит и за этим).
     #[test]
+    fn the_whitelist_locks_the_door_and_hands_out_passes() {
+        use core_filter::Fence;
+        // Приватный режим включён, туннель не подтверждён.
+        assert_eq!(fencing(Scope::Whitelist, true, true), (Fence::Off, true), "замок стоит, пропусков нет");
+        // Проба прошла.
+        assert_eq!(fencing(Scope::Whitelist, false, true), (Fence::Allow, true), "замок стоит, выбранным пропуск");
+        // Приватный режим выключен — замок обязан сняться, иначе машина без сети.
+        assert_eq!(fencing(Scope::Whitelist, false, false), (Fence::Off, false), "выключили — сняли всё");
+        assert_eq!(fencing(Scope::Whitelist, true, false), (Fence::Off, false), "и в окне запрета тоже");
+
+        assert_eq!(fencing(Scope::All, true, true), (Fence::Off, true), "делить некого — запирает политика");
+        assert_eq!(fencing(Scope::All, false, true), (Fence::Off, false), "туннель подтверждён — замок ни к чему");
+        // Выключенный приватный режим не запирает машину ни в одном охвате, и
+        // это не следствие того, кто как зовёт `guard`: перепутанный здесь знак
+        // оставил бы человека без сети до перезагрузки — политика её переживает.
+        assert_eq!(fencing(Scope::All, true, false), (Fence::Off, false), "режим выключен — замка нет");
+    }
+
     /// Охват «ничего» — это белый список с пустым списком пропусков, и обе
     /// половины этого обязаны держаться вместе. Разойдись `fencing` с белым
     /// списком — и «в туннель не идёт никто» стало бы «идут все»; не опустей
@@ -2469,24 +2493,6 @@ mod tests {
         assert!(!Service::selected(&st).is_empty(), "в белом списке отмеченное получает пропуск");
         st.scope = Scope::None;
         assert!(Service::selected(&st).is_empty(), "в охвате «ничего» пропуск не получает никто");
-    }
-
-    fn the_whitelist_locks_the_door_and_hands_out_passes() {
-        use core_filter::Fence;
-        // Приватный режим включён, туннель не подтверждён.
-        assert_eq!(fencing(Scope::Whitelist, true, true), (Fence::Off, true), "замок стоит, пропусков нет");
-        // Проба прошла.
-        assert_eq!(fencing(Scope::Whitelist, false, true), (Fence::Allow, true), "замок стоит, выбранным пропуск");
-        // Приватный режим выключен — замок обязан сняться, иначе машина без сети.
-        assert_eq!(fencing(Scope::Whitelist, false, false), (Fence::Off, false), "выключили — сняли всё");
-        assert_eq!(fencing(Scope::Whitelist, true, false), (Fence::Off, false), "и в окне запрета тоже");
-
-        assert_eq!(fencing(Scope::All, true, true), (Fence::Off, true), "делить некого — запирает политика");
-        assert_eq!(fencing(Scope::All, false, true), (Fence::Off, false), "туннель подтверждён — замок ни к чему");
-        // Выключенный приватный режим не запирает машину ни в одном охвате, и
-        // это не следствие того, кто как зовёт `guard`: перепутанный здесь знак
-        // оставил бы человека без сети до перезагрузки — политика её переживает.
-        assert_eq!(fencing(Scope::All, true, false), (Fence::Off, false), "режим выключен — замка нет");
     }
 
     /// Чужой kill-switch снимать не наше дело. Политика брандмауэра — состояние

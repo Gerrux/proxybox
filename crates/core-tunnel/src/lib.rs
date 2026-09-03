@@ -23,7 +23,6 @@
 
 use core_ipc::{t, tf, Conn};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -744,7 +743,7 @@ pub fn traffic(api_port: u16) -> io::Result<(u64, u64)> {
 /// решает это служба, она же единственная, кому есть чем.
 pub fn connections(
     api_port: u16,
-    owners: &BTreeMap<(&'static str, u16), String>,
+    owner_of: &dyn Fn(&'static str, u16, &str) -> Option<String>,
 ) -> io::Result<Vec<Conn>> {
     let v = clash(api_port)?;
     let mut conns: Vec<Conn> = v["connections"]
@@ -752,7 +751,7 @@ pub fn connections(
         .map(Vec::as_slice)
         .unwrap_or_default()
         .iter()
-        .map(|c| parse_conn(c, owners))
+        .map(|c| parse_conn(c, owner_of))
         .collect();
     // Самые говорливые первыми: список живёт секунды, и первые строки — это
     // единственное, что человек успевает прочитать.
@@ -762,7 +761,7 @@ pub fn connections(
 
 /// Разбор одного соединения. Цепочка маршрутов, а не список приложений: список
 /// — намерение, цепочка — то, что вышло на самом деле.
-fn parse_conn(c: &Value, owners: &BTreeMap<(&'static str, u16), String>) -> Conn {
+fn parse_conn(c: &Value, owner_of: &dyn Fn(&'static str, u16, &str) -> Option<String>) -> Conn {
     let meta = &c["metadata"];
     let str_of = |v: &Value| v.as_str().unwrap_or_default().to_string();
     // Домен известен не всегда: соединение по голому адресу так и остаётся
@@ -784,9 +783,12 @@ fn parse_conn(c: &Value, owners: &BTreeMap<(&'static str, u16), String>) -> Conn
         _ => "tcp",
     };
     Conn {
+        // Локальный адрес спрашивается вместе с портом, но нужен он только
+        // спорному порту (`core_apps::Owner`): у остальных имя находится и без
+        // него. Адреса в ответе может не быть вовсе — тогда спорный порт
+        // останется без имени, как и раньше.
         process: source_port
-            .and_then(|port| owners.get(&(proto, port)))
-            .cloned()
+            .and_then(|port| owner_of(proto, port, &str_of(&meta["sourceIP"])))
             .unwrap_or_default(),
         host: if port.is_empty() { host } else { format!("{host}:{port}") },
         tunneled: c["chains"]
@@ -848,6 +850,7 @@ fn socks5_connect(port: u16, (host, target_port): (&str, u16)) -> io::Result<Tcp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     /// Остановленный туннель уносит `singbox.pid` с собой.
     ///
@@ -906,7 +909,7 @@ mod tests {
                 "download": 2048,
                 "upload": 512,
             }),
-            &BTreeMap::new(),
+            &|_, _, _| None,
         );
         assert_eq!(tunneled.host, "example.com:443", "домен известен — показываем его");
         assert!(tunneled.tunneled);
@@ -917,7 +920,7 @@ mod tests {
                 "metadata": { "destinationIP": "1.1.1.1", "destinationPort": "53" },
                 "chains": ["direct"],
             }),
-            &BTreeMap::new(),
+            &|_, _, _| None,
         );
         assert_eq!(direct.host, "1.1.1.1:53", "домена нет — остаётся адрес");
         assert!(!direct.tunneled);
@@ -937,11 +940,15 @@ mod tests {
     /// средстве приватности хуже пустоты.
     #[test]
     fn the_process_is_found_by_the_local_port() {
+        // Карта снимка живёт в `core-apps`, а сюда приезжает поиском: разбору
+        // соединения незачем знать, как она устроена, — он знает только, что
+        // спросить можно протоколом, портом и локальным адресом.
         let owners = BTreeMap::from([
             (("tcp", 49152u16), r"C:\apps\zen.exe".to_string()),
             (("udp", 49152u16), r"C:\apps\other.exe".to_string()),
         ]);
-        let conn = |meta| parse_conn(&json!({ "metadata": meta, "chains": [TAG_PROXY] }), &owners);
+        let owner_of = |proto: &'static str, port: u16, _addr: &str| owners.get(&(proto, port)).cloned();
+        let conn = |meta| parse_conn(&json!({ "metadata": meta, "chains": [TAG_PROXY] }), &owner_of);
 
         assert_eq!(conn(json!({ "sourcePort": "49152", "network": "tcp" })).process, r"C:\apps\zen.exe");
         assert_eq!(conn(json!({ "sourcePort": "49152", "network": "udp" })).process, r"C:\apps\other.exe");

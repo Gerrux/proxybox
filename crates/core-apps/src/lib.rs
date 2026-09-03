@@ -401,54 +401,95 @@ fn pids() -> Vec<u32> {
 ///
 /// Только IPv4: адреса v6 у нашего TUN нет, и v6-сокет в туннель не заходит.
 #[cfg(not(windows))]
-pub fn port_owners() -> BTreeMap<(&'static str, u16), String> {
+pub fn port_owners() -> BTreeMap<(&'static str, u16), Owner> {
     BTreeMap::new()
 }
 
 #[cfg(windows)]
-pub fn port_owners() -> BTreeMap<(&'static str, u16), String> {
+pub fn port_owners() -> BTreeMap<(&'static str, u16), Owner> {
     // Один процесс держит десятки сокетов: путь по номеру спрашиваем раз.
     let mut paths: BTreeMap<u32, Option<String>> = BTreeMap::new();
-    let rows: Vec<((&'static str, u16), u32)> = tcp_rows().into_iter().chain(udp_rows()).collect();
-    fold_owners(rows.into_iter().filter_map(|(key, pid)| {
-        paths.entry(pid).or_insert_with(|| image_path(pid)).clone().map(|path| (key, path))
+    let rows: Vec<((&'static str, u16), (String, u32))> = tcp_rows().into_iter().chain(udp_rows()).collect();
+    fold_owners(rows.into_iter().filter_map(|(key, (addr, pid))| {
+        paths.entry(pid).or_insert_with(|| image_path(pid)).clone().map(|path| (key, (addr, path)))
     }))
+}
+
+/// Кто держит локальный порт.
+///
+/// Обычный случай — один процесс, и адрес ему не нужен вовсе: тот же номер
+/// порта на нескольких локальных адресах держит один и тот же exe (слушающий
+/// сокет и установленное соединение — две строки одной таблицы). Адрес
+/// спрашивается только там, где на порту действительно двое.
+///
+/// Почему не всегда: адрес соединения приходит от sing-box
+/// (`metadata.sourceIP`), а список портов — из таблицы сокетов Windows, и
+/// совпадение этих двух записей проверяемо только на живой машине. Сверяй мы
+/// адрес всегда — расхождение стоило бы имени у **каждой** строки панели;
+/// сверяя только на спорном порту, мы рискуем ровно тем, что и так уже
+/// потеряно.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Owner {
+    /// Порт держит один процесс, на всех своих адресах.
+    One(String),
+    /// Локальный адрес → путь. Ключ сверяется с `metadata.sourceIP`.
+    Split(BTreeMap<String, String>),
+}
+
+impl Owner {
+    /// Путь к exe. `addr` — локальный адрес соединения; спрашивается он только
+    /// у спорного порта, а `None` означает «назвать нечем» — и это лучше, чем
+    /// назвать чужим: панель открывают, чтобы узнать, кто ходит, а уверенный
+    /// неправильный ответ в средстве приватности хуже пустоты.
+    pub fn path(&self, addr: &str) -> Option<&str> {
+        match self {
+            Owner::One(path) => Some(path),
+            Owner::Split(by_addr) => by_addr.get(addr).map(String::as_str),
+        }
+    }
 }
 
 /// Сворачивание снимка в карту. Отдельно от Win32 потому, что здесь и живёт
 /// единственное решение, которое можно принять неверно, — что делать со
 /// столкновением.
 ///
-/// Один и тот же порт на двух локальных адресах держат разные процессы, и
-/// назвать соединение чужим именем в средстве приватности хуже, чем не назвать
-/// никак: панель открывают, чтобы узнать, кто ходит, а получают уверенный
-/// неправильный ответ. Столкнувшийся ключ выбрасывается целиком. Сторож —
+/// Спорят на самом деле не за порт, а за пару «адрес + порт»: два разных
+/// процесса на одном номере с разных адресов — обычное дело, и раньше имени
+/// лишались оба. Теперь их разводит адрес, а выбрасывается только то, что
+/// неразличимо и с ним: одна пара, названная двумя путями. Сторож —
 /// `a_clashing_port_has_no_owner`.
-///
-/// ponytail: ключ без локального адреса. Потолок — два сокета на одном порту с
-/// разных адресов теряют имя оба; апгрейд — добавить адрес в ключ и сверять с
-/// `metadata.sourceIP` из Clash API.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn fold_owners(
-    rows: impl Iterator<Item = ((&'static str, u16), String)>,
-) -> BTreeMap<(&'static str, u16), String> {
-    let mut out: BTreeMap<(&'static str, u16), String> = BTreeMap::new();
-    let mut clashed: std::collections::BTreeSet<(&'static str, u16)> = Default::default();
-    for (key, path) in rows {
-        match out.get(&key) {
-            // Тот же процесс на том же порту — обычное дело: строка про
+    rows: impl Iterator<Item = ((&'static str, u16), (String, String))>,
+) -> BTreeMap<(&'static str, u16), Owner> {
+    use std::collections::btree_map::Entry;
+
+    let mut by_key: BTreeMap<(&'static str, u16), BTreeMap<String, String>> = BTreeMap::new();
+    let mut clashed: std::collections::BTreeSet<((&'static str, u16), String)> = Default::default();
+    for (key, (addr, path)) in rows {
+        match by_key.entry(key).or_default().entry(addr.clone()) {
+            // Тот же процесс на том же адресе — обычное дело: строка про
             // прослушивание и строка про установленное соединение.
-            Some(known) if known.eq_ignore_ascii_case(&path) => {}
-            Some(_) => {
-                clashed.insert(key);
+            Entry::Occupied(kept) if kept.get().eq_ignore_ascii_case(&path) => {}
+            Entry::Occupied(_) => {
+                clashed.insert((key, addr));
             }
-            None => {
-                out.insert(key, path);
+            Entry::Vacant(slot) => {
+                slot.insert(path);
             }
         }
     }
-    out.retain(|key, _| !clashed.contains(key));
-    out
+    by_key
+        .into_iter()
+        .filter_map(|(key, mut by_addr)| {
+            by_addr.retain(|addr, _| !clashed.contains(&(key, addr.clone())));
+            let first = by_addr.values().next()?.clone();
+            let same = by_addr.values().all(|path| path.eq_ignore_ascii_case(&first));
+            // Один и тот же путь на всех адресах — это один владелец, и
+            // спрашивать у него адрес незачем.
+            Some((key, if same { Owner::One(first) } else { Owner::Split(by_addr) }))
+        })
+        .collect()
 }
 
 /// Строки таблицы TCP: `(("tcp", локальный порт), номер процесса)`.
@@ -457,7 +498,7 @@ fn fold_owners(
 /// слушатель на порту и чужое исходящее с того же номера столкнулись бы, и
 /// имени лишились бы оба.
 #[cfg(windows)]
-fn tcp_rows() -> Vec<((&'static str, u16), u32)> {
+fn tcp_rows() -> Vec<((&'static str, u16), (String, u32))> {
     use windows::Win32::NetworkManagement::IpHelper::{
         GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_CONNECTIONS,
     };
@@ -476,7 +517,7 @@ fn tcp_rows() -> Vec<((&'static str, u16), u32)> {
         (0..(*table).dwNumEntries as usize)
             .map(|i| {
                 let row = &*rows.add(i);
-                (("tcp", host_port(row.dwLocalPort)), row.dwOwningPid)
+                (("tcp", host_port(row.dwLocalPort)), (host_addr(row.dwLocalAddr), row.dwOwningPid))
             })
             .collect()
     }
@@ -485,7 +526,7 @@ fn tcp_rows() -> Vec<((&'static str, u16), u32)> {
 /// То же для UDP. Удалённого адреса у строки нет вовсе, но он и не нужен:
 /// сверяемся по локальному порту.
 #[cfg(windows)]
-fn udp_rows() -> Vec<((&'static str, u16), u32)> {
+fn udp_rows() -> Vec<((&'static str, u16), (String, u32))> {
     use windows::Win32::NetworkManagement::IpHelper::{
         GetExtendedUdpTable, MIB_UDPROW_OWNER_PID, MIB_UDPTABLE_OWNER_PID, UDP_TABLE_OWNER_PID,
     };
@@ -502,7 +543,7 @@ fn udp_rows() -> Vec<((&'static str, u16), u32)> {
         (0..(*table).dwNumEntries as usize)
             .map(|i| {
                 let row = &*rows.add(i);
-                (("udp", host_port(row.dwLocalPort)), row.dwOwningPid)
+                (("udp", host_port(row.dwLocalPort)), (host_addr(row.dwLocalAddr), row.dwOwningPid))
             })
             .collect()
     }
@@ -515,6 +556,14 @@ const AF_INET: u32 = 2;
 #[cfg(windows)]
 fn host_port(raw: u32) -> u16 {
     u16::from_be(raw as u16)
+}
+
+/// Локальный адрес — там же и так же: сетевой порядок байт в DWORD. Пишется
+/// строкой, потому что сверяется он со строкой из Clash API (`sourceIP`), а не
+/// с числом.
+#[cfg(windows)]
+fn host_addr(raw: u32) -> String {
+    std::net::Ipv4Addr::from(u32::from_be(raw)).to_string()
 }
 
 /// Двухзаходный вызов `GetExtended*Table`: сначала спрашиваем размер, потом
@@ -1666,28 +1715,51 @@ mod tests {
         assert_eq!(before, paths.len(), "один и тот же exe попал в список дважды");
     }
 
-    /// Столкнувшийся порт остаётся без имени. Назвать соединение чужим
-    /// процессом хуже, чем не назвать никак: панель для того и открыта, чтобы
-    /// узнать, кто ходит, а уверенный неправильный ответ этот вопрос закрывает
-    /// ложно. Повтор того же процесса столкновением не считается: одну и ту же
-    /// пару Windows отдаёт и строкой про прослушивание, и строкой про
-    /// установленное соединение.
+    /// Спорят за пару «адрес + порт», а не за порт: два разных процесса на
+    /// одном номере с разных адресов — обычное дело, и раньше имени лишались
+    /// оба. Теперь их разводит локальный адрес, а без имени остаётся только то,
+    /// что неразличимо и с ним. Назвать соединение чужим процессом хуже, чем не
+    /// назвать никак: панель для того и открыта, чтобы узнать, кто ходит, а
+    /// уверенный неправильный ответ этот вопрос закрывает ложно.
+    ///
+    /// Повтор того же процесса столкновением не считается: одну и ту же пару
+    /// Windows отдаёт и строкой про прослушивание, и строкой про установленное
+    /// соединение. И адрес у такого владельца не спрашивается вовсе — иначе
+    /// расхождение снимка сокетов с `sourceIP` от sing-box стоило бы имени
+    /// каждой строке панели, а проверить это можно только на живой машине.
     #[test]
     fn a_clashing_port_has_no_owner() {
+        let row = |proto, port, addr: &str, path: &str| ((proto, port), (addr.to_string(), path.to_string()));
         let owners = fold_owners(
             [
-                (("tcp", 49152u16), r"C:\apps\zen.exe".to_string()),
-                (("tcp", 49152u16), r"C:\apps\ZEN.EXE".to_string()),
-                (("udp", 49152u16), r"C:\apps\other.exe".to_string()),
-                (("tcp", 49153u16), r"C:\apps\a.exe".to_string()),
-                (("tcp", 49153u16), r"C:\apps\b.exe".to_string()),
+                row("tcp", 49152u16, "192.168.1.5", r"C:\apps\zen.exe"),
+                row("tcp", 49152u16, "172.27.234.1", r"C:\apps\ZEN.EXE"),
+                row("udp", 49152u16, "0.0.0.0", r"C:\apps\other.exe"),
+                row("tcp", 49153u16, "192.168.1.5", r"C:\apps\a.exe"),
+                row("tcp", 49153u16, "172.27.234.1", r"C:\apps\b.exe"),
+                row("tcp", 49154u16, "192.168.1.5", r"C:\apps\a.exe"),
+                row("tcp", 49154u16, "192.168.1.5", r"C:\apps\b.exe"),
             ]
             .into_iter(),
         );
-        assert_eq!(owners.get(&("tcp", 49152)).map(String::as_str), Some(r"C:\apps\zen.exe"));
+        // Один и тот же exe на двух адресах — один владелец, и адрес ему не
+        // нужен: спрашивать его было бы не с чего.
+        // Регистр пути тут какой прислала Windows: она отдаёт один и тот же exe
+        // и так, и так, а сверяют его всюду без регистра.
+        let one = owners[&("tcp", 49152)].path("").expect("владелец порта");
+        assert!(one.eq_ignore_ascii_case(r"C:\apps\zen.exe"), "{one}");
+        assert!(matches!(owners[&("tcp", 49152)], Owner::One(_)), "один exe на двух адресах — один владелец");
         // Протокол — часть ключа: тот же номер порта у TCP и UDP берут разные
         // процессы, и складывать их в один ключ значило бы врать про обоих.
-        assert_eq!(owners.get(&("udp", 49152)).map(String::as_str), Some(r"C:\apps\other.exe"));
-        assert_eq!(owners.get(&("tcp", 49153)), None, "два процесса на порту — имени нет");
+        assert_eq!(owners[&("udp", 49152)].path("10.0.0.1"), Some(r"C:\apps\other.exe"));
+        // Двое на одном номере — теперь у каждого своё имя, а не пустота у
+        // обоих. Это и был потолок: панель писала «без процесса» им обоим.
+        let split = &owners[&("tcp", 49153)];
+        assert_eq!(split.path("192.168.1.5"), Some(r"C:\apps\a.exe"));
+        assert_eq!(split.path("172.27.234.1"), Some(r"C:\apps\b.exe"));
+        assert_eq!(split.path("10.0.0.9"), None, "адрес не из снимка — имени нет");
+        // А неразличимое остаётся неразличимым: одна и та же пара названа
+        // двумя путями, и выбрать между ними нечем.
+        assert_eq!(owners.get(&("tcp", 49154)), None, "пара «адрес + порт» с двумя путями — имени нет");
     }
 }
