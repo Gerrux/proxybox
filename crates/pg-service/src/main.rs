@@ -250,6 +250,11 @@ struct Saved {
     refreshed_at: Option<u64>,
     #[serde(default)]
     lang: core_ipc::Lang,
+    /// Профили, отмеченные звёздочкой. Именами, а не флагом внутри узла: узел
+    /// из подписки сверка заменяет целиком, и флаг уехал бы вместе с ним —
+    /// звёздочка же про выбор человека, а не про узел.
+    #[serde(default)]
+    favorites: BTreeSet<String>,
     /// Политика брандмауэра, какой она была до нашего замка, — непрозрачной
     /// строкой от `core_filter::policy_now()`.
     ///
@@ -356,6 +361,9 @@ struct Service {
     /// Приватный режим включён пользователем. Не то же самое, что «туннель жив»:
     /// именно расхождение этих двух флагов и означает DROP.
     private: bool,
+    /// Профили со звёздочкой. Держит служба, а не окно: на второй машине
+    /// человек отмечает те же три узла из сотни.
+    favorites: BTreeSet<String>,
     /// Политика брандмауэра до нашего замка — её и вернём, снимая его.
     /// Спрашивается один раз за запуск и только пока замка нет: под своим
     /// замком служба прочитала бы свой же `blockoutbound`. Снимается вместе с
@@ -443,7 +451,7 @@ impl Service {
                 profile: saved.profile,
                 apps: Self::dedup_apps(saved.apps),
                 scope,
-                profiles: profiles_of(&saved.profiles),
+                profiles: profiles_of(&saved.profiles, &saved.favorites),
                 subscriptions: subscriptions_of(
                     &saved.subscriptions,
                     &saved.sub_names,
@@ -462,6 +470,7 @@ impl Service {
             sub_names: saved.sub_names,
             quotas: saved.quotas,
             private: saved.private,
+            favorites: saved.favorites,
             policy: saved.policy,
             tunnel: None,
             probe_target: (String::new(), 0),
@@ -518,7 +527,11 @@ impl Service {
     }
 
     fn save(&mut self) {
-        self.status.profiles = profiles_of(&self.profiles);
+        // Звёздочка на профиле, которого больше нет, — это строка в
+        // `state.json`, которая переживёт и его, и подписку, откуда он пришёл:
+        // прополку делаем здесь же, где и прополку измерений.
+        self.favorites.retain(|name| self.profiles.contains_key(name));
+        self.status.profiles = profiles_of(&self.profiles, &self.favorites);
         self.status.subscriptions =
             subscriptions_of(&self.subscriptions, &self.sub_names, &self.profiles, &self.quotas);
         // Профиля больше нет — и мерить нечего: без этой прополки кэш измерений
@@ -542,6 +555,7 @@ impl Service {
             refreshed_at: self.status.refreshed_at,
             lang: self.status.lang,
             private: self.private,
+            favorites: self.favorites.clone(),
             policy: self.policy.clone(),
             // Обратно тем же именем, каким читаем: перечисление знает своё имя
             // само, и дублировать его строкой значило бы разъехаться на первом
@@ -1064,12 +1078,12 @@ fn subscriptions_of(
 /// Пароля и ключа здесь нет: статус окно спрашивает каждые две секунды, и всё
 /// содержимое узла ездило бы туда-сюда сотнями раз в минуту. За узлом целиком
 /// окно ходит отдельно и только на открытие формы правки (`Request::ProfileNode`).
-fn profiles_of(profiles: &BTreeMap<String, Value>) -> Vec<ProfileInfo> {
+fn profiles_of(profiles: &BTreeMap<String, Value>, favorites: &BTreeSet<String>) -> Vec<ProfileInfo> {
     profiles
         .iter()
         .map(|(name, node)| {
             let (kind, server) = core_config::describe(node);
-            ProfileInfo { name: name.clone(), kind, server }
+            ProfileInfo { favorite: favorites.contains(name), name: name.clone(), kind, server }
         })
         .collect()
 }
@@ -1322,6 +1336,9 @@ fn edit_profile(s: &mut Service, name: &str, rename: &str, node: &str) -> Respon
         }
         for p in s.status.probes.iter_mut().filter(|p| p.name == name) {
             p.name = to.clone();
+        }
+        if s.favorites.remove(name) {
+            s.favorites.insert(to.clone());
         }
     }
     s.profiles.insert(to.clone(), after.clone());
@@ -1842,6 +1859,21 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             },
         },
         Request::EditProfile { name, rename, node } => edit_profile(&mut s, &name, &rename, &node),
+        Request::SetFavorite { name, on } => {
+            if !s.profiles.contains_key(&name) {
+                return Response::Error {
+                    message: tf!("нет профиля «{}»", name),
+                };
+            }
+            match on {
+                true => s.favorites.insert(name),
+                false => s.favorites.remove(&name),
+            };
+            // Ни туннеля, ни правил это не касается вовсе: звёздочка — про
+            // порядок строк в окне, и перезапускать ради неё нечего.
+            s.save();
+            Response::Done
+        }
         Request::SetLang { lang } => {
             // Язык переключает и журнал службы: сообщения пишет она, а читает
             // их пользователь в окне.
@@ -1990,7 +2022,13 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             // пока панель открыта, — sing-box за то же платил снимком на
             // каждое соединение машины.
             let owners = core_apps::port_owners();
-            match core_tunnel::connections(port, &owners) {
+            // Разводит спорный порт по локальному адресу сама карта: разбору
+            // соединения знать про устройство снимка незачем, а `core-tunnel`
+            // не должен из-за одной колонки зависеть от `core-apps`.
+            let owner_of = |proto: &'static str, port: u16, addr: &str| {
+                owners.get(&(proto, port)).and_then(|owner| owner.path(addr)).map(str::to_string)
+            };
+            match core_tunnel::connections(port, &owner_of) {
                 Ok(mut conns) => {
                     let total = conns.len();
                     // Обрезаем осознанно: в охвате «весь компьютер» соединений
@@ -2462,6 +2500,24 @@ mod tests {
     /// осталось вовсе (сторож `the_pass_is_bound_to_the_tunnel_address` в
     /// `core-filter` следит и за этим).
     #[test]
+    fn the_whitelist_locks_the_door_and_hands_out_passes() {
+        use core_filter::Fence;
+        // Приватный режим включён, туннель не подтверждён.
+        assert_eq!(fencing(Scope::Whitelist, true, true), (Fence::Off, true), "замок стоит, пропусков нет");
+        // Проба прошла.
+        assert_eq!(fencing(Scope::Whitelist, false, true), (Fence::Allow, true), "замок стоит, выбранным пропуск");
+        // Приватный режим выключен — замок обязан сняться, иначе машина без сети.
+        assert_eq!(fencing(Scope::Whitelist, false, false), (Fence::Off, false), "выключили — сняли всё");
+        assert_eq!(fencing(Scope::Whitelist, true, false), (Fence::Off, false), "и в окне запрета тоже");
+
+        assert_eq!(fencing(Scope::All, true, true), (Fence::Off, true), "делить некого — запирает политика");
+        assert_eq!(fencing(Scope::All, false, true), (Fence::Off, false), "туннель подтверждён — замок ни к чему");
+        // Выключенный приватный режим не запирает машину ни в одном охвате, и
+        // это не следствие того, кто как зовёт `guard`: перепутанный здесь знак
+        // оставил бы человека без сети до перезагрузки — политика её переживает.
+        assert_eq!(fencing(Scope::All, true, false), (Fence::Off, false), "режим выключен — замка нет");
+    }
+
     /// Охват «ничего» — это белый список с пустым списком пропусков, и обе
     /// половины этого обязаны держаться вместе. Разойдись `fencing` с белым
     /// списком — и «в туннель не идёт никто» стало бы «идут все»; не опустей
@@ -2488,24 +2544,6 @@ mod tests {
         assert!(!Service::selected(&st).is_empty(), "в белом списке отмеченное получает пропуск");
         st.scope = Scope::None;
         assert!(Service::selected(&st).is_empty(), "в охвате «ничего» пропуск не получает никто");
-    }
-
-    fn the_whitelist_locks_the_door_and_hands_out_passes() {
-        use core_filter::Fence;
-        // Приватный режим включён, туннель не подтверждён.
-        assert_eq!(fencing(Scope::Whitelist, true, true), (Fence::Off, true), "замок стоит, пропусков нет");
-        // Проба прошла.
-        assert_eq!(fencing(Scope::Whitelist, false, true), (Fence::Allow, true), "замок стоит, выбранным пропуск");
-        // Приватный режим выключен — замок обязан сняться, иначе машина без сети.
-        assert_eq!(fencing(Scope::Whitelist, false, false), (Fence::Off, false), "выключили — сняли всё");
-        assert_eq!(fencing(Scope::Whitelist, true, false), (Fence::Off, false), "и в окне запрета тоже");
-
-        assert_eq!(fencing(Scope::All, true, true), (Fence::Off, true), "делить некого — запирает политика");
-        assert_eq!(fencing(Scope::All, false, true), (Fence::Off, false), "туннель подтверждён — замок ни к чему");
-        // Выключенный приватный режим не запирает машину ни в одном охвате, и
-        // это не следствие того, кто как зовёт `guard`: перепутанный здесь знак
-        // оставил бы человека без сети до перезагрузки — политика её переживает.
-        assert_eq!(fencing(Scope::All, true, false), (Fence::Off, false), "режим выключен — замка нет");
     }
 
     /// Чужой kill-switch снимать не наше дело. Политика брандмауэра — состояние
@@ -3148,6 +3186,92 @@ mod tests {
         assert!(matches!(out, Response::Error { .. }), "битый узел отклоняется с причиной: {out:?}");
     }
 
+    /// Звёздочка — про выбор человека, а не про узел, и держится она на имени.
+    ///
+    /// Отсюда три вещи, каждая из которых ломается молча. Переименование
+    /// обязано её перевесить — иначе отметка остаётся висеть на имени, которого
+    /// больше нет, а профиль теряет её без единого слова. Сверка подписки её не
+    /// трогает: набор узлов она заменяет целиком, и живи отметка внутри узла,
+    /// её стирал бы каждый круг. И профиль, которого не стало, уносит её с
+    /// собой — иначе `state.json` копил бы имена вечно, а вернувшийся под тем
+    /// же именем чужой узел получил бы чужую звезду.
+    #[test]
+    fn a_favourite_follows_the_profile_and_not_the_node() {
+        let _state = scratch("pg-favourite-test");
+        let mut s = Service::load();
+        s.profiles.insert("NL-01".into(), json!({"type": "vless", "server": "a.com"}));
+        s.favorites.insert("NL-01".into());
+        s.save();
+        assert!(s.status.profiles.iter().any(|p| p.name == "NL-01" && p.favorite), "звезда обязана доехать до окна");
+
+        // Сверка подписки заменяет узел под тем же именем — отметка остаётся.
+        s.profiles.insert("NL-01".into(), json!({"type": "vless", "server": "b.com"}));
+        s.save();
+        assert!(s.favorites.contains("NL-01"), "сверка стёрла отметку человека");
+
+        let out = edit_profile(&mut s, "NL-01", "дом", "");
+        assert!(matches!(out, Response::Done), "{out:?}");
+        assert_eq!(
+            s.favorites.iter().collect::<Vec<_>>(),
+            vec!["дом"],
+            "переименование обязано перевесить звезду: {:?}",
+            s.favorites
+        );
+
+        s.forget_profile("дом");
+        s.save();
+        assert!(s.favorites.is_empty(), "профиля нет — и звезде висеть не на чем: {:?}", s.favorites);
+    }
+
+    /// Разрушающая команда называет того, кто её прислал.
+    ///
+    /// Список доступа канала различает пользователя, а не программу: от имени
+    /// человека работает и окно, и всё, что он когда-либо запускал, — а
+    /// выключение приватного режима это одна строка JSON. Запретом это не
+    /// закрыть (чужая программа запустит нашу же консоль, и отбор по образу
+    /// пропустит её не глядя), поэтому остаётся след — и он не пустяк: до него
+    /// приватный режим выключался молча, а «молча» и есть всё отличие такого
+    /// выключения от нажатия человеком.
+    ///
+    /// Проверяются обе половины решения. Чтение следа не оставляет: статус
+    /// спрашивают каждые две секунды, и журнал в тридцать строк он вытеснил бы
+    /// целиком. А своим считается тот, кто лежит в одной папке со службой —
+    /// установщик кладёт туда окно, консоль и её саму.
+    #[test]
+    fn a_command_from_a_stranger_is_named_in_the_journal() {
+        // То, что меняет машину.
+        for req in [
+            Request::Off,
+            Request::On { profile: "myvpn".into() },
+            Request::SetScope { scope: Scope::Whitelist },
+            Request::SetApp { path: r"C:\app.exe".into(), enabled: true },
+            Request::RemoveProfile { name: "myvpn".into() },
+            Request::Browse { profile: "работа".into() },
+        ] {
+            assert!(changes_the_machine(&req), "{req:?} меняет машину, а следа не оставит");
+        }
+        // …и то, что её не меняет.
+        for req in [
+            Request::Status,
+            Request::Connections,
+            Request::TestProfiles { only: None },
+            Request::SetLang { lang: core_ipc::Lang::En },
+            Request::SetFavorite { name: "myvpn".into(), on: true },
+        ] {
+            assert!(!changes_the_machine(&req), "{req:?} ничего не меняет, а шумит в журнале");
+        }
+
+        // Свой — тот, кто рядом со службой; чужой — кто угодно ещё.
+        let ours = Some(r"C:\Program Files\proxybox\pg-service.exe");
+        assert!(!foreign(r"C:\Program Files\proxybox\proxybox.exe", ours), "консоль своя");
+        assert!(!foreign(r"c:\program files\proxybox\pg-desktop.exe", ours), "регистр пути не различие");
+        assert!(foreign(r"C:\Users\ilya\Downloads\helper.exe", ours), "постороннее приложение");
+        assert!(foreign(r"C:\Program Files\proxybox\bin\other.exe", ours), "соседняя папка — уже не наша");
+        // Своего каталога не знаем — молчим: обвинить всех подряд хуже, чем не
+        // обвинить никого.
+        assert!(!foreign(r"C:\Users\ilya\Downloads\helper.exe", None));
+    }
+
     /// Занятое имя получает номер на обоих путях импорта. Голый `insert` в
     /// ручной вставке молча забирал чужое имя: старый узел исчезал без слова, а
     /// активный профиль начинал показывать на другой сервер — при живом
@@ -3264,6 +3388,89 @@ mod tests {
     }
 }
 
+/// Меняет ли команда то, что делает машина. Разрушающие называют в журнале
+/// своего отправителя, остальные — нет: статус спрашивают каждые две секунды, и
+/// след от него был бы не следом, а шумом, в котором тонет всё остальное.
+///
+/// Список закрытый и без запасной ветки намеренно: новая команда обязана
+/// получить ответ на этот вопрос осознанно, а не унаследовать чужой. Сторож —
+/// `a_command_from_a_stranger_is_named_in_the_journal`.
+fn changes_the_machine(req: &Request) -> bool {
+    match req {
+        // Приватный режим, охват и список приложений — это и есть «что делает
+        // машина»; профили и подписки решают, куда уходит трафик; браузерный
+        // сеанс поднимает свой sing-box и получает пропуск в брандмауэре.
+        Request::On { .. }
+        | Request::Off
+        | Request::SetScope { .. }
+        | Request::AddApp { .. }
+        | Request::SetApp { .. }
+        | Request::RemoveApp { .. }
+        | Request::AddProfile { .. }
+        | Request::EditProfile { .. }
+        | Request::RemoveProfile { .. }
+        | Request::RemoveSubscription { .. }
+        | Request::SetSettings { .. }
+        | Request::Browse { .. }
+        | Request::BrowseStop { .. }
+        | Request::SetBrowserProfile { .. }
+        | Request::RemoveBrowserProfile { .. } => true,
+        // Чтение и то, что видно только в окне: язык, имя подписки, звёздочка.
+        // Прогон профилей сюда же — он ничего не переключает, только меряет, и
+        // хуже от него не станет никому, кроме терпения.
+        Request::Status
+        | Request::ListApps
+        | Request::Discover { .. }
+        | Request::Icon { .. }
+        | Request::ProfileNode { .. }
+        | Request::RenameSubscription { .. }
+        | Request::SetFavorite { .. }
+        | Request::SetLang { .. }
+        | Request::TestProfiles { .. }
+        | Request::Connections => false,
+    }
+}
+
+/// Каталог, в котором лежит файл. Режется по обоим разделителям, а не
+/// `Path::parent`: на Windows путь приходит с обратной косой, а разбирал бы его
+/// в тестах Unix, для которого обратная коса — обычный символ имени. Сторож,
+/// проверяющий не ту форму пути, не проверяет ничего.
+fn folder(path: &str) -> &str {
+    match path.rfind(['\\', '/']) {
+        Some(at) => &path[..at],
+        None => "",
+    }
+}
+
+/// Чужой ли отправитель. Свои — окно, консоль и сама служба: установщик кладёт
+/// их в одну папку, и путь к ней служба знает по себе.
+///
+/// Не знаем своего каталога — молчим: обвинить всех подряд хуже, чем не
+/// обвинить никого, а журнал в тридцать строк такая ошибка вытеснила бы
+/// целиком.
+fn foreign(caller: &str, ours: Option<&str>) -> bool {
+    let Some(ours) = ours else { return false };
+    !folder(caller).eq_ignore_ascii_case(folder(ours))
+}
+
+/// Кто прислал разрушающую команду — строкой в журнал, и только если это не
+/// наше же окно и не наша консоль.
+///
+/// Запретом это быть не может: список доступа канала различает пользователя, а
+/// не программу, и запусти чужая программа нашу же консоль — отбор по образу
+/// пропустил бы её не глядя. Значит остаётся след, и он не пустяк: до него
+/// приватный режим выключался молча, а «молча» — это единственное, чем такое
+/// выключение отличается от нажатия человеком.
+fn note_caller(svc: &Mutex<Service>, conn: &Stream, req: &Request) {
+    let Some(path) = conn.peer().and_then(core_apps::process_path) else { return };
+    let ours = std::env::current_exe().ok().map(|p| p.to_string_lossy().into_owned());
+    if !foreign(&path, ours.as_deref()) {
+        return;
+    }
+    let cmd = serde_json::to_value(req).ok().and_then(|v| v["cmd"].as_str().map(str::to_string)).unwrap_or_default();
+    lock(svc).warn(tf!("команду «{}» прислало постороннее приложение: {}", cmd, path));
+}
+
 fn serve(svc: &Mutex<Service>, mut conn: Stream) {
     let Ok(clone) = conn.try_clone() else { return };
     let mut reader = BufReader::new(clone);
@@ -3286,7 +3493,15 @@ fn serve(svc: &Mutex<Service>, mut conn: Stream) {
             Response::Error { message: t("запрос слишком длинный") }
         } else {
             match serde_json::from_str(&line) {
-                Ok(req) => handle(svc, req),
+                Ok(req) => {
+                    // След берётся до обработки: команда, которая гасит
+                    // туннель, отвечает уже из другого состояния, а сказать
+                    // надо о том, кто её прислал.
+                    if changes_the_machine(&req) {
+                        note_caller(svc, &conn, &req);
+                    }
+                    handle(svc, req)
+                }
                 Err(e) => Response::Error {
                     message: tf!("неразбираемый запрос: {}", e),
                 },

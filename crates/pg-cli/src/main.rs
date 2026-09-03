@@ -20,7 +20,7 @@ const USAGE_RU: &str = "proxybox <команда>
   disable --path <exe>   убрать приложение из-под управления
   scope whitelist|all    охват: сеть только выбранным приложениям и только
                          через туннель; либо весь трафик машины в туннель
-  add-profile --link <l> импортировать share-link (vless/vmess/trojan/ss/hy2/wg),
+  add-profile --link <l> импортировать share-link (vless/vmess/trojan/ss/hy2/tuic/wg),
                          JSON-конфиг sing-box или подписку по https-адресу;
                          тот же адрес повторно — обновить подписку
   profiles               список профилей: имя, тип узла и куда он ведёт
@@ -58,7 +58,7 @@ const USAGE_EN: &str = "proxybox <command>
   disable --path <exe>   take the app out of control
   scope whitelist|all    scope: network for selected apps only and only
                          through the tunnel; or all machine traffic
-  add-profile --link <l> import a share-link (vless/vmess/trojan/ss/hy2/wg),
+  add-profile --link <l> import a share-link (vless/vmess/trojan/ss/hy2/tuic/wg),
                          a sing-box JSON config or a subscription https URL;
                          the same URL again refreshes the subscription
   profiles               list profiles: name, node type and where it points
@@ -96,7 +96,7 @@ const USAGE_FA: &str = "proxybox <فرمان>
   disable --path <exe>   بیرون بردن برنامه از کنترل
   scope whitelist|all    دامنه: شبکه فقط برای برنامه‌های انتخاب‌شده و فقط از
                          راه تونل؛ یا همهٔ ترافیک رایانه در تونل
-  add-profile --link <l> وارد کردن share-link (vless/vmess/trojan/ss/hy2/wg)،
+  add-profile --link <l> وارد کردن share-link (vless/vmess/trojan/ss/hy2/tuic/wg)،
                          پیکربندی JSON سینگ‌باکس یا اشتراک با نشانی https؛
                          همان نشانی برای بار دوم — به‌روزرسانی اشتراک
   profiles               فهرست پروفایل‌ها: نام، نوع گره و مقصد آن
@@ -134,7 +134,7 @@ const USAGE_ZH: &str = "proxybox <命令>
   disable --path <exe>   将应用移出管理
   scope whitelist|all    范围：仅所选应用联网且只能走隧道；
                          或整机流量进入隧道
-  add-profile --link <l> 导入 share-link（vless/vmess/trojan/ss/hy2/wg）、
+  add-profile --link <l> 导入 share-link（vless/vmess/trojan/ss/hy2/tuic/wg）、
                          sing-box 的 JSON 配置，或 https 订阅地址；
                          同一地址再来一次即更新订阅
   profiles               配置列表：名称、节点类型及去向
@@ -172,7 +172,7 @@ const USAGE_TR: &str = "proxybox <komut>
   disable --path <exe>   uygulamayı yönetimden çıkar
   scope whitelist|all    kapsam: ağ yalnızca seçili uygulamalara ve yalnızca
                          tünel üzerinden; ya da makinenin tüm trafiği tünele
-  add-profile --link <l> share-link (vless/vmess/trojan/ss/hy2/wg),
+  add-profile --link <l> share-link (vless/vmess/trojan/ss/hy2/tuic/wg),
                          sing-box JSON yapılandırması ya da https abonelik
                          adresi içe aktar; aynı adres yeniden — aboneliği tazeler
   profiles               profil listesi: ad, düğüm türü ve nereye gittiği
@@ -210,7 +210,7 @@ const USAGE_ID: &str = "proxybox <perintah>
   disable --path <exe>   keluarkan aplikasi dari pengelolaan
   scope whitelist|all    cakupan: jaringan hanya untuk aplikasi terpilih dan
                          hanya lewat terowongan; atau seluruh lalu lintas mesin
-  add-profile --link <l> impor share-link (vless/vmess/trojan/ss/hy2/wg),
+  add-profile --link <l> impor share-link (vless/vmess/trojan/ss/hy2/tuic/wg),
                          konfigurasi JSON sing-box, atau alamat langganan https;
                          alamat yang sama sekali lagi — menyegarkan langganan
   profiles               daftar profil: nama, jenis node, dan tujuannya
@@ -554,8 +554,13 @@ fn main() -> std::process::ExitCode {
                     (kind, "") => format!("  {kind}"),
                     (kind, server) => format!("  {kind} → {server}"),
                 };
-                let mark = if s.profile.as_deref() == Some(&p.name) { "* " } else { "  " };
-                println!("{mark}{:<24}{where_to}", p.name);
+                // Два знака, а не один: активный профиль и отмеченный — разные
+                // вещи, и строка обязана показывать обе. Ставит звёздочку окно
+                // (`set-favorite`); в консоли её видно, но не меняют — как и
+                // остальное, чему в ней не нашлось дела.
+                let active = if s.profile.as_deref() == Some(&p.name) { '*' } else { ' ' };
+                let star = if p.favorite { '★' } else { ' ' };
+                println!("{active}{star}{:<24}{where_to}", p.name);
             }
             std::process::ExitCode::SUCCESS
         }

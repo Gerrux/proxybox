@@ -415,6 +415,11 @@ pub enum Request {
     /// подпись группы в окне: у панелей адрес отличается одним токеном в хвосте,
     /// а обрезается как раз хвост. Пустое имя возвращает показ адреса.
     RenameSubscription { url: String, name: String },
+    /// Отметить профиль звёздочкой или снять отметку. Отдельной командой, а не
+    /// полем в `EditProfile`: правка узла из подписки запрещена, а звёздочку на
+    /// нём ставить можно — она про выбор человека, а не про узел, и сверка её
+    /// не трогает.
+    SetFavorite { name: String, on: bool },
     SetLang { lang: Lang },
     /// Прогнать профили: каждый поднимается отдельным sing-box без TUN и
     /// пробуется. Живой туннель при этом не трогается — прогон ничего не
@@ -554,6 +559,12 @@ pub struct ProfileInfo {
     /// первом пире, а у правленного руками узла его может не быть вовсе.
     #[serde(default)]
     pub server: String,
+    /// Отмечен ли профиль звёздочкой. Помнит это служба, а не окно: подписка на
+    /// сотню узлов — это сотня строк, среди которых человек пользуется тремя, и
+    /// на второй машине они те же самые. Порядок сортировки окно помнит у себя
+    /// (`localStorage`), а вот выбор человека — не настройка показа.
+    #[serde(default)]
+    pub favorite: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -769,6 +780,23 @@ enum Inner {
 }
 
 impl Stream {
+    /// Кто на том конце — номером процесса. `None` вне Windows и на любой
+    /// осечке: это след для журнала, а не право доступа, и терять из-за него
+    /// команду нельзя.
+    ///
+    /// Права даёт список доступа канала, и различает он пользователя, а не
+    /// программу. Иначе и быть не может: свою же консоль (`proxybox off`)
+    /// запускает кто угодно от имени того же человека, так что отбор по образу
+    /// не защита, а видимость. Номер поэтому не запрещает — он называет.
+    pub fn peer(&self) -> Option<u32> {
+        match &self.0 {
+            #[cfg(not(windows))]
+            Inner::Tcp(_) => None,
+            #[cfg(windows)]
+            Inner::Pipe(pipe) => windows_pipe::client_pid(pipe),
+        }
+    }
+
     pub fn try_clone(&self) -> io::Result<Stream> {
         Ok(Stream(match &self.0 {
             #[cfg(not(windows))]
@@ -997,6 +1025,7 @@ mod tests {
             Request::RemoveSubscription { url: "https://panel.example/sub?token=1".into() },
             Request::RenameSubscription { url: "https://panel.example/sub?token=1".into(), name: "рабочая".into() },
             Request::SetScope { scope: Scope::Whitelist },
+            Request::SetFavorite { name: "myvpn".into(), on: true },
             Request::SetLang { lang: Lang::En },
             Request::TestProfiles { only: None },
             Request::TestProfiles { only: Some("myvpn".into()) },
@@ -1044,6 +1073,7 @@ mod tests {
                     name: "myvpn".into(),
                     kind: "vless".into(),
                     server: "a.com:443".into(),
+                    favorite: true,
                 }],
                 testing: Some(TestRun { done: 3, total: 8 }),
                 browsers: vec!["работа".into()],

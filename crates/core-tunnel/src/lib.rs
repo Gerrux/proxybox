@@ -23,7 +23,6 @@
 
 use core_ipc::{t, tf, Conn};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -626,10 +625,12 @@ pub fn probe(socks_port: u16, target: (&str, u16)) -> io::Result<u32> {
 /// инстансу нужны свои.
 ///
 /// ponytail: между тем, как порт освобождён здесь, и тем, как его займёт
-/// sing-box, есть щель — влезший туда чужой процесс сорвёт запуск, и прогон
-/// покажет это ошибкой профиля. По-настоящему зарезервировать порт нечем:
-/// биндит его не наш процесс. Потолок — редкая ложная ошибка в прогоне;
-/// апгрейд — передавать sing-box уже открытый сокет, чего он не умеет.
+/// sing-box, есть щель — влезший туда чужой процесс сорвёт запуск. Прогон
+/// профилей эту щель переживает: отказ по `bind:` он отличает от мёртвого узла
+/// и повторяет попытку с другими портами (`port_was_taken`). Потолок остался у
+/// сеанса браузера — там повтора нет, и человек видит отказ; по-настоящему
+/// зарезервировать порт нечем, биндит его не наш процесс, а передать sing-box
+/// уже открытый сокет он не умеет.
 fn free_port() -> io::Result<u16> {
     Ok(TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port())
 }
@@ -654,22 +655,48 @@ fn free_port() -> io::Result<u16> {
 /// `geo` — спрашивать ли заодно точку выхода. Решает это служба (`PG_GEO`):
 /// адрес наружу один на весь проект, и распоряжаться им должно одно место.
 pub fn measure(node: &Value, dir: &Path, target: (&str, u16), geo: bool) -> io::Result<(u32, Option<Exit>)> {
-    // Стек берётся из умолчания и роли не играет: без TUN его некому читать.
-    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, ..Default::default() };
-    let mut proc = Tunnel::start(&build_config(node, &opts), dir)?;
-    let result = probe(opts.socks_port, target);
+    // Порт нам выдало ядро и тут же отпустило, а занять его до sing-box успевает
+    // кто угодно. Такой отказ — не свойство узла, а невезение, и показывать его
+    // человеку как неисправный узел значит врать в единственной колонке, ради
+    // которой прогон и затевают. Пробуем второй раз, уже с другими портами;
+    // если и там занято — это уже не невезение, и отказ едет наружу.
+    let (mut proc, socks) = match start_probe(node, dir) {
+        Err(e) if port_was_taken(&e.to_string()) => start_probe(node, dir)?,
+        other => other?,
+    };
+    let result = probe(socks, target);
     // Пока инстанс жив, страна стоит одного запроса; поднимать ядро второй раз
     // ради неё дороже самой пробы. Спрашиваем только у ответившего профиля —
     // через мёртвый некого. Не узнали — не показываем: вердикт профиля решает
     // задержка, а не страна.
     let country = match (&result, geo) {
-        (Ok(_), true) => exit_country(opts.socks_port).ok(),
+        (Ok(_), true) => exit_country(socks).ok(),
         _ => None,
     };
     // Отметку с мёртвым номером `stop()` уносит сам — и за прогоном, и за
     // сеансом браузера, и за общим туннелем одинаково.
     proc.stop();
     result.map(|ms| (ms, country))
+}
+
+/// Проверочный sing-box: без TUN, на свободных портах. Отдельно от `measure`
+/// затем, что попыток может быть две.
+fn start_probe(node: &Value, dir: &Path) -> io::Result<(Tunnel, u16)> {
+    // Стек берётся из умолчания и роли не играет: без TUN его некому читать.
+    let opts = Options { socks_port: free_port()?, api_port: free_port()?, tun: false, ..Default::default() };
+    let proc = Tunnel::start(&build_config(node, &opts), dir)?;
+    Ok((proc, opts.socks_port))
+}
+
+/// Отказ запуска означает «порт заняли между выдачей и стартом», а не «узел не
+/// работает».
+///
+/// Ищем след Go, а не текст Windows: `bind:` печатает сама сетевая библиотека, и
+/// печатает она его на любой машине, а причину за ним система переводит на язык
+/// человека — на русской Windows там будет про использование адреса сокета.
+/// Сверять перевод значило бы завести проверку, которая работает только у нас.
+fn port_was_taken(error: &str) -> bool {
+    error.contains("bind:")
 }
 
 /// Инстанс под одно окно браузера: свой sing-box, свои порты, свой каталог.
@@ -802,7 +829,7 @@ pub fn traffic(api_port: u16) -> io::Result<(u64, u64)> {
 /// решает это служба, она же единственная, кому есть чем.
 pub fn connections(
     api_port: u16,
-    owners: &BTreeMap<(&'static str, u16), String>,
+    owner_of: &dyn Fn(&'static str, u16, &str) -> Option<String>,
 ) -> io::Result<Vec<Conn>> {
     let v = clash(api_port)?;
     let mut conns: Vec<Conn> = v["connections"]
@@ -810,7 +837,7 @@ pub fn connections(
         .map(Vec::as_slice)
         .unwrap_or_default()
         .iter()
-        .map(|c| parse_conn(c, owners))
+        .map(|c| parse_conn(c, owner_of))
         .collect();
     // Самые говорливые первыми: список живёт секунды, и первые строки — это
     // единственное, что человек успевает прочитать.
@@ -820,7 +847,7 @@ pub fn connections(
 
 /// Разбор одного соединения. Цепочка маршрутов, а не список приложений: список
 /// — намерение, цепочка — то, что вышло на самом деле.
-fn parse_conn(c: &Value, owners: &BTreeMap<(&'static str, u16), String>) -> Conn {
+fn parse_conn(c: &Value, owner_of: &dyn Fn(&'static str, u16, &str) -> Option<String>) -> Conn {
     let meta = &c["metadata"];
     let str_of = |v: &Value| v.as_str().unwrap_or_default().to_string();
     // Домен известен не всегда: соединение по голому адресу так и остаётся
@@ -842,9 +869,12 @@ fn parse_conn(c: &Value, owners: &BTreeMap<(&'static str, u16), String>) -> Conn
         _ => "tcp",
     };
     Conn {
+        // Локальный адрес спрашивается вместе с портом, но нужен он только
+        // спорному порту (`core_apps::Owner`): у остальных имя находится и без
+        // него. Адреса в ответе может не быть вовсе — тогда спорный порт
+        // останется без имени, как и раньше.
         process: source_port
-            .and_then(|port| owners.get(&(proto, port)))
-            .cloned()
+            .and_then(|port| owner_of(proto, port, &str_of(&meta["sourceIP"])))
             .unwrap_or_default(),
         host: if port.is_empty() { host } else { format!("{host}:{port}") },
         tunneled: c["chains"]
@@ -906,6 +936,7 @@ fn socks5_connect(port: u16, (host, target_port): (&str, u16)) -> io::Result<Tcp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     /// Проба ждёт дольше, чем сам sing-box ждёт дозвона. Сравняются — вернётся
     /// гонка двух таймеров: половина отказов приедет в ленту голым `os error
@@ -1022,7 +1053,7 @@ mod tests {
                 "download": 2048,
                 "upload": 512,
             }),
-            &BTreeMap::new(),
+            &|_, _, _| None,
         );
         assert_eq!(tunneled.host, "example.com:443", "домен известен — показываем его");
         assert!(tunneled.tunneled);
@@ -1033,7 +1064,7 @@ mod tests {
                 "metadata": { "destinationIP": "1.1.1.1", "destinationPort": "53" },
                 "chains": ["direct"],
             }),
-            &BTreeMap::new(),
+            &|_, _, _| None,
         );
         assert_eq!(direct.host, "1.1.1.1:53", "домена нет — остаётся адрес");
         assert!(!direct.tunneled);
@@ -1053,11 +1084,15 @@ mod tests {
     /// средстве приватности хуже пустоты.
     #[test]
     fn the_process_is_found_by_the_local_port() {
+        // Карта снимка живёт в `core-apps`, а сюда приезжает поиском: разбору
+        // соединения незачем знать, как она устроена, — он знает только, что
+        // спросить можно протоколом, портом и локальным адресом.
         let owners = BTreeMap::from([
             (("tcp", 49152u16), r"C:\apps\zen.exe".to_string()),
             (("udp", 49152u16), r"C:\apps\other.exe".to_string()),
         ]);
-        let conn = |meta| parse_conn(&json!({ "metadata": meta, "chains": [TAG_PROXY] }), &owners);
+        let owner_of = |proto: &'static str, port: u16, _addr: &str| owners.get(&(proto, port)).cloned();
+        let conn = |meta| parse_conn(&json!({ "metadata": meta, "chains": [TAG_PROXY] }), &owner_of);
 
         assert_eq!(conn(json!({ "sourcePort": "49152", "network": "tcp" })).process, r"C:\apps\zen.exe");
         assert_eq!(conn(json!({ "sourcePort": "49152", "network": "udp" })).process, r"C:\apps\other.exe");
@@ -1517,6 +1552,34 @@ mod tests {
         };
         assert!(err.contains("завершился сразу"), "{err}");
         drop(busy);
+    }
+
+    /// Занятый порт — не мёртвый узел.
+    ///
+    /// Порт прогону выдаёт ядро и тут же отпускает, и занять его до sing-box
+    /// успевает кто угодно. В списке это выглядело неисправным узлом — то есть
+    /// враньём в единственной колонке, ради которой прогон и затевают.
+    ///
+    /// Отличаем по следу Go, а не по тексту Windows: `bind:` печатает сетевая
+    /// библиотека одинаково везде, а причину за ним система переводит на язык
+    /// человека. Сверять перевод значило бы завести проверку, работающую только
+    /// на машине разработчика.
+    #[test]
+    fn a_taken_port_is_not_a_dead_node() {
+        let taken = "sing-box завершился сразу: FATAL[0000] start service: initialize inbound/mixed[local]: \
+                     listen tcp 127.0.0.1:49711: bind: Обычно разрешается одно использование адреса сокета";
+        assert!(port_was_taken(taken), "занятый порт обязан опознаваться на любом языке системы");
+        assert!(port_was_taken("listen tcp4 127.0.0.1:1080: bind: address already in use"));
+
+        // А это уже про сам узел, и повторять тут нечего: второй заход даст то
+        // же самое, только вдвое дольше — на подписке в сотню узлов это минуты.
+        for real in [
+            "sing-box завершился сразу: FATAL[0000] decode config at probe/config.json: unknown field \"flow\"",
+            "sing-box завершился сразу: FATAL[0000] initialize outbound/vless[proxy]: missing server address",
+            "sing-box завершился сразу: причина не записана",
+        ] {
+            assert!(!port_was_taken(real), "повтор ради неисправного узла: {real}");
+        }
     }
 
     /// Конфиг проверяется настоящим sing-box, если он есть (PG_SINGBOX или PATH).

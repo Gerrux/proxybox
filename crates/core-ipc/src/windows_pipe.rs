@@ -32,6 +32,7 @@ struct SecurityAttributes {
 }
 
 extern "system" {
+    fn GetNamedPipeClientProcessId(pipe: Handle, pid: *mut u32) -> i32;
     fn CreateNamedPipeW(
         name: *const u16,
         open_mode: u32,
@@ -125,6 +126,20 @@ fn create() -> io::Result<File> {
 /// закрывается — рабочие создаёт accept.
 pub fn probe() -> io::Result<()> {
     create().map(drop)
+}
+
+/// Номер процесса на том конце канала.
+///
+/// Список доступа различает пользователя, но не программу: от имени человека
+/// работает и окно, и любая другая программа, которую он запустил, — а команды
+/// у службы разрушающие. Запретить по этому номеру ничего нельзя (свою же
+/// консоль запускает кто угодно), а вот сказать в журнале, кто пришёл, — можно,
+/// и это разница между «выключили молча» и «выключили, и вот кто».
+pub fn client_pid(pipe: &File) -> Option<u32> {
+    let mut pid = 0u32;
+    // SAFETY: хэндл живёт, пока живёт `pipe`; функция пишет ровно один u32.
+    let ok = unsafe { GetNamedPipeClientProcessId(pipe.as_raw_handle() as Handle, &mut pid) };
+    (ok != 0).then_some(pid)
 }
 
 /// Новый экземпляр канала и ожидание клиента на нём.

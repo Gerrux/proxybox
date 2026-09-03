@@ -43,6 +43,7 @@ pub fn parse(link: &str) -> Result<Profile, String> {
         "vmess" => vmess(link),
         "ss" => shadowsocks(link),
         "hy2" | "hysteria2" => hysteria2(link),
+        "tuic" => tuic(link),
         "wg" | "wireguard" => wireguard(link),
         "" => Err(t("не ссылка: нет схемы")),
         s => Err(tf!("протокол не поддерживается: {}", s)),
@@ -520,6 +521,61 @@ fn hysteria2(link: &str) -> Result<Profile, String> {
     Ok(Profile { name: l.name(&format!("hy2-{}", l.host()?)), node })
 }
 
+/// TUIC v5. Узел этого типа продукт принимал только конфигом: в белом списке
+/// `NODES` он был с самого начала, а разбора ссылки не было — и узел из
+/// подписки пропадал молча, потому что переложить его в ссылку было не во что.
+///
+/// v4 сюда не подходит и подходить не должен: там вместо пары «uuid + пароль»
+/// один `token`, а `tuic` в sing-box — это v5. Ссылка без одной из половин
+/// отвергается, а не достраивается пустой: профиль, который молча не
+/// соединяется, хуже пропущенной строки.
+///
+/// Имена параметров берём в обоих написаниях. Ссылку пишет чужая панель, и
+/// пишет она то через подчёркивание (v2rayN, NekoBox), то через дефис —
+/// последнее приезжает из Clash-YAML, который мы сами же в ссылку и
+/// перекладываем.
+fn tuic(link: &str) -> Result<Profile, String> {
+    let l = Link::new(link)?;
+    let (uuid, password) = (l.user(), l.url.password().map(decode).unwrap_or_default());
+    if uuid.is_empty() || password.is_empty() {
+        return Err(t("ссылка tuic: нужны UUID и пароль"));
+    }
+    let mut tls = json!({ "enabled": true });
+    if let Some(sni) = l.q("sni") {
+        tls["server_name"] = json!(sni);
+    }
+    if let Some(alpn) = l.q("alpn") {
+        tls["alpn"] = json!(alpn.split(',').collect::<Vec<_>>());
+    }
+    if matches!(l.q("allow_insecure").or_else(|| l.q("insecure")), Some("1" | "true")) {
+        tls["insecure"] = json!(true);
+    }
+    let mut node = json!({
+        "type": "tuic",
+        "server": l.host()?,
+        "server_port": l.port(443),
+        "uuid": uuid,
+        "password": password,
+        "tls": tls,
+    });
+    // Умолчания sing-box (`cubic`, `native`) не дублируем: узел, в котором
+    // написано ровно то, что прислала панель, легче сверить с её карточкой.
+    for from in ["congestion_control", "congestion-controller"] {
+        if let Some(value) = l.q(from) {
+            node["congestion_control"] = json!(value);
+        }
+    }
+    for from in ["udp_relay_mode", "udp-relay-mode"] {
+        if let Some(value) = l.q(from) {
+            node["udp_relay_mode"] = json!(value);
+        }
+    }
+    if matches!(l.q("zero_rtt_handshake").or_else(|| l.q("reduce-rtt")).or_else(|| l.q("reduce_rtt")), Some("1" | "true")) {
+        node["zero_rtt_handshake"] = json!(true);
+    }
+    Ok(Profile { name: l.name(&format!("tuic-{}", l.host()?)), node })
+}
+
 fn wireguard(link: &str) -> Result<Profile, String> {
     let l = Link::new(link)?;
     let private_key = l.user();
@@ -564,10 +620,11 @@ fn wireguard(link: &str) -> Result<Profile, String> {
 ///
 /// ponytail: из YAML понимается подмножество, которым и написан `proxies:` —
 /// вложенные отображения блоком и в фигурных скобках, списки в квадратных и
-/// блоком, кавычки, метка якоря на узле. За границей остались ссылки на якорь
-/// (`*node`), слияние отображений (`<<:`) и многострочные скаляры: узел,
-/// записанный так, потеряет поле или пропадёт целиком. Потолок виден по числу
-/// узлов в подписке, апгрейд — взять saphyr.
+/// блоком, кавычки, метка якоря на узле и слияние по ней (`<<: *base`) —
+/// включая якорь, объявленный вне `proxies:`. За границей остались узел целиком
+/// из ссылки (`- *node`) и многострочные скаляры: записанный так узел потеряет
+/// поле или пропадёт целиком. Потолок виден по числу узлов в подписке,
+/// апгрейд — взять saphyr.
 fn clash(body: &str) -> Vec<Profile> {
     proxies(body).iter().filter_map(|node| parse(&link_of(node)?).ok()).collect()
 }
@@ -577,6 +634,9 @@ fn clash(body: &str) -> Vec<Profile> {
 /// заголовков и `alterId` панели пишут кто как.
 fn proxies(body: &str) -> Vec<HashMap<String, String>> {
     let mut items: Vec<Vec<String>> = Vec::new();
+    // Имя якоря на каждый узел, в том же порядке: по нему узлы находят друг
+    // друга в `<<: *base`.
+    let mut labels: Vec<Option<String>> = Vec::new();
     let mut inside = false;
     // Столбец, в котором стоят дефисы самих узлов. Дефис глубже — это список
     // внутри узла (`alpn:` и строки `- h3` под ним), и новым узлом он не
@@ -606,6 +666,7 @@ fn proxies(body: &str) -> Vec<HashMap<String, String>> {
             // разбор принял бы его за отступ всего узла, а поля — за чужие.
             Some(rest) => {
                 dash = indent;
+                labels.push(anchor_name(rest));
                 let head = format!("{}  {}", " ".repeat(indent), unanchor(rest));
                 items.push(if head.trim().is_empty() { Vec::new() } else { vec![head] });
             }
@@ -616,7 +677,7 @@ fn proxies(body: &str) -> Vec<HashMap<String, String>> {
             }
         }
     }
-    items
+    let mut nodes: Vec<HashMap<String, String>> = items
         .iter()
         .map(|lines| {
             let mut node = HashMap::new();
@@ -629,7 +690,94 @@ fn proxies(body: &str) -> Vec<HashMap<String, String>> {
             }
             node
         })
-        .collect()
+        .collect();
+    // Слияние — вторым проходом, а не по дороге: якорь по правилам YAML стоит
+    // раньше ссылки на него, но проверять это построчно значило бы разбирать
+    // документ дважды и здесь же. Дешевле собрать всё, а потом дополнить.
+    // Якоря всего документа, а поверх них — якоря самих узлов: имя одно и то
+    // же, но узел собран уже с учётом дефиса и столбцов, и он точнее.
+    let mut anchors = anchors_of(body);
+    anchors.extend(labels.iter().zip(nodes.iter()).filter_map(|(label, node)| Some((label.clone()?, node.clone()))));
+    for node in &mut nodes {
+        merge(node, &anchors);
+    }
+    nodes
+}
+
+/// Слияние отображений (`<<: *base`) — так панели выносят общий кусок узла
+/// (TLS, транспорт) в один якорь и повторяют его у полусотни узлов. Без этого
+/// у каждого из них не хватало ровно вынесенного, и профиль либо пропадал, либо
+/// заводился недособранным.
+///
+/// Своё сильнее общего: `entry().or_insert` не перебивает то, что у узла уже
+/// написано, — в YAML `<<` и означает «остальное возьми оттуда».
+///
+/// Ключей у `<<` бывает несколько (`<<: [*a, *b]`), и наш `scalar` сводит
+/// список к строке через запятую ещё до нас. Якорь, которого мы не видели
+/// (объявлен вне `proxies:`), пропускается молча: узел останется неполным и не
+/// пройдёт разбор — то же, что и было.
+fn merge(node: &mut HashMap<String, String>, anchors: &HashMap<String, HashMap<String, String>>) {
+    let Some(from) = node.remove("<<") else { return };
+    for name in from.split(',') {
+        let Some(base) = name.trim().strip_prefix('*').and_then(|n| anchors.get(n)) else { continue };
+        for (key, value) in base {
+            node.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    }
+}
+
+/// Якоря, объявленные вне `proxies:`. Панели выносят общий кусок узла — TLS,
+/// транспорт, обфускацию — в отдельный раздел и ссылаются на него из каждого
+/// узла; без этого прохода `<<: *base` не находил бы ничего, и узел заводился бы
+/// недособранным, то есть молча не соединялся бы.
+///
+/// Раздел не назван никак специально: годится любой ключ, лишь бы за ним стоял
+/// якорь. Лишнего это не берёт — то, на что никто не сослался, просто лежит в
+/// карте и умирает вместе с ней.
+///
+/// Амперсанд в значении (пароль, запрос в ссылке) якорем не считается: якорь
+/// стоит сразу за `ключ:` или за дефисом списка, и только там его и ищем.
+fn anchors_of(body: &str) -> HashMap<String, HashMap<String, String>> {
+    let lines: Vec<&str> = body.lines().map(str::trim_end).collect();
+    let mut out = HashMap::new();
+    for (i, line) in lines.iter().enumerate() {
+        let bare = line.trim_start();
+        let Some(at) = bare.find('&') else { continue };
+        let head = bare[..at].trim_end();
+        if !(head.ends_with(':') || head == "-" || head.is_empty()) {
+            continue;
+        }
+        let tail = &bare[at + 1..];
+        let end = tail.find(char::is_whitespace).unwrap_or(tail.len());
+        let (name, rest) = (&tail[..end], tail[end..].trim());
+        if name.is_empty() {
+            continue;
+        }
+        let mut node = HashMap::new();
+        if rest.starts_with('{') {
+            flow(rest, "", &mut node);
+        } else {
+            // Тело якоря — всё, что ниже и глубже. Пустые строки и комментарии
+            // блок не обрывают: в конфигах панелей они стоят между полями.
+            let depth = line.len() - bare.len();
+            let body: Vec<&str> = lines[i + 1..]
+                .iter()
+                .take_while(|l| l.trim().is_empty() || indent(l) > depth)
+                .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+                .copied()
+                .collect();
+            block(&body, "", &mut node);
+        }
+        out.insert(name.to_string(), node);
+    }
+    out
+}
+
+/// Имя якоря узла, если оно есть: по нему на узел ссылается `<<:` соседа.
+fn anchor_name(rest: &str) -> Option<String> {
+    let tail = rest.strip_prefix('&')?;
+    let end = tail.find(char::is_whitespace).unwrap_or(tail.len());
+    Some(tail[..end].to_string())
 }
 
 /// Метка якоря в начале узла (`- &hk {server: …}`). Панели ставят её, чтобы
@@ -777,9 +925,9 @@ fn add(q: &mut Vec<String>, key: &str, value: &str) {
     }
 }
 
-/// Узел Clash → share-link. Узел, который так не переложить (ssr, tuic, snell,
-/// socks5 или наш же протокол без обязательного поля), пропускается: неполная
-/// ссылка дала бы профиль, который молча не соединяется.
+/// Узел Clash → share-link. Узел, который так не переложить (ssr, snell,
+/// socks5, tuic v4 с одним `token` или наш же протокол без обязательного поля),
+/// пропускается: неполная ссылка дала бы профиль, который молча не соединяется.
 fn link_of(node: &HashMap<String, String>) -> Option<String> {
     let get = |key: &str| node.get(key).map(String::as_str).unwrap_or_default();
     let server = match get("server") {
@@ -845,6 +993,26 @@ fn link_of(node: &HashMap<String, String>) -> Option<String> {
             }
             add(&mut q, "mport", get("ports"));
             format!("hy2://{}@{server}:{port}", enc(password))
+        }
+        "tuic" => {
+            // v4 отдаёт `token` вместо пары, а `tuic` в sing-box — это v5:
+            // собранная из половины ссылка дала бы профиль, который молча не
+            // соединяется.
+            let (uuid, password) = (get("uuid"), get("password"));
+            if uuid.is_empty() || password.is_empty() {
+                return None;
+            }
+            add(&mut q, "sni", get("sni"));
+            add(&mut q, "alpn", get("alpn"));
+            add(&mut q, "congestion-controller", get("congestion-controller"));
+            add(&mut q, "udp-relay-mode", get("udp-relay-mode"));
+            if get("skip-cert-verify") == "true" {
+                add(&mut q, "allow_insecure", "1");
+            }
+            if get("reduce-rtt") == "true" {
+                add(&mut q, "reduce-rtt", "1");
+            }
+            format!("tuic://{}:{}@{server}:{port}", enc(uuid), enc(password))
         }
         "wireguard" => {
             let private = get("private-key");
@@ -1062,6 +1230,38 @@ mod tests {
     }
 
     /// Подписка приходит в двух видах, и оба должны дать один и тот же список.
+    /// TUIC продукт принимал только конфигом: тип в `NODES` был, разбора ссылки
+    /// не было — и узел из подписки пропадал молча.
+    ///
+    /// Половина ссылки хуже её отсутствия: `tuic` в sing-box — это v5, а v4
+    /// отдаёт один `token` вместо пары. Собранный из половины профиль молча не
+    /// соединялся бы, и человек искал бы причину в сервере.
+    #[test]
+    fn tuic_link() {
+        let p = parse("tuic://11111111-2222-3333-4444-555555555555:pa%3Ass@a.com:8443?sni=a.com&alpn=h3&congestion_control=bbr&udp_relay_mode=native&allow_insecure=1#Узел").unwrap();
+        assert_eq!(p.name, "Узел");
+        assert_eq!(p.node["type"], "tuic");
+        assert_eq!(p.node["server_port"], 8443);
+        assert_eq!(p.node["uuid"], "11111111-2222-3333-4444-555555555555");
+        assert_eq!(p.node["password"], "pa:ss", "пароль раскодируется из percent-encoding");
+        assert_eq!(p.node["congestion_control"], "bbr");
+        assert_eq!(p.node["udp_relay_mode"], "native");
+        assert_eq!(p.node["tls"]["server_name"], "a.com");
+        assert_eq!(p.node["tls"]["alpn"], serde_json::json!(["h3"]));
+        assert_eq!(p.node["tls"]["insecure"], true);
+        assert!(p.node.get("zero_rtt_handshake").is_none(), "чего не просили, того в узле нет");
+
+        // Порт по умолчанию и умолчания sing-box, которых мы не дублируем.
+        let bare = parse("tuic://uuid:pass@b.com").unwrap();
+        assert_eq!(bare.node["server_port"], 443);
+        assert_eq!(bare.node["tls"]["enabled"], true, "tuic без TLS не бывает");
+        assert!(bare.node.get("congestion_control").is_none());
+
+        // v4 (`token`) и любая другая половина — не узел.
+        assert!(parse("tuic://token@c.com:443").is_err(), "без пароля ссылка не собирается");
+        assert!(parse("tuic://:pass@c.com:443").is_err(), "без UUID тоже");
+    }
+
     #[test]
     fn subscription_plain_and_base64() {
         let list = "vless://u@a.com:443?security=none#Первый\n\
@@ -1101,6 +1301,12 @@ mod tests {
         let body = "\
 port: 7890
 mode: rule
+common: &shared
+  type: trojan
+  server: sh.example.com
+  port: 443
+  password: shpass
+  sni: sh.example.com
 proxies:
   - name: \"Узел ①\"
     type: vless
@@ -1148,6 +1354,28 @@ proxies:
     ip: 10.0.0.2
     mtu: 1408
     reserved: [1, 2, 3]
+  - &common
+    type: trojan
+    server: tr.example.com
+    port: 443
+    password: trpass
+    sni: tr.example.com
+  - <<: *common
+    name: MERGED
+  - name: TU
+    type: tuic
+    server: tu.example.com
+    port: 8443
+    uuid: 11111111-2222-3333-4444-555555555555
+    password: tupass
+    congestion-controller: bbr
+    udp-relay-mode: native
+    sni: tu.example.com
+  - name: TU4
+    type: tuic
+    server: old.example.com
+    port: 8443
+    token: legacy-token
   - &anchored
     name: TR
     type: trojan
@@ -1159,6 +1387,8 @@ proxies:
       - h2
       - http/1.1
   - *anchored
+  - <<: *shared
+    name: OUTSIDE
   - name: SSR
     type: ssr
     server: x.example.com
@@ -1171,8 +1401,8 @@ proxy-groups:
         let names: Vec<&str> = found.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
-            ["Узел ①", "SS", "VM", "HY", "WG", "TR"],
-            "ssr не наш протокол, а ссылка на якорь узла не описывает — оба пропускаются"
+            ["Узел ①", "SS", "VM", "HY", "WG", "trojan-tr.example.com", "MERGED", "TU", "TR", "OUTSIDE"],
+            "ssr не наш, tuic v4 с одним token — половина узла, ссылка на якорь узла не описывает"
         );
 
         let vless = &found[0].node;
@@ -1207,14 +1437,44 @@ proxy-groups:
         assert_eq!(wg["peers"][0]["reserved"], serde_json::json!([1, 2, 3]));
         assert_eq!(wg["mtu"], 1408);
 
+        // Якорь без имени — тоже узел, и имя ему выдаётся из адреса: панели
+        // так и пишут общий кусок, а `name` дают только наследникам.
+        assert_eq!(found[5].node["type"], "trojan");
+
+        // Слияние: у наследника своё имя, остальное — из якоря. Так панели
+        // выносят TLS и транспорт в один кусок и повторяют его у полусотни
+        // узлов; без слияния каждый из них терял ровно вынесенное.
+        let merged = &found[6].node;
+        assert_eq!(merged["type"], "trojan");
+        assert_eq!(merged["server"], "tr.example.com");
+        assert_eq!(merged["password"], "trpass");
+
+        // TUIC: в белом списке типов он был с самого начала, а переложить его в
+        // ссылку было не во что — узел пропадал молча.
+        let tu = &found[7].node;
+        assert_eq!(tu["type"], "tuic");
+        assert_eq!(tu["uuid"], "11111111-2222-3333-4444-555555555555");
+        assert_eq!(tu["password"], "tupass");
+        assert_eq!(tu["congestion_control"], "bbr", "дефисное написание Clash доезжает");
+        assert_eq!(tu["udp_relay_mode"], "native");
+        assert_eq!(tu["tls"]["server_name"], "tu.example.com");
+
         // Метка якоря — это ссылка для `proxy-groups`, которых мы не читаем.
         // Узел с ней раньше пропадал целиком, а список блоком (так панели
         // пишут alpn не реже, чем скобками) терялся полем.
-        let tr = &found[5].node;
+        let tr = &found[8].node;
         assert_eq!(tr["type"], "trojan");
         assert_eq!(tr["server"], "tr.example.com");
         assert_eq!(tr["password"], "trpass");
         assert_eq!(tr["tls"]["alpn"], serde_json::json!(["h2", "http/1.1"]), "список блоком");
+
+        // Якорь, объявленный вне `proxies:`: панели выносят туда общий кусок
+        // узла и ссылаются на него из каждого. Без этого прохода узел заводился
+        // бы недособранным, то есть молча не соединялся бы.
+        let outside = &found[9].node;
+        assert_eq!(outside["type"], "trojan");
+        assert_eq!(outside["server"], "sh.example.com");
+        assert_eq!(outside["password"], "shpass");
     }
 
     /// Разбор YAML — запасной путь, и включаться он должен только вместо ссылок.
