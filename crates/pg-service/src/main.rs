@@ -250,6 +250,11 @@ struct Saved {
     refreshed_at: Option<u64>,
     #[serde(default)]
     lang: core_ipc::Lang,
+    /// Профили, отмеченные звёздочкой. Именами, а не флагом внутри узла: узел
+    /// из подписки сверка заменяет целиком, и флаг уехал бы вместе с ним —
+    /// звёздочка же про выбор человека, а не про узел.
+    #[serde(default)]
+    favorites: BTreeSet<String>,
     /// Политика брандмауэра, какой она была до нашего замка, — непрозрачной
     /// строкой от `core_filter::policy_now()`.
     ///
@@ -356,6 +361,9 @@ struct Service {
     /// Приватный режим включён пользователем. Не то же самое, что «туннель жив»:
     /// именно расхождение этих двух флагов и означает DROP.
     private: bool,
+    /// Профили со звёздочкой. Держит служба, а не окно: на второй машине
+    /// человек отмечает те же три узла из сотни.
+    favorites: BTreeSet<String>,
     /// Политика брандмауэра до нашего замка — её и вернём, снимая его.
     /// Спрашивается один раз за запуск и только пока замка нет: под своим
     /// замком служба прочитала бы свой же `blockoutbound`. Снимается вместе с
@@ -443,7 +451,7 @@ impl Service {
                 profile: saved.profile,
                 apps: Self::dedup_apps(saved.apps),
                 scope,
-                profiles: profiles_of(&saved.profiles),
+                profiles: profiles_of(&saved.profiles, &saved.favorites),
                 subscriptions: subscriptions_of(
                     &saved.subscriptions,
                     &saved.sub_names,
@@ -462,6 +470,7 @@ impl Service {
             sub_names: saved.sub_names,
             quotas: saved.quotas,
             private: saved.private,
+            favorites: saved.favorites,
             policy: saved.policy,
             tunnel: None,
             probe_target: (String::new(), 0),
@@ -518,7 +527,11 @@ impl Service {
     }
 
     fn save(&mut self) {
-        self.status.profiles = profiles_of(&self.profiles);
+        // Звёздочка на профиле, которого больше нет, — это строка в
+        // `state.json`, которая переживёт и его, и подписку, откуда он пришёл:
+        // прополку делаем здесь же, где и прополку измерений.
+        self.favorites.retain(|name| self.profiles.contains_key(name));
+        self.status.profiles = profiles_of(&self.profiles, &self.favorites);
         self.status.subscriptions =
             subscriptions_of(&self.subscriptions, &self.sub_names, &self.profiles, &self.quotas);
         // Профиля больше нет — и мерить нечего: без этой прополки кэш измерений
@@ -542,6 +555,7 @@ impl Service {
             refreshed_at: self.status.refreshed_at,
             lang: self.status.lang,
             private: self.private,
+            favorites: self.favorites.clone(),
             policy: self.policy.clone(),
             // Обратно тем же именем, каким читаем: перечисление знает своё имя
             // само, и дублировать его строкой значило бы разъехаться на первом
@@ -1064,12 +1078,12 @@ fn subscriptions_of(
 /// Пароля и ключа здесь нет: статус окно спрашивает каждые две секунды, и всё
 /// содержимое узла ездило бы туда-сюда сотнями раз в минуту. За узлом целиком
 /// окно ходит отдельно и только на открытие формы правки (`Request::ProfileNode`).
-fn profiles_of(profiles: &BTreeMap<String, Value>) -> Vec<ProfileInfo> {
+fn profiles_of(profiles: &BTreeMap<String, Value>, favorites: &BTreeSet<String>) -> Vec<ProfileInfo> {
     profiles
         .iter()
         .map(|(name, node)| {
             let (kind, server) = core_config::describe(node);
-            ProfileInfo { name: name.clone(), kind, server }
+            ProfileInfo { favorite: favorites.contains(name), name: name.clone(), kind, server }
         })
         .collect()
 }
@@ -1322,6 +1336,9 @@ fn edit_profile(s: &mut Service, name: &str, rename: &str, node: &str) -> Respon
         }
         for p in s.status.probes.iter_mut().filter(|p| p.name == name) {
             p.name = to.clone();
+        }
+        if s.favorites.remove(name) {
+            s.favorites.insert(to.clone());
         }
     }
     s.profiles.insert(to.clone(), after.clone());
@@ -1842,6 +1859,21 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             },
         },
         Request::EditProfile { name, rename, node } => edit_profile(&mut s, &name, &rename, &node),
+        Request::SetFavorite { name, on } => {
+            if !s.profiles.contains_key(&name) {
+                return Response::Error {
+                    message: tf!("нет профиля «{}»", name),
+                };
+            }
+            match on {
+                true => s.favorites.insert(name),
+                false => s.favorites.remove(&name),
+            };
+            // Ни туннеля, ни правил это не касается вовсе: звёздочка — про
+            // порядок строк в окне, и перезапускать ради неё нечего.
+            s.save();
+            Response::Done
+        }
         Request::SetLang { lang } => {
             // Язык переключает и журнал службы: сообщения пишет она, а читает
             // их пользователь в окне.
@@ -3133,6 +3165,43 @@ mod tests {
 
         let out = edit_profile(&mut s, "дом", "", "не ссылка и не JSON");
         assert!(matches!(out, Response::Error { .. }), "битый узел отклоняется с причиной: {out:?}");
+    }
+
+    /// Звёздочка — про выбор человека, а не про узел, и держится она на имени.
+    ///
+    /// Отсюда три вещи, каждая из которых ломается молча. Переименование
+    /// обязано её перевесить — иначе отметка остаётся висеть на имени, которого
+    /// больше нет, а профиль теряет её без единого слова. Сверка подписки её не
+    /// трогает: набор узлов она заменяет целиком, и живи отметка внутри узла,
+    /// её стирал бы каждый круг. И профиль, которого не стало, уносит её с
+    /// собой — иначе `state.json` копил бы имена вечно, а вернувшийся под тем
+    /// же именем чужой узел получил бы чужую звезду.
+    #[test]
+    fn a_favourite_follows_the_profile_and_not_the_node() {
+        let _state = scratch("pg-favourite-test");
+        let mut s = Service::load();
+        s.profiles.insert("NL-01".into(), json!({"type": "vless", "server": "a.com"}));
+        s.favorites.insert("NL-01".into());
+        s.save();
+        assert!(s.status.profiles.iter().any(|p| p.name == "NL-01" && p.favorite), "звезда обязана доехать до окна");
+
+        // Сверка подписки заменяет узел под тем же именем — отметка остаётся.
+        s.profiles.insert("NL-01".into(), json!({"type": "vless", "server": "b.com"}));
+        s.save();
+        assert!(s.favorites.contains("NL-01"), "сверка стёрла отметку человека");
+
+        let out = edit_profile(&mut s, "NL-01", "дом", "");
+        assert!(matches!(out, Response::Done), "{out:?}");
+        assert_eq!(
+            s.favorites.iter().collect::<Vec<_>>(),
+            vec!["дом"],
+            "переименование обязано перевесить звезду: {:?}",
+            s.favorites
+        );
+
+        s.forget_profile("дом");
+        s.save();
+        assert!(s.favorites.is_empty(), "профиля нет — и звезде висеть не на чем: {:?}", s.favorites);
     }
 
     /// Занятое имя получает номер на обоих путях импорта. Голый `insert` в

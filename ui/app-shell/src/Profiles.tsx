@@ -580,7 +580,14 @@ function Rows({
   const at = (name: string) => probes.find((p) => p.name === name)?.latency_ms ?? Infinity;
   // Сортировка устойчива, поэтому внутри «неизмеренных» порядок остаётся тем,
   // каким пришёл, — а пришёл он от службы и от подписки.
-  const shown = byLatency ? [...items].sort((a, b) => at(a.name) - at(b.name)) : items;
+  //
+  // Звёздочка сильнее задержки и стоит первой: отмечают ровно те три узла из
+  // сотни, которыми пользуются, и уехать вниз из-за чужого замера они не
+  // должны. Внутри отмеченных порядок тот же самый, что и у остальных, —
+  // сортировка одна и та же, просто в два ключа.
+  const order = (a: ProfileInfo, b: ProfileInfo) =>
+    Number(b.favorite) - Number(a.favorite) || (byLatency ? at(a.name) - at(b.name) : 0);
+  const shown = items.some((i) => i.favorite) || byLatency ? [...items].sort(order) : items;
   return (
     <ul className="flex flex-col gap-1">
       {shown.map((item) => {
@@ -671,6 +678,19 @@ function Rows({
                   />
                 </span>
               </div>
+              {/* Звёздочка есть и у узла подписки, в отличие от правки и `✕`:
+                  сверка заменяет её набор целиком, но отметку она не трогает —
+                  та про выбор человека, а не про узел. Помнит её служба, а не
+                  окно: на второй машине человек отметит те же три узла. */}
+              <Button
+                variant="quiet"
+                aria-label={s.favorite}
+                aria-pressed={item.favorite}
+                title={s.favorite}
+                onClick={() => void act({ cmd: "set-favorite", arg: { name, on: !item.favorite } })}
+              >
+                <span className={item.favorite ? "text-accent" : "text-muted"}>{item.favorite ? "★" : "☆"}</span>
+              </Button>
               {/* Проверить один узел: прогон идёт по узлу за раз и стоит секунд
                   на каждый, так что на подписке в сотню «вот этот» — это минуты
                   разницы. Заперта та же кнопка тем же прогоном: каталог
