@@ -37,6 +37,27 @@ use tauri_plugin_notification::NotificationExt;
 /// `command(async)` уводит вызов в задачу рантайма Tauri; блокировка остаётся,
 /// но уже не на потоке окна. Служба принимает соединения по потоку на каждое,
 /// так что опрос статуса больше не стоит в очереди за долгой командой.
+/// Последний статус, проехавший через мост окна, и когда он приехал.
+///
+/// Значок спрашивает службу своим потоком, потому что с закрытым окном спросить
+/// за него некому. Но пока окно открыто, тот же статус едет мимо и так —
+/// каждые две секунды, — и свой опрос значка становится вторым запросом об
+/// одном и том же, а с открытой плашкой третьим. Служба на каждый заводит
+/// поток и берёт свой замок, и стоит это ровно ничего полезного.
+///
+/// Условие тут не «окно видно», а «статус свежий»: окно, спрятанное в трей,
+/// перестаёт спрашивать само, отметка стареет, и значок возвращается к
+/// собственному опросу — без единой проверки видимости.
+static SEEN: Mutex<Option<(Instant, Status)>> = Mutex::new(None);
+
+/// Статус, если он моложе круга значка. Дальше — как будто кэша нет: значок
+/// спросит службу сам.
+fn seen(fresher_than: Duration) -> Option<Status> {
+    let seen = SEEN.lock().ok()?;
+    let (at, status) = seen.as_ref()?;
+    (at.elapsed() < fresher_than).then(|| status.clone())
+}
+
 #[tauri::command(async)]
 fn ipc(req: Request) -> Result<Response, String> {
     // Единственное, что оболочка добавляет от себя: своё окружение. Фронтенду
@@ -46,7 +67,13 @@ fn ipc(req: Request) -> Result<Response, String> {
         Request::Discover { .. } => Request::Discover { env: core_ipc::whoami() },
         req => req,
     };
-    call(&req).map_err(|e| match e.kind() {
+    let out = call(&req);
+    if let Ok(Response::Status(s)) = &out {
+        if let Ok(mut seen) = SEEN.lock() {
+            *seen = Some((Instant::now(), s.clone()));
+        }
+    }
+    out.map_err(|e| match e.kind() {
         // Ни канала, ни сокета — служба не запущена. Код ошибки об этом не
         // говорит, а человеку нужно ровно одно действие.
         io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound => tf!("служба не запущена ({}): запустите proxybox", e),
@@ -472,6 +499,9 @@ fn set_autostart(_enabled: bool) -> Result<bool, String> {
 /// без значка закрытое окно нельзя прятать, иначе приложение исчезнет совсем.
 static TRAY: AtomicBool = AtomicBool::new(false);
 
+/// Круг значка: чаще службы всё равно не узнать — надзор у неё тот же.
+const TRAY_EVERY: Duration = Duration::from_secs(3);
+
 /// Показать окно с любого места: из меню значка и по клику по нему. Свёрнутое
 /// окно `show()` не поднимает — нужен ещё и `unminimize()`.
 fn raise(app: &tauri::AppHandle) {
@@ -886,10 +916,11 @@ fn tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         let mut was: Option<core_ipc::Tunnel> = None;
         let mut warned = false;
         loop {
-            let status = match call(&Request::Status) {
+            // Спрашиваем службу, только если окно не спросило за нас: см. `SEEN`.
+            let status = seen(TRAY_EVERY).or_else(|| match call(&Request::Status) {
                 Ok(Response::Status(s)) => Some(s),
                 _ => None,
-            };
+            });
             // Язык выбирают в окне, и хранит его служба: значок обязан говорить
             // на нём же. Заодно на него переходят и сообщения оболочки.
             if let Some(s) = &status {
@@ -939,7 +970,7 @@ fn tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            std::thread::sleep(Duration::from_secs(3));
+            std::thread::sleep(TRAY_EVERY);
         }
     });
     Ok(())
