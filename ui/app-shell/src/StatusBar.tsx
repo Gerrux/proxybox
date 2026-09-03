@@ -343,7 +343,7 @@ export function StatusBar({
             ["all", s.scopeAll, s.scopeHint],
           ]}
           value={scope}
-          className="seg-well"
+          className="well"
           disabled={!status || busy}
           onPick={(v) => onScope(v as Scope)}
         />
