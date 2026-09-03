@@ -560,9 +560,9 @@ fn tuic(link: &str) -> Result<Profile, String> {
     });
     // Умолчания sing-box (`cubic`, `native`) не дублируем: узел, в котором
     // написано ровно то, что прислала панель, легче сверить с её карточкой.
-    for (from, to) in [("congestion_control", "congestion_control"), ("congestion-controller", "congestion_control")] {
+    for from in ["congestion_control", "congestion-controller"] {
         if let Some(value) = l.q(from) {
-            node[to] = json!(value);
+            node["congestion_control"] = json!(value);
         }
     }
     for from in ["udp_relay_mode", "udp-relay-mode"] {

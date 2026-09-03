@@ -554,8 +554,13 @@ fn main() -> std::process::ExitCode {
                     (kind, "") => format!("  {kind}"),
                     (kind, server) => format!("  {kind} → {server}"),
                 };
-                let mark = if s.profile.as_deref() == Some(&p.name) { "* " } else { "  " };
-                println!("{mark}{:<24}{where_to}", p.name);
+                // Два знака, а не один: активный профиль и отмеченный — разные
+                // вещи, и строка обязана показывать обе. Ставит звёздочку окно
+                // (`set-favorite`); в консоли её видно, но не меняют — как и
+                // остальное, чему в ней не нашлось дела.
+                let active = if s.profile.as_deref() == Some(&p.name) { '*' } else { ' ' };
+                let star = if p.favorite { '★' } else { ' ' };
+                println!("{active}{star}{:<24}{where_to}", p.name);
             }
             std::process::ExitCode::SUCCESS
         }
