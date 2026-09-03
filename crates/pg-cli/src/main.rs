@@ -341,7 +341,7 @@ fn parse(args: &[String]) -> Result<Request, String> {
             Some("whitelist") => Ok(Request::SetScope { scope: Scope::Whitelist }),
             // `none` в экране помощи не значится намеренно: он диагностический,
             // как `PG_STACK` и `PG_PPROF`, и человеку выбирать в нём нечего.
-            // Описан в README, рядом с остальной диагностикой.
+            // Описан в `docs/development.md`, рядом с остальной диагностикой.
             Some("none") => Ok(Request::SetScope { scope: Scope::None }),
             _ => Err(t("нужен охват: whitelist или all")),
         },

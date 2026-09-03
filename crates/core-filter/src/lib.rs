@@ -137,7 +137,7 @@ fn pass_args(path: &str, tun_addr: &str) -> Vec<String> {
 /// в WFP: `ALE_APP_ID` — это путь к `svchost.exe`, один на всех. Значит имя,
 /// которое спросило запертое приложение, узлу всё-таки видно — но только если
 /// это запрос из тех, что FakeIP не обслуживает локально (`HTTPS`, `TXT`,
-/// `PTR`); A, AAAA и локальные имена до сервера не доходят. Записано в README.
+/// `PTR`); A, AAAA и локальные имена до сервера не доходят. Записано в `docs/limitations.md`.
 fn dns_args(tun_addr: &str) -> Vec<String> {
     let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     add_args(
