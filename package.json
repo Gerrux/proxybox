@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "proxybox — контроль исходящего трафика выбранных приложений, fail-closed",
-  "license": "UNLICENSED",
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "packageManager": "pnpm@9.15.9",
   "scripts": {

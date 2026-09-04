@@ -9,6 +9,13 @@
 <p align="center"><a href="https://gerrux.github.io/proxybox/">网站</a> · <a href="https://github.com/Gerrux/proxybox/releases">下载</a> · <a href="docs/">文档</a> · <a href="docs/brand.md">品牌规范</a></p>
 
 <p align="center"><a href="README.md">Русский</a> · <a href="README.en.md">English</a> · <a href="README.fa.md">فارسی</a> · <b>简体中文</b> · <a href="README.tr.md">Türkçe</a> · <a href="README.id.md">Bahasa Indonesia</a></p>
+<p align="center">
+  <a href="https://github.com/Gerrux/proxybox/releases/latest"><img alt="" src="https://img.shields.io/github/v/release/Gerrux/proxybox?style=flat-square&labelColor=14161A&color=2E4BD8"></a>
+  <a href="https://github.com/Gerrux/proxybox/actions/workflows/ci.yml"><img alt="" src="https://img.shields.io/github/actions/workflow/status/Gerrux/proxybox/ci.yml?branch=master&style=flat-square&labelColor=14161A&label=ci"></a>
+  <a href="LICENSE"><img alt="" src="https://img.shields.io/github/license/Gerrux/proxybox?style=flat-square&labelColor=14161A&color=1E9E5A"></a>
+  <img alt="" src="https://img.shields.io/badge/Windows-10%20%7C%2011-14161A?style=flat-square">
+  <img alt="" src="https://img.shields.io/badge/i18n-ru%20en%20fa%20zh%20tr%20id-14161A?style=flat-square">
+</p>
 
 **按 fail-closed 原则控制出站流量。** 你选中的程序只能经由你自己的隧道访问网络；
 没有隧道，就没有网络。其他应用的流量完全不受干预。
@@ -92,6 +99,7 @@ LocalSystem 身份注册自启动的 `proxybox` 服务。本产品没有自己�
 
 | | |
 | --- | --- |
+| [第一步](docs/quickstart.md) | 从空窗口到可用的隧道，以及没成功时怎么办 |
 | [工作原理](docs/how-it-works.md) | 隧道、sing-box 配置、防火墙、DNS，以及完整的原则 |
 | [在 Windows 上安装](docs/install.md) | 安装程序、更新、服务记住了什么、旁边有别的 VPN |
 | [配置、订阅与测速](docs/profiles.md) | 导入链接与订阅、Clash YAML、测量节点 |
@@ -105,3 +113,14 @@ LocalSystem 身份注册自启动的 `proxybox` 服务。本产品没有自己�
 文档用俄语书写：俄语是本项目的源语言，也是翻译查表所用的键。只有 README 有译本。
 
 构建与发布安装程序——[src-tauri/BUILD-WINDOWS.md](src-tauri/BUILD-WINDOWS.md)。
+
+## 参与贡献
+
+本项目在 Linux 上构建，却只在 Windows 上运行。因此眼下最有用的是两件事：在真实机器上
+装好之后究竟发生了什么的报告，以及校读译文——除英文外，没有任何一种语言经过母语者过目。
+其余见 [CONTRIBUTING.md](CONTRIBUTING.md)。隐私或权限方面的漏洞请勿写成公开 issue：
+见 [SECURITY.md](SECURITY.md)。
+
+## 许可证
+
+[GPL-3.0-or-later](LICENSE)。

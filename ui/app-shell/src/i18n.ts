@@ -315,6 +315,24 @@ const RU = {
   updateAvailable: (tag: string) => `Вышла ${tag}`,
   download: "Скачать",
   allReleases: (n: number) => `Все релизы (${n})`,
+  // Первый запуск. Про то, что узлов продукт не даёт, сказано первой же
+  // строкой: это самое частое недоразумение — его ставят, ожидая VPN-сервис.
+  welcomeTitle: "С чего начать",
+  welcomeIntro:
+    "Своих серверов у proxybox нет: нужна ссылка от вашего сервера или от панели, " +
+    "которой вы пользуетесь. Продукт делает другое — следит, чтобы выбранные " +
+    "приложения ходили в сеть только через ваш туннель, а без туннеля не ходили вовсе.",
+  welcomeStep1: "Завести профиль",
+  welcomeStep1Hint: "Вставьте share-link, адрес подписки или JSON узла — разберётся сам.",
+  welcomeStep2: "Выбрать приложения",
+  welcomeStep2Hint: "Сеть будет только у них, и только через туннель. У остальных её не будет вовсе.",
+  welcomeStep2All: "В охвате «весь компьютер» список не участвует: в туннель идёт всё.",
+  welcomeStep3: "Включить приватный режим",
+  welcomeStep3Hint:
+    "Пока туннель не подтверждён, выбранные приложения остаются без сети. " +
+    "Это не поломка, а само обещание.",
+  welcomeHide: "Скрыть",
+  welcomeStepDone: "готово",
 };
 
 const EN: typeof RU = {
@@ -594,11 +612,27 @@ const EN: typeof RU = {
   updateAvailable: (tag: string) => `${tag} is out`,
   download: "Download",
   allReleases: (n: number) => `All releases (${n})`,
+  welcomeTitle: "Getting started",
+  welcomeIntro:
+    "proxybox has no servers of its own: you need a link to your own server, or one " +
+    "from the panel you already use. What it does is different — it makes sure the " +
+    "apps you pick reach the network only through your tunnel, and never without it.",
+  welcomeStep1: "Add a profile",
+  welcomeStep1Hint: "Paste a share link, a subscription address or a node's JSON — it works out which is which.",
+  welcomeStep2: "Pick the apps",
+  welcomeStep2Hint: "Only they get the network, and only through the tunnel. Everything else gets none at all.",
+  welcomeStep2All: "In the whole-machine scope the list takes no part: everything goes into the tunnel.",
+  welcomeStep3: "Turn the private mode on",
+  welcomeStep3Hint:
+    "Until the tunnel is confirmed the apps you picked stay without network. " +
+    "That is not a fault — it is the promise itself.",
+  welcomeHide: "Hide",
+  welcomeStepDone: "done",
 };
 
 const FA: typeof RU = {
   serviceDown: "سرویس پاسخ نمی‌دهد",
-  serviceDownHint: "PrivacyGateway را با دسترسی مدیر اجرا کنید — بدون سرویس هیچ‌چیز کار نمی‌کند",
+  serviceDownHint: "proxybox را با دسترسی مدیر اجرا کنید — بدون سرویس هیچ‌چیز کار نمی‌کند",
   off: "حالت خصوصی خاموش است",
   offHintWhitelist: "تا وقتی حالت خاموش است، همه به شبکه می‌روند — چه انتخاب‌شده، چه نه",
   offNoProfiles: "نخست یک پروفایل بیفزایید — فعلاً چیزی برای روشن کردن نیست",
@@ -876,6 +910,22 @@ const FA: typeof RU = {
   updateAvailable: (tag: string) => `${tag} بیرون آمد`,
   download: "دانلود",
   allReleases: (n: number) => `همهٔ انتشارها (${n})`,
+  welcomeTitle: "از کجا شروع کنیم",
+  welcomeIntro:
+    "proxybox سرور از آنِ خود ندارد: به پیوندی از سرور خودتان یا از پنلی که به کار " +
+    "می‌برید نیاز دارید. کار این محصول چیز دیگری است — مراقب است که برنامه‌های برگزیده " +
+    "تنها از راه تونل شما به شبکه بروند و بدون تونل اصلاً نروند.",
+  welcomeStep1: "افزودن نمایه",
+  welcomeStep1Hint: "یک share-link، نشانی اشتراک یا JSON گره را بچسبانید — خودش تشخیص می‌دهد.",
+  welcomeStep2: "برگزیدن برنامه‌ها",
+  welcomeStep2Hint: "شبکه تنها به آن‌ها می‌رسد و تنها از راه تونل. بقیه اصلاً شبکه ندارند.",
+  welcomeStep2All: "در گسترهٔ «همهٔ رایانه» فهرست نقشی ندارد: همه‌چیز به تونل می‌رود.",
+  welcomeStep3: "روشن کردن حالت خصوصی",
+  welcomeStep3Hint:
+    "تا وقتی تونل تأیید نشده، برنامه‌های برگزیده بی‌شبکه می‌مانند. " +
+    "این خرابی نیست، خودِ همان وعده است.",
+  welcomeHide: "پنهان کردن",
+  welcomeStepDone: "انجام شد",
 };
 
 /** Китайский (упрощённое письмо). */
@@ -1159,6 +1209,20 @@ const ZH: typeof RU = {
   updateAvailable: (tag: string) => `${tag} 已发布`,
   download: "下载",
   allReleases: (n: number) => `全部发布（${n}）`,
+  welcomeTitle: "从哪里开始",
+  welcomeIntro:
+    "proxybox 自己没有服务器：你需要一条指向自己服务器的链接，或者你正在用的面板给的链接。" +
+    "它做的是另一件事——保证你选中的程序只经由你的隧道联网，没有隧道就完全不联网。",
+  welcomeStep1: "添加配置",
+  welcomeStep1Hint: "粘贴 share-link、订阅地址或节点 JSON——它自己会分辨。",
+  welcomeStep2: "选择应用",
+  welcomeStep2Hint: "只有它们能联网，而且只能走隧道。其余的一概没有网络。",
+  welcomeStep2All: "在「整台电脑」范围下，这个列表不参与：所有流量都走隧道。",
+  welcomeStep3: "打开隐私模式",
+  welcomeStep3Hint:
+    "隧道未确认之前，选中的程序一直没有网络。这不是故障，这正是那个承诺本身。",
+  welcomeHide: "隐藏",
+  welcomeStepDone: "已完成",
 };
 
 /** Турецкий. */
@@ -1442,6 +1506,22 @@ const TR: typeof RU = {
   updateAvailable: (tag: string) => `${tag} çıktı`,
   download: "İndir",
   allReleases: (n: number) => `Tüm sürümler (${n})`,
+  welcomeTitle: "Nereden başlamalı",
+  welcomeIntro:
+    "proxybox'ın kendi sunucusu yoktur: kendi sunucunuza ya da kullandığınız panele ait " +
+    "bir bağlantı gerekir. Ürünün yaptığı başka bir şeydir — seçtiğiniz programların ağa " +
+    "yalnızca sizin tünelinizden çıkmasını, tünel yokken hiç çıkmamasını sağlar.",
+  welcomeStep1: "Profil ekleyin",
+  welcomeStep1Hint: "Bir share-link, abonelik adresi veya düğüm JSON'u yapıştırın — hangisi olduğunu kendi anlar.",
+  welcomeStep2: "Programları seçin",
+  welcomeStep2Hint: "Ağ yalnızca onlara verilir, o da yalnızca tünelden. Geri kalanlarda ağ hiç olmaz.",
+  welcomeStep2All: "«Tüm bilgisayar» kapsamında liste hiç işe karışmaz: her şey tünele gider.",
+  welcomeStep3: "Gizli kipi açın",
+  welcomeStep3Hint:
+    "Tünel doğrulanana dek seçtiğiniz programlar ağsız kalır. " +
+    "Bu bir arıza değil, vaadin ta kendisidir.",
+  welcomeHide: "Gizle",
+  welcomeStepDone: "tamam",
 };
 
 /** Индонезийский. */
@@ -1725,6 +1805,23 @@ const ID: typeof RU = {
   updateAvailable: (tag: string) => `${tag} sudah rilis`,
   download: "Unduh",
   allReleases: (n: number) => `Semua rilis (${n})`,
+  welcomeTitle: "Mulai dari mana",
+  welcomeIntro:
+    "proxybox tidak punya server sendiri: Anda perlu tautan ke server Anda sendiri, atau " +
+    "dari panel yang sudah Anda pakai. Yang dikerjakannya lain — memastikan program yang " +
+    "Anda pilih menjangkau jaringan hanya lewat terowongan Anda, dan tanpa terowongan " +
+    "tidak sama sekali.",
+  welcomeStep1: "Tambahkan profil",
+  welcomeStep1Hint: "Tempelkan share-link, alamat langganan, atau JSON node — ia sendiri yang membedakan.",
+  welcomeStep2: "Pilih aplikasi",
+  welcomeStep2Hint: "Hanya mereka yang mendapat jaringan, dan hanya lewat terowongan. Selebihnya tidak sama sekali.",
+  welcomeStep2All: "Dalam cakupan «seluruh komputer» daftar ini tidak ikut serta: semuanya masuk ke terowongan.",
+  welcomeStep3: "Nyalakan mode privat",
+  welcomeStep3Hint:
+    "Selama terowongan belum dipastikan, program pilihan Anda tetap tanpa jaringan. " +
+    "Itu bukan kerusakan, melainkan janjinya sendiri.",
+  welcomeHide: "Sembunyikan",
+  welcomeStepDone: "selesai",
 };
 
 export type Strings = typeof RU;

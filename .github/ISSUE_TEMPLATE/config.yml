@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Вопрос «как настроить» / How do I…
+    url: https://github.com/Gerrux/proxybox/discussions
+    about: Не заработало, но непонятно, ошибка ли это — спросите в обсуждениях.
+  - name: Документация
+    url: https://github.com/Gerrux/proxybox/tree/master/docs
+    about: Установка, профили и подписки, браузерные профили, окно, разработка.
+  - name: Чего ещё нет
+    url: https://github.com/Gerrux/proxybox/blob/master/docs/limitations.md
+    about: Известные дыры и то, чего нет намеренно, — с разбором, почему.
+  - name: Дыра в безопасности
+    url: https://github.com/Gerrux/proxybox/security/advisories/new
+    about: Приватно, а не публичным issue.

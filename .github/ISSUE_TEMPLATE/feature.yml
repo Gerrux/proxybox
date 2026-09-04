@@ -1,0 +1,42 @@
+name: Предложение / Feature request
+description: Чего не хватает
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Загляните сперва в [«Чего ещё нет»](https://github.com/Gerrux/proxybox/blob/master/docs/limitations.md):
+        там перечислено и то, чего нет намеренно, — с разбором, почему.
+
+        *Feel free to write in English.*
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какую задачу это решает
+      description: >
+        Что вы пытались сделать и обо что споткнулись. Задача важнее решения:
+        у неё бывает выход дешевле того, который приходит в голову первым.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: Как это могло бы выглядеть
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: invariant
+    attributes:
+      label: Инвариант
+      description: >
+        Приватный режим включён + туннель не подтверждён = выбранные приложения
+        без сети. Промежуточных состояний с прямым доступом не существует,
+        bypass-правил нет. Предложения «пустить это приложение мимо туннеля» и
+        «снять запрет вместо выдачи пропуска» отклоняются по этой причине, а не
+        из вредности.
+      options:
+        - label: Предложение не заводит приложению пути мимо туннеля
+          required: true

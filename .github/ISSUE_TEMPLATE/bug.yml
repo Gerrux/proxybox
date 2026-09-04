@@ -1,0 +1,85 @@
+name: Ошибка / Bug report
+description: Что-то сломалось или ведёт себя не так
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Дыру в приватности или в правах сюда не пишите — она приватная,
+        [как сообщить](https://github.com/Gerrux/proxybox/blob/master/SECURITY.md).
+
+        *Feel free to write in English.*
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Вывод `proxybox doctor`
+      description: >
+        Половина отказов объясняется окружением, а не кодом: права, служба Base
+        Filtering Engine, чужой VPN рядом, системный прокси. В установленной
+        версии — `proxybox doctor` из консоли, из исходников —
+        `cargo run -p pg-cli -- doctor`.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: Что произошло
+      description: Что вы делали, что ожидали и что вышло вместо этого.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Версия proxybox
+      description: В окне — в настройках, внизу. В консоли — `proxybox --version`.
+      placeholder: "0.4.0"
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows
+      description: "`winver`, либо `[System.Environment]::OSVersion.Version` в PowerShell"
+      placeholder: "Windows 11 23H2 (22631.4169)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Охват
+      options:
+        - Белый список (сеть только выбранным приложениям)
+        - Весь компьютер
+        - Не знаю / приватный режим был выключен
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Тип узла
+      description: >
+        Протокол профиля: vless, vmess, trojan, ss, hysteria2, tuic, wireguard.
+        Адрес сервера, пароль и ключ сюда не вставляйте.
+      placeholder: "vless + reality"
+    validations:
+      required: false
+
+  - type: textarea
+    id: journal
+    attributes:
+      label: Журнал
+      description: >
+        Строки из ленты в окне, а если туннель не поднимался — хвост
+        `singbox.log`. Кнопка «Открыть журналы» в настройках открывает каталог.
+        Перед отправкой проверьте, что не увезли туда адрес сервера, пароль или
+        ключ.
+      render: text
+    validations:
+      required: false

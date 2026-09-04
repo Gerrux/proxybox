@@ -2,7 +2,7 @@
 name = "pg-desktop"
 version = "0.1.0"
 edition = "2021"
-license = "UNLICENSED"
+license = "GPL-3.0-or-later"
 
 # Отдельный Cargo-проект, не член корневого воркспейса: собирается только на
 # Windows (WebView2), на Linux нет webkit2gtk.

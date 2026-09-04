@@ -9,6 +9,13 @@
 <p align="center"><a href="https://gerrux.github.io/proxybox/">Situs</a> · <a href="https://github.com/Gerrux/proxybox/releases">Unduh</a> · <a href="docs/">Dokumentasi</a> · <a href="docs/brand.md">Identitas</a></p>
 
 <p align="center"><a href="README.md">Русский</a> · <a href="README.en.md">English</a> · <a href="README.fa.md">فارسی</a> · <a href="README.zh.md">简体中文</a> · <a href="README.tr.md">Türkçe</a> · <b>Bahasa Indonesia</b></p>
+<p align="center">
+  <a href="https://github.com/Gerrux/proxybox/releases/latest"><img alt="" src="https://img.shields.io/github/v/release/Gerrux/proxybox?style=flat-square&labelColor=14161A&color=2E4BD8"></a>
+  <a href="https://github.com/Gerrux/proxybox/actions/workflows/ci.yml"><img alt="" src="https://img.shields.io/github/actions/workflow/status/Gerrux/proxybox/ci.yml?branch=master&style=flat-square&labelColor=14161A&label=ci"></a>
+  <a href="LICENSE"><img alt="" src="https://img.shields.io/github/license/Gerrux/proxybox?style=flat-square&labelColor=14161A&color=1E9E5A"></a>
+  <img alt="" src="https://img.shields.io/badge/Windows-10%20%7C%2011-14161A?style=flat-square">
+  <img alt="" src="https://img.shields.io/badge/i18n-ru%20en%20fa%20zh%20tr%20id-14161A?style=flat-square">
+</p>
 
 **Kendali lalu lintas keluar dengan prinsip fail-closed.** Program yang Anda
 pilih hanya bisa menjangkau jaringan lewat terowongan Anda sendiri; tidak ada
@@ -113,6 +120,7 @@ dipasang; `run.bat` akan memperingatkan bila dijalankan tanpa hak tersebut.
 
 | | |
 | --- | --- |
+| [Langkah pertama](docs/quickstart.md) | dari jendela kosong ke terowongan yang jalan, dan apa yang dilakukan bila gagal |
 | [Cara kerjanya](docs/how-it-works.md) | terowongan, konfigurasi sing-box, firewall, DNS, prinsip selengkapnya |
 | [Pemasangan di Windows](docs/install.md) | penginstal, pembaruan, apa yang diingat layanan, VPN lain di sebelah |
 | [Profil, langganan, dan pengujian](docs/profiles.md) | impor tautan dan langganan, Clash YAML, mengukur node |
@@ -127,3 +135,16 @@ Dokumentasi ditulis dalam bahasa Rusia: Rusia adalah bahasa sumber proyek ini
 sekaligus kunci pencarian terjemahannya. Hanya README yang diterjemahkan.
 
 Membangun dan merilis penginstal — [src-tauri/BUILD-WINDOWS.md](src-tauri/BUILD-WINDOWS.md).
+
+## Ikut membantu
+
+Proyek ini dibangun di Linux tetapi hanya berjalan di Windows, jadi dua hal yang
+paling berguna sekarang: laporan tentang apa yang sebenarnya terjadi di mesin
+sungguhan, dan pembacaan ulang terjemahan — tidak satu pun di antaranya, selain
+bahasa Inggris, pernah dibaca penutur aslinya. Selebihnya ada di
+[CONTRIBUTING.md](CONTRIBUTING.md). Lubang privasi atau hak akses tidak ditulis
+sebagai issue publik: lihat [SECURITY.md](SECURITY.md).
+
+## Lisensi
+
+[GPL-3.0-or-later](LICENSE).
