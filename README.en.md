@@ -9,6 +9,13 @@
 <p align="center"><a href="https://gerrux.github.io/proxybox/">Site</a> · <a href="https://github.com/Gerrux/proxybox/releases">Download</a> · <a href="docs/">Docs</a> · <a href="docs/brand.md">Brand</a></p>
 
 <p align="center"><a href="README.md">Русский</a> · <b>English</b> · <a href="README.fa.md">فارسی</a> · <a href="README.zh.md">简体中文</a> · <a href="README.tr.md">Türkçe</a> · <a href="README.id.md">Bahasa Indonesia</a></p>
+<p align="center">
+  <a href="https://github.com/Gerrux/proxybox/releases/latest"><img alt="" src="https://img.shields.io/github/v/release/Gerrux/proxybox?style=flat-square&labelColor=14161A&color=2E4BD8"></a>
+  <a href="https://github.com/Gerrux/proxybox/actions/workflows/ci.yml"><img alt="" src="https://img.shields.io/github/actions/workflow/status/Gerrux/proxybox/ci.yml?branch=master&style=flat-square&labelColor=14161A&label=ci"></a>
+  <a href="LICENSE"><img alt="" src="https://img.shields.io/github/license/Gerrux/proxybox?style=flat-square&labelColor=14161A&color=1E9E5A"></a>
+  <img alt="" src="https://img.shields.io/badge/Windows-10%20%7C%2011-14161A?style=flat-square">
+  <img alt="" src="https://img.shields.io/badge/i18n-ru%20en%20fa%20zh%20tr%20id-14161A?style=flat-square">
+</p>
 
 **Fail-closed control over outbound traffic.** The programs you pick reach the
 network only through your tunnel; no tunnel, no network. Traffic from every
@@ -112,6 +119,7 @@ without them; `run.bat` warns about this when started without them.
 
 | | |
 | --- | --- |
+| [First steps](docs/quickstart.md) | from an empty window to a working tunnel, and what to do when it did not work |
 | [How it works](docs/how-it-works.md) | the tunnel, the sing-box config, the firewall, DNS, the principles in full |
 | [Installing on Windows](docs/install.md) | the installer, updates, what the service remembers, a foreign VPN nearby |
 | [Profiles, subscriptions and testing](docs/profiles.md) | importing links and subscriptions, Clash YAML, measuring nodes |
@@ -127,3 +135,16 @@ project and the key its translations are looked up by. Only the README is
 translated.
 
 Building and releasing the installer — [src-tauri/BUILD-WINDOWS.md](src-tauri/BUILD-WINDOWS.md).
+
+## Contributing
+
+The project is built on Linux and runs only on Windows, so the two most useful
+things right now are a report of what actually happened on a real machine, and a
+proof-read of the translations — no native speaker has read any of them except
+the English one. The rest is in [CONTRIBUTING.md](CONTRIBUTING.md). A privacy or
+privilege hole does not go into a public issue: see
+[SECURITY.md](SECURITY.md).
+
+## Licence
+
+[GPL-3.0-or-later](LICENSE).

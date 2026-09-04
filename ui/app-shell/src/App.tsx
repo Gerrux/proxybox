@@ -22,6 +22,7 @@ import { Profiles } from "./Profiles";
 import { Settings, useReleases, useTheme } from "./Settings";
 import { StatusBar, tunnelState } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
+import { Welcome } from "./Welcome";
 import { Button, Icon, type IconName } from "./ui";
 
 /** Что делать с крестиком, если человек попросил больше не спрашивать. Живёт в
@@ -258,6 +259,10 @@ export function App() {
           />
         ) : (
           <>
+            {/* Что сделать, чтобы это заработало. Уходит навсегда, как только
+                сбылись все три шага, и не показывается в плашке: 380 px из
+                трея открывают, чтобы глянуть состояние, а не читать. */}
+            {status && !flyout && <Welcome status={status} />}
             {/* Табы со счётчиками: сколько там строк, видно не открывая. Узкая
                 полоса и широкая «Главная» — одна навигация в двух видах, кто из
                 них показан, решает `index.css` по ширине окна. */}

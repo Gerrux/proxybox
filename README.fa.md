@@ -9,6 +9,13 @@
 <p align="center"><a href="https://gerrux.github.io/proxybox/">وب‌سایت</a> · <a href="https://github.com/Gerrux/proxybox/releases">دانلود</a> · <a href="docs/">مستندات</a> · <a href="docs/brand.md">هویت بصری</a></p>
 
 <p align="center"><a href="README.md">Русский</a> · <a href="README.en.md">English</a> · <b>فارسی</b> · <a href="README.zh.md">简体中文</a> · <a href="README.tr.md">Türkçe</a> · <a href="README.id.md">Bahasa Indonesia</a></p>
+<p align="center">
+  <a href="https://github.com/Gerrux/proxybox/releases/latest"><img alt="" src="https://img.shields.io/github/v/release/Gerrux/proxybox?style=flat-square&labelColor=14161A&color=2E4BD8"></a>
+  <a href="https://github.com/Gerrux/proxybox/actions/workflows/ci.yml"><img alt="" src="https://img.shields.io/github/actions/workflow/status/Gerrux/proxybox/ci.yml?branch=master&style=flat-square&labelColor=14161A&label=ci"></a>
+  <a href="LICENSE"><img alt="" src="https://img.shields.io/github/license/Gerrux/proxybox?style=flat-square&labelColor=14161A&color=1E9E5A"></a>
+  <img alt="" src="https://img.shields.io/badge/Windows-10%20%7C%2011-14161A?style=flat-square">
+  <img alt="" src="https://img.shields.io/badge/i18n-ru%20en%20fa%20zh%20tr%20id-14161A?style=flat-square">
+</p>
 
 <div dir="rtl">
 
@@ -108,6 +115,7 @@ NSIS، per-machine، شش زبان: پنجره، سرویس، CLI و sing-box ر
 
 | | |
 | --- | --- |
+| [گام‌های نخست](docs/quickstart.md) | از پنجرهٔ خالی تا تونل کارا، و وقتی نشد چه کنیم |
 | [چطور کار می‌کند](docs/how-it-works.md) | تونل، پیکربندی sing-box، دیوارهٔ آتش، DNS و اصول به‌تمامی |
 | [نصب روی ویندوز](docs/install.md) | نصب‌کننده، به‌روزرسانی، سرویس چه چیزی را به یاد دارد، VPN بیگانه در کنار |
 | [پروفایل‌ها، اشتراک‌ها و سنجش](docs/profiles.md) | درون‌ریزی پیوند و اشتراک، Clash YAML، اندازه‌گیری گره‌ها |
@@ -122,5 +130,17 @@ NSIS، per-machine، شش زبان: پنجره، سرویس، CLI و sing-box ر
 ترجمه‌ها هم هست. تنها README ترجمه شده است.
 
 ساخت و انتشار نصب‌کننده — [src-tauri/BUILD-WINDOWS.md](src-tauri/BUILD-WINDOWS.md).
+
+## مشارکت
+
+پروژه روی لینوکس ساخته می‌شود و تنها روی ویندوز کار می‌کند؛ به همین دلیل دو چیز
+از همه سودمندتر است: گزارش اینکه روی یک دستگاه واقعی واقعاً چه شد، و بازخوانی
+ترجمه‌ها — هیچ‌کدام از آن‌ها جز انگلیسی را گویشور بومی نخوانده است. باقی در
+[CONTRIBUTING.md](CONTRIBUTING.md) آمده است. حفرهٔ حریم خصوصی یا دسترسی را در
+issue عمومی مطرح نکنید: [SECURITY.md](SECURITY.md).
+
+## پروانه
+
+[GPL-3.0-or-later](LICENSE).
 
 </div>

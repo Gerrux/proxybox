@@ -1,0 +1,49 @@
+name: Перевод / Translation
+description: Строка переведена неверно, криво или не переведена вовсе
+labels: ["i18n"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ни один перевод, кроме английского, не читал носитель языка. Тесты
+        стерегут, что строка переведена, а не что переведена верно, — поэтому
+        такое сообщение здесь ценнее многих.
+
+        *No native speaker has read any translation except the English one.
+        Corrections are very welcome.*
+
+  - type: dropdown
+    id: lang
+    attributes:
+      label: Язык
+      options:
+        - فارسی (fa)
+        - 简体中文 (zh)
+        - Türkçe (tr)
+        - Bahasa Indonesia (id)
+        - English (en)
+        - Русский (ru)
+    validations:
+      required: true
+
+  - type: textarea
+    id: strings
+    attributes:
+      label: Что и на что
+      description: >
+        Как есть сейчас и как правильно. Скриншот помогает: слово в интерфейсе
+        значит не то же, что в списке.
+      placeholder: |
+        Было: …
+        Надо: …
+        Где: шапка окна / настройки / список профилей
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: rtl
+    attributes:
+      label: Раскладка
+      options:
+        - label: Дело не в словах, а в раскладке справа налево (фарси)
+          required: false

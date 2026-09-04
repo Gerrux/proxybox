@@ -9,6 +9,13 @@
 <p align="center"><a href="https://gerrux.github.io/proxybox/">Сайт</a> · <a href="https://github.com/Gerrux/proxybox/releases">Скачать</a> · <a href="docs/">Документация</a> · <a href="docs/brand.md">Фирменный стиль</a></p>
 
 <p align="center"><b>Русский</b> · <a href="README.en.md">English</a> · <a href="README.fa.md">فارسی</a> · <a href="README.zh.md">简体中文</a> · <a href="README.tr.md">Türkçe</a> · <a href="README.id.md">Bahasa Indonesia</a></p>
+<p align="center">
+  <a href="https://github.com/Gerrux/proxybox/releases/latest"><img alt="" src="https://img.shields.io/github/v/release/Gerrux/proxybox?style=flat-square&labelColor=14161A&color=2E4BD8"></a>
+  <a href="https://github.com/Gerrux/proxybox/actions/workflows/ci.yml"><img alt="" src="https://img.shields.io/github/actions/workflow/status/Gerrux/proxybox/ci.yml?branch=master&style=flat-square&labelColor=14161A&label=ci"></a>
+  <a href="LICENSE"><img alt="" src="https://img.shields.io/github/license/Gerrux/proxybox?style=flat-square&labelColor=14161A&color=1E9E5A"></a>
+  <img alt="" src="https://img.shields.io/badge/Windows-10%20%7C%2011-14161A?style=flat-square">
+  <img alt="" src="https://img.shields.io/badge/i18n-ru%20en%20fa%20zh%20tr%20id-14161A?style=flat-square">
+</p>
 
 **Контроль исходящего трафика по принципу fail-closed.** Выбранные пользователем
 программы ходят в сеть только через его туннель; туннеля нет — сети нет. Трафик
@@ -107,6 +114,7 @@ sing-box, поставит зависимости и предложит: зап�
 
 | | |
 | --- | --- |
+| [Первые шаги](docs/quickstart.md) | от пустого окна до работающего туннеля, и что делать, когда не вышло |
 | [Как это работает](docs/how-it-works.md) | туннель, конфиг sing-box, брандмауэр, DNS, принципы целиком |
 | [Установка на Windows](docs/install.md) | установщик, обновления, что помнит служба, чужой VPN рядом |
 | [Профили, подписки и прогон](docs/profiles.md) | импорт ссылок и подписок, Clash-YAML, измерение узлов |
@@ -118,3 +126,15 @@ sing-box, поставит зависимости и предложит: зап�
 | [WFP: считали, но не завели](docs/wfp.md) | почему своего фильтра нет |
 
 Сборка и выпуск установщика — [src-tauri/BUILD-WINDOWS.md](src-tauri/BUILD-WINDOWS.md).
+
+## Как помочь
+
+Проект собирается на Linux, а работает только на Windows, и дороже всего сейчас
+две вещи: отчёт «поставил на живую машину, вот что вышло» и вычитка переводов —
+ни один из них, кроме английского, не читал носитель языка. Остальное — в
+[CONTRIBUTING.md](CONTRIBUTING.md). Дыру в приватности или в правах не заводите
+публичным issue: [SECURITY.md](SECURITY.md).
+
+## Лицензия
+
+[GPL-3.0-or-later](LICENSE).

@@ -2,7 +2,7 @@
 name = "core-wfp"
 version = "0.1.0"
 edition = "2021"
-license = "UNLICENSED"
+license = "GPL-3.0-or-later"
 
 # Отдельный Cargo-проект, не член корневого воркспейса, — по той же причине, что
 # и `src-tauri`, только жёстче: это драйвер. Собирается он WDK и линкуется в

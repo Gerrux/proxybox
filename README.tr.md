@@ -9,6 +9,13 @@
 <p align="center"><a href="https://gerrux.github.io/proxybox/">Site</a> · <a href="https://github.com/Gerrux/proxybox/releases">İndir</a> · <a href="docs/">Belgeler</a> · <a href="docs/brand.md">Marka</a></p>
 
 <p align="center"><a href="README.md">Русский</a> · <a href="README.en.md">English</a> · <a href="README.fa.md">فارسی</a> · <a href="README.zh.md">简体中文</a> · <b>Türkçe</b> · <a href="README.id.md">Bahasa Indonesia</a></p>
+<p align="center">
+  <a href="https://github.com/Gerrux/proxybox/releases/latest"><img alt="" src="https://img.shields.io/github/v/release/Gerrux/proxybox?style=flat-square&labelColor=14161A&color=2E4BD8"></a>
+  <a href="https://github.com/Gerrux/proxybox/actions/workflows/ci.yml"><img alt="" src="https://img.shields.io/github/actions/workflow/status/Gerrux/proxybox/ci.yml?branch=master&style=flat-square&labelColor=14161A&label=ci"></a>
+  <a href="LICENSE"><img alt="" src="https://img.shields.io/github/license/Gerrux/proxybox?style=flat-square&labelColor=14161A&color=1E9E5A"></a>
+  <img alt="" src="https://img.shields.io/badge/Windows-10%20%7C%2011-14161A?style=flat-square">
+  <img alt="" src="https://img.shields.io/badge/i18n-ru%20en%20fa%20zh%20tr%20id-14161A?style=flat-square">
+</p>
 
 **Giden trafiğin fail-closed denetimi.** Seçtiğiniz programlar ağa yalnızca sizin
 tünelinizden çıkar; tünel yoksa ağ da yoktur. Diğer uygulamaların trafiğine hiç
@@ -107,6 +114,7 @@ kurulmaz; haklar olmadan başlatıldığında `run.bat` bunu söyler.
 
 | | |
 | --- | --- |
+| [İlk adımlar](docs/quickstart.md) | boş pencereden çalışan tünele, ve olmadığında ne yapmalı |
 | [Nasıl çalışır](docs/how-it-works.md) | tünel, sing-box yapılandırması, güvenlik duvarı, DNS, ilkelerin tamamı |
 | [Windows'a kurulum](docs/install.md) | kurulum programı, güncellemeler, hizmetin hatırladıkları, yanındaki yabancı VPN |
 | [Profiller, abonelikler ve ölçüm](docs/profiles.md) | bağlantı ve abonelik içe aktarma, Clash YAML, düğüm ölçümü |
@@ -121,3 +129,15 @@ Belgeler Rusça yazılır: bu projede kaynak dil Rusçadır ve çevirilerin anah
 odur. Yalnızca README çevrilmiştir.
 
 Kurulum programını derlemek ve yayımlamak — [src-tauri/BUILD-WINDOWS.md](src-tauri/BUILD-WINDOWS.md).
+
+## Katkı
+
+Proje Linux'ta derlenir ama yalnızca Windows'ta çalışır; bu yüzden şu an en işe
+yarayan iki şey: gerçek bir makinede kurunca ne olduğunun raporu ve çevirilerin
+okunması — İngilizce dışında hiçbirini ana dili konuşan biri okumadı. Gerisi
+[CONTRIBUTING.md](CONTRIBUTING.md) içinde. Gizlilik veya yetki açığı herkese
+açık bir issue'ya yazılmaz: [SECURITY.md](SECURITY.md).
+
+## Lisans
+
+[GPL-3.0-or-later](LICENSE).
