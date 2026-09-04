@@ -375,6 +375,16 @@ export function Settings({
               ))}
             </ul>
           )}
+
+          {/* Дыры продукта видит тот, у кого он не работает, а до трекера от
+              него дороги не было вовсе. Ведёт на форму заведения — снимок
+              экрана человек прикладывает там же, перетаскиванием. */}
+          <Row title={s.issueTitle} note={s.issueHint}>
+            <Button variant="quiet" onClick={() => void openUrl(`https://github.com/${REPO}/issues/new`)}>
+              {s.issueOpen}
+            </Button>
+          </Row>
+
         </Group>
       </div>
     </Panel>

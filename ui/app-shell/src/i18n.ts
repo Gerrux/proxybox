@@ -270,6 +270,10 @@ const RU = {
   logsHint:
     "Лента рядом говорит, что туннель отвалился; почему — пишет сам sing-box в singbox.log. Там же конфиг, с которым он запущен, и состояние службы. Файл переписывается с каждым запуском туннеля: снимите копию, пока не перезапустили.",
   logsOpen: "Открыть каталог",
+  issueTitle: "Сообщить о проблеме",
+  issueHint:
+    "Форма заведения на GitHub: опишите, что случилось, и приложите снимок экрана — прямо в поле, перетаскиванием. Пригодятся версия, охват и строка из ленты. Открывается в браузере, ничего отсюда не отправляется.",
+  issueOpen: "Открыть на GitHub",
   autostartTitle: "Запускать с Windows",
   autostartHint:
     "Окно стартует вместе с системой и сразу уходит в трей. Службы это не касается: она в SCM и поднимает туннель без всякого окна — автозапуск нужен значку, иначе о запертой машине в интерфейсе ни следа.",
@@ -545,6 +549,10 @@ const EN: typeof RU = {
   logsHint:
     "The journal next door says the tunnel went down; why it did is written by sing-box itself into singbox.log. The config it runs with and the service state are in the same folder. The file is rewritten on every tunnel start: take a copy before restarting.",
   logsOpen: "Open folder",
+  issueTitle: "Report a problem",
+  issueHint:
+    "The issue form on GitHub: describe what happened and attach a screenshot — drop it straight into the field. The version, the scope and the line from the journal all help. Opens in the browser; nothing is sent from here.",
+  issueOpen: "Open on GitHub",
   autostartTitle: "Start with Windows",
   autostartHint:
     "The window starts with the system and goes straight to the tray. The service is unaffected: it lives in the SCM and brings the tunnel up with no window at all — autostart is for the tray icon, without which a locked machine leaves no trace in the interface.",
@@ -823,6 +831,10 @@ const FA: typeof RU = {
   logsHint:
     "فهرست کنار فقط می‌گوید تونل افتاد؛ دلیلش را خود sing-box در singbox.log می‌نویسد. پیکربندی در حال اجرا و وضعیت سرویس هم در همان پوشه است. این فایل با هر راه‌اندازی تونل بازنویسی می‌شود: پیش از راه‌اندازی مجدد یک نسخه بردارید.",
   logsOpen: "باز کردن پوشه",
+  issueTitle: "گزارش مشکل",
+  issueHint:
+    "فرم ثبت مشکل در گیت‌هاب: بنویسید چه شد و تصویر صفحه را همان‌جا با کشیدن و رها کردن پیوست کنید. نسخه، دامنه و سطری از فهرست به کار می‌آید. در مرورگر باز می‌شود؛ از اینجا چیزی فرستاده نمی‌شود.",
+  issueOpen: "باز کردن در گیت‌هاب",
   autostartTitle: "اجرا همراه ویندوز",
   autostartHint:
     "پنجره همراه سیستم بالا می‌آید و یک‌راست به سینی می‌رود. به سرویس ربطی ندارد: او در SCM است و تونل را بی‌هیچ پنجره‌ای بالا می‌آورد — اجرای خودکار برای نشان سینی است، وگرنه از رایانهٔ قفل‌شده هیچ ردی در رابط نمی‌ماند.",
@@ -1102,6 +1114,10 @@ const ZH: typeof RU = {
   logsHint:
     "旁边的日志只说隧道断了，原因由 sing-box 自己写入 singbox.log。它运行所用的配置和服务状态也在同一目录。该文件在每次启动隧道时都会重写：重启之前请先复制一份。",
   logsOpen: "打开目录",
+  issueTitle: "报告问题",
+  issueHint:
+    "GitHub 上的问题表单：说明发生了什么，并把截图直接拖进输入框。版本、范围和日志里的那一行都有用。在浏览器中打开，这里不会发送任何东西。",
+  issueOpen: "在 GitHub 上打开",
   autostartTitle: "随 Windows 启动",
   autostartHint:
     "窗口随系统启动并直接进入托盘。这与服务无关：它在 SCM 里，没有窗口也照样把隧道拉起来 — 自启是为了托盘图标，没有它，被锁住的电脑在界面上不留一点痕迹。",
@@ -1381,6 +1397,10 @@ const TR: typeof RU = {
   logsHint:
     "Yandaki akış yalnızca tünelin düştüğünü söyler; nedenini sing-box kendi singbox.log dosyasına yazar. Çalıştığı yapılandırma ve servis durumu da aynı klasördedir. Dosya her tünel başlatmada yeniden yazılır: yeniden başlatmadan önce bir kopya alın.",
   logsOpen: "Klasörü aç",
+  issueTitle: "Sorun bildir",
+  issueHint:
+    "GitHub üzerindeki sorun formu: ne olduğunu yazın ve ekran görüntüsünü doğrudan alana sürükleyip bırakın. Sürüm, kapsam ve akıştaki satır işe yarar. Tarayıcıda açılır; buradan hiçbir şey gönderilmez.",
+  issueOpen: "GitHub'da aç",
   autostartTitle: "Windows ile başlat",
   autostartHint:
     "Pencere sistemle birlikte açılır ve doğruca tepsiye iner. Hizmeti ilgilendirmez: o SCM içindedir ve hiç pencere olmadan tüneli açar — otomatik başlatma tepsi simgesi içindir, o olmazsa kilitli makine arayüzde hiç iz bırakmaz.",
@@ -1660,6 +1680,10 @@ const ID: typeof RU = {
   logsHint:
     "Jurnal di sebelah hanya mengatakan tunnel terputus; alasannya ditulis sing-box sendiri ke singbox.log. Konfigurasi yang dipakainya dan keadaan layanan ada di folder yang sama. Berkas ini ditulis ulang setiap tunnel dijalankan: salin dulu sebelum memulai ulang.",
   logsOpen: "Buka folder",
+  issueTitle: "Laporkan masalah",
+  issueHint:
+    "Formulir masalah di GitHub: ceritakan apa yang terjadi dan lampirkan tangkapan layar — seret langsung ke kolomnya. Versi, cakupan, dan baris dari jurnal semuanya membantu. Terbuka di peramban; tidak ada apa pun yang dikirim dari sini.",
+  issueOpen: "Buka di GitHub",
   autostartTitle: "Jalankan bersama Windows",
   autostartHint:
     "Jendela ikut menyala bersama sistem dan langsung masuk baki. Layanan tidak terpengaruh: ia ada di SCM dan menyalakan terowongan tanpa jendela sama sekali — jalan otomatis diperlukan ikon baki, tanpanya komputer yang terkunci tidak meninggalkan jejak apa pun di antarmuka.",
