@@ -318,14 +318,24 @@ fn from_processes() -> Vec<Found> {
 }
 
 /// Путь к образу процесса по номеру — снаружи он нужен службе: она называет в
-/// журнале того, кто прислал разрушающую команду. Вне Windows такого вопроса не
-/// стоит вовсе: канала там нет, а сокет отвечать на него не умеет.
+/// журнале того, кто прислал разрушающую команду (`note_caller`). unix-сокет
+/// на этот вопрос отвечает не хуже именованного канала — `SO_PEERCRED` в
+/// `core-ipc` называет pid, а имя по pid здесь.
 #[cfg(windows)]
 pub fn process_path(pid: u32) -> Option<String> {
     image_path(pid)
 }
 
-#[cfg(not(windows))]
+/// `/proc/<pid>/exe` — символьная ссылка на исполняемый файл, и её содержимое
+/// живёт в пространстве имён того, кто её читает: подделать чужому процессу
+/// нечем. Отсутствие (процесс уже завершился, доступ запрещён) — не ошибка,
+/// а то же самое «не знаем», что и молчание `note_caller` на пустом ответе.
+#[cfg(target_os = "linux")]
+pub fn process_path(pid: u32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok().map(|p| p.to_string_lossy().into_owned())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn process_path(_pid: u32) -> Option<String> {
     None
 }

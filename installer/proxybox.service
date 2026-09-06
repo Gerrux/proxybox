@@ -7,6 +7,11 @@ Wants=network.target
 
 [Service]
 Type=simple
+# Без nft guard(true) не откажет — linux::apply вернёт NotFound, applied
+# останется None, а sing-box поднимется как ни в чём не бывало: сеть без
+# замка вовсе, и молча. Лучше не стартовать, чем стартовать без
+# единственного механизма, ради которого служба вообще нужна.
+ExecStartPre=/bin/sh -c 'command -v nft >/dev/null'
 ExecStart=/usr/bin/pg-service
 # Права настоящие: TUN и nftables от обычного пользователя не работают.
 # Урезание до CAP_NET_ADMIN — отдельным шагом после проверки на живой машине.
