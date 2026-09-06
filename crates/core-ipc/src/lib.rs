@@ -1626,7 +1626,6 @@ mod tests {
     /// из окружения самого теста, а литерал в `vite.config.ts` обязан
     /// совпадать с умолчанием, а не с тем, что стоит в переменной у CI.
     #[test]
-    #[cfg(not(windows))]
     fn the_dev_bridge_knows_the_socket() {
         let vite = include_str!("../../../ui/app-shell/vite.config.ts");
         assert!(
