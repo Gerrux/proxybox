@@ -181,11 +181,16 @@ export function Profiles({
   act,
   busy,
   className,
+  onError,
 }: {
   status: Status | null;
   act: Act;
   busy?: boolean;
   className?: string;
+  /** Отказ, о котором сказать больше некому: копирование ссылки — единственное
+   *  действие панели, которое делает не служба, а само окно, и ответа со
+   *  статусом у него нет. */
+  onError?: (message: string) => void;
 }) {
   const s = strings(status?.lang);
   const profiles = status?.profiles ?? [];
@@ -206,13 +211,26 @@ export function Profiles({
   // Какую подписку сейчас переименовывают. Адресом, а не флагом: подписок
   // несколько, и открытых полей должно быть не больше одного.
   const [renaming, setRenaming] = useState<string | null>(null);
-  // Какой профиль правят и с каким узлом. Узел приезжает отдельным запросом:
+  // Какой профиль правят и каким текстом. Узел приезжает отдельным запросом:
   // в статусе его нет намеренно — окно спрашивает статус каждые две секунды, а
   // подписка приносит сотни узлов с ключами и паролями внутри.
-  const [editing, setEditing] = useState<{ name: string; json: string } | null>(null);
+  const [editing, setEditing] = useState<{ name: string; text: string } | null>(null);
+  // Правка и «скопировать ссылку» спрашивают одно и то же — узел целиком.
+  const nodeOf = (name: string) =>
+    act({ cmd: "profile-node", arg: { name } }).then((r) => (r?.reply === "profile-node" ? r.data : null));
+  // В поле правки едет ссылка, если она у узла есть: сменить порт или пароль —
+  // это правка одной строки, а тем же JSON человек до сих пор платил за неё
+  // чтением всего узла. Ссылки нет — узел в неё не перекладывается без потерь,
+  // и тогда JSON остаётся единственным честным видом.
   const openEditor = (name: string) =>
-    void act({ cmd: "profile-node", arg: { name } }).then((r) => {
-      if (r?.reply === "profile-node") setEditing({ name, json: r.data.json });
+    void nodeOf(name).then((data) => data && setEditing({ name, text: data.link || data.json }));
+  // Успех молчит: в буфере обмена лежит ссылка, и это и есть ответ. Говорить
+  // приходится только об отказе — их два, и они про разное.
+  const copyLink = (name: string) =>
+    void nodeOf(name).then((data) => {
+      if (!data) return;
+      if (!data.link) return onError?.(s.noLink);
+      return navigator.clipboard.writeText(data.link).catch(() => onError?.(s.copyFailed));
     });
   // Открытое меню — одно на панель: второе, оставшееся от прошлой строки,
   // делало бы вид, что относится к этой.
@@ -480,6 +498,7 @@ export function Profiles({
             busy={busy}
             editing={editing}
             onEdit={openEditor}
+            onCopy={copyLink}
             onDone={() => setEditing(null)}
             onMenu={openMenu}
             onReorder={draggable ? (names) => reorder("", names) : undefined}
@@ -622,6 +641,7 @@ export function Profiles({
                     busy={busy}
                     editing={editing}
                     onEdit={openEditor}
+                    onCopy={copyLink}
                     onDone={() => setEditing(null)}
                     onMenu={openMenu}
                     onReorder={draggable ? (names) => reorder(sub?.url ?? "", names) : undefined}
@@ -642,23 +662,28 @@ export function Profiles({
  *  протоколам — это десяток форм, которые расходятся с sing-box на каждой его
  *  версии.
  *
- *  Ошибка живёт здесь же, а не в общей рамке наверху окна: правят JSON руками,
+ *  Приезжает сюда ссылка, когда узел в неё перекладывается без потерь, и JSON,
+ *  когда нет (`core_config::share_link`). Поле одно на оба вида: службе всё
+ *  равно, чем его заполнили, а форма, которая показывает то ссылку, то JSON
+ *  разными полями, — это две формы вместо одной.
+ *
+ *  Ошибка живёт здесь же, а не в общей рамке наверху окна: правят узел руками,
  *  и «в узле нет поля type» надо читать, не отводя глаз от самого узла. */
 function Editor({
   s,
   name,
-  json,
+  text,
   act,
   onDone,
 }: {
   s: Strings;
   name: string;
-  json: string;
+  text: string;
   act: Act;
   onDone: () => void;
 }) {
   const [want, setWant] = useState(name);
-  const [node, setNode] = useState(json);
+  const [node, setNode] = useState(text);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
@@ -673,7 +698,7 @@ function Editor({
           // Нетронутый узел не отправляем вовсе: разбор вернул бы тот же самый,
           // но лишний повод перезапустить туннель на активном профиле здесь ни
           // к чему.
-          arg: { name, rename: want.trim(), node: node.trim() === json.trim() ? "" : node.trim() },
+          arg: { name, rename: want.trim(), node: node.trim() === text.trim() ? "" : node.trim() },
         })
           .then((r) => (r?.reply === "error" ? setError(r.data.message) : onDone()))
           .finally(() => setBusy(false));
@@ -698,7 +723,10 @@ function Editor({
       </div>
       <textarea
         value={node}
-        rows={Math.min(14, node.split("\n").length)}
+        // Ссылка — одна строка, но длинная: в один ряд она переносом уезжает за
+        // край поля, и правят её вслепую. Три ряда её показывают целиком, а
+        // JSON и без того длиннее.
+        rows={Math.min(14, Math.max(3, node.split("\n").length))}
         onChange={(e) => setNode(e.target.value)}
         aria-label={s.editNode}
         spellCheck={false}
@@ -724,6 +752,7 @@ function Rows({
   busy,
   editing,
   onEdit,
+  onCopy,
   onDone,
   onMenu,
   onReorder,
@@ -735,8 +764,11 @@ function Rows({
   act: Act;
   s: Strings;
   busy?: boolean;
-  editing: { name: string; json: string } | null;
+  editing: { name: string; text: string } | null;
   onEdit: (name: string) => void;
+  /** Ссылку узла — в буфер обмена. Есть и у узла подписки: правка ему заказана,
+   *  а перенести его на телефон или отдать соседу — нет. */
+  onCopy: (name: string) => void;
   onDone: () => void;
   onMenu: (e: React.MouseEvent<HTMLElement>, items: MenuItem[]) => void;
   /** Переставили строки — сюда приезжает новый порядок имён этой группы.
@@ -807,6 +839,7 @@ function Rows({
             mark: item.favorite,
             onPick: () => void act({ cmd: "set-favorite", arg: { name, on: !item.favorite } }),
           },
+          { label: s.copyLink, hint: s.copyLinkHint, onPick: () => onCopy(name) },
           ...(fromSub ? [] : [{ label: s.edit, hint: s.editProfile(name), onPick: () => onEdit(name) }]),
           {
             label: s.remove,
@@ -944,7 +977,7 @@ function Rows({
               </Button>
             </div>
             {editing?.name === name && (
-              <Editor s={s} name={name} json={editing.json} act={act} onDone={onDone} />
+              <Editor s={s} name={name} text={editing.text} act={act} onDone={onDone} />
             )}
           </li>
         );

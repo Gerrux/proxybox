@@ -2,8 +2,10 @@
 //!
 //! Раскладка полей повторяет NekoBox (`fmt/Link2Bean.cpp` + `fmt/Bean2CoreObj_box.cpp`):
 //! это де-факто формат, на который ориентируются панели и генераторы ссылок.
-//! Промежуточной модели протокола (Bean) у нас нет — редактировать узлы руками
-//! пока негде, а значит и хранить их в двух видах незачем.
+//! Промежуточной модели протокола (Bean) у нас нет и с правкой узлов не
+//! завелось: правят их той же ссылкой, которой заводят, а собирает её обратно
+//! `share_link` — сверенная разбором, она не заводит второго хранилища полей,
+//! которое разъезжалось бы с sing-box на каждой его версии.
 
 use base64::Engine;
 use core_ipc::{t, tf};
@@ -1083,6 +1085,195 @@ fn stream(node: &HashMap<String, String>, q: &mut Vec<String>, tls_by_default: b
     }
 }
 
+// --- узел → ссылка --------------------------------------------------------
+
+/// Узел → share-link, и только такая, которая означает ровно тот же узел.
+///
+/// Нужна двум делам сразу: поделиться своим узлом (перенести на телефон,
+/// отдать другому) и править его строкой вместо голого JSON. Второй двери в
+/// службе для правки не понадобилось: обратно ссылку читает тот же `parse`,
+/// которым заводят любой профиль, — `edit_profile` принимал её и до этого,
+/// показать было нечего.
+///
+/// Сборка нарочно оптимистична, а точность держит проверка: собранная ссылка
+/// тут же разбирается обратно и сверяется с исходным узлом до поля. Разошлось
+/// — ссылки нет вовсе, и окно оставляет JSON. Так закрыт единственный опасный
+/// исход: ссылка, тихо потерявшая поле (мультиплекс, ECH, свой transport), —
+/// это правка, которая выглядит удавшейся, а узел стал другим. Ровно этим
+/// тихим промахом был матчер по `process_path`, и здесь он был бы обиднее:
+/// JSON человек правит именно тогда, когда ему важно поле.
+///
+/// Сторож — `a_link_means_the_very_same_node`.
+pub fn share_link(name: &str, node: &Node) -> Option<String> {
+    let link = build(name, node)?;
+    let back = parse(&link).ok()?;
+    (back.name == name && back.node == *node).then_some(link)
+}
+
+fn build(name: &str, node: &Node) -> Option<String> {
+    let s = |key: &str| node[key].as_str().unwrap_or_default();
+    let kind = node["type"].as_str()?;
+    // Адрес и порт у WireGuard лежат в первом пире, у остальных — в узле.
+    let (host, port) = match kind {
+        "wireguard" => (node["peers"][0]["address"].as_str()?, node["peers"][0]["port"].as_u64()?),
+        _ => (node["server"].as_str()?, node["server_port"].as_u64()?),
+    };
+    // IPv6 в ссылке без скобок не отделить от порта. У узла, заведённого
+    // ссылкой, скобки уже есть — их возвращает `Url::host_str`.
+    let server = match host {
+        h if h.contains(':') && !h.starts_with('[') => format!("[{h}]"),
+        h => h.to_string(),
+    };
+    let mut q: Vec<String> = Vec::new();
+    let head = match kind {
+        "vless" => {
+            stream_q(node, &mut q, false);
+            add(&mut q, "flow", s("flow"));
+            format!("vless://{}@{server}:{port}", enc(s("uuid")))
+        }
+        "trojan" => {
+            stream_q(node, &mut q, true);
+            format!("trojan://{}@{server}:{port}", enc(s("password")))
+        }
+        "vmess" => {
+            stream_q(node, &mut q, false);
+            add(&mut q, "encryption", s("security"));
+            add(&mut q, "alterId", &node["alter_id"].as_u64()?.to_string());
+            // Форма-ссылка, а не base64(json) от v2rayN: разбор пробует base64
+            // первым, но `@` в теле не по его алфавиту — и ссылка достаётся
+            // `vmess_url`, тому же коду, что читает vless.
+            format!("vmess://{}@{server}:{port}", enc(s("uuid")))
+        }
+        "shadowsocks" => {
+            if !s("plugin").is_empty() {
+                add(&mut q, "plugin", &format!("{};{}", s("plugin"), s("plugin_opts")));
+            }
+            format!("ss://{}:{}@{server}:{port}", enc(s("method")), enc(s("password")))
+        }
+        "hysteria2" => {
+            add(&mut q, "sni", node["tls"]["server_name"].as_str().unwrap_or_default());
+            if node["tls"]["insecure"] == true {
+                add(&mut q, "insecure", "1");
+            }
+            if node["obfs"]["type"] == "salamander" {
+                add(&mut q, "obfs-password", node["obfs"]["password"].as_str().unwrap_or_default());
+            }
+            add(&mut q, "mport", s("hop_ports"));
+            // Схема из спецификации самого протокола, а не наше `hy2://`:
+            // ссылка уезжает в чужое приложение, а `hysteria2://` понимают все.
+            format!("hysteria2://{}@{server}:{port}", enc(s("password")))
+        }
+        "tuic" => {
+            add(&mut q, "sni", node["tls"]["server_name"].as_str().unwrap_or_default());
+            add(&mut q, "alpn", &join(&node["tls"]["alpn"]));
+            if node["tls"]["insecure"] == true {
+                add(&mut q, "allow_insecure", "1");
+            }
+            // Подчёркивание, а не дефис: так пишут v2rayN и NekoBox, а дефисы
+            // наш разбор принимает ради Clash-YAML, который мы сами же в
+            // ссылку и перекладываем.
+            add(&mut q, "congestion_control", s("congestion_control"));
+            add(&mut q, "udp_relay_mode", s("udp_relay_mode"));
+            if node["zero_rtt_handshake"] == true {
+                add(&mut q, "zero_rtt_handshake", "1");
+            }
+            format!("tuic://{}:{}@{server}:{port}", enc(s("uuid")), enc(s("password")))
+        }
+        "wireguard" => {
+            let peer = &node["peers"][0];
+            add(&mut q, "publickey", peer["public_key"].as_str().unwrap_or_default());
+            add(&mut q, "psk", peer["pre_shared_key"].as_str().unwrap_or_default());
+            add(&mut q, "reserved", &join(&peer["reserved"]));
+            add(&mut q, "mtu", &node["mtu"].as_u64().map(|m| m.to_string()).unwrap_or_default());
+            add(&mut q, "address", &join(&node["address"]));
+            format!("wg://{}@{server}:{port}", enc(s("private_key")))
+        }
+        // hysteria (первая), anytls и ssh в `NODES` есть, а ссылки у нас не
+        // разбираются — собирать её значило бы собрать то, что не читается.
+        _ => return None,
+    };
+    let query = if q.is_empty() { String::new() } else { format!("?{}", q.join("&")) };
+    Some(format!("{head}{query}#{}", enc(name)))
+}
+
+/// Массив узла в значение запроса: `alpn`, `reserved` и адреса ссылка несёт
+/// через запятую.
+fn join(value: &Value) -> String {
+    let Some(items) = value.as_array() else {
+        return String::new();
+    };
+    items
+        .iter()
+        .map(|item| match item {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Транспорт и TLS обратно в параметры — зеркало `transport()` и `tls()`.
+/// Оптимистично: чего здесь не написано, то поймает сверка в `share_link`.
+fn stream_q(node: &Value, q: &mut Vec<String>, tls_by_default: bool) {
+    let t = &node["transport"];
+    let path = t["path"].as_str().unwrap_or_default();
+    match t["type"].as_str().unwrap_or_default() {
+        "ws" => {
+            add(q, "type", "ws");
+            // Ранние данные едут в пути: своего ключа у них в ссылке нет.
+            let ed = t["max_early_data"].as_u64().map(|ed| format!("?ed={ed}")).unwrap_or_default();
+            add(q, "path", &format!("{path}{ed}"));
+            add(q, "host", t["headers"]["Host"].as_str().unwrap_or_default());
+        }
+        // `method` отличает http-заголовок поверх tcp от настоящего transport
+        // http: у первого хост лежит в заголовках, у второго — своим полем.
+        "http" if t["method"].is_string() => {
+            add(q, "type", "tcp");
+            add(q, "headerType", "http");
+            add(q, "path", path);
+            add(q, "host", &join(&t["headers"]["Host"]));
+        }
+        "http" => {
+            add(q, "type", "http");
+            add(q, "path", path);
+            add(q, "host", &join(&t["host"]));
+        }
+        "httpupgrade" => {
+            add(q, "type", "httpupgrade");
+            add(q, "path", path);
+            add(q, "host", t["host"].as_str().unwrap_or_default());
+        }
+        "grpc" => {
+            add(q, "type", "grpc");
+            add(q, "serviceName", t["service_name"].as_str().unwrap_or_default());
+        }
+        _ => {}
+    }
+    let tls = &node["tls"];
+    if tls["enabled"] != true {
+        // У trojan разбор включает TLS сам, поэтому узел без TLS обязан сказать
+        // об этом вслух — молча ссылка вернулась бы другим узлом.
+        if tls_by_default {
+            add(q, "security", "none");
+        }
+        return;
+    }
+    let reality = &tls["reality"];
+    if reality["enabled"] == true {
+        add(q, "security", "reality");
+        add(q, "pbk", reality["public_key"].as_str().unwrap_or_default());
+        add(q, "sid", reality["short_id"].as_str().unwrap_or_default());
+    } else {
+        add(q, "security", "tls");
+    }
+    add(q, "sni", tls["server_name"].as_str().unwrap_or_default());
+    add(q, "alpn", &join(&tls["alpn"]));
+    add(q, "fp", tls["utls"]["fingerprint"].as_str().unwrap_or_default());
+    if tls["insecure"] == true {
+        add(q, "allowInsecure", "1");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1175,6 +1366,53 @@ mod tests {
         assert_eq!(p.node["obfs"]["type"], "salamander");
         assert_eq!(p.node["tls"]["insecure"], true);
         assert_eq!(p.node["tls"]["alpn"][0], "h3");
+    }
+
+    /// Ссылка обязана означать ровно тот узел, из которого собрана: по ней и
+    /// правят, и делятся. Каждую разбираем, собираем обратно и разбираем ещё
+    /// раз — разъехалось хоть одно поле, и это уже другой узел.
+    #[test]
+    fn a_link_means_the_very_same_node() {
+        let links = [
+            format!("vless://{UUID}@example.com:8443?security=reality&pbk=KEY&sid=ab&fp=chrome&flow=xtls-rprx-vision&type=tcp#Узел"),
+            format!("vless://{UUID}@a.com:443?type=ws&path=/x%3Fed%3D2048&host=a.com&security=tls#WS"),
+            format!("vless://{UUID}@a.com:443?type=grpc&serviceName=svc&security=tls&sni=b.com&alpn=h2,http/1.1#G"),
+            format!("vless://{UUID}@a.com:80?type=tcp&headerType=http&path=/&host=h1.com,h2.com#TCP"),
+            format!("vless://{UUID}@a.com:443?type=httpupgrade&path=/u&host=h.com&security=tls&allowInsecure=1#HU"),
+            // IPv6: скобки ставит уже разбор, и второй раз их ставить нельзя.
+            format!("vless://{UUID}@[2001:db8::1]:443?security=tls#V6"),
+            format!("vmess://{UUID}@a.com:443?type=ws&path=/p&host=h.com&security=tls#VM"),
+            "trojan://pass@a.com:443?sni=b.com#T".into(),
+            // TLS у trojan включает сам разбор — узел без него обязан сказать
+            // об этом вслух, иначе ссылка вернётся другим узлом.
+            "trojan://pass@a.com:443?security=none#T2".into(),
+            "ss://aes-256-gcm:pa%40ss@a.com:8388?plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dx#S".into(),
+            "hy2://pass@a.com:443?obfs-password=o&sni=b.com&insecure=1#H".into(),
+            "tuic://11111111-2222-3333-4444-555555555555:pa%3Ass@a.com:8443?sni=a.com&alpn=h3&congestion_control=bbr&udp_relay_mode=native&allow_insecure=1#Т".into(),
+            "wg://cHJpdmF0ZQ@a.com:51820?publickey=cHVibGlj&psk=cHNr&reserved=1,2,3&address=10.0.0.2/32&mtu=1408#W".into(),
+        ];
+        for link in links {
+            let profile = parse(&link).unwrap_or_else(|why| panic!("{link}: {why}"));
+            let back = share_link(&profile.name, &profile.node)
+                .unwrap_or_else(|| panic!("ссылки нет вовсе: {link}"));
+            assert_eq!(parse(&back).unwrap(), profile, "{link} → {back}");
+        }
+    }
+
+    /// Поле, которого ссылка не несёт, — это не «ссылка без него»: не сошёлся
+    /// узел со своей же ссылкой — ссылки нет вовсе, и правят его по-прежнему
+    /// JSON. Молча потерянное поле было бы правкой, которая выглядит удавшейся.
+    #[test]
+    fn a_node_without_a_link_keeps_its_json() {
+        let mut p = parse(&format!("vless://{UUID}@a.com:443?security=tls#У")).unwrap();
+        assert!(share_link(&p.name, &p.node).is_some(), "обычный узел ссылку имеет");
+        p.node["multiplex"] = json!({ "enabled": true, "protocol": "smux" });
+        assert!(share_link(&p.name, &p.node).is_none(), "мультиплекс ссылка не несёт");
+
+        // Тип из `NODES`, ссылки для которого не разбирается: собрать её
+        // значило бы собрать то, что не читается обратно.
+        let ssh = parse(r#"{"type":"ssh","tag":"S","server":"a.com","server_port":22,"user":"root"}"#).unwrap();
+        assert!(share_link(&ssh.name, &ssh.node).is_none());
     }
 
     /// Строка «куда ведёт узел» обязана находить адрес у обоих раскладов:

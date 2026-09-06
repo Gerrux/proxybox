@@ -230,7 +230,8 @@ export type Request =
   /** Импорт: share-link, JSON-конфиг, адрес подписки — и любая их смесь одной
    *  вставкой. Строки разбираются по одной, а не по префиксу всего текста. */
   | { cmd: "add-profile"; arg: { link: string } }
-  /** Узел профиля как JSON — на открытие формы правки, а не в каждый статус. */
+  /** Узел профиля — на открытие формы правки и на «скопировать ссылку», а не
+   *  в каждый статус. */
   | { cmd: "profile-node"; arg: { name: string } }
   /** Переименовать профиль и/или переписать его узел. Пустой `node` — правится
    *  только имя. Узел из подписки служба править не даст: сверка вернёт своё. */
@@ -275,8 +276,10 @@ export type Response =
       reply: "imported";
       data: { added: number; kept: number; gone: number; skipped: string[]; skipped_total: number };
     }
-  /** Узел профиля как JSON, с отступами: этот текст правят руками. */
-  | { reply: "profile-node"; data: { json: string } }
+  /** Узел профиля обоими видами: JSON с отступами и share-link, если узел в
+   *  неё перекладывается без потерь. Пустая ссылка — значит её нет вовсе, и
+   *  править остаётся JSON. */
+  | { reply: "profile-node"; data: { json: string; link: string } }
   | { reply: "error"; data: { message: string } };
 
 /** Подставляется сборкой из src-tauri/tauri.conf.json (см. vite.config.ts). */

@@ -292,7 +292,13 @@ export function App() {
               <Conns status={status} className="min-h-0 flex-1" />
             ) : (
               <div className="panes gap-2.5">
-                <Profiles className={pane(tab, "profiles")} status={status} act={act} busy={busy > 0} />
+                <Profiles
+                  className={pane(tab, "profiles")}
+                  status={status}
+                  act={act}
+                  busy={busy > 0}
+                  onError={setError}
+                />
                 <Apps className={pane(tab, "apps")} status={status} act={act} busy={busy > 0} />
                 <Journal className={pane(tab, "journal")} lines={status?.log ?? []} lang={status?.lang} />
               </div>
