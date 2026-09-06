@@ -264,9 +264,15 @@ fn icacls(_batches: Vec<Vec<String>>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// TUN — только на целевой платформе; в разработке хватает локального SOCKS.
+/// TUN — только на целевых системах; в разработке хватает локального SOCKS.
 fn tun_enabled() -> bool {
-    cfg!(windows) && std::env::var("PG_TUN").as_deref() != Ok("0")
+    tun_allowed(cfg!(windows) || cfg!(target_os = "linux"), std::env::var("PG_TUN").ok().as_deref())
+}
+
+/// Решение отдельно от окружения — чтобы его было чем проверить.
+/// Сторож — `the_tunnel_rises_on_both_target_systems`.
+fn tun_allowed(target: bool, pg_tun: Option<&str>) -> bool {
+    target && pg_tun != Some("0")
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -2562,6 +2568,16 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// TUN поднимается на обеих целевых системах, а `PG_TUN=0` по-прежнему его
+    /// снимает: это ручка диагностическая, как `PG_STACK` и `PG_PPROF`, и
+    /// настройкой она не продублирована.
+    #[test]
+    fn the_tunnel_rises_on_both_target_systems() {
+        assert!(tun_allowed(true, None), "на целевой системе TUN обязан подниматься");
+        assert!(!tun_allowed(true, Some("0")), "PG_TUN=0 обязан снимать TUN");
+        assert!(!tun_allowed(false, None), "вне целевых систем TUN не поднимается");
+    }
 
     /// Свой пустой каталог на каждый прогон: тесты бегут в одном процессе, и
     /// общий временный каталог давал бы им ронять друг друга через диск.
