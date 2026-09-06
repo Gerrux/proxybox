@@ -19,8 +19,8 @@ pub enum Level {
     Warn,
     /// Так работать не будет.
     Fail,
-    /// Проверка только для Windows.
-    #[cfg_attr(windows, allow(dead_code))]
+    /// Проверка недоступна на этой платформе (ни Windows, ни Linux).
+    #[cfg_attr(any(windows, target_os = "linux"), allow(dead_code))]
     Skip,
 }
 
@@ -84,6 +84,15 @@ fn elevated() -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// То же самое на Linux — без root не поднять ни TUN, ни nftables.
+#[cfg(target_os = "linux")]
+fn elevated() -> bool {
+    extern "C" {
+        fn geteuid() -> u32;
+    }
+    unsafe { geteuid() == 0 }
+}
+
 /// Полный путь к sing-box: переменная → рядом с бинарником → PATH.
 /// `core_tunnel::binary()` отдаёт голое имя, когда рядом ничего нет, — PATH за
 /// него досматриваем здесь, иначе «не найден» не отличить от «найден в PATH».
@@ -99,7 +108,7 @@ fn singbox() -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
-fn windows_checks() -> Vec<Check> {
+fn platform_checks() -> Vec<Check> {
     let mut v = Vec::new();
 
     v.push(if elevated() {
@@ -160,13 +169,57 @@ fn windows_checks() -> Vec<Check> {
     v
 }
 
-#[cfg(not(windows))]
-fn windows_checks() -> Vec<Check> {
+/// Права, брандмауэр и чужие туннели существуют и на Linux — доктор обязан
+/// отвечать про них, а не разводить руками «только для Windows»: именно за
+/// этим его и открывают, когда служба не поднимает туннель.
+#[cfg(target_os = "linux")]
+fn platform_checks() -> Vec<Check> {
+    let mut v = Vec::new();
+
+    v.push(if elevated() {
+        check(&t("права"), Level::Ok, t("root"))
+    } else {
+        check(&t("права"), Level::Warn, t("обычный пользователь — службе нужны права root для TUN и nftables"))
+    });
+
+    let nft_found = std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|dir| dir.join("nft").exists()));
+    v.push(if nft_found {
+        check(&t("брандмауэр"), Level::Ok, t("nft найден"))
+    } else {
+        check(
+            &t("брандмауэр"),
+            Level::Fail,
+            t("nft не найден в PATH — без него замок не встанет, и при падении туннеля выбранные приложения уйдут напрямую"),
+        )
+    });
+
+    v.push(if std::path::Path::new("/dev/net/tun").exists() {
+        check(&t("TUN"), Level::Ok, t("/dev/net/tun есть"))
+    } else {
+        check(&t("TUN"), Level::Fail, t("/dev/net/tun нет — включите модуль ядра tun"))
+    });
+
+    // Разбор и запуск — в core-filter: тем же списком пользуется служба.
+    let foreign = core_filter::foreign_tunnels(core_tunnel::TUN_NAME);
+    v.push(if foreign.is_empty() {
+        check(&t("чужие туннели"), Level::Ok, t("поднятых TUN/VPN-адаптеров нет"))
+    } else {
+        check(
+            &t("чужие туннели"),
+            Level::Warn,
+            tf!("подняты: {} — они спорят за маршруты с нашим strict_route, выключите на время проверки", foreign.join(", ")),
+        )
+    });
+
+    v
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn platform_checks() -> Vec<Check> {
     [
         t("права"),
-        t("служба Windows"),
         t("брандмауэр"),
-        t("системный прокси"),
         t("чужие туннели"),
     ]
     .into_iter()
@@ -193,7 +246,7 @@ pub fn run() -> Vec<Check> {
         ),
     });
 
-    v.extend(windows_checks());
+    v.extend(platform_checks());
     v
 }
 

@@ -183,6 +183,13 @@ pub static EN: &[(&str, &str)] = &[
     ("никто: туннель поднят, но пропусков нет ни у кого", "nobody: the tunnel is up, but no one has a pass"),
     ("ссылка tuic: нужны UUID и пароль", "tuic link: a UUID and a password are required"),
     ("команду «{}» прислало постороннее приложение: {}", "the «{}» command came from an outside application: {}"),
+    ("root", "root"),
+    ("обычный пользователь — службе нужны права root для TUN и nftables", "ordinary user — the service needs root for TUN and nftables"),
+    ("nft найден", "nft found"),
+    ("nft не найден в PATH — без него замок не встанет, и при падении туннеля выбранные приложения уйдут напрямую", "nft not found in PATH — without it the lock will not go up, and selected apps will go direct when the tunnel drops"),
+    ("TUN", "TUN"),
+    ("/dev/net/tun есть", "/dev/net/tun exists"),
+    ("/dev/net/tun нет — включите модуль ядра tun", "/dev/net/tun is missing — load the tun kernel module"),
 ];
 
 /// Персидские строки.
@@ -352,6 +359,13 @@ pub static FA: &[(&str, &str)] = &[
     ("никто: туннель поднят, но пропусков нет ни у кого", "هیچ‌کس: تونل بالاست، اما هیچ‌کس اجازهٔ عبور ندارد"),
     ("ссылка tuic: нужны UUID и пароль", "پیوند tuic: به UUID و گذرواژه نیاز است"),
     ("команду «{}» прислало постороннее приложение: {}", "فرمان «{}» از یک برنامهٔ بیرونی آمد: {}"),
+    ("root", "روت"),
+    ("обычный пользователь — службе нужны права root для TUN и nftables", "کاربر عادی — سرویس برای TUN و nftables به دسترسی root نیاز دارد"),
+    ("nft найден", "nft پیدا شد"),
+    ("nft не найден в PATH — без него замок не встанет, и при падении туннеля выбранные приложения уйдут напрямую", "nft در PATH پیدا نشد — بدون آن قفل برقرار نمی‌شود و برنامه‌های انتخاب‌شده هنگام افت تونل مستقیم می‌روند"),
+    ("TUN", "TUN"),
+    ("/dev/net/tun есть", "/dev/net/tun وجود دارد"),
+    ("/dev/net/tun нет — включите модуль ядра tun", "/dev/net/tun وجود ندارد — ماژول هستهٔ tun را بارگذاری کنید"),
 ];
 
 /// Китайские строки (упрощённое письмо).
@@ -521,6 +535,13 @@ pub static ZH: &[(&str, &str)] = &[
     ("никто: туннель поднят, но пропусков нет ни у кого", "无人：隧道已建立，但没有人拿到放行"),
     ("ссылка tuic: нужны UUID и пароль", "tuic 链接：需要 UUID 和密码"),
     ("команду «{}» прислало постороннее приложение: {}", "命令「{}」来自外部程序：{}"),
+    ("root", "root"),
+    ("обычный пользователь — службе нужны права root для TUN и nftables", "普通用户 — 服务需要 root 权限才能使用 TUN 和 nftables"),
+    ("nft найден", "已找到 nft"),
+    ("nft не найден в PATH — без него замок не встанет, и при падении туннеля выбранные приложения уйдут напрямую", "在 PATH 中找不到 nft — 没有它锁无法生效，隧道断开时所选应用会直连"),
+    ("TUN", "TUN"),
+    ("/dev/net/tun есть", "/dev/net/tun 存在"),
+    ("/dev/net/tun нет — включите модуль ядра tun", "/dev/net/tun 不存在 — 请加载 tun 内核模块"),
 ];
 
 /// Турецкие строки.
@@ -690,6 +711,13 @@ pub static TR: &[(&str, &str)] = &[
     ("никто: туннель поднят, но пропусков нет ни у кого", "kimse: tünel ayakta, ama kimsenin geçiş izni yok"),
     ("ссылка tuic: нужны UUID и пароль", "tuic bağlantısı: UUID ve parola gerekir"),
     ("команду «{}» прислало постороннее приложение: {}", "«{}» komutu dışarıdaki bir uygulamadan geldi: {}"),
+    ("root", "root"),
+    ("обычный пользователь — службе нужны права root для TUN и nftables", "sıradan kullanıcı — hizmetin TUN ve nftables için root yetkisi gerekir"),
+    ("nft найден", "nft bulundu"),
+    ("nft не найден в PATH — без него замок не встанет, и при падении туннеля выбранные приложения уйдут напрямую", "nft PATH içinde bulunamadı — onsuz kilit kurulmaz ve tünel düştüğünde seçili uygulamalar doğrudan gider"),
+    ("TUN", "TUN"),
+    ("/dev/net/tun есть", "/dev/net/tun var"),
+    ("/dev/net/tun нет — включите модуль ядра tun", "/dev/net/tun yok — tun çekirdek modülünü yükleyin"),
 ];
 
 /// Индонезийские строки.
@@ -859,6 +887,13 @@ pub static ID: &[(&str, &str)] = &[
     ("никто: туннель поднят, но пропусков нет ни у кого", "tak seorang pun: terowongan hidup, tetapi tidak ada yang punya izin lewat"),
     ("ссылка tuic: нужны UUID и пароль", "tautan tuic: perlu UUID dan kata sandi"),
     ("команду «{}» прислало постороннее приложение: {}", "perintah «{}» datang dari aplikasi luar: {}"),
+    ("root", "root"),
+    ("обычный пользователь — службе нужны права root для TUN и nftables", "pengguna biasa — layanan memerlukan hak root untuk TUN dan nftables"),
+    ("nft найден", "nft ditemukan"),
+    ("nft не найден в PATH — без него замок не встанет, и при падении туннеля выбранные приложения уйдут напрямую", "nft tidak ditemukan di PATH — tanpanya kunci tidak akan terpasang, dan aplikasi terpilih akan langsung keluar saat tunnel terputus"),
+    ("TUN", "TUN"),
+    ("/dev/net/tun есть", "/dev/net/tun ada"),
+    ("/dev/net/tun нет — включите модуль ядра tun", "/dev/net/tun tidak ada — muat modul kernel tun"),
 ];
 
 /// Все таблицы разом — для сторожа полноты. Русской тут нет: она и есть
