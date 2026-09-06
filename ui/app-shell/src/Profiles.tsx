@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import qrcode from "qrcode-generator";
 import type { Act, Lang, ProfileInfo, Probe, Quota, Response, Status, Subscription } from "./platform";
 import type { Strings } from "./i18n";
 import { measuredAgo, strings, syncedAgo } from "./i18n";
@@ -15,6 +16,7 @@ import {
   type Outcome,
   Panel,
   SearchField,
+  Segmented,
 } from "./ui";
 
 /** Чем окажется набранное в поле импорта — по одному лишь префиксу и до
@@ -181,11 +183,16 @@ export function Profiles({
   act,
   busy,
   className,
+  onError,
 }: {
   status: Status | null;
   act: Act;
   busy?: boolean;
   className?: string;
+  /** Отказ, о котором сказать больше некому: копирование ссылки — единственное
+   *  действие панели, которое делает не служба, а само окно, и ответа со
+   *  статусом у него нет. */
+  onError?: (message: string) => void;
 }) {
   const s = strings(status?.lang);
   const profiles = status?.profiles ?? [];
@@ -206,13 +213,36 @@ export function Profiles({
   // Какую подписку сейчас переименовывают. Адресом, а не флагом: подписок
   // несколько, и открытых полей должно быть не больше одного.
   const [renaming, setRenaming] = useState<string | null>(null);
-  // Какой профиль правят и с каким узлом. Узел приезжает отдельным запросом:
+  // Какой профиль правят и каким текстом. Узел приезжает отдельным запросом:
   // в статусе его нет намеренно — окно спрашивает статус каждые две секунды, а
   // подписка приносит сотни узлов с ключами и паролями внутри.
-  const [editing, setEditing] = useState<{ name: string; json: string } | null>(null);
+  const [editing, setEditing] = useState<{ name: string; text: string } | null>(null);
+  // Правка и «скопировать ссылку» спрашивают одно и то же — узел целиком.
+  const nodeOf = (name: string) =>
+    act({ cmd: "profile-node", arg: { name } }).then((r) => (r?.reply === "profile-node" ? r.data : null));
+  // В поле правки едет ссылка, если она у узла есть: сменить порт или пароль —
+  // это правка одной строки, а тем же JSON человек до сих пор платил за неё
+  // чтением всего узла. Ссылки нет — узел в неё не перекладывается без потерь,
+  // и тогда JSON остаётся единственным честным видом.
   const openEditor = (name: string) =>
-    void act({ cmd: "profile-node", arg: { name } }).then((r) => {
-      if (r?.reply === "profile-node") setEditing({ name, json: r.data.json });
+    void nodeOf(name).then((data) => data && setEditing({ name, text: data.link || data.json }));
+  // Успех молчит: в буфере обмена лежит ссылка, и это и есть ответ. Говорить
+  // приходится только об отказе — их два, и они про разное.
+  const copyLink = (name: string) =>
+    void nodeOf(name).then((data) => {
+      if (!data) return;
+      if (!data.link) return onError?.(s.noLink);
+      return navigator.clipboard.writeText(data.link).catch(() => onError?.(s.copyFailed));
+    });
+  // Ссылка, которую показывают кодом. Держим саму строку, а не имя профиля:
+  // узел за время показа могли переписать, а на экране обязано остаться то,
+  // что человек в этот код и снял.
+  const [qr, setQr] = useState<string | null>(null);
+  const showQr = (name: string) =>
+    void nodeOf(name).then((data) => {
+      if (!data) return;
+      if (!data.link) return onError?.(s.noLink);
+      setQr(data.link);
     });
   // Открытое меню — одно на панель: второе, оставшееся от прошлой строки,
   // делало бы вид, что относится к этой.
@@ -480,6 +510,8 @@ export function Profiles({
             busy={busy}
             editing={editing}
             onEdit={openEditor}
+            onCopy={copyLink}
+            onQr={showQr}
             onDone={() => setEditing(null)}
             onMenu={openMenu}
             onReorder={draggable ? (names) => reorder("", names) : undefined}
@@ -622,6 +654,8 @@ export function Profiles({
                     busy={busy}
                     editing={editing}
                     onEdit={openEditor}
+                    onCopy={copyLink}
+                    onQr={showQr}
                     onDone={() => setEditing(null)}
                     onMenu={openMenu}
                     onReorder={draggable ? (names) => reorder(sub?.url ?? "", names) : undefined}
@@ -634,31 +668,92 @@ export function Profiles({
         )}
       </div>
       {menu && <Menu at={menu.at} items={menu.items} onClose={() => setMenu(null)} />}
+      {qr != null && (
+        <Modal title={s.showQr} onClose={() => setQr(null)}>
+          <div className="flex flex-col items-center gap-2">
+            <Qr link={qr} />
+            {/* Сама ссылка под кодом: код снимают телефоном, а глазами сверяют,
+                что сняли тот узел. Выделяется и копируется как всякий текст. */}
+            <p className="selectable w-full break-all text-center font-mono text-[10.5px] leading-[15px] text-muted">
+              {qr}
+            </p>
+          </div>
+        </Modal>
+      )}
     </Panel>
   );
 }
-/** Форма правки: имя и узел. Узел — тем же текстом, что принимает импорт, и
- *  разбирает его тот же разбор: второму парсеру взяться неоткуда, а поля по
- *  протоколам — это десяток форм, которые расходятся с sing-box на каждой его
- *  версии.
+
+/** Ссылка узла кодом: перенести узел на телефон, не гоняя его через буфер и
+ *  чужой мессенджер.
  *
- *  Ошибка живёт здесь же, а не в общей рамке наверху окна: правят JSON руками,
+ *  Рисуем сами по `isDark`, а не вставляем готовую разметку из библиотеки:
+ *  вставка строкой — это `dangerouslySetInnerHTML` ради того, что собирается
+ *  здесь же из чисел. Модули едут одним `path`, а не тысячей `rect`: у длинной
+ *  ссылки их под четыре тысячи, и каждый был бы отдельным узлом дерева.
+ *
+ *  Код всегда тёмный на белом, в любой теме окна: инвертированный QR читают не
+ *  все сканеры, а живёт эта картинка ровно до того мгновения, как её сняли.
+ *
+ *  Уровень коррекции M — тот же, что у панелей: L мельче, но на экране, с
+ *  которого снимают в упор, разница только в устойчивости. */
+function Qr({ link }: { link: string }) {
+  const code = qrcode(0, "M");
+  code.addData(link);
+  code.make();
+  const size = code.getModuleCount();
+  let d = "";
+  for (let row = 0; row < size; row++) {
+    for (let col = 0; col < size; col++) {
+      if (code.isDark(row, col)) d += `M${col} ${row}h1v1h-1z`;
+    }
+  }
+  return (
+    <svg
+      viewBox={`-2 -2 ${size + 4} ${size + 4}`}
+      // Поле вокруг кода — часть самого кода: без тихой зоны сканер его не
+      // находит. Потому и рисуется белым прямоугольником по всему viewBox.
+      shapeRendering="crispEdges"
+      role="img"
+      aria-label={link}
+      className="w-full max-w-[280px] rounded-md"
+    >
+      <rect x={-2} y={-2} width={size + 4} height={size + 4} fill="#fff" />
+      <path d={d} fill="#000" />
+    </svg>
+  );
+}
+/** Форма правки: имя и узел. Узел уходит службе тем же текстом, что принимает
+ *  импорт, и разбирает его тот же разбор — второму парсеру взяться неоткуда.
+ *
+ *  Приезжает сюда ссылка, когда узел в неё перекладывается без потерь, и JSON,
+ *  когда нет (`core_config::share_link`). Ссылку показываем полями (`Fields`) —
+ *  сменить порт или sni значит поправить поле, а не вычитать строку; JSON
+ *  остаётся строкой, полей у него нет. Переключатель между видами стоит только
+ *  там, где есть оба.
+ *
+ *  Ошибка живёт здесь же, а не в общей рамке наверху окна: правят узел руками,
  *  и «в узле нет поля type» надо читать, не отводя глаз от самого узла. */
 function Editor({
   s,
   name,
-  json,
+  text,
   act,
   onDone,
 }: {
   s: Strings;
   name: string;
-  json: string;
+  text: string;
   act: Act;
   onDone: () => void;
 }) {
   const [want, setWant] = useState(name);
-  const [node, setNode] = useState(json);
+  const [node, setNode] = useState(text);
+  // Узел по частям — то, чем правят поля. Держится здесь, а не считается из
+  // строки на каждый кадр: стёртый на секунду адрес делает строку неразбираемой,
+  // и форма исчезала бы из-под рук ровно тогда, когда поле начинают перебивать.
+  const [p, setP] = useState<Parts | null>(() => linkParts(text));
+  const [fields, setFields] = useState(p != null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
@@ -673,7 +768,7 @@ function Editor({
           // Нетронутый узел не отправляем вовсе: разбор вернул бы тот же самый,
           // но лишний повод перезапустить туннель на активном профиле здесь ни
           // к чему.
-          arg: { name, rename: want.trim(), node: node.trim() === json.trim() ? "" : node.trim() },
+          arg: { name, rename: want.trim(), node: node.trim() === text.trim() ? "" : node.trim() },
         })
           .then((r) => (r?.reply === "error" ? setError(r.data.message) : onDone()))
           .finally(() => setBusy(false));
@@ -696,17 +791,232 @@ function Editor({
           {s.cancel}
         </Button>
       </div>
-      <textarea
-        value={node}
-        rows={Math.min(14, node.split("\n").length)}
-        onChange={(e) => setNode(e.target.value)}
-        aria-label={s.editNode}
-        spellCheck={false}
-        className={`${FIELD.replace("h-8", "h-auto")} resize-none py-[5px] font-mono text-[11px] leading-[18px]`}
-      />
+      {/* Развилка показывается только тогда, когда есть что показывать: у JSON
+          полей нет, и переключатель с одним рабочим положением — это кнопка,
+          которая ничего не делает. */}
+      {(p != null || linkParts(node) != null) && (
+        <Segmented
+          className="self-start"
+          options={[
+            ["fields", s.nodeFields],
+            ["text", s.nodeText],
+          ]}
+          value={fields ? "fields" : "text"}
+          onPick={(v) => {
+            if (v === "text") return setFields(false);
+            // Вернулись к полям после правки строкой — поля обязаны показать
+            // то, что в строке сейчас, а не то, с чем форму открывали.
+            const next = linkParts(node);
+            if (next) {
+              setP(next);
+              setFields(true);
+            }
+          }}
+          label={s.editNode}
+        />
+      )}
+      {fields && p ? (
+        <Fields
+          s={s}
+          value={p}
+          onChange={(next) => {
+            setP(next);
+            setNode(assemble(next));
+          }}
+        />
+      ) : (
+        <textarea
+          value={node}
+          // Ссылка — одна строка, но длинная: в один ряд она переносом уезжает
+          // за край поля, и правят её вслепую. Три ряда её показывают целиком,
+          // а JSON и без того длиннее.
+          rows={Math.min(14, Math.max(3, node.split("\n").length))}
+          onChange={(e) => setNode(e.target.value)}
+          aria-label={s.editNode}
+          spellCheck={false}
+          className={`${FIELD.replace("h-8", "h-auto")} resize-none py-[5px] font-mono text-[11px] leading-[18px]`}
+        />
+      )}
       <span className={`text-[11px] ${error ? "text-fault" : "text-muted"}`}>{error ?? s.editNodeHint}</span>
     </form>
   );
+}
+
+/** Ссылка по частям — ровно теми, из которых её собирает служба:
+ *  `схема://секрет@адрес:порт?параметры#имя`.
+ *
+ *  Разбирает и собирает родной `URL`: второго разбора ссылок в окне не
+ *  заводится, а этот в браузере уже есть. Ошибётся человек в поле — скажет
+ *  служба своим разбором, тем же, что читает импорт; окно тут не судья. */
+type Parts = {
+  scheme: string;
+  user: string;
+  password: string;
+  host: string;
+  port: string;
+  params: [string, string][];
+  /** Имя узла из ссылки. Правку имени ведёт поле выше и отдельным полем
+   *  команды, поэтому фрагмент здесь только переносится как есть. */
+  hash: string;
+};
+
+function linkParts(link: string): Parts | null {
+  try {
+    const url = new URL(link.trim());
+    return {
+      scheme: url.protocol.replace(":", ""),
+      user: decodeURIComponent(url.username),
+      password: decodeURIComponent(url.password),
+      host: url.hostname,
+      port: url.port,
+      params: [...url.searchParams],
+      hash: url.hash.replace("#", ""),
+    };
+  } catch {
+    // Не ссылка (JSON узла, недописанная строка) — полей у неё нет.
+    return null;
+  }
+}
+
+function assemble(p: Parts): string {
+  const secret = [p.user, p.password].filter((v) => v !== "").map(encodeURIComponent).join(":");
+  const query = p.params
+    .filter(([key]) => key !== "")
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join("&");
+  const port = p.port === "" ? "" : `:${p.port}`;
+  const at = secret === "" ? "" : "@";
+  return `${p.scheme}://${secret}${at}${p.host}${port}${query === "" ? "" : `?${query}`}#${p.hash}`;
+}
+
+/** Как зовут секрет в userinfo. Это подпись, а не схема полей: сама пара в
+ *  ссылке у всех устроена одинаково, и форма о протоколах ничего не знает —
+ *  иначе это были бы те же десять форм, от которых мы и уходили. Незнакомая
+ *  схема получает две безымянные половины и правится так же. */
+const SECRET: Record<string, [string, string?]> = {
+  vless: ["uuid"],
+  vmess: ["uuid"],
+  trojan: ["password"],
+  hy2: ["password"],
+  hysteria2: ["password"],
+  ss: ["method", "password"],
+  tuic: ["uuid", "password"],
+  wg: ["private-key"],
+  wireguard: ["private-key"],
+};
+
+/** Узел по полям — по тем самым, из которых состоит его ссылка.
+ *
+ *  Форм по протоколам (как у NekoBox) тут нет и не будет: это десяток схем,
+ *  расходящихся с sing-box на каждой его версии, и каждая молча теряет поле,
+ *  которого не знает. Здесь поля берутся из самой ссылки, поэтому форма знает
+ *  ровно то же, что и она, — включая параметры, о которых мы никогда не
+ *  слышали: они просто строки внизу списка.
+ *
+ *  Подписи параметров не переводятся: `sni`, `alpn`, `pbk` — словарь самих
+ *  панелей, и по нему же карточку узла сверяют с формой. Секрет подписан тем
+ *  же словарём (`SECRET`).
+ *
+ *  Ссылка пересобирается на каждую правку, но только на правку: открытая и
+ *  закрытая форма оставляет текст нетронутым — иначе пересборка, отличающаяся
+ *  от исходной одним знаком кодирования, выдавала бы себя за правку узла и
+ *  зря перезапускала живой туннель.
+ *
+ *  Что пересборка возвращает ровно ту же строку, проверено на десяти ссылках,
+ *  которые отдаёт `share_link`, — по одной на протокол, плюс IPv6, reality,
+ *  ранние данные ws и `alpn` из двух значений: все десять пережили разбор и
+ *  сборку без единого знака разницы. Своего прогона у окна для этого нет, а
+ *  вторая копия этих же функций в тесте разъехалась бы с первой молча. */
+function Fields({ s, value: p, onChange }: { s: Strings; value: Parts; onChange: (next: Parts) => void }) {
+  const edit = (change: Partial<Parts>) => onChange({ ...p, ...change });
+  const [user, password] = SECRET[p.scheme] ?? ["", ""];
+  // Пустая строка в хвосте — она же и «добавить»: кнопки для этого не нужно,
+  // а лишний параметр без имени в ссылку не попадает.
+  const rows: [string, string][] = [...p.params, ["", ""]];
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-2">
+        <span className="engraved w-20 shrink-0 text-muted">{p.scheme}</span>
+        <input
+          value={p.host}
+          onChange={(e) => edit({ host: e.target.value })}
+          placeholder={s.nodeHost}
+          aria-label={s.nodeHost}
+          spellCheck={false}
+          className={FIELD}
+        />
+        <input
+          value={p.port}
+          onChange={(e) => edit({ port: e.target.value.replace(/\D/g, "") })}
+          placeholder={s.nodePort}
+          aria-label={s.nodePort}
+          inputMode="numeric"
+          className={`${FIELD} w-20 flex-none text-center font-mono`}
+        />
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="w-20 shrink-0 truncate font-mono text-[11px] text-muted" title={user}>
+          {user}
+        </span>
+        <input
+          value={p.user}
+          onChange={(e) => edit({ user: e.target.value })}
+          aria-label={user || s.editNode}
+          spellCheck={false}
+          className={`${FIELD} font-mono text-[11px]`}
+        />
+        {/* Вторая половина показывается только там, где она есть: у vless её
+            нет вовсе, и пустое поле рядом означало бы забытый пароль. */}
+        {password != null && (
+          <input
+            value={p.password}
+            onChange={(e) => edit({ password: e.target.value })}
+            placeholder={password}
+            aria-label={password}
+            spellCheck={false}
+            className={`${FIELD} font-mono text-[11px]`}
+          />
+        )}
+      </div>
+      {rows.map(([key, value], i) => (
+        <div key={i} className="flex items-center gap-2">
+          <input
+            value={key}
+            onChange={(e) => edit({ params: seatedParams(p.params, i, [e.target.value, value]) })}
+            placeholder="sni"
+            aria-label={s.nodeParam}
+            spellCheck={false}
+            className={`${FIELD} w-20 flex-none font-mono text-[11px]`}
+          />
+          <input
+            value={value}
+            onChange={(e) => edit({ params: seatedParams(p.params, i, [key, e.target.value]) })}
+            aria-label={key || s.nodeParam}
+            spellCheck={false}
+            className={`${FIELD} font-mono text-[11px]`}
+          />
+          {i < p.params.length && (
+            <Button
+              variant="quiet"
+              aria-label={s.remove}
+              className="w-8 flex-none px-0"
+              onClick={() => edit({ params: p.params.filter((_, at) => at !== i) })}
+            >
+              ✕
+            </Button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Параметр на своё место, а последний — в хвост: та же строка внизу списка
+ *  служит и «добавить», и её незачем заводить отдельной кнопкой. */
+function seatedParams(params: [string, string][], at: number, row: [string, string]): [string, string][] {
+  const out = [...params];
+  out[at] = row;
+  return out;
 }
 
 
@@ -724,6 +1034,8 @@ function Rows({
   busy,
   editing,
   onEdit,
+  onCopy,
+  onQr,
   onDone,
   onMenu,
   onReorder,
@@ -735,8 +1047,14 @@ function Rows({
   act: Act;
   s: Strings;
   busy?: boolean;
-  editing: { name: string; json: string } | null;
+  editing: { name: string; text: string } | null;
   onEdit: (name: string) => void;
+  /** Ссылку узла — кодом на экран: перенос на телефон без буфера и мессенджера.
+   *  Как и «скопировать», есть у любой строки. */
+  onQr: (name: string) => void;
+  /** Ссылку узла — в буфер обмена. Есть и у узла подписки: правка ему заказана,
+   *  а перенести его на телефон или отдать соседу — нет. */
+  onCopy: (name: string) => void;
   onDone: () => void;
   onMenu: (e: React.MouseEvent<HTMLElement>, items: MenuItem[]) => void;
   /** Переставили строки — сюда приезжает новый порядок имён этой группы.
@@ -807,6 +1125,8 @@ function Rows({
             mark: item.favorite,
             onPick: () => void act({ cmd: "set-favorite", arg: { name, on: !item.favorite } }),
           },
+          { label: s.copyLink, hint: s.copyLinkHint, onPick: () => onCopy(name) },
+          { label: s.showQr, hint: s.showQrHint, onPick: () => onQr(name) },
           ...(fromSub ? [] : [{ label: s.edit, hint: s.editProfile(name), onPick: () => onEdit(name) }]),
           {
             label: s.remove,
@@ -944,7 +1264,7 @@ function Rows({
               </Button>
             </div>
             {editing?.name === name && (
-              <Editor s={s} name={name} json={editing.json} act={act} onDone={onDone} />
+              <Editor s={s} name={name} text={editing.text} act={act} onDone={onDone} />
             )}
           </li>
         );
