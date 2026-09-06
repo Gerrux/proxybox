@@ -233,6 +233,9 @@ export type Request =
   /** Узел профиля — на открытие формы правки и на «скопировать ссылку», а не
    *  в каждый статус. */
   | { cmd: "profile-node"; arg: { name: string } }
+  /** Хвост журнала sing-box. Спрашивается, только пока панель открыта: это
+   *  чтение с диска в службе. */
+  | { cmd: "singbox-log" }
   /** Переименовать профиль и/или переписать его узел. Пустой `node` — правится
    *  только имя. Узел из подписки служба править не даст: сверка вернёт своё. */
   | { cmd: "edit-profile"; arg: { name: string; rename: string; node: string } }
@@ -280,6 +283,9 @@ export type Response =
    *  неё перекладывается без потерь. Пустая ссылка — значит её нет вовсе, и
    *  править остаётся JSON. */
   | { reply: "profile-node"; data: { json: string; link: string } }
+  /** Хвост журнала sing-box строками, от старых к новым. Пусто — sing-box ни
+   *  разу не запускался. */
+  | { reply: "singbox-log"; data: { lines: string[] } }
   | { reply: "error"; data: { message: string } };
 
 /** Подставляется сборкой из src-tauri/tauri.conf.json (см. vite.config.ts). */

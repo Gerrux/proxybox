@@ -535,11 +535,28 @@ const LOG_TAIL: u64 = 16 * 1024;
 /// исходящего, поэтому `outbound/` их и разводит. Сторож —
 /// `the_reason_skips_the_noise_from_the_tun_side`.
 pub fn last_failure(dir: &Path) -> Option<String> {
-    let mut file = std::fs::File::open(dir.join("singbox.log")).ok()?;
-    let from = file.metadata().ok()?.len().saturating_sub(LOG_TAIL);
-    file.seek(SeekFrom::Start(from)).ok()?;
-    let mut tail = Vec::new();
-    file.read_to_end(&mut tail).ok()?;
+    log_tail(dir).into_iter().rev().find(|line| line.contains("outbound/"))
+}
+
+/// Тот же хвост, но целиком и строками: его показывает окно, когда одной
+/// причины мало и надо видеть, что там было вокруг.
+///
+/// Читается ровно столько же, сколько под причину, и это не экономия, а
+/// свойство: лог живёт весь срок процесса и на болтливом узле растёт
+/// мегабайтами, а человек читает конец. Файла нет — пусто, и это не ошибка:
+/// sing-box ни разу не запускался.
+pub fn log_tail(dir: &Path) -> Vec<String> {
+    let read = || -> std::io::Result<(u64, Vec<u8>)> {
+        let mut file = std::fs::File::open(dir.join("singbox.log"))?;
+        let from = file.metadata()?.len().saturating_sub(LOG_TAIL);
+        file.seek(SeekFrom::Start(from))?;
+        let mut tail = Vec::new();
+        file.read_to_end(&mut tail)?;
+        Ok((from, tail))
+    };
+    let Ok((from, tail)) = read() else {
+        return Vec::new();
+    };
     // Хвост отрезан по байтам, а не по строкам: и границу UTF-8 это ломает, и
     // первую строку — поэтому `lossy` и пропуск первой, когда резали.
     let text = String::from_utf8_lossy(&tail);
@@ -547,7 +564,7 @@ pub fn last_failure(dir: &Path) -> Option<String> {
     if from > 0 {
         lines.next();
     }
-    lines.rev().find(|l| l.contains("outbound/")).map(strip_ansi)
+    lines.map(strip_ansi).collect()
 }
 
 /// Последняя содержательная строка лога sing-box — она объясняет отказ запуска.

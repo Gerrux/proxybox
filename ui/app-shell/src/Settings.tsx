@@ -32,6 +32,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   autostart as readAutostart,
+  call,
   isTauri,
   openLogs,
   openUrl,
@@ -42,8 +43,8 @@ import {
   type Settings as ServiceSettings,
   type Status,
 } from "./platform";
-import { strings } from "./i18n";
-import { Button, FIELD, Panel, Segmented } from "./ui";
+import { strings, type Strings } from "./i18n";
+import { Button, CopyButton, FIELD, Modal, Panel, Segmented } from "./ui";
 
 const REPO = "Gerrux/proxybox";
 
@@ -199,6 +200,9 @@ export function Settings({
   const lang = status?.lang;
   const s = strings(lang);
   const [expanded, setExpanded] = useState(false);
+  // Журнал sing-box поверх панели, а не полосой внутри неё: строк там сотни, и
+  // раздвинутая ими настройка уехала бы за нижний край вместе со всем прочим.
+  const [showLog, setShowLog] = useState(false);
   const { releases, error, busy, check, latest, fresh } = rel;
   const settings = status?.settings;
 
@@ -307,11 +311,15 @@ export function Settings({
             />
           </Row>
 
-          {/* Единственный путь из окна к настоящей причине отказа: лента говорит,
-              что туннель отвалился, а словами это объясняет только `singbox.log`.
-              Открывает каталог оболочка — в браузере при разработке Проводника
-              нет, поэтому там кнопка заперта. */}
+          {/* Путь из окна к настоящей причине отказа: лента говорит, что туннель
+              отвалился, а словами это объясняет только `singbox.log`. Дверей
+              две, и вторая нужна не для красоты: каталог открывает оболочка,
+              то есть только Windows и только с Проводником, — а хвост показывает
+              сама служба, и он есть везде, включая разработку в браузере. */}
           <Row title={s.logsTitle} note={s.logsHint}>
+            <Button variant="ghost" onClick={() => setShowLog(true)}>
+              {s.logsShow}
+            </Button>
             <Button
               variant="ghost"
               disabled={!isTauri()}
@@ -387,7 +395,73 @@ export function Settings({
 
         </Group>
       </div>
+      {showLog && <SingboxLog s={s} onClose={() => setShowLog(false)} />}
     </Panel>
+  );
+}
+
+/** Хвост `singbox.log` прямо в окне — то, что пишет о себе сам sing-box.
+ *
+ *  Ленте службы этого не заменить и не поручить: она говорит, что туннель
+ *  отвалился, а почему — знает только он, и до сих пор ответ лежал за словами
+ *  «зайдите в %ProgramData%», то есть ровно тогда, когда у человека уже нет
+ *  сети. Тридцати строк ленты тут мало и по другой причине: sing-box пишет
+ *  сотнями, и в ленту из них попадает одна — последняя с `outbound/`.
+ *
+ *  Спрашивается, пока панель открыта, и по тому же правилу, что соединения:
+ *  это чтение с диска в службе, и платить за него, когда никто не смотрит,
+ *  незачем. Прячут окно в трей — опрос останавливается там же, где и статус.
+ *
+ *  Прокрутку вниз сама не тянет: строка, которую читают, уезжала бы из-под
+ *  глаз каждые две секунды. Свежие внизу, и открытая панель уже там. */
+function SingboxLog({ s, onClose }: { s: Strings; onClose: () => void }) {
+  // `null` — ещё не спрашивали: пустой файл и неотвеченный запрос выглядят
+  // одинаково, а сказать про них надо разное.
+  const [lines, setLines] = useState<string[] | null>(null);
+  useEffect(() => {
+    let gone = false;
+    const ask = () => {
+      if (document.hidden) return;
+      void call({ cmd: "singbox-log" })
+        .then((r) => {
+          if (!gone && r.reply === "singbox-log") setLines(r.data.lines);
+        })
+        // Служба замолчала — про это во весь рост говорит шапка окна, а
+        // последнее известное честнее пустоты.
+        .catch(() => {});
+    };
+    ask();
+    const id = setInterval(ask, 2000);
+    return () => {
+      gone = true;
+      clearInterval(id);
+    };
+  }, []);
+  return (
+    <Modal title={s.logsTitle} onClose={onClose}>
+      <div className="flex flex-col gap-2">
+        <div className="scroll max-h-[55vh] overflow-auto rounded-md bg-surface-2 p-2">
+          {lines == null || lines.length === 0 ? (
+            // Ответ идёт с местного диска и приходит мгновенно, так что
+            // ожидание тут — не состояние, а мигание: своей строки, которую
+            // пришлось бы переводить на шесть языков, оно не стоит.
+            <p className="p-1 text-[12.5px] text-muted">{lines == null ? "…" : s.logsEmpty}</p>
+          ) : (
+            // Перенос по любому месту, а не по словам: в строках лога адреса и
+            // пути без пробелов, и по словам они уезжали бы за правый край.
+            <pre className="selectable whitespace-pre-wrap break-all font-mono text-[11px] leading-[17px] text-muted">
+              {lines.join("\n")}
+            </pre>
+          )}
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] text-muted">{s.logsTail}</span>
+          {lines != null && lines.length > 0 && (
+            <CopyButton text={() => lines.join("\n")} label={s.copyLog} done={s.copied} />
+          )}
+        </div>
+      </div>
+    </Modal>
   );
 }
 

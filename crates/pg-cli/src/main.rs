@@ -452,8 +452,12 @@ fn main() -> std::process::ExitCode {
         }
         // Иконок CLI не спрашивает — печатать в терминал нечего. Узел целиком
         // (`ProfileNode`) спрашивает только форма правки в окне: править JSON в
-        // одну строку аргумента незачем, когда рядом есть `add-profile`.
-        Ok(Response::Done | Response::Icon(_) | Response::ProfileNode { .. }) => std::process::ExitCode::SUCCESS,
+        // одну строку аргумента незачем, когда рядом есть `add-profile`. Хвост
+        // журнала sing-box (`SingboxLog`) — панель окна, а в консоли тот же
+        // файл читается чем угодно, и путь к нему говорит `doctor`.
+        Ok(Response::Done | Response::Icon(_) | Response::ProfileNode { .. } | Response::SingboxLog { .. }) => {
+            std::process::ExitCode::SUCCESS
+        }
         // Что вышло из импорта. Пропущенное печатается с причиной: вставили
         // полсотни строк, приехало двенадцать — и куда делись остальные, до сих
         // пор не отвечал никто.

@@ -1,7 +1,6 @@
-import { useState } from "react";
 import type { Lang, LogLine } from "./platform";
 import { dayLabel, loggedAgo, strings } from "./i18n";
-import { Button, Empty, Panel } from "./ui";
+import { CopyButton, Empty, Panel } from "./ui";
 
 /** Журнал службы: что она сделала и почему. Своих сообщений окно не выдумывает,
  *  кроме ошибок, до службы не дошедших. Своей важности — тоже: поломку красит
@@ -26,10 +25,6 @@ export function Journal({ lines, lang, className }: { lines: LogLine[]; lang?: L
   const at = (line: LogLine) => new Date(line.at * 1000);
   const clock = (line: LogLine) =>
     at(line).toLocaleTimeString(lang ?? "ru", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-  // Скопированное показывается ответом на нажатие: буфер обмена невидим, и
-  // молчаливая кнопка тут неотличима от несработавшей. Флаг снимается сам —
-  // подтверждение живёт ровно столько, сколько на него смотрят.
-  const [copied, setCopied] = useState(false);
   // Лента идёт от новых к старым, а показывают её в переписке, где читают
   // сверху вниз: наружу отдаём по порядку событий. Дата целиком, а не одно
   // время: тридцать строк легко перешагивают полночь.
@@ -43,23 +38,7 @@ export function Journal({ lines, lang, className }: { lines: LogLine[]; lang?: L
       className={className}
       title={s.journal}
       action={
-        lines.length > 0 && (
-          <Button
-            variant="quiet"
-            onClick={() => {
-              // Отказ буфера ничем не показываем: подтверждение не появится, а
-              // это и есть весь ответ. Своей ошибки окно тут выдумывать не
-              // станет — журнал остаётся на экране, его видно и так.
-              void navigator.clipboard
-                .writeText(text())
-                .then(() => setCopied(true))
-                .then(() => setTimeout(() => setCopied(false), 2000))
-                .catch(() => {});
-            }}
-          >
-            {copied ? s.copied : s.copyLog}
-          </Button>
-        )
+        lines.length > 0 && <CopyButton text={text} label={s.copyLog} done={s.copied} />
       }
     >
       {lines.length === 0 ? (

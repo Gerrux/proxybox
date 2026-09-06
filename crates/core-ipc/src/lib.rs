@@ -401,6 +401,13 @@ pub enum Request {
     /// бывают сотни, а статус окно опрашивает каждые две секунды. Спрашивают
     /// его на открытие формы правки и на «скопировать ссылку».
     ProfileNode { name: String },
+    /// Хвост журнала sing-box — тот самый файл, из которого служба тянет причину
+    /// отказа в ленту. До него из окна не было пути вовсе: только «зайдите в
+    /// `%ProgramData%`», то есть ровно тогда, когда у человека уже нет сети.
+    ///
+    /// Спрашивают его, только пока панель открыта, и разбирают до общего замка:
+    /// это поход на диск, а под замком за ним стоят и статус в окне, и надзор.
+    SingboxLog,
     /// Переименовать профиль и/или переписать его узел. `node` — тот же текст,
     /// что принимает `AddProfile`: JSON узла либо share-link. Пустой `node`
     /// оставляет узел как есть, то есть это же и переименование.
@@ -788,6 +795,9 @@ pub enum Response {
     /// поля везут пароль и ключ, поэтому и едут отдельным запросом, а не в
     /// статусе.
     ProfileNode { json: String, link: String },
+    /// Хвост журнала sing-box строками, от старых к новым и уже без ANSI.
+    /// Пусто — файла нет вовсе: sing-box ни разу не запускался.
+    SingboxLog { lines: Vec<String> },
     Error { message: String },
 }
 
@@ -1043,6 +1053,7 @@ mod tests {
             Request::Icon { path: r"C:\app.exe".into() },
             Request::AddProfile { link: "vless://u@a.com:443".into() },
             Request::ProfileNode { name: "myvpn".into() },
+            Request::SingboxLog,
             Request::EditProfile { name: "myvpn".into(), rename: "дом".into(), node: "{\"type\":\"vless\"}".into() },
             Request::RemoveProfile { name: "myvpn".into() },
             Request::RemoveSubscription { url: "https://panel.example/sub?token=1".into() },
@@ -1145,6 +1156,8 @@ mod tests {
             },
             Response::ProfileNode { json: "{}".into(), link: "vless://u@a.com:443#дом".into() },
             Response::ProfileNode { json: "{}".into(), link: String::new() },
+            Response::SingboxLog { lines: vec!["INFO[0000] router: started".into()] },
+            Response::SingboxLog { lines: Vec::new() },
             Response::Error { message: "нет".into() },
         ];
         let mut seen = Vec::new();
