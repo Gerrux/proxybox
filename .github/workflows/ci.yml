@@ -78,6 +78,10 @@ jobs:
   # совпадение поверхностей.
   linux:
     runs-on: ubuntu-latest
+    # e2e.sh проверяет fail-closed на живом замке — сорвавшееся утверждение
+    # между guard(true) и `proxybox off` (скрипт снимает его и сам, в трапе)
+    # не обязано устроить раннеру без сети и без логов дефолтные 360 минут.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -91,12 +95,17 @@ jobs:
           sudo install "sing-box-$VER-linux-amd64/sing-box" /usr/local/bin/sing-box
       - run: sudo apt-get update -qq && sudo apt-get install -y nftables
       - run: cargo build
-      # Под root — то есть с настоящим замком и настоящим TUN. e2e.sh сам
-      # решает, что ему доступно (`FULL`): без root он проверяет только путь
-      # до узла, здесь — ещё и то, что посторонний процесс не проходит замок.
-      - run: sudo -E PG_SINGBOX=/usr/local/bin/sing-box scripts/e2e.sh
       # Оболочка вне воркспейса, и под Linux её до сих пор не собирал никто —
-      # строка ниже про Windows проверяет только совпадение поверхностей
-      # (`--target` без линковки), а эта собирает по-настоящему.
+      # строка в `validate` про Windows проверяет только совпадение
+      # поверхностей (`--target` без линковки), а эта собирает по-настоящему.
+      # Обязана идти до шага e2e ниже: тот зовёт `cargo build` через `sudo -E`
+      # (сохранённый HOME), и root-овый `~/.cargo/registry` после него стал бы
+      # нечитаемым для этой же сборки от имени runner.
       - run: sudo apt-get update -qq && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
       - run: cargo check --manifest-path src-tauri/Cargo.toml
+      # Под root — то есть с настоящим замком и настоящим TUN. e2e.sh сам
+      # решает, что ему доступно (`FULL`), а PG_E2E_FULL=1 требует, чтобы
+      # здесь оно оказалось включённым: молчаливый откат на путь до узла
+      # (отвалившийся `apt-get`, смена образа раннера, потерянный `sudo -E`)
+      # иначе зеленил бы job, не проверив инвариант вовсе.
+      - run: sudo -E PG_SINGBOX=/usr/local/bin/sing-box PG_E2E_FULL=1 scripts/e2e.sh
