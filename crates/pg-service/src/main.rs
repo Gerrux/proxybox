@@ -1850,6 +1850,13 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
     if let Request::Discover { env } = &req {
         return discover(svc, env);
     }
+    // Журнал sing-box — файл, и состояния службы для него не нужно вовсе.
+    // Спрашивают его, пока открыта панель, то есть раз в две секунды: под общим
+    // замком это чтение с диска встало бы в одну очередь со статусом окна и
+    // надзором за туннелем — ровно то, за что до замка вынесены иконка и обход.
+    if let Request::SingboxLog = &req {
+        return Response::SingboxLog { lines: core_tunnel::log_tail(&dir()) };
+    }
     let mut s = lock(svc);
     match req {
         Request::Status => {
@@ -1875,10 +1882,10 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             Response::Status(s.status.clone())
         }
         Request::ListApps => Response::Apps(s.status.apps.clone()),
-        // Обе разобраны до замка и сюда не доходят. Паника тут безопасна:
+        // Все они разобраны до замка и сюда не доходят. Паника тут безопасна:
         // до `lock(svc)` управление не дошло, отравить замок нечем, а поток
         // на этом соединении свой — уронить она может только его.
-        Request::Icon { .. } | Request::Discover { .. } | Request::AddProfile { .. } => {
+        Request::Icon { .. } | Request::Discover { .. } | Request::AddProfile { .. } | Request::SingboxLog => {
             unreachable!("разбирается до замка")
         }
         Request::AddApp { path } => {
@@ -2911,7 +2918,7 @@ mod tests {
     fn the_lock_is_never_held_through_a_walk_of_the_disk() {
         let handle = include_str!("main.rs").split_once("\nfn handle(").expect("handle()").1;
         let before = handle.split_once("let mut s = lock(svc);").expect("замок в handle()").0;
-        for command in ["Request::Icon", "Request::Discover"] {
+        for command in ["Request::Icon", "Request::Discover", "Request::SingboxLog"] {
             assert!(before.contains(command), "{command} разбирается под общим замком");
         }
     }
@@ -3631,6 +3638,7 @@ fn changes_the_machine(req: &Request) -> bool {
         | Request::Discover { .. }
         | Request::Icon { .. }
         | Request::ProfileNode { .. }
+        | Request::SingboxLog
         | Request::RenameSubscription { .. }
         | Request::SetFavorite { .. }
         | Request::SetOrder { .. }

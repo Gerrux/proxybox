@@ -270,6 +270,9 @@ const RU = {
   logsHint:
     "Лента рядом говорит, что туннель отвалился; почему — пишет сам sing-box в singbox.log. Там же конфиг, с которым он запущен, и состояние службы. Файл переписывается с каждым запуском туннеля: снимите копию, пока не перезапустили.",
   logsOpen: "Открыть каталог",
+  logsShow: "Показать",
+  logsTail: "Последние 16 КБ файла, обновляются на глазах",
+  logsEmpty: "Пусто: sing-box ещё ни разу не запускался",
   issueTitle: "Сообщить о проблеме",
   issueHint:
     "Форма заведения на GitHub: опишите, что случилось, и приложите снимок экрана — прямо в поле, перетаскиванием. Пригодятся версия, охват и строка из ленты. Открывается в браузере, ничего отсюда не отправляется.",
@@ -567,6 +570,9 @@ const EN: typeof RU = {
   logsHint:
     "The journal next door says the tunnel went down; why it did is written by sing-box itself into singbox.log. The config it runs with and the service state are in the same folder. The file is rewritten on every tunnel start: take a copy before restarting.",
   logsOpen: "Open folder",
+  logsShow: "Show",
+  logsTail: "The file's last 16 KB, refreshed as you watch",
+  logsEmpty: "Empty: sing-box has never been started",
   issueTitle: "Report a problem",
   issueHint:
     "The issue form on GitHub: describe what happened and attach a screenshot — drop it straight into the field. The version, the scope and the line from the journal all help. Opens in the browser; nothing is sent from here.",
@@ -865,6 +871,9 @@ const FA: typeof RU = {
   logsHint:
     "فهرست کنار فقط می‌گوید تونل افتاد؛ دلیلش را خود sing-box در singbox.log می‌نویسد. پیکربندی در حال اجرا و وضعیت سرویس هم در همان پوشه است. این فایل با هر راه‌اندازی تونل بازنویسی می‌شود: پیش از راه‌اندازی مجدد یک نسخه بردارید.",
   logsOpen: "باز کردن پوشه",
+  logsShow: "نمایش",
+  logsTail: "۱۶ کیلوبایت پایانی فایل، هم‌زمان تازه می‌شود",
+  logsEmpty: "خالی: sing-box هرگز اجرا نشده است",
   issueTitle: "گزارش مشکل",
   issueHint:
     "فرم ثبت مشکل در گیت‌هاب: بنویسید چه شد و تصویر صفحه را همان‌جا با کشیدن و رها کردن پیوست کنید. نسخه، دامنه و سطری از فهرست به کار می‌آید. در مرورگر باز می‌شود؛ از اینجا چیزی فرستاده نمی‌شود.",
@@ -1164,6 +1173,9 @@ const ZH: typeof RU = {
   logsHint:
     "旁边的日志只说隧道断了，原因由 sing-box 自己写入 singbox.log。它运行所用的配置和服务状态也在同一目录。该文件在每次启动隧道时都会重写：重启之前请先复制一份。",
   logsOpen: "打开目录",
+  logsShow: "查看",
+  logsTail: "文件最后 16 KB，实时刷新",
+  logsEmpty: "空的：sing-box 还没有启动过",
   issueTitle: "报告问题",
   issueHint:
     "GitHub 上的问题表单：说明发生了什么，并把截图直接拖进输入框。版本、范围和日志里的那一行都有用。在浏览器中打开，这里不会发送任何东西。",
@@ -1461,6 +1473,9 @@ const TR: typeof RU = {
   logsHint:
     "Yandaki akış yalnızca tünelin düştüğünü söyler; nedenini sing-box kendi singbox.log dosyasına yazar. Çalıştığı yapılandırma ve servis durumu da aynı klasördedir. Dosya her tünel başlatmada yeniden yazılır: yeniden başlatmadan önce bir kopya alın.",
   logsOpen: "Klasörü aç",
+  logsShow: "Göster",
+  logsTail: "Dosyanın son 16 KB'ı, gözünüzün önünde tazelenir",
+  logsEmpty: "Boş: sing-box hiç çalıştırılmadı",
   issueTitle: "Sorun bildir",
   issueHint:
     "GitHub üzerindeki sorun formu: ne olduğunu yazın ve ekran görüntüsünü doğrudan alana sürükleyip bırakın. Sürüm, kapsam ve akıştaki satır işe yarar. Tarayıcıda açılır; buradan hiçbir şey gönderilmez.",
@@ -1760,6 +1775,9 @@ const ID: typeof RU = {
   logsHint:
     "Jurnal di sebelah hanya mengatakan tunnel terputus; alasannya ditulis sing-box sendiri ke singbox.log. Konfigurasi yang dipakainya dan keadaan layanan ada di folder yang sama. Berkas ini ditulis ulang setiap tunnel dijalankan: salin dulu sebelum memulai ulang.",
   logsOpen: "Buka folder",
+  logsShow: "Tampilkan",
+  logsTail: "16 KB terakhir dari berkas, disegarkan langsung",
+  logsEmpty: "Kosong: sing-box belum pernah dijalankan",
   issueTitle: "Laporkan masalah",
   issueHint:
     "Formulir masalah di GitHub: ceritakan apa yang terjadi dan lampirkan tangkapan layar — seret langsung ke kolomnya. Versi, cakupan, dan baris dari jurnal semuanya membantu. Terbuka di peramban; tidak ada apa pun yang dikirim dari sini.",
