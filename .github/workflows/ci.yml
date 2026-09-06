@@ -1,7 +1,8 @@
 # Сторожа держат ровно до тех пор, пока их кто-то запускает. Тег бывает раз в
 # месяц, а правило нарушают в тот же день — поэтому весь `pnpm validate` бежит
-# на каждый пуш и каждый PR. Linux: службе тут не подняться, но проверяют
-# сторожа не живой туннель, а совпадение поверхностей и чистую логику.
+# на каждый пуш и каждый PR. Сам `validate` службу не поднимает — сторожа в нём
+# проверяют не живой туннель, а совпадение поверхностей и чистую логику; живой
+# замок и настоящий TUN под root проверяет отдельный job `linux` ниже.
 name: ci
 
 on:
@@ -69,3 +70,33 @@ jobs:
           done
           : > src-tauri/binaries/LICENSE-sing-box.txt
       - run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+
+  # Отдельный job, а не шаг в `validate`: здесь нужен root — без него не
+  # поднять ни nftables, ни TUN, — а остальным сторожам такое окружение не
+  # нужно и не должно быть нужно. Это первая сквозная проверка инварианта,
+  # какая у продукта вообще есть: настоящий замок и настоящий TUN, а не
+  # совпадение поверхностей.
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Версия sing-box закреплена в установщике, и она обязана быть одна на
+      # установщик и на CI: иначе CI зеленеет на версии, которой нет ни у кого.
+      # Ровно так фатальный конфиг и уехал в 0.3.1.
+      - name: sing-box
+        run: |
+          VER=$(grep -oP '\$Version = "\K[^"]+' installer/get-singbox.ps1)
+          curl -sL "https://github.com/SagerNet/sing-box/releases/download/v$VER/sing-box-$VER-linux-amd64.tar.gz" | tar xz
+          sudo install "sing-box-$VER-linux-amd64/sing-box" /usr/local/bin/sing-box
+      - run: sudo apt-get update -qq && sudo apt-get install -y nftables
+      - run: cargo build
+      # Под root — то есть с настоящим замком и настоящим TUN. e2e.sh сам
+      # решает, что ему доступно (`FULL`): без root он проверяет только путь
+      # до узла, здесь — ещё и то, что посторонний процесс не проходит замок.
+      - run: sudo -E PG_SINGBOX=/usr/local/bin/sing-box scripts/e2e.sh
+      # Оболочка вне воркспейса, и под Linux её до сих пор не собирал никто —
+      # строка ниже про Windows проверяет только совпадение поверхностей
+      # (`--target` без линковки), а эта собирает по-настоящему.
+      - run: sudo apt-get update -qq && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
+      - run: cargo check --manifest-path src-tauri/Cargo.toml
