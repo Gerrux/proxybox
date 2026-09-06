@@ -24,8 +24,11 @@ FULL=0
 if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" = "0" ] && command -v nft >/dev/null; then
   FULL=1
 fi
-# Служба, убитая сигналом, не успевает прибрать за собой sing-box — в жизни его
-# добивает reap_orphan при следующем старте, здесь это делает уборщик скрипта.
+# Уборщик не ждёт, пока служба разберёт SIGTERM сама: `kill $(jobs -p)` не
+# делает `wait`, а trap может сработать и раньше, чем guard(false)/stop()
+# успеют погасить sing-box (сорванное утверждение на середине, отказ шага).
+# kill -9 по pid-файлу — страховка на этот случай, а не единственный путь
+# уборки: с job 3 служба вне Windows сама гасит sing-box по SIGTERM.
 cleanup() {
   kill $(jobs -p) 2>/dev/null || true
   kill -9 "$(cat "$XDG_CONFIG_HOME/proxybox/singbox.pid" 2>/dev/null)" 2>/dev/null || true
@@ -115,7 +118,11 @@ sleep 2
 step "перезапуск службы: приватный режим восстанавливается сам"
 SVC=$(pgrep -f 'target/debug/pg-service' | head -1)
 [ -n "$SVC" ] || fail "служба не найдена"
-kill "$SVC"; sleep 1
+# -9: голый `kill` шлёт SIGTERM, а его служба теперь перехватывает и гасит
+# приватный режим сама (`stop()`: private = false, записано на диск) — то
+# есть перестаёт быть тем «падением», которое проверяет этот шаг. Нужен
+# настоящий SIGKILL, необрабатываемый, чтобы private=true пережило рестарт.
+kill -9 "$SVC"; sleep 1
 ./target/debug/pg-service >>"$WORK/service.log" 2>&1 &
 sleep 6
 ./target/debug/proxybox status
@@ -131,8 +138,10 @@ if [ "$FULL" = "1" ]; then
   # адресе был точно той же ловушкой в другой обёртке.
   # Посторонний — это другой uid: служба и sing-box проходят замок по
   # пропуску, и их успех про замок не говорит ничего.
+  # 15, а не 5: round-trip до внешнего хоста под нагруженным CI-раннером в
+  # пять секунд может не уложиться — а красный master дороже лишних секунд.
   outsider() { setpriv --reuid=nobody --regid=nogroup --clear-groups \
-      curl -s --max-time 5 -o /dev/null https://github.com; }
+      curl -s --max-time 15 -o /dev/null https://github.com; }
   # Обязан идти до убийства сервера ниже, а не после. Здесь единственный
   # охват — `Scope::All` (свежий XDG_CONFIG_HOME, узел ещё не сверялся,
   # `migrate_scope` в отсутствие state.json отдаёт `Scope::All`), а для него
