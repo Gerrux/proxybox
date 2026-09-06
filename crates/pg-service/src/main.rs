@@ -3887,7 +3887,7 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
         let (apps, profiles) = (s.status.apps.len(), s.profiles.len());
         let where_ = match endpoint {
             Endpoint::Pipe => format!("канал {}", core_ipc::PIPE),
-            Endpoint::Socket => format!("сокет {}", core_ipc::SOCKET),
+            Endpoint::Socket => format!("сокет {}", core_ipc::socket()),
         };
         s.log(tf!("служба слушает {}; приложений: {}, профилей: {}", where_, apps, profiles));
         if !elevated() {

@@ -13,6 +13,10 @@ UUID=b831381d-6324-4d53-ad4f-8cda48b30811
 export PG_LANG=ru
 WORK=$(mktemp -d)
 export XDG_CONFIG_HOME="$WORK/cfg"
+# Умолчание `/run/proxybox/service.sock` создать может только root — свой
+# путь на каждый прогон заодно даёт изоляцию параллельным e2e, которой не
+# было и у прежнего фиксированного порта.
+export PG_SOCKET="$WORK/service.sock"
 # Служба, убитая сигналом, не успевает прибрать за собой sing-box — в жизни его
 # добивает reap_orphan при следующем старте, здесь это делает уборщик скрипта.
 cleanup() {

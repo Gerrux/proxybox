@@ -10,9 +10,13 @@ const VERSION = JSON.parse(
   readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
 ).version;
 
-/** Куда стучаться в службу (core_ipc::SOCKET и core_ipc::PIPE). Дублируется
- *  здесь только ради разработки. */
-const SERVICE_SOCKET = "/run/proxybox/service.sock";
+/** Куда стучаться в службу (core_ipc::socket() и core_ipc::PIPE). Дублируется
+ *  здесь только ради разработки. Умолчание — литерал, а не значение
+ *  переменной: сторож `the_dev_bridge_knows_the_socket` сверяет его текстом,
+ *  и он обязан остаться константой независимо от того, чем перебит
+ *  PG_SOCKET у того, кто запускает `pnpm dev`. */
+const SERVICE_SOCKET_DEFAULT = "/run/proxybox/service.sock";
+const SERVICE_SOCKET = process.env.PG_SOCKET || SERVICE_SOCKET_DEFAULT;
 const SERVICE_PIPE = "\\\\.\\pipe\\proxybox";
 
 /**

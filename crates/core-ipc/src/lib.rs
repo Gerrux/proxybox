@@ -27,11 +27,30 @@ use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::sync::atomic::{AtomicU8, Ordering};
 
-/// Куда встаёт служба вне Windows. Каталог, а не голый путь в `/run`: права
-/// стоят на каталоге — см. шапку `unix_socket`. Без `cfg`, как и `PIPE`: обе
-/// строки встречаются в одном безусловном `match` по `Endpoint` в `pg-service`,
-/// и, будь эта константа windows-специфичной, разбор упал бы на чужой платформе.
-pub const SOCKET: &str = "/run/proxybox/service.sock";
+/// Умолчание для пути сокета вне Windows. Каталог, а не голый путь в `/run`:
+/// права стоят на каталоге — см. шапку `unix_socket`. Отдельной константой, а
+/// не строкой внутри `socket()`: сторож `the_dev_bridge_knows_the_socket`
+/// сверяет `vite.config.ts` с умолчанием текстом, и ему нужен литерал, а не
+/// результат чтения окружения.
+pub const SOCKET_DEFAULT: &str = "/run/proxybox/service.sock";
+
+/// Путь сокета вне Windows, с поправкой на `PG_SOCKET`. Та же диагностическая
+/// ручка, что `PG_SINGBOX`: путь задаёт тот, кто запускает службу, — тот же
+/// уровень доверия, что у пути к исполняемому файлу sing-box, новой
+/// поверхности атаки нет. Права по-прежнему даёт каталог, а не сам путь (см.
+/// `unix_socket`), так что подмена пути не открывает сокет шире, чем открыл
+/// бы умолчание. Нужна на практике ровно затем же, зачем нужен запуск без
+/// root вообще: `/run/proxybox` при отсутствии прав создать некому, и без
+/// переменной `cargo run -p pg-service` и `scripts/e2e.sh` не поднимались бы
+/// без root. В настройках не продублирована — человеку выбирать тут нечего.
+///
+/// Без `cfg`, как и `PIPE`: обе строки встречаются в одном безусловном `match`
+/// по `Endpoint` в `pg-service`, и, будь эта функция windows-специфичной,
+/// разбор упал бы на чужой платформе.
+pub fn socket() -> String {
+    std::env::var("PG_SOCKET").unwrap_or_else(|_| SOCKET_DEFAULT.into())
+}
+
 /// Потолок одной строки протокола. Без него строка без перевода строки растёт
 /// до предела памяти процесса: у службы это отказ обслуживания от любого
 /// локального процесса, у клиента — от подставного канала. Восемь мегабайт
@@ -955,7 +974,7 @@ fn connect() -> io::Result<Stream> {
         Err(last)
     }
     #[cfg(not(windows))]
-    Ok(Stream(Inner::Unix(std::os::unix::net::UnixStream::connect(SOCKET)?)))
+    Ok(Stream(Inner::Unix(std::os::unix::net::UnixStream::connect(socket())?)))
 }
 
 /// Один запрос — один ответ. Используется и CLI, и Tauri-оболочкой.
@@ -1602,12 +1621,18 @@ mod tests {
 
     /// Мост дев-сервера ходит в службу по пути сокета, записанному второй раз.
     /// Компилятора у него нет вовсе, и разъезд с контрактом молчит с обеих
-    /// сторон: окно просто перестаёт получать статус.
+    /// сторон: окно просто перестаёт получать статус. Сверяем с умолчанием
+    /// (`SOCKET_DEFAULT`), а не со значением `socket()`: то читает `PG_SOCKET`
+    /// из окружения самого теста, а литерал в `vite.config.ts` обязан
+    /// совпадать с умолчанием, а не с тем, что стоит в переменной у CI.
     #[test]
     #[cfg(not(windows))]
     fn the_dev_bridge_knows_the_socket() {
         let vite = include_str!("../../../ui/app-shell/vite.config.ts");
-        assert!(vite.contains(&format!("SERVICE_SOCKET = \"{SOCKET}\"")), "vite.config.ts смотрит не в {SOCKET}");
+        assert!(
+            vite.contains(&format!("SERVICE_SOCKET_DEFAULT = \"{SOCKET_DEFAULT}\"")),
+            "vite.config.ts смотрит не в {SOCKET_DEFAULT}"
+        );
     }
 
     /// Скорость канала в шапке обязана считаться по отметке службы, а не по

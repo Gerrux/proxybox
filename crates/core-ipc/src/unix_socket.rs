@@ -25,9 +25,9 @@ const DIR_MODE: u32 = 0o750;
 /// каталог остаётся за одним root.
 const GROUP: &str = "proxybox";
 
-/// Поднять сокет по пути из контракта.
+/// Поднять сокет по пути из контракта (с поправкой на `PG_SOCKET`).
 pub fn bind() -> io::Result<UnixListener> {
-    bind_at(Path::new(crate::SOCKET))
+    bind_at(Path::new(&crate::socket()))
 }
 
 /// То же, но по произвольному пути — так проверяет сторож, не трогая `/run`.
