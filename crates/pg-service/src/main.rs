@@ -1008,6 +1008,46 @@ fn elevated() -> bool {
     unsafe { geteuid() == 0 }
 }
 
+/// Остановка по сигналу. systemd шлёт SIGTERM, человек в консоли — SIGINT, и
+/// оба означают одно: погасить туннель и снять правила.
+///
+/// Обработчик только взводит флаг. Из него нельзя ни звать `nft`, ни трогать
+/// канал: в обработчике сигнала разрешено крайне мало, а `mpsc::Sender::send`
+/// выделяет память и берёт замок. Поэтому за флагом следит отдельный поток и он
+/// же посылает по каналу — тому самому, который на Windows заполняет SCM.
+///
+/// Сторож — `the_service_gives_the_machine_back`.
+#[cfg(not(windows))]
+fn watch_for_signals() -> mpsc::Receiver<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static STOPPING: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn on_signal(_: i32) {
+        STOPPING.store(true, Ordering::SeqCst);
+    }
+    extern "C" {
+        fn signal(num: i32, handler: extern "C" fn(i32)) -> usize;
+    }
+    const SIGINT: i32 = 2;
+    const SIGTERM: i32 = 15;
+
+    unsafe {
+        signal(SIGINT, on_signal);
+        signal(SIGTERM, on_signal);
+    }
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || loop {
+        if STOPPING.load(Ordering::SeqCst) {
+            let _ = tx.send(());
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    });
+    rx
+}
+
 /// Отказ на стадии TUN означает одно: службу запустили без прав администратора.
 /// Голый FATAL из sing-box об этом не говорит, а причина всегда одна и та же.
 fn explain(error: &str) -> String {
@@ -3659,6 +3699,29 @@ mod tests {
         // Без прав, без окружения и без домашней папки — .config рядом с собой
         assert_eq!(base_dir(false, None, None), PathBuf::from(".config"));
     }
+
+    /// Служба, остановленная systemd, обязана вернуть машину: снятие правил
+    /// висит на канале остановки, и `run(None)` означал бы запертое исходящее,
+    /// пережившее службу. Проверить сигнал в тесте нечем — процесс тут один и
+    /// он же испытуемый, — поэтому сторожим текстом: `main` обязан завести
+    /// канал и отдать его в `run`.
+    ///
+    /// Искать разделитель приходится с ведущим переносом строки: этот файл сам
+    /// себе `include_str!`, а `mod tests` в нём стоит раньше настоящего `main`.
+    /// Без переноса разделитель находил бы сам себя внутри своей же строки —
+    /// первым вхождением оказывался этот `split(...)`, а не объявление `main`,
+    /// и `body` вечно состоял бы из хвоста этого теста, где буквально написано
+    /// `"run(None)"` — вторая проверка не прошла бы никогда, что ни делай в
+    /// самом `main`. Настоящее `fn main` — единственное место в файле, где
+    /// перед ним стоит перенос строки: только оно и подходит под шаблон.
+    #[test]
+    #[cfg(unix)]
+    fn the_service_gives_the_machine_back() {
+        let src = include_str!("main.rs");
+        let body = src.split("\nfn main() -> std::process::ExitCode").nth(1).expect("main на месте");
+        assert!(body.contains("watch_for_signals("), "main не ставит обработчик сигналов");
+        assert!(!body.contains("run(None)"), "вне Windows служба обязана останавливаться по сигналу, а не только по Ctrl+C");
+    }
 }
 
 /// Меняет ли команда то, что делает машина. Разрушающие называют в журнале
@@ -3931,7 +3994,12 @@ fn main() -> std::process::ExitCode {
         eprintln!("{USAGE}");
         return std::process::ExitCode::FAILURE;
     }
-    match run(None) {
+    #[cfg(windows)]
+    let stop = None;
+    #[cfg(not(windows))]
+    let stop = Some(watch_for_signals());
+
+    match run(stop) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("служба не запустилась: {e}");
