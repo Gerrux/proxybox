@@ -1935,9 +1935,14 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             Response::Done
         }
         Request::ProfileNode { name } => match s.profiles.get(&name) {
-            // С отступами: этот текст человек читает и правит руками, а
-            // однострочный узел с транспортом и TLS не читается вовсе.
-            Some(node) => Response::ProfileNode { json: serde_json::to_string_pretty(node).unwrap_or_default() },
+            // JSON с отступами: этот текст человек читает и правит руками, а
+            // однострочный узел с транспортом и TLS не читается вовсе. Ссылка
+            // рядом — ею и правят, и делятся; пустая означает, что этот узел
+            // в неё не перекладывается (`core_config::share_link`).
+            Some(node) => Response::ProfileNode {
+                json: serde_json::to_string_pretty(node).unwrap_or_default(),
+                link: core_config::share_link(&name, node).unwrap_or_default(),
+            },
             None => Response::Error {
                 message: tf!("нет профиля «{}»", name),
             },
