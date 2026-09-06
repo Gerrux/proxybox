@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import qrcode from "qrcode-generator";
 import type { Act, Lang, ProfileInfo, Probe, Quota, Response, Status, Subscription } from "./platform";
 import type { Strings } from "./i18n";
 import { measuredAgo, strings, syncedAgo } from "./i18n";
@@ -232,6 +233,16 @@ export function Profiles({
       if (!data) return;
       if (!data.link) return onError?.(s.noLink);
       return navigator.clipboard.writeText(data.link).catch(() => onError?.(s.copyFailed));
+    });
+  // Ссылка, которую показывают кодом. Держим саму строку, а не имя профиля:
+  // узел за время показа могли переписать, а на экране обязано остаться то,
+  // что человек в этот код и снял.
+  const [qr, setQr] = useState<string | null>(null);
+  const showQr = (name: string) =>
+    void nodeOf(name).then((data) => {
+      if (!data) return;
+      if (!data.link) return onError?.(s.noLink);
+      setQr(data.link);
     });
   // Открытое меню — одно на панель: второе, оставшееся от прошлой строки,
   // делало бы вид, что относится к этой.
@@ -500,6 +511,7 @@ export function Profiles({
             editing={editing}
             onEdit={openEditor}
             onCopy={copyLink}
+            onQr={showQr}
             onDone={() => setEditing(null)}
             onMenu={openMenu}
             onReorder={draggable ? (names) => reorder("", names) : undefined}
@@ -643,6 +655,7 @@ export function Profiles({
                     editing={editing}
                     onEdit={openEditor}
                     onCopy={copyLink}
+                    onQr={showQr}
                     onDone={() => setEditing(null)}
                     onMenu={openMenu}
                     onReorder={draggable ? (names) => reorder(sub?.url ?? "", names) : undefined}
@@ -655,7 +668,59 @@ export function Profiles({
         )}
       </div>
       {menu && <Menu at={menu.at} items={menu.items} onClose={() => setMenu(null)} />}
+      {qr != null && (
+        <Modal title={s.showQr} onClose={() => setQr(null)}>
+          <div className="flex flex-col items-center gap-2">
+            <Qr link={qr} />
+            {/* Сама ссылка под кодом: код снимают телефоном, а глазами сверяют,
+                что сняли тот узел. Выделяется и копируется как всякий текст. */}
+            <p className="selectable w-full break-all text-center font-mono text-[10.5px] leading-[15px] text-muted">
+              {qr}
+            </p>
+          </div>
+        </Modal>
+      )}
     </Panel>
+  );
+}
+
+/** Ссылка узла кодом: перенести узел на телефон, не гоняя его через буфер и
+ *  чужой мессенджер.
+ *
+ *  Рисуем сами по `isDark`, а не вставляем готовую разметку из библиотеки:
+ *  вставка строкой — это `dangerouslySetInnerHTML` ради того, что собирается
+ *  здесь же из чисел. Модули едут одним `path`, а не тысячей `rect`: у длинной
+ *  ссылки их под четыре тысячи, и каждый был бы отдельным узлом дерева.
+ *
+ *  Код всегда тёмный на белом, в любой теме окна: инвертированный QR читают не
+ *  все сканеры, а живёт эта картинка ровно до того мгновения, как её сняли.
+ *
+ *  Уровень коррекции M — тот же, что у панелей: L мельче, но на экране, с
+ *  которого снимают в упор, разница только в устойчивости. */
+function Qr({ link }: { link: string }) {
+  const code = qrcode(0, "M");
+  code.addData(link);
+  code.make();
+  const size = code.getModuleCount();
+  let d = "";
+  for (let row = 0; row < size; row++) {
+    for (let col = 0; col < size; col++) {
+      if (code.isDark(row, col)) d += `M${col} ${row}h1v1h-1z`;
+    }
+  }
+  return (
+    <svg
+      viewBox={`-2 -2 ${size + 4} ${size + 4}`}
+      // Поле вокруг кода — часть самого кода: без тихой зоны сканер его не
+      // находит. Потому и рисуется белым прямоугольником по всему viewBox.
+      shapeRendering="crispEdges"
+      role="img"
+      aria-label={link}
+      className="w-full max-w-[280px] rounded-md"
+    >
+      <rect x={-2} y={-2} width={size + 4} height={size + 4} fill="#fff" />
+      <path d={d} fill="#000" />
+    </svg>
   );
 }
 /** Форма правки: имя и узел. Узел уходит службе тем же текстом, что принимает
@@ -970,6 +1035,7 @@ function Rows({
   editing,
   onEdit,
   onCopy,
+  onQr,
   onDone,
   onMenu,
   onReorder,
@@ -983,6 +1049,9 @@ function Rows({
   busy?: boolean;
   editing: { name: string; text: string } | null;
   onEdit: (name: string) => void;
+  /** Ссылку узла — кодом на экран: перенос на телефон без буфера и мессенджера.
+   *  Как и «скопировать», есть у любой строки. */
+  onQr: (name: string) => void;
   /** Ссылку узла — в буфер обмена. Есть и у узла подписки: правка ему заказана,
    *  а перенести его на телефон или отдать соседу — нет. */
   onCopy: (name: string) => void;
@@ -1057,6 +1126,7 @@ function Rows({
             onPick: () => void act({ cmd: "set-favorite", arg: { name, on: !item.favorite } }),
           },
           { label: s.copyLink, hint: s.copyLinkHint, onPick: () => onCopy(name) },
+          { label: s.showQr, hint: s.showQrHint, onPick: () => onQr(name) },
           ...(fromSub ? [] : [{ label: s.edit, hint: s.editProfile(name), onPick: () => onEdit(name) }]),
           {
             label: s.remove,
