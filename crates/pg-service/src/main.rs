@@ -101,24 +101,38 @@ static PROBE_LOCK: Mutex<()> = Mutex::new(());
 /// Где служба держит состояние. Грязная половина: спрашивает окружение и
 /// права, а решает `base_dir` — её и проверяет сторож.
 fn dir() -> PathBuf {
-    let base = base_dir(elevated(), std::env::var_os("ProgramData").or_else(|| std::env::var_os("XDG_CONFIG_HOME")).map(PathBuf::from));
+    let base = base_dir(
+        elevated(),
+        std::env::var_os("ProgramData")
+            .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
+            .map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+    );
     settle(base)
 }
 
-/// Куда класть каталог состояния. Под root на Linux — `/var/lib`: у root
-/// `$XDG_CONFIG_HOME` указывает в `/root/.config`, то есть состояние службы
-/// уехало бы в домашний каталог, которого у неё нет. Без прав — туда, куда
-/// показало окружение: так работает разработка.
+/// Куда класть каталог состояния. Служба работает под LocalSystem на Windows,
+/// и её %APPDATA% — это системный профиль внутри System32, а не профиль
+/// пользователя: состоянию место в `%ProgramData%`. Под root на Linux —
+/// `/var/lib`: у root `$XDG_CONFIG_HOME` указывает в `/root/.config`, то есть
+/// состояние службы уехало бы в домашний каталог, которого у неё нет.
 ///
-/// На Windows окружение всегда называет `%ProgramData%`, и первая ветка не
-/// исполняется: `elevated()` там про права администратора, а не про uid.
+/// Без прав на Linux и без переменных окружения — домашний каталог человека.
+/// `$XDG_CONFIG_HOME` обычно не задана вовсе: её отсутствие норма, а не край,
+/// то есть эта ветка и есть основной путь всей разработки без root.
+///
+/// На Windows первая ветка (root на Linux) не исполняется: `elevated()` там
+/// про права администратора, а не про uid, и попасть в неё нельзя.
 /// Сторож — `the_service_keeps_its_state_where_the_system_keeps_it`.
-fn base_dir(elevated: bool, from_env: Option<PathBuf>) -> PathBuf {
+fn base_dir(elevated: bool, from_env: Option<PathBuf>, home: Option<PathBuf>) -> PathBuf {
     match (cfg!(windows), elevated, from_env) {
         (false, true, _) => PathBuf::from("/var/lib"),
         (_, _, Some(env)) => env,
-        // Ни окружения, ни прав — работаем рядом с собой, как и раньше.
-        (_, _, None) => PathBuf::from("."),
+        // Ни прав, ни переменной окружения — домашний каталог человека. Так и
+        // было до порта, и менять это нельзя: `XDG_CONFIG_HOME` обычно не
+        // задана вовсе, то есть сюда попадает вся разработка без root, а
+        // текущий рабочий каталог у неё — корень репозитория.
+        (_, _, None) => home.unwrap_or_default().join(".config"),
     }
 }
 
@@ -3621,12 +3635,29 @@ mod tests {
     /// профилей, и место им там, где система держит состояние служб.
     ///
     /// Разработке остаётся XDG: там служба работает обычным процессом, и
-    /// `/var/lib` ей не отдадят.
+    /// `/var/lib` ей не отдадят. `XDG_CONFIG_HOME` обычно не задана — её
+    /// отсутствие норма, а не край, — то есть fallback на домашний каталог и
+    /// есть основной путь разработки без root.
     #[test]
     #[cfg(unix)]
     fn the_service_keeps_its_state_where_the_system_keeps_it() {
-        assert_eq!(base_dir(true, Some("/home/kto/.config".into())), PathBuf::from("/var/lib"));
-        assert_eq!(base_dir(false, Some("/home/kto/.config".into())), PathBuf::from("/home/kto/.config"));
+        // Под root, с любым окружением — всегда /var/lib
+        assert_eq!(
+            base_dir(true, Some("/home/kto/.config".into()), Some("/home/kto".into())),
+            PathBuf::from("/var/lib")
+        );
+        // Без прав, но окружение задано — его и используем (XDG_CONFIG_HOME или %ProgramData%)
+        assert_eq!(
+            base_dir(false, Some("/home/kto/.config".into()), Some("/home/kto".into())),
+            PathBuf::from("/home/kto/.config")
+        );
+        // Без прав и без окружения — домашний каталог (основной путь разработки)
+        assert_eq!(
+            base_dir(false, None, Some("/home/kto".into())),
+            PathBuf::from("/home/kto/.config")
+        );
+        // Без прав, без окружения и без домашней папки — .config рядом с собой
+        assert_eq!(base_dir(false, None, None), PathBuf::from(".config"));
     }
 }
 
