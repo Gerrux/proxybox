@@ -98,14 +98,28 @@ fn lock(svc: &Mutex<Service>) -> std::sync::MutexGuard<'_, Service> {
 /// см. `Request::TestProfiles`.
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 
+/// Где служба держит состояние. Грязная половина: спрашивает окружение и
+/// права, а решает `base_dir` — её и проверяет сторож.
 fn dir() -> PathBuf {
-    // Служба работает под LocalSystem, и её %APPDATA% — это системный профиль
-    // внутри System32. Состоянию службы место в ProgramData.
-    let base = std::env::var("ProgramData")
-        .or_else(|_| std::env::var("XDG_CONFIG_HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"));
+    let base = base_dir(elevated(), std::env::var_os("ProgramData").or_else(|| std::env::var_os("XDG_CONFIG_HOME")).map(PathBuf::from));
     settle(base)
+}
+
+/// Куда класть каталог состояния. Под root на Linux — `/var/lib`: у root
+/// `$XDG_CONFIG_HOME` указывает в `/root/.config`, то есть состояние службы
+/// уехало бы в домашний каталог, которого у неё нет. Без прав — туда, куда
+/// показало окружение: так работает разработка.
+///
+/// На Windows окружение всегда называет `%ProgramData%`, и первая ветка не
+/// исполняется: `elevated()` там про права администратора, а не про uid.
+/// Сторож — `the_service_keeps_its_state_where_the_system_keeps_it`.
+fn base_dir(elevated: bool, from_env: Option<PathBuf>) -> PathBuf {
+    match (cfg!(windows), elevated, from_env) {
+        (false, true, _) => PathBuf::from("/var/lib"),
+        (_, _, Some(env)) => env,
+        // Ни окружения, ни прав — работаем рядом с собой, как и раньше.
+        (_, _, None) => PathBuf::from("."),
+    }
 }
 
 /// Каталог состояния под именем продукта — и переезд из каталога под прошлым
@@ -969,9 +983,15 @@ fn elevated() -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// Без прав не поднять TUN и не тронуть nftables — а узнать об этом лучше
+/// сразу, а не из потока отказов. Раньше вне Windows тут стояло `true`: там
+/// службы и не было, проверять было нечего.
 #[cfg(not(windows))]
 fn elevated() -> bool {
-    true
+    extern "C" {
+        fn geteuid() -> u32;
+    }
+    unsafe { geteuid() == 0 }
 }
 
 /// Отказ на стадии TUN означает одно: службу запустили без прав администратора.
@@ -3593,6 +3613,20 @@ mod tests {
         let mut s = restored;
         s.stop();
         assert!(!Service::load().private, "выключение — тоже решение, и оно тоже запоминается");
+    }
+
+    /// Служба под root обязана держать состояние в `/var/lib`, а не в
+    /// `$XDG_CONFIG_HOME`: у root это `/root/.config`, то есть домашний каталог
+    /// человека, которого нет. В `state.json` лежат пароли и ключи всех
+    /// профилей, и место им там, где система держит состояние служб.
+    ///
+    /// Разработке остаётся XDG: там служба работает обычным процессом, и
+    /// `/var/lib` ей не отдадят.
+    #[test]
+    #[cfg(unix)]
+    fn the_service_keeps_its_state_where_the_system_keeps_it() {
+        assert_eq!(base_dir(true, Some("/home/kto/.config".into())), PathBuf::from("/var/lib"));
+        assert_eq!(base_dir(false, Some("/home/kto/.config".into())), PathBuf::from("/home/kto/.config"));
     }
 }
 
