@@ -85,7 +85,8 @@ sleep 2
 ./target/debug/proxybox conns | grep -q "туннель" || fail "соединение не подписано маршрутом"
 
 step "перезапуск службы: приватный режим восстанавливается сам"
-SVC=$(ss -ltnp 2>/dev/null | grep ':48291 ' | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+SVC=$(pgrep -f 'target/debug/pg-service' | head -1)
+[ -n "$SVC" ] || fail "служба не найдена"
 kill "$SVC"; sleep 1
 ./target/debug/pg-service >>"$WORK/service.log" 2>&1 &
 sleep 6

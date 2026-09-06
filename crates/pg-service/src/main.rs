@@ -12,7 +12,7 @@ mod service;
 use core_ipc::{
     dir_name, t, tf, App, BrowserProfile, Conn, Endpoint, Listener, LogLine, Probe, ProfileInfo,
     Quota, Request, Response, Scope, Settings, Status, Stream, Subscription, TestRun,
-    Tunnel as TunnelState, ADDR,
+    Tunnel as TunnelState,
 };
 use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
@@ -3743,7 +3743,7 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
         let (apps, profiles) = (s.status.apps.len(), s.profiles.len());
         let where_ = match endpoint {
             Endpoint::Pipe => format!("канал {}", core_ipc::PIPE),
-            Endpoint::Tcp => format!("сокет {ADDR}"),
+            Endpoint::Socket => format!("сокет {}", core_ipc::SOCKET),
         };
         s.log(tf!("служба слушает {}; приложений: {}, профилей: {}", where_, apps, profiles));
         if !elevated() {

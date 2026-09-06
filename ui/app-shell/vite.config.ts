@@ -10,14 +10,14 @@ const VERSION = JSON.parse(
   readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
 ).version;
 
-/** Куда стучаться в службу (core_ipc::ADDR и core_ipc::PIPE). Дублируется
+/** Куда стучаться в службу (core_ipc::SOCKET и core_ipc::PIPE). Дублируется
  *  здесь только ради разработки. */
-const SERVICE_PORT = 48291;
+const SERVICE_SOCKET = "/run/proxybox/service.sock";
 const SERVICE_PIPE = "\\\\.\\pipe\\proxybox";
 
 /**
- * Мост «браузер → служба» для разработки. Служба говорит построчным JSON по
- * TCP, из браузера туда не дотянуться, а через Tauri — можно. Чтобы `pnpm dev`
+ * Мост «браузер → служба» для разработки. Служба говорит построчным JSON, из
+ * браузера туда не дотянуться, а через Tauri — можно. Чтобы `pnpm dev`
  * показывал живой интерфейс, а не заглушку, дев-сервер сам ходит в службу.
  * В собранном приложении этого моста нет: там всегда invoke() Tauri.
  */
@@ -34,10 +34,10 @@ function serviceBridge(): Plugin {
         };
         let body = "";
         req.on("data", (chunk) => (body += chunk));
-        // На Windows служба слушает именованный канал; сокет остаётся запасным
-        // вариантом — тем же, на который откатывается сама служба.
+        // На Windows служба слушает именованный канал, вне Windows — unix-сокет.
+        // Отката между ними нет: на чужой платформе на том конце не служба.
         const ask = (viaPipe: boolean) => {
-          const socket = viaPipe ? net.connect({ path: SERVICE_PIPE }) : net.connect(SERVICE_PORT, "127.0.0.1");
+          const socket = net.connect({ path: viaPipe ? SERVICE_PIPE : SERVICE_SOCKET });
           socket.setTimeout(5000);
           let reply = "";
           socket.on("connect", () => socket.write(`${body.trim()}\n`));
@@ -51,7 +51,7 @@ function serviceBridge(): Plugin {
             }
           });
           socket.on("timeout", () => { socket.destroy(); fail("служба не ответила за 5 с"); });
-          socket.on("error", (e) => (viaPipe ? ask(false) : fail(`служба недоступна: ${e.message}`)));
+          socket.on("error", (e) => fail(`служба недоступна: ${e.message}`));
         };
         req.on("end", () => ask(process.platform === "win32"));
       });
