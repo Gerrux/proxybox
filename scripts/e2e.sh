@@ -13,17 +13,48 @@ UUID=b831381d-6324-4d53-ad4f-8cda48b30811
 export PG_LANG=ru
 WORK=$(mktemp -d)
 export XDG_CONFIG_HOME="$WORK/cfg"
-# Служба, убитая сигналом, не успевает прибрать за собой sing-box — в жизни его
-# добивает reap_orphan при следующем старте, здесь это делает уборщик скрипта.
+# Умолчание `/run/proxybox/service.sock` создать может только root — свой
+# путь на каждый прогон заодно даёт изоляцию параллельным e2e, которой не
+# было и у прежнего фиксированного порта.
+export PG_SOCKET="$WORK/service.sock"
+# Под root на Linux скрипт проверяет сам инвариант, а не только путь до узла:
+# поднимает TUN, роняет сервер и убеждается, что наружу не уходит ничего.
+# Без root проверять нечем — nftables и TUN требуют прав.
+FULL=0
+if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" = "0" ] && command -v nft >/dev/null; then
+  FULL=1
+fi
+# Уборщик не ждёт, пока служба разберёт SIGTERM сама: `kill $(jobs -p)` не
+# делает `wait`, а trap может сработать и раньше, чем guard(false)/stop()
+# успеют погасить sing-box (сорванное утверждение на середине, отказ шага).
+# kill -9 по pid-файлу — страховка на этот случай, а не единственный путь
+# уборки: с job 3 служба вне Windows сама гасит sing-box по SIGTERM.
 cleanup() {
   kill $(jobs -p) 2>/dev/null || true
   kill -9 "$(cat "$XDG_CONFIG_HOME/proxybox/singbox.pid" 2>/dev/null)" 2>/dev/null || true
+  # Провал утверждения между guard(true) и `proxybox off` ниже оставил бы
+  # замок стоять до конца job'а — раннер без сети и без логов на весь
+  # timeout. Трап надёжнее, чем надежда на то, что штатное снятие успело
+  # отработать.
+  if [ "$FULL" = "1" ]; then
+    nft delete table inet proxybox >/dev/null 2>&1 || true
+  fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT
 
 step() { printf '\n== %s\n' "$1"; }
 fail() { echo "ПРОВАЛ: $1" >&2; exit 1; }
+
+step "режим проверки: FULL=$FULL"
+# CI обязан гонять полную проверку, а не молча откатываться на путь до узла:
+# ровно так «sing-box не установлен — проверять нечем» когда-то пропустил
+# фатальный конфиг в 0.3.1 — сторожа спали, а тесты зеленели. PG_E2E_FULL=1
+# в CI требует, чтобы FULL и правда оказался 1; без переменной (разработчик
+# без root) требования нет.
+if [ "${PG_E2E_FULL:-0}" = "1" ] && [ "$FULL" != "1" ]; then
+  fail "PG_E2E_FULL=1, а полной проверки нет: нужны Linux, root и nftables"
+fi
 
 step "сборка"
 cargo build -q
@@ -85,18 +116,65 @@ sleep 2
 ./target/debug/proxybox conns | grep -q "туннель" || fail "соединение не подписано маршрутом"
 
 step "перезапуск службы: приватный режим восстанавливается сам"
-SVC=$(ss -ltnp 2>/dev/null | grep ':48291 ' | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
-kill "$SVC"; sleep 1
+SVC=$(pgrep -f 'target/debug/pg-service' | head -1)
+[ -n "$SVC" ] || fail "служба не найдена"
+# -9: голый `kill` шлёт SIGTERM, а его служба теперь перехватывает и гасит
+# приватный режим сама (`stop()`: private = false, записано на диск) — то
+# есть перестаёт быть тем «падением», которое проверяет этот шаг. Нужен
+# настоящий SIGKILL, необрабатываемый, чтобы private=true пережило рестарт.
+kill -9 "$SVC"; sleep 1
 ./target/debug/pg-service >>"$WORK/service.log" 2>&1 &
 sleep 6
 ./target/debug/proxybox status
 ./target/debug/proxybox status | grep -q "поднят" || fail "после перезапуска туннель не поднялся сам"
 
+if [ "$FULL" = "1" ]; then
+  step "fail-closed: посторонний доходит, пока замка нет вовсе"
+  # Цель — реальный внешний адрес, а не свой: ядро маршрутизирует пакет к
+  # собственному адресу машины через `lo` (`ip route get <свой адрес>` отдаёт
+  # `dev lo`), и первое же правило нашей таблицы (`oifname "lo" accept`,
+  # `core-filter/src/linux.rs`) пропускало бы такой пакет при любом состоянии
+  # замка — проверка была бы тавтологией. Свой http.server на непетлевом
+  # адресе был точно той же ловушкой в другой обёртке.
+  # Посторонний — это другой uid: служба и sing-box проходят замок по
+  # пропуску, и их успех про замок не говорит ничего.
+  # 15, а не 5: round-trip до внешнего хоста под нагруженным CI-раннером в
+  # пять секунд может не уложиться — а красный master дороже лишних секунд.
+  outsider() { setpriv --reuid=nobody --regid=nogroup --clear-groups \
+      curl -s --max-time 15 -o /dev/null https://github.com; }
+  # Обязан идти до убийства сервера ниже, а не после. Здесь единственный
+  # охват — `Scope::All` (свежий XDG_CONFIG_HOME, узел ещё не сверялся,
+  # `migrate_scope` в отсутствие state.json отдаёт `Scope::All`), а для него
+  # `fencing()` ставит killswitch только на `private && blocked` — то есть
+  # только пока туннель не подтверждён. Тут он давно подтверждён (проверено
+  # выше), `guard(true)` от смерти сервера ещё не сработал, и замка нет
+  # вовсе — посторонний обязан пройти. Без этой строки следующая проверка
+  # (посторонний заперт) зеленела бы и от сломанного curl.
+  outsider || fail "посторонний не дошёл до внешнего адреса при снятом замке"
+fi
+
 step "fail-closed: сервер убит"
 kill $SERVER; wait $SERVER 2>/dev/null || true
-sleep 5
+# Down наступает не сразу: PROBE_MISSES=3 промаха подряд, промах — раз в
+# PROBE_EVERY=3 с, итого от 6 до 9 с. Фиксированная пауза здесь — как и с
+# трафиком выше — либо короче и врёт, либо длиннее и удлиняет прогон впустую.
+for _ in $(seq 25); do
+  if ./target/debug/proxybox status | grep -q "без сети"; then break; fi
+  sleep 1
+done
 ./target/debug/proxybox status
 ./target/debug/proxybox status | grep -q "без сети" || fail "падение сервера не переведено в DROP"
 curl -s -m 5 --socks5-hostname 127.0.0.1:48292 http://127.0.0.1:18080/ && fail "через мёртвый туннель что-то прошло"
+
+if [ "$FULL" = "1" ]; then
+  step "fail-closed: наружу не уходит ничего"
+  nft list table inet proxybox >/dev/null 2>&1 || fail "замок не стоит при мёртвом туннеле"
+  outsider && fail "посторонний процесс достучался наружу при мёртвом туннеле"
+
+  step "снятие замка возвращает машину"
+  ./target/debug/proxybox off
+  nft list table inet proxybox >/dev/null 2>&1 && fail "снятый замок оставил таблицу"
+  outsider || fail "снятый замок не вернул сеть"
+fi
 
 printf '\nВСЁ ПРОШЛО\n'

@@ -43,6 +43,9 @@
 use std::io;
 use std::path::Path;
 
+#[cfg(target_os = "linux")]
+mod linux;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Policy {
     /// Приватный режим выключен — приложение ходит как обычно.
@@ -82,6 +85,20 @@ pub fn policy(private_mode: bool, tunnel_up: bool) -> Policy {
 /// Общее начало имени у всех наших правил: по нему и только по нему они
 /// снимаются. Путь входит в имя, чтобы правило было опознаваемо в брандмауэре
 /// глазами, но искать по нему нельзя — см. `sweep`.
+///
+/// `allow(dead_code)`, а не `cfg`: эта и следующая горстка windows-хелперов
+/// (аргументы netsh/PowerShell, разбор и возврат политики, детект чужих
+/// адаптеров) живы на Windows и живы в тестах — их зовут отсюда сторожа,
+/// проверяющие чистую сборку аргументов без единого системного вызова.
+/// Мертвы они только для линуксового production-пути (`set_fence` и
+/// соседи там его не вызывают вовсе, см. ветки `#[cfg(target_os = "linux")]`
+/// выше). `cfg(not(target_os = "linux"))` сняло бы warning ценой того, что
+/// эти одиннадцать сторожей — включая `the_lock_gives_back_the_policy_it_found`
+/// — перестали бы собираться и выполняться на Linux, а Linux — единственная
+/// платформа, где CI вообще гоняет `cargo test` (под Windows только `cargo
+/// check`). Одиннадцать неработающих сторожей хуже одного подавленного
+/// предупреждения о неиспользуемом коде.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 const RULE_PREFIX: &str = "proxybox: ";
 
 /// Тот же префикс до переименования продукта. Метла обязана мести и его: наши
@@ -90,13 +107,16 @@ const RULE_PREFIX: &str = "proxybox: ";
 /// то, что человек из списка уже убрал, и делает это молча и навсегда.
 /// Правила брандмауэра переживают перезагрузку и переустановку. Сторож —
 /// `the_broom_sweeps_the_old_name_too`.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 const LEGACY_RULE_PREFIX: &str = "Privacy Gateway: ";
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn rule_name(path: &str) -> String {
     format!("{RULE_PREFIX}{path}")
 }
 
 /// Маска, которой снимаются все наши правила разом.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn sweep_mask() -> String {
     format!("{RULE_PREFIX}*")
 }
@@ -104,6 +124,7 @@ fn sweep_mask() -> String {
 /// Разрешающее правило: имя, программа и всё, чем оно сужено. `tail` — это и
 /// есть сужение (`localip`, протокол, порт), и без него правило означало бы
 /// «программе можно всё», то есть ровно то, чего мы не выдаём никому.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn add_args(name: &str, path: &str, tail: &[String]) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "advfirewall".into(),
@@ -121,6 +142,7 @@ fn add_args(name: &str, path: &str, tail: &[String]) -> Vec<String> {
 }
 
 /// Пропуск выбранному приложению: только с адреса источника нашего туннеля.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn pass_args(path: &str, tun_addr: &str) -> Vec<String> {
     add_args(&rule_name(path), path, &[format!("localip={tun_addr}")])
 }
@@ -138,6 +160,7 @@ fn pass_args(path: &str, tun_addr: &str) -> Vec<String> {
 /// которое спросило запертое приложение, узлу всё-таки видно — но только если
 /// это запрос из тех, что FakeIP не обслуживает локально (`HTTPS`, `TXT`,
 /// `PTR`); A, AAAA и локальные имена до сервера не доходят. Записано в `docs/limitations.md`.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn dns_args(tun_addr: &str) -> Vec<String> {
     let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     add_args(
@@ -155,10 +178,12 @@ fn dns_args(tun_addr: &str) -> Vec<String> {
 /// тогда браузер прошёл бы и без него. Стоит оно ровно на время сеанса и
 /// открывает только петлю, так что цена ошибки в любую сторону — одно
 /// бесполезное правило.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn browser_args(path: &str) -> Vec<String> {
     add_args(&format!("{RULE_PREFIX}browser"), path, &["remoteip=127.0.0.1".into()])
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn delete_args(name: &str) -> Vec<String> {
     vec!["advfirewall".into(), "firewall".into(), "delete".into(), "rule".into(), format!("name={name}")]
 }
@@ -180,30 +205,43 @@ fn delete_args(name: &str) -> Vec<String> {
 /// сети при зелёном статусе. Наружу отдаётся первый отказ, и его достаточно:
 /// вызывающий всё равно не запоминает частичный успех и повторит всю операцию.
 pub fn set_fence(fence: Fence, previous: Option<Fence>, tun_addr: &str, apps: &[String], browser: Option<&str>) -> io::Result<()> {
-    if needs_sweep(previous) {
-        sweep();
-    }
-    if fence == Fence::Off {
+    // На Linux пропусков нет вовсе: отбирать по приложению нечем до cgroup, а
+    // она приезжает следующим подпроектом. До тех пор белый список на Linux
+    // совпадает с охватом «весь компьютер» — правило замка выдаёт туннель
+    // всем процессам, и в него идут все. Мимо туннеля при этом по-прежнему не
+    // уходит никто — см. шапку `linux.rs`.
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (fence, previous, tun_addr, apps, browser);
         return Ok(());
     }
-    let mut failure = None;
-    let mut put = |args: Vec<String>, what: &str| {
-        // В сообщение идёт приложение и причина, а не вся строка netsh: читать
-        // её в журнале невозможно, а полезного в ней — хвост.
-        if let Err(e) = run(&args).map_err(|e| io::Error::other(format!("{what}: {e}"))) {
-            failure.get_or_insert(e);
+    #[cfg(not(target_os = "linux"))]
+    {
+        if needs_sweep(previous) {
+            sweep();
         }
-    };
-    for path in apps {
-        put(pass_args(path, tun_addr), path);
-    }
-    put(dns_args(tun_addr), "DNS");
-    if let Some(path) = browser {
-        put(browser_args(path), path);
-    }
-    match failure {
-        Some(e) => Err(e),
-        None => Ok(()),
+        if fence == Fence::Off {
+            return Ok(());
+        }
+        let mut failure = None;
+        let mut put = |args: Vec<String>, what: &str| {
+            // В сообщение идёт приложение и причина, а не вся строка netsh: читать
+            // её в журнале невозможно, а полезного в ней — хвост.
+            if let Err(e) = run(&args).map_err(|e| io::Error::other(format!("{what}: {e}"))) {
+                failure.get_or_insert(e);
+            }
+        };
+        for path in apps {
+            put(pass_args(path, tun_addr), path);
+        }
+        put(dns_args(tun_addr), "DNS");
+        if let Some(path) = browser {
+            put(browser_args(path), path);
+        }
+        match failure {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
 
@@ -229,6 +267,7 @@ pub fn set_fence(fence: Fence, previous: Option<Fence>, tun_addr: &str, apps: &[
 /// «приватный режим выключен», а та проходит раз в PROBE_EVERY: сообщи мы об
 /// отказе — вызывающий забыл бы применённое и звал бы метлу каждые три секунды.
 /// Нет прав ставить правила — об этом скажет первый же `add`.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn sweep() {
     powershell(&sweep_command());
 }
@@ -250,10 +289,12 @@ fn sweep() {
 /// исходящем соединении в системе.
 ///
 /// Сторож — `the_broom_is_skipped_only_when_there_was_nothing_to_sweep`.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn needs_sweep(previous: Option<Fence>) -> bool {
     previous != Some(Fence::Off)
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn sweep_command() -> String {
     format!(
         "Get-NetFirewallRule -DisplayName '{}','{}*' -ErrorAction SilentlyContinue \
@@ -265,12 +306,15 @@ fn sweep_command() -> String {
 
 /// Имя разрешающего правила для sing-box. Своё, отдельное от правил приложений:
 /// снимается оно вместе с политикой, а не вместе со списком.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 const ALLOW_RULE: &str = "proxybox: sing-box";
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn policy_args(outbound: &str) -> Vec<String> {
     vec!["advfirewall".into(), "set".into(), "allprofiles".into(), "firewallpolicy".into(), format!("blockinbound,{outbound}")]
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn allow_args(singbox: &Path) -> Vec<String> {
     vec![
         "advfirewall".into(),
@@ -299,30 +343,46 @@ fn allow_args(singbox: &Path) -> Vec<String> {
 /// сильно позже. `None` значит «вернуть нечего»: не спросили, не разобрали,
 /// правили руками — тогда остаётся умолчание.
 pub fn set_killswitch(on: bool, singbox: &Path, before: Option<&str>) -> io::Result<()> {
-    let delete = delete_args(ALLOW_RULE);
-    if !on {
-        // Сначала политика, потом снятие правила: в обратном порядке sing-box
-        // на мгновение остался бы без сети под ещё действующим запретом.
-        //
-        // Запасной путь обязателен и обязан быть именно таким: машина с
-        // запертым исходящим — это машина без сети вообще, и потерянная
-        // настройка рядом с этим ничего не стоит. Поэтому не вышло вернуть
-        // сохранённое — возвращаем умолчание Windows, как и раньше.
-        if !before.and_then(restore_command).is_some_and(|c| powershell_ok(&c)) {
-            run(&policy_args("allowoutbound"))?;
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (singbox, before);
+        extern "C" {
+            fn geteuid() -> u32;
         }
-        return run(&delete);
+        // Имя интерфейса приходит не сюда, а от службы — как и `tun_addr` в
+        // `set_fence`: зависимостей у крейта нет намеренно. Здесь оно совпадает
+        // с именем таблицы, и это не совпадение, а одно имя продукта.
+        return linux::apply(&linux::table(on, "proxybox", unsafe { geteuid() }));
     }
-    run(&delete)?;
-    run(&allow_args(singbox))?;
-    run(&policy_args("blockoutbound"))
+    #[cfg(not(target_os = "linux"))]
+    {
+        let delete = delete_args(ALLOW_RULE);
+        if !on {
+            // Сначала политика, потом снятие правила: в обратном порядке sing-box
+            // на мгновение остался бы без сети под ещё действующим запретом.
+            //
+            // Запасной путь обязателен и обязан быть именно таким: машина с
+            // запертым исходящим — это машина без сети вообще, и потерянная
+            // настройка рядом с этим ничего не стоит. Поэтому не вышло вернуть
+            // сохранённое — возвращаем умолчание Windows, как и раньше.
+            if !before.and_then(restore_command).is_some_and(|c| powershell_ok(&c)) {
+                run(&policy_args("allowoutbound"))?;
+            }
+            return run(&delete);
+        }
+        run(&delete)?;
+        run(&allow_args(singbox))?;
+        run(&policy_args("blockoutbound"))
+    }
 }
 
 /// Профили брандмауэра и действия политики — списками, и списки закрытые.
 /// Это не педантизм: строка политики уезжает в `state.json`, а его правят
 /// руками, а обратно она приезжает в команду PowerShell. Незакрытый список
 /// означал бы, что в неё подставляется что угодно.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 const PROFILES: [&str; 3] = ["Domain", "Private", "Public"];
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 const ACTIONS: [&str; 3] = ["Allow", "Block", "NotConfigured"];
 
 /// Политика брандмауэра, какая она сейчас, — одной непрозрачной строкой
@@ -341,13 +401,21 @@ const ACTIONS: [&str; 3] = ["Allow", "Block", "NotConfigured"];
 /// на замке это были бы те самые сотни миллисекунд, за которые выбранные
 /// приложения успевают уйти напрямую.
 pub fn policy_now() -> Option<String> {
-    remember(&powershell(
-        "Get-NetFirewallProfile | ForEach-Object \
-         {\"$($_.Name)=$($_.DefaultInboundAction)/$($_.DefaultOutboundAction)\"}",
-    ))
+    // Чужую политику мы не берём, значит и возвращать нечего: снятие замка —
+    // это удаление своей таблицы, и машина остаётся ровно такой, какой была.
+    #[cfg(target_os = "linux")]
+    return None;
+    #[cfg(not(target_os = "linux"))]
+    {
+        remember(&powershell(
+            "Get-NetFirewallProfile | ForEach-Object \
+             {\"$($_.Name)=$($_.DefaultInboundAction)/$($_.DefaultOutboundAction)\"}",
+        ))
+    }
 }
 
 /// Разбор одной записи «профиль=входящее/исходящее». `None` — запись не наша.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn entry(line: &str) -> Option<(&str, &str, &str)> {
     let (name, actions) = line.split_once('=')?;
     let (inbound, outbound) = actions.split_once('/')?;
@@ -358,11 +426,13 @@ fn entry(line: &str) -> Option<(&str, &str, &str)> {
 /// Вывод PowerShell → строка для `state.json`. Всё или ничего: половина
 /// запомненной политики хуже незапомненной — вернув два профиля из трёх, мы
 /// оставили бы третий с нашим `Block`, то есть без сети навсегда.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn remember(out: &str) -> Option<String> {
     let kept = parse(out.lines())?;
     Some(kept.into_iter().map(|(n, i, o)| format!("{n}={i}/{o}")).collect::<Vec<_>>().join(";"))
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn parse<'a>(lines: impl Iterator<Item = &'a str>) -> Option<Vec<(&'a str, &'a str, &'a str)>> {
     let mut out = Vec::new();
     for line in lines.map(str::trim).filter(|l| !l.is_empty()) {
@@ -373,6 +443,7 @@ fn parse<'a>(lines: impl Iterator<Item = &'a str>) -> Option<Vec<(&'a str, &'a s
 
 /// Команда, возвращающая политику к тому, что стояло до нас. Профили порознь —
 /// ровно то, чего не умеет `netsh set allprofiles`.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn restore_command(saved: &str) -> Option<String> {
     let parts = parse(saved.split(';'))?;
     Some(
@@ -397,12 +468,17 @@ fn restore_command(saved: &str) -> Option<String> {
 /// умолчание Windows — то есть молча сняла бы чужой kill-switch, ничего при
 /// этом не включив.
 pub fn locked_by_us() -> bool {
-    !powershell(&format!(
-        "Get-NetFirewallRule -DisplayName '{ALLOW_RULE}' -ErrorAction SilentlyContinue \
-         | Select-Object -First 1 -ExpandProperty DisplayName"
-    ))
-    .trim()
-    .is_empty()
+    #[cfg(target_os = "linux")]
+    return linux::locked();
+    #[cfg(not(target_os = "linux"))]
+    {
+        !powershell(&format!(
+            "Get-NetFirewallRule -DisplayName '{ALLOW_RULE}' -ErrorAction SilentlyContinue \
+             | Select-Object -First 1 -ExpandProperty DisplayName"
+        ))
+        .trim()
+        .is_empty()
+    }
 }
 
 #[cfg(windows)]
@@ -417,6 +493,7 @@ fn run(args: &[String]) -> io::Result<()> {
 }
 
 #[cfg(not(windows))]
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn run(_args: &[String]) -> io::Result<()> {
     // Брандмауэр есть только на целевой платформе; на разработке — пусто.
     Ok(())
@@ -429,7 +506,12 @@ fn run(_args: &[String]) -> io::Result<()> {
 /// зашито: у крейта нет зависимостей, и заводить их ради одной строки дороже,
 /// чем принять её параметром.
 pub fn foreign_tunnels(ours: &str) -> Vec<String> {
-    detect(&adapters(), ours)
+    #[cfg(target_os = "linux")]
+    return linux::tunnels(ours);
+    #[cfg(not(target_os = "linux"))]
+    {
+        detect(&adapters(), ours)
+    }
 }
 
 /// Строки приходят как «Имя\tОписание», и различать их обязательно: имя мы
@@ -437,6 +519,7 @@ pub fn foreign_tunnels(ours: &str) -> Vec<String> {
 /// «sing-tun Tunnel», нашего имени в нём нет вовсе. Пока сверялось одно
 /// описание, служба на каждом запуске находила «чужой туннель» и жаловалась в
 /// журнал на саму себя. Сторож — `our_own_adapter_is_not_a_stranger`.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn detect(adapters: &str, ours: &str) -> Vec<String> {
     const MARKERS: [&str; 6] = ["wintun", "tap-", "tun", "wireguard", "openvpn", "vpn"];
     let ours = ours.to_lowercase();
@@ -472,6 +555,7 @@ fn adapters() -> String {
 }
 
 #[cfg(not(windows))]
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn adapters() -> String {
     String::new()
 }
@@ -489,6 +573,7 @@ fn powershell(command: &str) -> String {
 }
 
 #[cfg(not(windows))]
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn powershell(_command: &str) -> String {
     // Брандмауэр и адаптеры есть только на целевой платформе.
     String::new()
@@ -505,6 +590,7 @@ fn powershell_ok(command: &str) -> bool {
 }
 
 #[cfg(not(windows))]
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn powershell_ok(_command: &str) -> bool {
     // Возвращать нечего: политики вне Windows нет, и запасной путь тут пустой.
     false

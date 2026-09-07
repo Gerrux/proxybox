@@ -1,0 +1,27 @@
+[Unit]
+Description=proxybox — сеть выбранным приложениям только через туннель
+# Замок ставится в nftables, туннель поднимается через TUN: без сети
+# стартовать можно, без ядра — нет.
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+# Без nft guard(true) не откажет — linux::apply вернёт NotFound, applied
+# останется None, а sing-box поднимется как ни в чём не бывало: сеть без
+# замка вовсе, и молча. Лучше не стартовать, чем стартовать без
+# единственного механизма, ради которого служба вообще нужна.
+ExecStartPre=/bin/sh -c 'command -v nft >/dev/null'
+ExecStart=/usr/bin/pg-service
+# Права настоящие: TUN и nftables от обычного пользователя не работают.
+# Урезание до CAP_NET_ADMIN — отдельным шагом после проверки на живой машине.
+User=root
+Restart=on-failure
+RestartSec=2
+# Остановка обязана быть по SIGTERM: снятие правил висит на обработчике.
+# Убитая KILL служба оставит машину с запертым исходящим до следующего старта.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -12,7 +12,7 @@ mod service;
 use core_ipc::{
     dir_name, t, tf, App, BrowserProfile, Conn, Endpoint, Listener, LogLine, Probe, ProfileInfo,
     Quota, Request, Response, Scope, Settings, Status, Stream, Subscription, TestRun,
-    Tunnel as TunnelState, ADDR,
+    Tunnel as TunnelState,
 };
 use core_tunnel::{build_config, Options, Tunnel as Process};
 use serde::{Deserialize, Serialize};
@@ -98,14 +98,63 @@ fn lock(svc: &Mutex<Service>) -> std::sync::MutexGuard<'_, Service> {
 /// см. `Request::TestProfiles`.
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 
+/// Где служба держит состояние. Грязная половина: спрашивает окружение и
+/// права, а решает `base_dir` — её и проверяет сторож.
+///
+/// `elevated()` на Windows — это целый процесс (`net session`), а `dir()` зовут
+/// на каждую строку журнала дважды, на каждое сохранение состояния и на каждую
+/// неудачную пробу. `base_dir` при этом читает права только в ветке «root на
+/// Linux» — `cfg!(windows)` отбивает её первой же на Windows, и посчитанное
+/// там значение всё равно никуда не идёт. Короткое замыкание `&&` не даёт
+/// `elevated()` даже начаться на Windows — дешевле кеша и честнее вопроса,
+/// ответ на который не читают.
 fn dir() -> PathBuf {
-    // Служба работает под LocalSystem, и её %APPDATA% — это системный профиль
-    // внутри System32. Состоянию службы место в ProgramData.
-    let base = std::env::var("ProgramData")
-        .or_else(|_| std::env::var("XDG_CONFIG_HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"));
+    let base = base_dir(
+        !cfg!(windows) && elevated(),
+        std::env::var_os("ProgramData")
+            .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
+            .map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+    );
     settle(base)
+}
+
+/// Куда класть каталог состояния. Служба работает под LocalSystem на Windows,
+/// и её %APPDATA% — это системный профиль внутри System32, а не профиль
+/// пользователя: состоянию место в `%ProgramData%`.
+///
+/// Явно заданная переменная окружения перевешивает всё, включая root:
+/// «окружение сильнее» — сквозное правило проекта, а не исключение для этой
+/// функции. `scripts/e2e.sh` и разработка под `sudo -E` полагаются ровно на
+/// это, выставляя свой `XDG_CONFIG_HOME` на каждый прогон, — от root их
+/// защищала не переменная, а её отсутствие при `HOME=/root`, и следующая
+/// ветка ловит именно этот случай, а не любой root вообще.
+///
+/// Root без переменной — `/var/lib`: у root `$XDG_CONFIG_HOME` не задана и
+/// умолчанием ушла бы в `/root/.config`, домашний каталог, которого у службы
+/// нет. В production systemd отдаёт службе минимальное окружение —
+/// `XDG_CONFIG_HOME` там не задана вовсе, — так что `/var/lib` и остаётся
+/// действующим умолчанием.
+///
+/// Без прав на Linux и без переменных окружения — домашний каталог человека.
+/// `$XDG_CONFIG_HOME` обычно не задана вовсе: её отсутствие норма, а не край,
+/// то есть эта ветка и есть основной путь всей разработки без root.
+///
+/// На Windows ветка «root без переменной» не исполняется дважды: `dir()`
+/// передаёт сюда `elevated` уже коротким замыканием на `!cfg!(windows)` (см.
+/// её шапку), а `cfg!(windows)` в первом поле матча ловит и прямой вызов этой
+/// функции с `elevated: true` по ошибке.
+/// Сторож — `the_service_keeps_its_state_where_the_system_keeps_it`.
+fn base_dir(elevated: bool, from_env: Option<PathBuf>, home: Option<PathBuf>) -> PathBuf {
+    match (cfg!(windows), elevated, from_env) {
+        (_, _, Some(env)) => env,
+        (false, true, None) => PathBuf::from("/var/lib"),
+        // Ни прав, ни переменной окружения — домашний каталог человека. Так и
+        // было до порта, и менять это нельзя: `XDG_CONFIG_HOME` обычно не
+        // задана вовсе, то есть сюда попадает вся разработка без root, а
+        // текущий рабочий каталог у неё — корень репозитория.
+        (_, _, None) => home.unwrap_or_default().join(".config"),
+    }
 }
 
 /// Каталог состояния под именем продукта — и переезд из каталога под прошлым
@@ -236,9 +285,15 @@ fn icacls(_batches: Vec<Vec<String>>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// TUN — только на целевой платформе; в разработке хватает локального SOCKS.
+/// TUN — только на целевых системах; в разработке хватает локального SOCKS.
 fn tun_enabled() -> bool {
-    cfg!(windows) && std::env::var("PG_TUN").as_deref() != Ok("0")
+    tun_allowed(cfg!(windows) || cfg!(target_os = "linux"), std::env::var("PG_TUN").ok().as_deref())
+}
+
+/// Решение отдельно от окружения — чтобы его было чем проверить.
+/// Сторож — `the_tunnel_rises_on_both_target_systems`.
+fn tun_allowed(target: bool, pg_tun: Option<&str>) -> bool {
+    target && pg_tun != Some("0")
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -969,9 +1024,73 @@ fn elevated() -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// Без прав не поднять TUN и не тронуть nftables — а узнать об этом лучше
+/// сразу, а не из потока отказов. Раньше вне Windows тут стояло `true`: там
+/// службы и не было, проверять было нечего.
 #[cfg(not(windows))]
 fn elevated() -> bool {
+    extern "C" {
+        fn geteuid() -> u32;
+    }
+    unsafe { geteuid() == 0 }
+}
+
+/// Стоит ли `nft` в PATH. Без него `guard(true)` не откажет — `linux::apply`
+/// вернёт `NotFound`, `applied` останется `None`, а `start()` как ни в чём не
+/// бывало поднимет sing-box. До подтверждённой пробы это значит сеть без
+/// замка вовсе, и молча: таблица не встала, но и упасть было нечему, а
+/// `nftables` не входит в минимальные образы многих дистрибутивов. Та же
+/// форма и та же громкость, что у `elevated()` выше — предупреждение в
+/// журнал, видное в окне, а не отказ запуска.
+#[cfg(target_os = "linux")]
+fn nft_found() -> bool {
+    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|dir| dir.join("nft").exists()))
+}
+/// Вопрос имеет смысл только на Linux: на Windows замок — WFP через `netsh`,
+/// и своя нехватка бинарника у него другая (сама Windows).
+#[cfg(not(target_os = "linux"))]
+fn nft_found() -> bool {
     true
+}
+
+/// Остановка по сигналу. systemd шлёт SIGTERM, человек в консоли — SIGINT, и
+/// оба означают одно: погасить туннель и снять правила.
+///
+/// Обработчик только взводит флаг. Из него нельзя ни звать `nft`, ни трогать
+/// канал: в обработчике сигнала разрешено крайне мало, а `mpsc::Sender::send`
+/// выделяет память и берёт замок. Поэтому за флагом следит отдельный поток и он
+/// же посылает по каналу — тому самому, который на Windows заполняет SCM.
+///
+/// Сторож — `the_service_gives_the_machine_back`.
+#[cfg(not(windows))]
+fn watch_for_signals() -> mpsc::Receiver<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static STOPPING: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn on_signal(_: i32) {
+        STOPPING.store(true, Ordering::SeqCst);
+    }
+    extern "C" {
+        fn signal(num: i32, handler: extern "C" fn(i32)) -> usize;
+    }
+    const SIGINT: i32 = 2;
+    const SIGTERM: i32 = 15;
+
+    unsafe {
+        signal(SIGINT, on_signal);
+        signal(SIGTERM, on_signal);
+    }
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || loop {
+        if STOPPING.load(Ordering::SeqCst) {
+            let _ = tx.send(());
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    });
+    rx
 }
 
 /// Отказ на стадии TUN означает одно: службу запустили без прав администратора.
@@ -2501,6 +2620,16 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// TUN поднимается на обеих целевых системах, а `PG_TUN=0` по-прежнему его
+    /// снимает: это ручка диагностическая, как `PG_STACK` и `PG_PPROF`, и
+    /// настройкой она не продублирована.
+    #[test]
+    fn the_tunnel_rises_on_both_target_systems() {
+        assert!(tun_allowed(true, None), "на целевой системе TUN обязан подниматься");
+        assert!(!tun_allowed(true, Some("0")), "PG_TUN=0 обязан снимать TUN");
+        assert!(!tun_allowed(false, None), "вне целевых систем TUN не поднимается");
+    }
+
     /// Свой пустой каталог на каждый прогон: тесты бегут в одном процессе, и
     /// общий временный каталог давал бы им ронять друг друга через диск.
     fn settle_dir(tag: &str) -> PathBuf {
@@ -3606,6 +3735,68 @@ mod tests {
         s.stop();
         assert!(!Service::load().private, "выключение — тоже решение, и оно тоже запоминается");
     }
+
+    /// Служба под root без явной переменной обязана держать состояние в
+    /// `/var/lib`, а не в `$XDG_CONFIG_HOME`: у root это `/root/.config`, то
+    /// есть домашний каталог человека, которого нет. В `state.json` лежат
+    /// пароли и ключи всех профилей, и место им там, где система держит
+    /// состояние служб.
+    ///
+    /// Но явно заданная переменная перевешивает и root: «окружение сильнее» —
+    /// сквозное правило проекта, и `scripts/e2e.sh` под `sudo -E` держит
+    /// изоляцию прогонов ровно на этом. Защищались мы от отсутствия
+    /// переменной при `HOME=/root`, а не от переменной, заданной осознанно.
+    ///
+    /// Разработке остаётся XDG: там служба работает обычным процессом, и
+    /// `/var/lib` ей не отдадут. `XDG_CONFIG_HOME` обычно не задана — её
+    /// отсутствие норма, а не край, — то есть fallback на домашний каталог и
+    /// есть основной путь разработки без root.
+    #[test]
+    #[cfg(unix)]
+    fn the_service_keeps_its_state_where_the_system_keeps_it() {
+        // Root с явной переменной — переменная перевешивает.
+        assert_eq!(
+            base_dir(true, Some("/work/cfg".into()), Some("/root".into())),
+            PathBuf::from("/work/cfg")
+        );
+        // Root без переменной — /var/lib: то, что видит systemd в production.
+        assert_eq!(base_dir(true, None, Some("/root".into())), PathBuf::from("/var/lib"));
+        // Без прав, но окружение задано — его и используем (XDG_CONFIG_HOME или %ProgramData%)
+        assert_eq!(
+            base_dir(false, Some("/home/kto/.config".into()), Some("/home/kto".into())),
+            PathBuf::from("/home/kto/.config")
+        );
+        // Без прав и без окружения — домашний каталог (основной путь разработки)
+        assert_eq!(
+            base_dir(false, None, Some("/home/kto".into())),
+            PathBuf::from("/home/kto/.config")
+        );
+        // Без прав, без окружения и без домашней папки — .config рядом с собой
+        assert_eq!(base_dir(false, None, None), PathBuf::from(".config"));
+    }
+
+    /// Служба, остановленная systemd, обязана вернуть машину: снятие правил
+    /// висит на канале остановки, и `run(None)` означал бы запертое исходящее,
+    /// пережившее службу. Проверить сигнал в тесте нечем — процесс тут один и
+    /// он же испытуемый, — поэтому сторожим текстом: `main` обязан завести
+    /// канал и отдать его в `run`.
+    ///
+    /// Искать разделитель приходится с ведущим переносом строки: этот файл сам
+    /// себе `include_str!`, а `mod tests` в нём стоит раньше настоящего `main`.
+    /// Без переноса разделитель находил бы сам себя внутри своей же строки —
+    /// первым вхождением оказывался этот `split(...)`, а не объявление `main`,
+    /// и `body` вечно состоял бы из хвоста этого теста, где буквально написано
+    /// `"run(None)"` — вторая проверка не прошла бы никогда, что ни делай в
+    /// самом `main`. Настоящее `fn main` — единственное место в файле, где
+    /// перед ним стоит перенос строки: только оно и подходит под шаблон.
+    #[test]
+    #[cfg(unix)]
+    fn the_service_gives_the_machine_back() {
+        let src = include_str!("main.rs");
+        let body = src.split("\nfn main() -> std::process::ExitCode").nth(1).expect("main на месте");
+        assert!(body.contains("watch_for_signals("), "main не ставит обработчик сигналов");
+        assert!(!body.contains("run(None)"), "вне Windows служба обязана останавливаться по сигналу, а не только по Ctrl+C");
+    }
 }
 
 /// Меняет ли команда то, что делает машина. Разрушающие называют в журнале
@@ -3756,11 +3947,14 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
         let (apps, profiles) = (s.status.apps.len(), s.profiles.len());
         let where_ = match endpoint {
             Endpoint::Pipe => format!("канал {}", core_ipc::PIPE),
-            Endpoint::Tcp => format!("сокет {ADDR}"),
+            Endpoint::Socket => format!("сокет {}", core_ipc::socket()),
         };
         s.log(tf!("служба слушает {}; приложений: {}, профилей: {}", where_, apps, profiles));
         if !elevated() {
             s.warn(t("ВНИМАНИЕ: служба запущена без прав администратора — TUN и правила брандмауэра работать не будут"));
+        }
+        if !nft_found() {
+            s.warn(t("nft не найден в PATH — без него замок не встанет, и при падении туннеля выбранные приложения уйдут напрямую"));
         }
         if let Err(e) = sealed {
             s.warn(tf!("права каталога состояния не выставлены — пароли профилей читает вся машина: {}", e));
@@ -3879,7 +4073,12 @@ fn main() -> std::process::ExitCode {
         eprintln!("{USAGE}");
         return std::process::ExitCode::FAILURE;
     }
-    match run(None) {
+    #[cfg(windows)]
+    let stop = None;
+    #[cfg(not(windows))]
+    let stop = Some(watch_for_signals());
+
+    match run(stop) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("служба не запустилась: {e}");

@@ -6,7 +6,9 @@
 //! loopback ограничить некому, и службой через него управлял бы любой процесс
 //! машины. Канал пускает SYSTEM, администраторов и интерактивных пользователей
 //! и отсекает процессы низкой целостности (песочницы браузеров). На остальных
-//! системах — TCP на loopback: там служба не работает, там разработка.
+//! системах — unix-сокет: право управлять службой там даёт членство в группе
+//! `proxybox`, прямой аналог той же «интерактивных пользователей» (подробности
+//! — в шапке `unix_socket`).
 //!
 //! Открывает канал клиент анонимно (`SECURITY_ANONYMOUS`). Имя канала свободно
 //! ровно до старта службы, и занять его может кто угодно; подставной сервер без
@@ -15,6 +17,8 @@
 
 #[cfg(windows)]
 mod windows_pipe;
+#[cfg(not(windows))]
+mod unix_socket;
 
 pub mod dict;
 
@@ -22,10 +26,31 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::sync::atomic::{AtomicU8, Ordering};
-#[cfg(not(windows))]
-use std::net::{TcpListener, TcpStream};
 
-pub const ADDR: &str = "127.0.0.1:48291";
+/// Умолчание для пути сокета вне Windows. Каталог, а не голый путь в `/run`:
+/// права стоят на каталоге — см. шапку `unix_socket`. Отдельной константой, а
+/// не строкой внутри `socket()`: сторож `the_dev_bridge_knows_the_socket`
+/// сверяет `vite.config.ts` с умолчанием текстом, и ему нужен литерал, а не
+/// результат чтения окружения.
+pub const SOCKET_DEFAULT: &str = "/run/proxybox/service.sock";
+
+/// Путь сокета вне Windows, с поправкой на `PG_SOCKET`. Та же диагностическая
+/// ручка, что `PG_SINGBOX`: путь задаёт тот, кто запускает службу, — тот же
+/// уровень доверия, что у пути к исполняемому файлу sing-box, новой
+/// поверхности атаки нет. Права по-прежнему даёт каталог, а не сам путь (см.
+/// `unix_socket`), так что подмена пути не открывает сокет шире, чем открыл
+/// бы умолчание. Нужна на практике ровно затем же, зачем нужен запуск без
+/// root вообще: `/run/proxybox` при отсутствии прав создать некому, и без
+/// переменной `cargo run -p pg-service` и `scripts/e2e.sh` не поднимались бы
+/// без root. В настройках не продублирована — человеку выбирать тут нечего.
+///
+/// Без `cfg`, как и `PIPE`: обе строки встречаются в одном безусловном `match`
+/// по `Endpoint` в `pg-service`, и, будь эта функция windows-специфичной,
+/// разбор упал бы на чужой платформе.
+pub fn socket() -> String {
+    std::env::var("PG_SOCKET").unwrap_or_else(|_| SOCKET_DEFAULT.into())
+}
+
 /// Потолок одной строки протокола. Без него строка без перевода строки растёт
 /// до предела памяти процесса: у службы это отказ обслуживания от любого
 /// локального процесса, у клиента — от подставного канала. Восемь мегабайт
@@ -807,24 +832,24 @@ pub struct Stream(Inner);
 
 enum Inner {
     #[cfg(not(windows))]
-    Tcp(TcpStream),
+    Unix(std::os::unix::net::UnixStream),
     #[cfg(windows)]
     Pipe(std::fs::File),
 }
 
 impl Stream {
-    /// Кто на том конце — номером процесса. `None` вне Windows и на любой
-    /// осечке: это след для журнала, а не право доступа, и терять из-за него
-    /// команду нельзя.
+    /// Кто на том конце — номером процесса. `None` на любой осечке: это след
+    /// для журнала, а не право доступа, и терять из-за него команду нельзя.
     ///
-    /// Права даёт список доступа канала, и различает он пользователя, а не
-    /// программу. Иначе и быть не может: свою же консоль (`proxybox off`)
-    /// запускает кто угодно от имени того же человека, так что отбор по образу
-    /// не защита, а видимость. Номер поэтому не запрещает — он называет.
+    /// Права даёт список доступа канала на Windows и каталог сокета на
+    /// остальных системах, и различают они пользователя, а не программу.
+    /// Иначе и быть не может: свою же консоль (`proxybox off`) запускает кто
+    /// угодно от имени того же человека, так что отбор по образу не защита, а
+    /// видимость. Номер поэтому не запрещает — он называет.
     pub fn peer(&self) -> Option<u32> {
         match &self.0 {
             #[cfg(not(windows))]
-            Inner::Tcp(_) => None,
+            Inner::Unix(s) => unix_socket::client_pid(s),
             #[cfg(windows)]
             Inner::Pipe(pipe) => windows_pipe::client_pid(pipe),
         }
@@ -833,7 +858,7 @@ impl Stream {
     pub fn try_clone(&self) -> io::Result<Stream> {
         Ok(Stream(match &self.0 {
             #[cfg(not(windows))]
-            Inner::Tcp(s) => Inner::Tcp(s.try_clone()?),
+            Inner::Unix(s) => Inner::Unix(s.try_clone()?),
             #[cfg(windows)]
             Inner::Pipe(f) => Inner::Pipe(f.try_clone()?),
         }))
@@ -844,7 +869,7 @@ impl Read for Stream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match &mut self.0 {
             #[cfg(not(windows))]
-            Inner::Tcp(s) => s.read(buf),
+            Inner::Unix(s) => s.read(buf),
             #[cfg(windows)]
             Inner::Pipe(f) => f.read(buf),
         }
@@ -855,7 +880,7 @@ impl Write for Stream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match &mut self.0 {
             #[cfg(not(windows))]
-            Inner::Tcp(s) => s.write(buf),
+            Inner::Unix(s) => s.write(buf),
             #[cfg(windows)]
             Inner::Pipe(f) => f.write(buf),
         }
@@ -863,26 +888,25 @@ impl Write for Stream {
     fn flush(&mut self) -> io::Result<()> {
         match &mut self.0 {
             #[cfg(not(windows))]
-            Inner::Tcp(s) => s.flush(),
+            Inner::Unix(s) => s.flush(),
             #[cfg(windows)]
             Inner::Pipe(f) => f.flush(),
         }
     }
 }
 
-/// Куда встала служба. Показывается в журнале: на Windows это всегда канал,
-/// сокет остаётся только там, где службы и нет, — в разработке.
+/// Куда встала служба. Показывается в журнале.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Endpoint {
     Pipe,
-    Tcp,
+    Socket,
 }
 
 pub struct Listener(ListenerInner);
 
 enum ListenerInner {
     #[cfg(not(windows))]
-    Tcp(TcpListener),
+    Unix(std::os::unix::net::UnixListener),
     #[cfg(windows)]
     Pipe,
 }
@@ -920,13 +944,13 @@ impl Listener {
             Ok((Listener(ListenerInner::Pipe), Endpoint::Pipe))
         }
         #[cfg(not(windows))]
-        Ok((Listener(ListenerInner::Tcp(TcpListener::bind(ADDR)?)), Endpoint::Tcp))
+        Ok((Listener(ListenerInner::Unix(unix_socket::bind()?)), Endpoint::Socket))
     }
 
     pub fn accept(&self) -> io::Result<Stream> {
         match &self.0 {
             #[cfg(not(windows))]
-            ListenerInner::Tcp(l) => Ok(Stream(Inner::Tcp(l.accept()?.0))),
+            ListenerInner::Unix(l) => Ok(Stream(Inner::Unix(l.accept()?.0))),
             #[cfg(windows)]
             ListenerInner::Pipe => Ok(Stream(Inner::Pipe(windows_pipe::accept()?))),
         }
@@ -967,7 +991,7 @@ fn connect() -> io::Result<Stream> {
         Err(last)
     }
     #[cfg(not(windows))]
-    Ok(Stream(Inner::Tcp(TcpStream::connect(ADDR)?)))
+    Ok(Stream(Inner::Unix(std::os::unix::net::UnixStream::connect(socket())?)))
 }
 
 /// Один запрос — один ответ. Используется и CLI, и Tauri-оболочкой.
@@ -1616,12 +1640,19 @@ mod tests {
         }
     }
 
-    /// Мост дев-сервера ходит в службу по номеру порта, записанному второй раз.
+    /// Мост дев-сервера ходит в службу по пути сокета, записанному второй раз.
+    /// Компилятора у него нет вовсе, и разъезд с контрактом молчит с обеих
+    /// сторон: окно просто перестаёт получать статус. Сверяем с умолчанием
+    /// (`SOCKET_DEFAULT`), а не со значением `socket()`: то читает `PG_SOCKET`
+    /// из окружения самого теста, а литерал в `vite.config.ts` обязан
+    /// совпадать с умолчанием, а не с тем, что стоит в переменной у CI.
     #[test]
-    fn the_dev_bridge_knows_the_port() {
-        let port = ADDR.rsplit(':').next().unwrap();
+    fn the_dev_bridge_knows_the_socket() {
         let vite = include_str!("../../../ui/app-shell/vite.config.ts");
-        assert!(vite.contains(&format!("SERVICE_PORT = {port}")), "vite.config.ts смотрит не в {ADDR}");
+        assert!(
+            vite.contains(&format!("SERVICE_SOCKET_DEFAULT = \"{SOCKET_DEFAULT}\"")),
+            "vite.config.ts смотрит не в {SOCKET_DEFAULT}"
+        );
     }
 
     /// Скорость канала в шапке обязана считаться по отметке службы, а не по

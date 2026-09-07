@@ -1,7 +1,8 @@
 # Сторожа держат ровно до тех пор, пока их кто-то запускает. Тег бывает раз в
 # месяц, а правило нарушают в тот же день — поэтому весь `pnpm validate` бежит
-# на каждый пуш и каждый PR. Linux: службе тут не подняться, но проверяют
-# сторожа не живой туннель, а совпадение поверхностей и чистую логику.
+# на каждый пуш и каждый PR. Сам `validate` службу не поднимает — сторожа в нём
+# проверяют не живой туннель, а совпадение поверхностей и чистую логику; живой
+# замок и настоящий TUN под root проверяет отдельный job `linux` ниже.
 name: ci
 
 on:
@@ -69,3 +70,42 @@ jobs:
           done
           : > src-tauri/binaries/LICENSE-sing-box.txt
       - run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+
+  # Отдельный job, а не шаг в `validate`: здесь нужен root — без него не
+  # поднять ни nftables, ни TUN, — а остальным сторожам такое окружение не
+  # нужно и не должно быть нужно. Это первая сквозная проверка инварианта,
+  # какая у продукта вообще есть: настоящий замок и настоящий TUN, а не
+  # совпадение поверхностей.
+  linux:
+    runs-on: ubuntu-latest
+    # e2e.sh проверяет fail-closed на живом замке — сорвавшееся утверждение
+    # между guard(true) и `proxybox off` (скрипт снимает его и сам, в трапе)
+    # не обязано устроить раннеру без сети и без логов дефолтные 360 минут.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Версия sing-box закреплена в установщике, и она обязана быть одна на
+      # установщик и на CI: иначе CI зеленеет на версии, которой нет ни у кого.
+      # Ровно так фатальный конфиг и уехал в 0.3.1.
+      - name: sing-box
+        run: |
+          VER=$(grep -oP '\$Version = "\K[^"]+' installer/get-singbox.ps1)
+          curl -sL "https://github.com/SagerNet/sing-box/releases/download/v$VER/sing-box-$VER-linux-amd64.tar.gz" | tar xz
+          sudo install "sing-box-$VER-linux-amd64/sing-box" /usr/local/bin/sing-box
+      - run: sudo apt-get update -qq && sudo apt-get install -y nftables
+      - run: cargo build
+      # Оболочка вне воркспейса, и под Linux её до сих пор не собирал никто —
+      # строка в `validate` про Windows проверяет только совпадение
+      # поверхностей (`--target` без линковки), а эта собирает по-настоящему.
+      # Обязана идти до шага e2e ниже: тот зовёт `cargo build` через `sudo -E`
+      # (сохранённый HOME), и root-овый `~/.cargo/registry` после него стал бы
+      # нечитаемым для этой же сборки от имени runner.
+      - run: sudo apt-get update -qq && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
+      - run: cargo check --manifest-path src-tauri/Cargo.toml
+      # Под root — то есть с настоящим замком и настоящим TUN. e2e.sh сам
+      # решает, что ему доступно (`FULL`), а PG_E2E_FULL=1 требует, чтобы
+      # здесь оно оказалось включённым: молчаливый откат на путь до узла
+      # (отвалившийся `apt-get`, смена образа раннера, потерянный `sudo -E`)
+      # иначе зеленил бы job, не проверив инвариант вовсе.
+      - run: sudo -E PG_SINGBOX=/usr/local/bin/sing-box PG_E2E_FULL=1 scripts/e2e.sh
