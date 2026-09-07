@@ -15,10 +15,14 @@ ExecStartPre=/bin/sh -c 'command -v nft >/dev/null'
 ExecStart=/usr/bin/pg-service
 # sing-box не лежит рядом с pg-service в /usr/bin: этот путь занят
 # официальным .deb от SagerNet, и install.md больше не будет мириться с
-# конфликтом. Бинарник кладём отдельно в /usr/lib/proxybox — core_tunnel::
-# binary() ищет sing-box рядом с current_exe и без этой переменной его там
-# не найдёт (см. docs/limitations.md про `proxybox doctor` без юнита).
-Environment=PG_SINGBOX=/usr/lib/proxybox/sing-box
+# конфликтом. Бинарник кладём отдельно в /usr/lib/proxybox, и переменной
+# здесь для этого нет: core_tunnel::binary() сам знает этот путь последним
+# запасным шагом (после PG_SINGBOX, настройки и поиска рядом с pg-service),
+# так что находит sing-box и служба, и `proxybox doctor`, запущенный руками
+# без systemd. Раньше этот же путь называла переменная окружения юнита, и
+# это стоило двух неприятностей разом: она писала в журнал «настройки
+# перебиты окружением» на каждом старте службы и не была видна вызову без
+# юнита.
 # Права настоящие: TUN и nftables от обычного пользователя не работают.
 # Урезание до CAP_NET_ADMIN — отдельным шагом после проверки на живой машине.
 User=root

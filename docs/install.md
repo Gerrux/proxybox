@@ -64,11 +64,11 @@ postinst печатает точную команду в вывод maintainer-�
 
 sing-box в пакете свой: лежит не в `/usr/bin` (там уже может стоять
 официальный `.deb` от SagerNet — из-за этого конфликта путь и выбран другим),
-а в `/usr/lib/proxybox/sing-box`, и юнит указывает на него переменной
-`PG_SINGBOX`. Эта переменная — свойство юнита, а не системы: `pg-cli doctor`
-или `pg-service`, запущенные вручную (не через `systemctl`), её не увидят и
-будут искать sing-box рядом с собой или в `PATH` — разбор в
-[docs/limitations.md](limitations.md). Версия закреплена в
+а в `/usr/lib/proxybox/sing-box`, и этот путь знает сам `core_tunnel::binary()`
+последним запасным шагом — после переменной `PG_SINGBOX`, настройки из окна и
+поиска рядом с самим собой. Переменной в юните для этого нет: `pg-cli doctor`
+или `pg-service`, запущенные вручную (не через `systemctl`), находят sing-box
+тем же путём, что и служба под systemd. Версия закреплена в
 `installer/get-singbox.ps1`, у пакета своя копия под лицензией GPL-3.0
 (`/usr/lib/proxybox/LICENSE-sing-box.txt`).
 

@@ -25,9 +25,10 @@ pnpm install
 # целиком, объекты — рекурсивно), тем же приёмом build.ps1 подмешивает
 # отпечаток сертификата, — и только для этой, линуксовой, сборки: убираем
 # sing-box из externalBin и кладём его отдельным файлом в /usr/lib/proxybox,
-# куда сторонний пакет не заглядывает. proxybox.service находит его там через
-# PG_SINGBOX (Environment=), core_tunnel::binary() иначе искал бы только
-# рядом с pg-service.
+# куда сторонний пакет не заглядывает. Путь этот знает сам core_tunnel::
+# binary() — последним запасным шагом на Linux, — и переменная окружения в
+# юните для этого не нужна: она перебивала бы настройку из окна на каждом
+# старте службы и была бы не видна `proxybox doctor`, запущенному без юнита.
 TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 DEB_CONFIG="{\"bundle\":{\"externalBin\":[\"binaries/pg-service\",\"binaries/proxybox\"],\"linux\":{\"deb\":{\"files\":{\"/usr/lib/proxybox/sing-box\":\"binaries/sing-box-$TRIPLE\"}}}}}"
 

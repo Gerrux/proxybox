@@ -423,20 +423,43 @@ pub fn set_binary(path: &str) {
     }
 }
 
-/// Где искать sing-box: переменная окружения → настройка → рядом с бинарником
-/// → PATH.
+/// Где искать sing-box: переменная окружения → настройка → рядом с
+/// бинарником → путь пакета (Linux) → PATH.
+///
+/// Сортировка вынесена в чистую функцию ради теста: гонять по-настоящему
+/// `/usr/lib/proxybox/sing-box` (нужен root, чтобы туда что-то положить) или
+/// временно подменять `current_exe()` вышло бы дороже, чем эта проверка на
+/// `Option`-ах.
+fn resolve_binary(
+    env: Option<PathBuf>,
+    configured: Option<PathBuf>,
+    near_exe: Option<PathBuf>,
+    packaged: Option<PathBuf>,
+    name: &str,
+) -> PathBuf {
+    env.or(configured).or(near_exe).or(packaged).unwrap_or_else(|| PathBuf::from(name))
+}
+
 pub fn binary() -> PathBuf {
-    if let Some(p) = std::env::var_os("PG_SINGBOX") {
-        return PathBuf::from(p);
-    }
-    if let Some(p) = CONFIGURED.lock().ok().and_then(|s| s.clone()) {
-        return p;
-    }
     let name = if cfg!(windows) { "sing-box.exe" } else { "sing-box" };
-    match std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(name))) {
-        Some(p) if p.exists() => p,
-        _ => PathBuf::from(name),
-    }
+    let env = std::env::var_os("PG_SINGBOX").map(PathBuf::from);
+    let configured = CONFIGURED.lock().ok().and_then(|s| s.clone());
+    let near_exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(name)))
+        .filter(|p| p.exists());
+    // Пакет .deb кладёт sing-box не рядом с pg-service (тот путь в /usr/bin
+    // занят официальным пакетом SagerNet — installer/build.sh), а отдельно в
+    // /usr/lib/proxybox. Это последний путь, который binary() проверяет сам,
+    // и он же избавляет юнит от Environment=PG_SINGBOX: та переменная не
+    // только дублировала этот путь второй раз в другом языке, но и перебивала
+    // настройку из окна на каждом старте службы, и была невидима `doctor`,
+    // запущенному руками.
+    #[cfg(not(windows))]
+    let packaged = Some(PathBuf::from("/usr/lib/proxybox/sing-box")).filter(|p| p.exists());
+    #[cfg(windows)]
+    let packaged: Option<PathBuf> = None;
+    resolve_binary(env, configured, near_exe, packaged, name)
 }
 
 pub struct Tunnel {
@@ -954,6 +977,34 @@ fn socks5_connect(port: u16, (host, target_port): (&str, u16)) -> io::Result<Tcp
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    /// Порядок поиска sing-box сильнее к слабее: переменная окружения,
+    /// настройка, место рядом с pg-service, путь пакета (заведён вместе с
+    /// C1 упаковки .deb — Environment=PG_SINGBOX из юнита убран, и без этого
+    /// шага служба, поднятая из свежего пакета, не находила бы sing-box
+    /// вовсе), и только потом голое имя — искать его в PATH пойдёт уже ОС.
+    #[test]
+    fn binary_prefers_env_then_setting_then_near_exe_then_packaged_path() {
+        let env = Some(PathBuf::from("/env/sing-box"));
+        let setting = Some(PathBuf::from("/setting/sing-box"));
+        let near_exe = Some(PathBuf::from("/near-exe/sing-box"));
+        let packaged = Some(PathBuf::from("/usr/lib/proxybox/sing-box"));
+
+        assert_eq!(
+            resolve_binary(env.clone(), setting.clone(), near_exe.clone(), packaged.clone(), "sing-box"),
+            PathBuf::from("/env/sing-box")
+        );
+        assert_eq!(
+            resolve_binary(None, setting.clone(), near_exe.clone(), packaged.clone(), "sing-box"),
+            PathBuf::from("/setting/sing-box")
+        );
+        assert_eq!(
+            resolve_binary(None, None, near_exe.clone(), packaged.clone(), "sing-box"),
+            PathBuf::from("/near-exe/sing-box")
+        );
+        assert_eq!(resolve_binary(None, None, None, packaged, "sing-box"), PathBuf::from("/usr/lib/proxybox/sing-box"));
+        assert_eq!(resolve_binary(None, None, None, None, "sing-box"), PathBuf::from("sing-box"));
+    }
 
     /// Проба ждёт дольше, чем сам sing-box ждёт дозвона. Сравняются — вернётся
     /// гонка двух таймеров: половина отказов приедет в ленту голым `os error

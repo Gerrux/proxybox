@@ -1987,16 +1987,24 @@ mod tests {
         );
 
         // Место sing-box называют дважды — build.sh кладёт его файлом в
-        // deb.files, юнит находит его через PG_SINGBOX, — и это не одна
-        // переменная, а совпадение двух строк в разных языках (bash и
-        // systemd unit); заведи их порознь, и служба, поднятая из свежего
-        // пакета, не найдёт sing-box вовсе.
+        // deb.files, core_tunnel::binary() ищет его тем же путём последним
+        // запасным шагом (после PG_SINGBOX, настройки и поиска рядом с
+        // pg-service) — и это не одна переменная в юните, а совпадение двух
+        // строк в разных языках (bash и Rust). В юните эта переменная больше
+        // не нужна и не стоит: она перебивала настройку из окна на каждом
+        // старте службы («настройки перебиты окружением: PG_SINGBOX») и не
+        // была видна `proxybox doctor`, запущенному руками.
         let build_sh = include_str!("../../../installer/build.sh");
         let sb_path = "/usr/lib/proxybox/sing-box";
-        assert!(build_sh.contains(sb_path), "build.sh не кладёт sing-box в {sb_path}");
+        let core_tunnel = include_str!("../../core-tunnel/src/lib.rs");
         assert!(
-            service.contains(&format!("PG_SINGBOX={sb_path}")),
-            "proxybox.service не указывает PG_SINGBOX на {sb_path}"
+            core_tunnel.contains(&format!("\"{sb_path}\"")),
+            "core_tunnel::binary() не знает запасной путь {sb_path}"
+        );
+        assert!(
+            !service.contains("Environment=PG_SINGBOX"),
+            "proxybox.service не должен задавать PG_SINGBOX: путь ищет сам core_tunnel::binary(), \
+             а переменная в юните перебивала бы настройку из окна на каждом старте"
         );
 
         // Подстрока выше проверяет форму, а не смысл: ей удовлетворил бы и
