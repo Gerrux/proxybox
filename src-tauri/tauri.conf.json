@@ -72,7 +72,9 @@
         "depends": [
           "nftables",
           "libwebkit2gtk-4.1-0",
-          "libayatana-appindicator3-1"
+          "libayatana-appindicator3-1",
+          "libc6 (>= 2.39)",
+          "libssl3"
         ],
         "files": {
           "/usr/lib/systemd/system/proxybox.service": "../installer/proxybox.service"

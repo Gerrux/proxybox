@@ -1911,4 +1911,84 @@ mod tests {
         let driver = include_str!("../../core-wfp/Cargo.toml");
         assert!(driver.contains("\n[workspace]"), "драйверу нужен свой корень воркспейса, как у src-tauri");
     }
+
+    /// Собрать `.deb` здесь нечем (нет webkit и root), поэтому то, что иначе
+    /// проверил бы сам пакет при установке, сверяется текстом — тем же
+    /// приёмом, что и `the_installer_speaks_the_same_languages` для NSIS.
+    #[test]
+    fn the_deb_package_agrees_with_the_code_it_ships() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../../../src-tauri/tauri.conf.json")).expect("tauri.conf.json");
+
+        // mainBinaryName в конфиге нет намеренно: главный бинарник называется
+        // pg-desktop (по [package].name в src-tauri/Cargo.toml), а имя
+        // "proxybox" уже занято сайдкаром pg-cli (bundle.externalBin ниже).
+        // Поставь кто-нибудь "mainBinaryName": "proxybox" — и сайдкары,
+        // копируемые вторыми, перезапишут собой окно: /usr/bin/proxybox
+        // станет консолью, а .desktop (Exec=proxybox) будет звать её же.
+        assert!(
+            conf["bundle"].get("mainBinaryName").is_none(),
+            "mainBinaryName отнял бы имя \"proxybox\" у сайдкара pg-cli и подменил бы окно консолью"
+        );
+
+        // ExecStart юнита обязан звать тот же файл, что кладёт в /usr/bin
+        // externalBin: tauri-bundler кладёт туда все бинарники безусловно
+        // (bin_dir = data_dir/"usr/bin" в debian.rs), беря имя из этого же
+        // списка, — переименуй кто-нибудь бинарник pg-service, юнит продолжит
+        // звать старое имя молча, и служба не запустится вовсе.
+        let external_bin = conf["bundle"]["externalBin"].as_array().expect("bundle.externalBin");
+        let pg_service = external_bin
+            .iter()
+            .filter_map(|v| v.as_str())
+            .find(|p| p.ends_with("pg-service"))
+            .expect("externalBin содержит pg-service")
+            .rsplit('/')
+            .next()
+            .unwrap();
+        let service = include_str!("../../../installer/proxybox.service");
+        let exec_start = service
+            .lines()
+            .find(|l| l.starts_with("ExecStart="))
+            .expect("ExecStart в proxybox.service")
+            .trim_start_matches("ExecStart=");
+        assert_eq!(
+            exec_start,
+            format!("/usr/bin/{pg_service}"),
+            "ExecStart разошёлся с именем pg-service из bundle.externalBin"
+        );
+
+        // Имя группы называют трое: код сокета, postinst (заводит и впускает
+        // человека) и postrm/prerm (её не трогают). Разойдись оно с
+        // unix_socket::GROUP — постановка заведёт группу, которую сокет не
+        // слушает, и окно от обычного пользователя до службы не достучится
+        // никогда, при этом молча.
+        let unix_socket = include_str!("unix_socket.rs");
+        let group = unix_socket
+            .lines()
+            .find(|l| l.trim_start().starts_with("const GROUP"))
+            .and_then(|l| l.split('"').nth(1))
+            .expect("const GROUP в unix_socket.rs");
+        let postinst = include_str!("../../../installer/postinst");
+        assert!(
+            postinst.contains(&format!("groupadd -r {group}")),
+            "postinst заводит не ту группу, что unix_socket::GROUP"
+        );
+        assert!(
+            postinst.contains(&format!("usermod -aG {group} ")),
+            "postinst впускает человека не в ту группу, что unix_socket::GROUP"
+        );
+
+        // Место sing-box называют дважды — build.sh кладёт его файлом в
+        // deb.files, юнит находит его через PG_SINGBOX, — и это не одна
+        // переменная, а совпадение двух строк в разных языках (bash и
+        // systemd unit); заведи их порознь, и служба, поднятая из свежего
+        // пакета, не найдёт sing-box вовсе.
+        let build_sh = include_str!("../../../installer/build.sh");
+        let sb_path = "/usr/lib/proxybox/sing-box";
+        assert!(build_sh.contains(sb_path), "build.sh не кладёт sing-box в {sb_path}");
+        assert!(
+            service.contains(&format!("PG_SINGBOX={sb_path}")),
+            "proxybox.service не указывает PG_SINGBOX на {sb_path}"
+        );
+    }
 }
