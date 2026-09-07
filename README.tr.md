@@ -14,6 +14,7 @@
   <a href="https://github.com/Gerrux/proxybox/actions/workflows/ci.yml"><img alt="" src="https://img.shields.io/github/actions/workflow/status/Gerrux/proxybox/ci.yml?branch=master&style=flat-square&labelColor=14161A&label=ci"></a>
   <a href="LICENSE"><img alt="" src="https://img.shields.io/github/license/Gerrux/proxybox?style=flat-square&labelColor=14161A&color=1E9E5A"></a>
   <img alt="" src="https://img.shields.io/badge/Windows-10%20%7C%2011-14161A?style=flat-square">
+  <img alt="" src="https://img.shields.io/badge/Linux-headless-14161A?style=flat-square">
   <img alt="" src="https://img.shields.io/badge/i18n-ru%20en%20fa%20zh%20tr%20id-14161A?style=flat-square">
 </p>
 
@@ -21,9 +22,12 @@
 tünelinizden çıkar; tünel yoksa ağ da yoktur. Diğer uygulamaların trafiğine hiç
 dokunulmaz.
 
-Windows 10/11. Çalışma alanı crate'lerinde bir Rust çekirdeği, üstünde bir
-hizmet, Tauri 2.x masaüstü kabuğu ve Vite + React + TS + Tailwind ön yüzü.
-Arayüz, hizmet ve kurulum programı altı dil konuşuyor.
+Çalışma alanı crate'lerinde bir Rust çekirdeği, üstünde bir hizmet. Windows
+10/11'de bunun yanında Tauri 2.x masaüstü kabuğu ve Vite + React + TS +
+Tailwind ön yüzü de var — arayüz, hizmet ve kurulum programı altı dil
+konuşuyor. Linux'ta şimdilik yalnızca hizmet ve konsol (`proxybox`) var: ne
+pencere, ne paket, ne de gerçek bir beyaz liste — ayrıntılar
+[docs/install.md](docs/install.md) ve [docs/limitations.md](docs/limitations.md) içinde.
 
 Özgün teknik şartname (Rusça) — [proxybox-prompt.md](proxybox-prompt.md).
 
@@ -54,14 +58,17 @@ Gizli kip açık + tünel doğrulanmamış = seçili uygulamaların ağı yok. D
 erişimli ara durumlar yoktur, bypass kuralı da yoktur. Mimarideki diğer her şey
 bunun sonucudur.
 
-Kapsam iki tanedir ve pencere başlığında, kanalın sol ucunda seçilir. **Beyaz
-liste** — ağ yalnızca seçili uygulamalarda ve yalnızca tünel üzerinden.
-**Tüm bilgisayar** — hiç ayıklama yok, arkasında süreç olmayan trafik de tünele
-girer: hizmet, sürücü, DNS. Değişmez aynıdır, yalnızca kimi kapsadığı değişir.
+Kapsam iki tanedir: pencere başlığında, kanalın sol ucunda seçilir (Windows) ya
+da `proxybox scope` komutuyla (Linux). **Beyaz liste** — ağ yalnızca seçili
+uygulamalarda ve yalnızca tünel üzerinden; Linux'ta bu ayrım henüz çizilmedi,
+bkz. [docs/limitations.md](docs/limitations.md). **Tüm bilgisayar** — hiç
+ayıklama yok, arkasında süreç olmayan trafik de tünele girer: hizmet, sürücü,
+DNS. Değişmez aynıdır, yalnızca kimi kapsadığı değişir.
 
-Ayıklama tünel yapılandırmasında değil, Windows güvenlik duvarında yaşar ve
-`connect` anında, herhangi bir TUN'dan önce olur. sing-box yapılandırması her iki
-kapsamda bayt bayt aynıdır ve içinde tüneli atlayan bir rota hiç yoktur — bu
+Ayıklama tünel yapılandırmasında değil, bir katman aşağıda yaşar — Windows'ta
+güvenlik duvarında, Linux'ta nftables'ta — ve `connect` anında, herhangi bir
+TUN'dan önce olur. sing-box yapılandırması her iki kapsamda bayt bayt aynıdır
+ve içinde tüneli atlayan bir rota hiç yoktur — bu
 yüzden kapsamı değiştirmek ve uygulama listesini düzenlemek tüneli yeniden
 başlatmaz: açık bir SSH oturumu bunları atlatır.
 
@@ -79,6 +86,8 @@ Hazır kurulum programı [sürümlerde](https://github.com/Gerrux/proxybox/relea
 NSIS, per-machine, altı dil: pencereyi, hizmeti, CLI'yi ve sing-box'ı tek bir
 klasöre koyar ve `proxybox` hizmetini LocalSystem altında, otomatik başlatmayla
 kaydeder. Ürünün kendi ağı yoktur — tünel sizin kendi sunucunuzdur.
+
+Linux'ta henüz hazır bir paket yok: hizmet elle derlenip kuruluyor.
 
 Ayrıntılar, güncellemeler ve yanınızdaki başka bir VPN — [docs/install.md](docs/install.md).
 
@@ -116,7 +125,7 @@ kurulmaz; haklar olmadan başlatıldığında `run.bat` bunu söyler.
 | --- | --- |
 | [İlk adımlar](docs/quickstart.md) | boş pencereden çalışan tünele, ve olmadığında ne yapmalı |
 | [Nasıl çalışır](docs/how-it-works.md) | tünel, sing-box yapılandırması, güvenlik duvarı, DNS, ilkelerin tamamı |
-| [Windows'a kurulum](docs/install.md) | kurulum programı, güncellemeler, hizmetin hatırladıkları, yanındaki yabancı VPN |
+| [Kurulum](docs/install.md) | Windows'ta kurulum programı ve güncellemeler, Linux'ta hizmetin elle kurulumu, hizmetin hatırladıkları, yanındaki yabancı VPN |
 | [Profiller, abonelikler ve ölçüm](docs/profiles.md) | bağlantı ve abonelik içe aktarma, Clash YAML, düğüm ölçümü |
 | [Tarayıcı profilleri](docs/browser-profiles.md) | ayrı tarayıcı oturumları ve bir sitenin onlardan gördüğü |
 | [Pencere](docs/interface.md) | bağlantılar, dil, tepsi ve küçük pano, ayarlar |
@@ -132,9 +141,12 @@ Kurulum programını derlemek ve yayımlamak — [src-tauri/BUILD-WINDOWS.md](sr
 
 ## Katkı
 
-Proje Linux'ta derlenir ama yalnızca Windows'ta çalışır; bu yüzden şu an en işe
-yarayan iki şey: gerçek bir makinede kurunca ne olduğunun raporu ve çevirilerin
-okunması — İngilizce dışında hiçbirini ana dili konuşan biri okumadı. Gerisi
+Windows baştan sona bitmiş bir ürün: pencere, hizmet, kurulum programı.
+Linux'ta şimdilik yalnızca hizmet ve konsol var, penceresi, paketi ve gerçek
+bir beyaz listesi yok ([docs/limitations.md](docs/limitations.md)). Şu an en
+işe yarayan iki şey: iki platformdan birinde gerçek bir makinede kurunca ne
+olduğunun raporu ve çevirilerin okunması — İngilizce dışında hiçbirini ana dili
+konuşan biri okumadı. Gerisi
 [CONTRIBUTING.md](CONTRIBUTING.md) içinde. Gizlilik veya yetki açığı herkese
 açık bir issue'ya yazılmaz: [SECURITY.md](SECURITY.md).
 

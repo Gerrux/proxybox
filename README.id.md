@@ -14,6 +14,7 @@
   <a href="https://github.com/Gerrux/proxybox/actions/workflows/ci.yml"><img alt="" src="https://img.shields.io/github/actions/workflow/status/Gerrux/proxybox/ci.yml?branch=master&style=flat-square&labelColor=14161A&label=ci"></a>
   <a href="LICENSE"><img alt="" src="https://img.shields.io/github/license/Gerrux/proxybox?style=flat-square&labelColor=14161A&color=1E9E5A"></a>
   <img alt="" src="https://img.shields.io/badge/Windows-10%20%7C%2011-14161A?style=flat-square">
+  <img alt="" src="https://img.shields.io/badge/Linux-headless-14161A?style=flat-square">
   <img alt="" src="https://img.shields.io/badge/i18n-ru%20en%20fa%20zh%20tr%20id-14161A?style=flat-square">
 </p>
 
@@ -22,9 +23,13 @@ pilih hanya bisa menjangkau jaringan lewat terowongan Anda sendiri; tidak ada
 terowongan, tidak ada jaringan. Lalu lintas aplikasi lain sama sekali tidak
 disentuh.
 
-Windows 10/11. Inti Rust dalam crate workspace, sebuah layanan di atasnya,
-cangkang desktop Tauri 2.x, dan frontend Vite + React + TS + Tailwind. Antarmuka,
-layanan, dan penginstal sama-sama berbicara enam bahasa.
+Inti Rust dalam crate workspace, sebuah layanan di atasnya. Di Windows 10/11
+ada tambahan cangkang desktop Tauri 2.x dan frontend Vite + React + TS +
+Tailwind — antarmuka, layanan, dan penginstal sama-sama berbicara enam bahasa.
+Di Linux untuk saat ini baru ada layanan dan konsol (`proxybox`): belum ada
+jendela, belum ada paket, dan belum ada daftar putih yang sesungguhnya —
+rinciannya di [docs/install.md](docs/install.md) dan
+[docs/limitations.md](docs/limitations.md).
 
 Spesifikasi asli (bahasa Rusia) — [proxybox-prompt.md](proxybox-prompt.md).
 
@@ -56,15 +61,18 @@ Mode privat menyala + terowongan belum terkonfirmasi = aplikasi terpilih tanpa
 jaringan. Keadaan antara dengan akses langsung tidak ada, aturan bypass juga
 tidak ada. Semua hal lain dalam arsitektur adalah akibat dari ini.
 
-Cakupannya ada dua, dipilih di kepala jendela, di ujung kiri saluran. **Daftar
-putih** — jaringan hanya untuk aplikasi terpilih dan hanya lewat terowongan.
-**Seluruh komputer** — tidak ada penyaringan sama sekali: lalu lintas yang tidak
+Cakupannya ada dua: dipilih di kepala jendela, di ujung kiri saluran (Windows),
+atau dengan perintah `proxybox scope` (Linux). **Daftar putih** — jaringan
+hanya untuk aplikasi terpilih dan hanya lewat terowongan; di Linux batas ini
+belum digambar, lihat [docs/limitations.md](docs/limitations.md). **Seluruh
+komputer** — tidak ada penyaringan sama sekali: lalu lintas yang tidak
 punya proses di belakangnya pun masuk ke terowongan — layanan, driver, DNS.
 Invariannya sama, yang berubah hanya siapa yang terkena.
 
-Penyaringan tidak tinggal di konfigurasi terowongan, melainkan di firewall
-Windows, dan terjadi pada `connect`, sebelum TUN apa pun. Konfigurasi sing-box
-persis sama bita demi bita pada kedua cakupan, dan di dalamnya sama sekali tidak
+Penyaringan tidak tinggal di konfigurasi terowongan, melainkan satu lapis di
+bawahnya — firewall di Windows, nftables di Linux — dan terjadi pada `connect`,
+sebelum TUN apa pun. Konfigurasi sing-box persis sama bita demi bita pada
+kedua cakupan, dan di dalamnya sama sekali tidak
 ada rute yang melewati terowongan — karena itu mengganti cakupan dan menyunting
 daftar aplikasi tidak memulai ulang terowongan: sesi SSH yang terbuka selamat
 melaluinya.
@@ -84,6 +92,8 @@ NSIS, per-machine, enam bahasa: ia menaruh jendela, layanan, CLI, dan sing-box
 dalam satu folder lalu mendaftarkan layanan `proxybox` di bawah LocalSystem
 dengan mulai otomatis. Produk ini tidak punya jaringan sendiri — terowongannya
 adalah server Anda sendiri.
+
+Di Linux belum ada paket siap pakai: layanan dibangun dan dipasang secara manual.
 
 Rincian, pembaruan, dan hidup berdampingan dengan VPN lain — [docs/install.md](docs/install.md).
 
@@ -122,7 +132,7 @@ dipasang; `run.bat` akan memperingatkan bila dijalankan tanpa hak tersebut.
 | --- | --- |
 | [Langkah pertama](docs/quickstart.md) | dari jendela kosong ke terowongan yang jalan, dan apa yang dilakukan bila gagal |
 | [Cara kerjanya](docs/how-it-works.md) | terowongan, konfigurasi sing-box, firewall, DNS, prinsip selengkapnya |
-| [Pemasangan di Windows](docs/install.md) | penginstal, pembaruan, apa yang diingat layanan, VPN lain di sebelah |
+| [Pemasangan](docs/install.md) | penginstal dan pembaruan di Windows, pemasangan layanan manual di Linux, apa yang diingat layanan, VPN lain di sebelah |
 | [Profil, langganan, dan pengujian](docs/profiles.md) | impor tautan dan langganan, Clash YAML, mengukur node |
 | [Profil peramban](docs/browser-profiles.md) | sesi peramban terpisah dan apa yang dilihat situs tentangnya |
 | [Jendela](docs/interface.md) | koneksi, bahasa, baki sistem dan panelnya, pengaturan |
@@ -138,10 +148,13 @@ Membangun dan merilis penginstal — [src-tauri/BUILD-WINDOWS.md](src-tauri/BUIL
 
 ## Ikut membantu
 
-Proyek ini dibangun di Linux tetapi hanya berjalan di Windows, jadi dua hal yang
-paling berguna sekarang: laporan tentang apa yang sebenarnya terjadi di mesin
-sungguhan, dan pembacaan ulang terjemahan — tidak satu pun di antaranya, selain
-bahasa Inggris, pernah dibaca penutur aslinya. Selebihnya ada di
+Windows adalah produk yang utuh: jendela, layanan, penginstal. Di Linux untuk
+saat ini baru ada layanan dan konsol, tanpa jendela, tanpa paket, dan tanpa
+daftar putih yang sesungguhnya ([docs/limitations.md](docs/limitations.md)).
+Dua hal yang paling berguna sekarang: laporan tentang apa yang sebenarnya
+terjadi di mesin sungguhan, di kedua platform, dan pembacaan ulang terjemahan —
+tidak satu pun di antaranya, selain bahasa Inggris, pernah dibaca penutur
+aslinya. Selebihnya ada di
 [CONTRIBUTING.md](CONTRIBUTING.md). Lubang privasi atau hak akses tidak ditulis
 sebagai issue publik: lihat [SECURITY.md](SECURITY.md).
 
