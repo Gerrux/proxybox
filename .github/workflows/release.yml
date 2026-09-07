@@ -64,6 +64,10 @@ jobs:
   linux:
     needs: windows
     runs-on: ubuntu-latest
+    # Сборка tauri (минуты) плюс докер-проверка пакета ниже (тянет образ,
+    # ставит зависимости apt дважды) — без потолка зависший шаг съел бы
+    # дефолтные 360 минут раннера, как и в job linux у ci.yml.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -142,6 +146,61 @@ jobs:
           fi
           echo "окно продержалось отведённые 20 секунд"
 
+      # Ревью упаковки нашло конфликт путей с официальным sing-box (C1) и
+      # хрупкую проверку systemd в postinst (I1) — оба разбором конфигов, а
+      # не живой установкой. Эта проверка — то же самое на настоящем apt:
+      # четыре строки, которые и стоило написать сразу. Ubuntu 24.04, а не
+      # Debian 12: там glibc старее объявленной зависимости (libc6 >= 2.39),
+      # и апт отказал бы по совершенно правильной причине — тест на такой
+      # базе был бы красным всегда, не поймав ничего нового.
+      #
+      # Докер в контейнере не поднимает systemd (не PID 1), и
+      # /run/systemd/system там не существует — ветки postinst/prerm/postrm
+      # со `systemctl` под этой проверкой не выполняются вовсе. Это ожидаемо:
+      # тест покрывает состав файлов, группу и главный конфликт (C1), а не
+      # поведение systemd (I1/I4) — им бы понадобился настоящий init.
+      - name: проверка пакета в Ubuntu 24.04
+        run: |
+          deb=$(ls src-tauri/target/release/bundle/deb/*.deb 2>/dev/null)
+          if [ -z "$deb" ]; then
+            echo "пакет не собрался" >&2
+            exit 1
+          fi
+
+          VER=$(grep -oP '\$Version = "\K[^"]+' installer/get-singbox.ps1)
+          mkdir -p /tmp/pkgs
+          cp "$deb" /tmp/pkgs/proxybox.deb
+          # Официальный .deb SagerNet — прямая проверка C1: если наш пакет
+          # конфликтует с ним за /usr/bin/sing-box, apt откажет ставить наш
+          # поверх, и именно это должно НЕ случиться.
+          curl -sL -o /tmp/pkgs/sing-box.deb \
+            "https://github.com/SagerNet/sing-box/releases/download/v$VER/sing-box_${VER}_linux_amd64.deb"
+
+          docker run --rm -v /tmp/pkgs:/pkg:ro ubuntu:24.04 bash -euxc '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+
+            # sing-box ставится первым и владеет /usr/bin/sing-box — если
+            # наш пакет туда же лезет, следующая строка и провалится с
+            # "trying to overwrite".
+            apt-get install -y /pkg/sing-box.deb
+            apt-get install -y /pkg/proxybox.deb
+
+            getent group proxybox >/dev/null
+
+            for f in /usr/bin/pg-desktop /usr/bin/pg-service /usr/bin/proxybox \
+                     /usr/lib/proxybox/sing-box /usr/lib/systemd/system/proxybox.service; do
+              test -e "$f" || { echo "нет файла: $f" >&2; exit 1; }
+            done
+
+            # Три пути maintainer-скриптов, которые дальше пользователь
+            # видит поодиночке, а не только на первой установке.
+            apt-get remove -y proxybox
+            apt-get purge -y proxybox
+            apt-get install -y /pkg/proxybox.deb
+            getent group proxybox >/dev/null
+          '
+
       - name: догрузить .deb в релиз
         env:
           GH_TOKEN: ${{ github.token }}
@@ -151,4 +210,7 @@ jobs:
             echo "пакет не собрался" >&2
             exit 1
           fi
-          gh release upload "${{ github.ref_name }}" "$deb"
+          # --clobber: повторный прогон после частичной выгрузки (сеть
+          # оборвалась после первого gh release upload) иначе упирается в
+          # "asset already exists", и релиз без правки руками не починить.
+          gh release upload "${{ github.ref_name }}" "$deb" --clobber
