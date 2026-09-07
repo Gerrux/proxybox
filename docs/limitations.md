@@ -42,6 +42,19 @@
   `blockoutbound` решает на `connect`, то есть только про новые исходящие, и
   ответа уже принятого входящего это не касается вовсе — такого разрыва там
   нет.
+- `PG_SINGBOX` в `.deb` — свойство юнита (`Environment=` в
+  `installer/proxybox.service`), не системы: sing-box лежит в
+  `/usr/lib/proxybox/sing-box`, а не в `/usr/bin` рядом с `pg-service`, — путь
+  в `/usr/bin` занят официальным `.deb` от SagerNet, и класть туда свой было
+  бы прямым конфликтом («trying to overwrite»). `core_tunnel::binary()` ищет
+  sing-box рядом с `current_exe`, и это работает только пока служба поднята
+  systemd. `pg-cli doctor` (или `pg-service`), запущенные вручную — не через
+  `systemctl` — этой переменной не увидят: `current_exe` для них
+  `/usr/bin/proxybox`, рядом sing-box нет, и следующий шаг — голое имя из
+  `PATH`, где официального пакета может и не быть. Диагностика в этом случае
+  честно скажет «sing-box не найден» о машине, где служба работает исправно.
+  Лечится тем же, чем и разработка без пакета: `PG_SINGBOX=/usr/lib/proxybox/
+  sing-box pg-cli doctor`.
 - Оболочка на Linux до `.deb` запускалась только под `xvfb-run` в CI (job
   `linux` в `release.yml`) — проверка держит одно: окно живёт отведённые
   секунды, а не падает сразу. На настоящем рабочем столе (значок в трее под
