@@ -1,0 +1,22 @@
+#!/bin/sh
+# postrm .deb: снимает то, что завёл postinst, — юнит и его состояние в
+# systemd. Группу `proxybox` не трогаем нарочно: в ней остались люди, и
+# удаление на обновлении (postrm старой версии зовётся с `upgrade`, не с
+# `remove`) отобрало бы у них доступ к сокету между установкой новой версии
+# и её собственным postinst.
+set -e
+
+case "$1" in
+  remove)
+    if [ -d /run/systemd/system ]; then
+      # К этому моменту dpkg уже удалил сам юнит-файл — `disable` работает и
+      # без него: systemd убирает висящие симлинки автозапуска по имени
+      # юнита, не читая исчезнувший [Install]. `--now` гасит ещё и живой
+      # процесс, если служба почему-то не была остановлена раньше.
+      systemctl disable --now proxybox 2>/dev/null || true
+      systemctl daemon-reload || true
+    fi
+    ;;
+esac
+
+exit 0

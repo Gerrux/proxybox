@@ -29,7 +29,8 @@
   "bundle": {
     "active": true,
     "targets": [
-      "nsis"
+      "nsis",
+      "deb"
     ],
     "icon": [
       "icons/32x32.png",
@@ -64,6 +65,20 @@
           "Farsi": "../installer/languages/Farsi.nsh",
           "Indonesian": "../installer/languages/Indonesian.nsh"
         }
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "nftables",
+          "libwebkit2gtk-4.1-0",
+          "libayatana-appindicator3-1"
+        ],
+        "files": {
+          "/usr/lib/systemd/system/proxybox.service": "../installer/proxybox.service"
+        },
+        "postInstallScript": "../installer/postinst",
+        "postRemoveScript": "../installer/postrm"
       }
     }
   }
