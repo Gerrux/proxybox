@@ -101,16 +101,30 @@ done
 step "соединения видны и подписаны маршрутом"
 # Список показывает открытые прямо сейчас соединения, а curl из прошлого шага
 # закрылся вместе с ответом сервера. Нужен тот, кто принимает и молчит.
-python3 -c 'import socket
+#
+# И он же обязан быть громким. Список режется сотней по громкости
+# (`core-tunnel`, `leaks_first`), а под живым TUN в туннель идёт вся машина: на
+# CI-раннере это под тысячу соединений его собственного сторожевого демона, и
+# тихое соединение с нулём байт вытесняется из списка целиком. Раньше на Linux
+# TUN не поднимался, в туннеле было только своё, и объём не имел значения.
+# Поэтому принятое не просто держим, а вычитываем — иначе upload упрётся в
+# backpressure на первых килобайтах и до счётчиков не доедет.
+python3 -c 'import socket, threading
 s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind(("127.0.0.1", 18081)); s.listen(4)
-# Принятое держим: брошенный сокет Python закрывает сам, и соединение
-# умирает раньше вопроса — ровно то, что и пряталось за пустым списком.
-held = []
-while True: held.append(s.accept())' &
+def drain(c):
+    # Принятое держим открытым: брошенный сокет Python закрывает сам, и
+    # соединение умирает раньше вопроса — ровно то, что и пряталось за
+    # пустым списком.
+    while c.recv(65536):
+        pass
+while True:
+    conn, _ = s.accept()
+    threading.Thread(target=drain, args=(conn,), daemon=True).start()' &
 sleep 1
-curl -s -m 20 --socks5-hostname 127.0.0.1:48292 http://127.0.0.1:18081/ >/dev/null &
-sleep 2
+head -c 4194304 /dev/zero | curl -s -m 20 --socks5-hostname 127.0.0.1:48292 \
+  --data-binary @- http://127.0.0.1:18081/ >/dev/null &
+sleep 3
 ./target/debug/proxybox conns
 ./target/debug/proxybox conns | grep -q "18081" || fail "живое соединение не попало в список"
 ./target/debug/proxybox conns | grep -q "туннель" || fail "соединение не подписано маршрутом"
@@ -174,6 +188,14 @@ if [ "$FULL" = "1" ]; then
   step "снятие замка возвращает машину"
   ./target/debug/proxybox off
   nft list table inet proxybox >/dev/null 2>&1 && fail "снятый замок оставил таблицу"
+  # С запасом, а не одной попыткой: вместе с замком уходит и TUN, а маршрут по
+  # умолчанию возвращается не тем же мгновением, каким исчезает интерфейс.
+  # Проверяем возврат сети, а не скорость, с какой ядро переставляет таблицу
+  # маршрутов.
+  for _ in $(seq 5); do
+    if outsider; then break; fi
+    sleep 2
+  done
   outsider || fail "снятый замок не вернул сеть"
 fi
 
