@@ -12,14 +12,17 @@ crates/
   core-tunnel/       генерация конфига sing-box, запуск и присмотр, проба, трафик
   core-filter/       политика fail-closed + пропуска брандмауэра выбранным .exe
   pg-service/        служба: состояние, процесс sing-box, надзор раз в 3 с;
-                     на Windows — служба SCM (install/uninstall в ней же)
+                     на Windows — служба SCM (install/uninstall в ней же),
+                     на Linux — systemd-юнит (installer/proxybox.service)
   pg-cli/            бинарник proxybox — headless-клиент контракта
 src-tauri/           Tauri 2.x оболочка (отдельный Cargo-проект, сборка только
                      на Windows); пробрасывает запросы фронтенда в core-ipc
 ui/app-shell/        Vite+React+TS+Tailwind: статус, профили, приложения, журнал
 resources/apps/      каталог-дополнение к реестру: консольные инструменты и то,
                      что не регистрируется (catalog.v1.json, вшит в core-apps)
-installer/           hooks.nsh (регистрация службы) и build.ps1 (сборка установщика)
+installer/           hooks.nsh + build.ps1 — регистрация службы и сборка
+                     установщика на Windows; proxybox.service — systemd-юнит
+                     для Linux (пока кладётся руками, см. install.md)
 scripts/e2e.sh       сквозная проверка на своём же sing-box-сервере
 scripts/bench-cores.sh  сравнение ядер (sing-box / mihomo / Xray) на одном стенде
 ```
@@ -27,8 +30,13 @@ scripts/bench-cores.sh  сравнение ядер (sing-box / mihomo / Xray) �
 ## Требования
 
 - Rust toolchain; Node + [pnpm](https://pnpm.io) 9+
-- **sing-box** рядом с бинарником службы (`sing-box.exe`), в `PATH` или по пути
-  из `PG_SINGBOX`. В установщик кладётся вместе со службой.
+- **sing-box** рядом с бинарником службы (`sing-box.exe` на Windows, `sing-box`
+  на Linux), в `PATH` или по пути из `PG_SINGBOX`. В установщик кладётся вместе
+  со службой.
+- На Linux ещё нужен `nftables` в `PATH` — на нём стоит замок
+  (`crates/core-filter/src/linux.rs`). Без него служба поднимет туннель без
+  замка и предупредит об этом в журнале, а `installer/proxybox.service` вообще
+  не даст стартовать юниту без `nft`.
 - Для десктоп-сборки (только Windows) — Tauri CLI 2.x
   (`cargo install tauri-cli --version "^2"`), MSVC/VS Build Tools, WebView2.
   На Linux нет webkit2gtk — `src-tauri` не собирается, ядро и фронтенд собираются.
@@ -37,7 +45,10 @@ scripts/bench-cores.sh  сравнение ядер (sing-box / mihomo / Xray) �
 
 ```bash
 pnpm install
-cargo run -p pg-service                       # служба (терминал 1)
+cargo run -p pg-service                       # служба (терминал 1); на Linux
+                                              # поднимает TUN, нужен root (TUN,
+                                              # nftables) — без него PG_SOCKET
+                                              # на путь, который вам доступен
 cargo run -p pg-cli -- add-profile --link 'vless://…'
 cargo run -p pg-cli -- add-profile --link 'https://панель/sub'  # подписка целиком
 cargo run -p pg-cli -- profiles                # что заведено: имя, тип, куда ведёт
@@ -76,7 +87,9 @@ scripts/settings.sh                           # настройки: правка
 Переменные: `PG_SINGBOX` — путь к бинарнику, `PG_TUN=0` — не поднимать TUN,
 `PG_PROBE=host:port` — цель пробы (по умолчанию сам сервер профиля, чтобы не
 трогать сторонние адреса), `PG_GEO=0` — не спрашивать точку выхода,
-`PG_REFRESH=0` — не сверять подписки по расписанию.
+`PG_REFRESH=0` — не сверять подписки по расписанию. Вне Windows ещё
+`PG_SOCKET=/путь/к/сокету` — где слушает IPC (по умолчанию
+`/run/proxybox/service.sock`, а этот каталог без root не создать).
 
 Четыре из них — `PG_SINGBOX`, `PG_PROBE`, `PG_GEO`, `PG_REFRESH` — теперь есть
 и настройками: в окне и в `proxybox settings`. Переменная сильнее
@@ -91,15 +104,19 @@ scripts/settings.sh                           # настройки: правка
 `journal.json` — сам журнал службы, те же тридцать строк, что показаны в окне.
 Журнал лежит файлом именно потому, что перезапуск службы — это обновление,
 падение или загрузка машины, то есть ровно те случаи, ради которых в него и
-смотрят; под SCM у службы нет ни консоли, ни stderr.
+смотрят; под SCM у службы нет ни консоли, ни stderr. На Linux те же файлы
+лежат в `/var/lib/proxybox` под root (`systemctl` запускает службу так) или в
+`$XDG_CONFIG_HOME`/`~/.config/proxybox` без прав.
 
-`doctor` проверяет не свой код, а внешние причины: отвечает ли служба, найден ли
-sing-box, работает ли служба Base Filtering Engine (без неё `netsh` не поставит
-блокирующие правила), запущено ли всё от администратора, не включён ли системный
-прокси и не подняты ли чужие TUN/VPN-адаптеры — они спорят за маршруты с нашим
-`strict_route`. Провал хотя бы одной проверки — ненулевой код возврата.
-Единственная команда, которая работает без службы: она нужна ровно тогда, когда
-служба молчит.
+`doctor` проверяет не свой код, а внешние причины, и на каждой платформе свои.
+На Windows: отвечает ли служба, найден ли sing-box, работает ли служба Base
+Filtering Engine (без неё `netsh` не поставит блокирующие правила), запущено ли
+всё от администратора, не включён ли системный прокси и не подняты ли чужие
+TUN/VPN-адаптеры — они спорят за маршруты с нашим `strict_route`. На Linux
+вместо администратора и BFE — root (без него не поднять ни TUN, ни nftables) и
+`nft` в `PATH` (без него замку нечем встать). Провал хотя бы одной проверки —
+ненулевой код возврата. Единственная команда, которая работает без службы: она
+нужна ровно тогда, когда служба молчит.
 
 ## Если что-то не работает
 

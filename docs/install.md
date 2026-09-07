@@ -1,4 +1,4 @@
-# Установка на Windows
+# Установка
 
 Готовый установщик — в [релизах](https://github.com/Gerrux/proxybox/releases):
 их собирает `.github/workflows/release.yml` из тега `vX.Y.Z` тем же скриптом,
