@@ -14,14 +14,18 @@
   <a href="https://github.com/Gerrux/proxybox/actions/workflows/ci.yml"><img alt="" src="https://img.shields.io/github/actions/workflow/status/Gerrux/proxybox/ci.yml?branch=master&style=flat-square&labelColor=14161A&label=ci"></a>
   <a href="LICENSE"><img alt="" src="https://img.shields.io/github/license/Gerrux/proxybox?style=flat-square&labelColor=14161A&color=1E9E5A"></a>
   <img alt="" src="https://img.shields.io/badge/Windows-10%20%7C%2011-14161A?style=flat-square">
+  <img alt="" src="https://img.shields.io/badge/Linux-headless-14161A?style=flat-square">
   <img alt="" src="https://img.shields.io/badge/i18n-ru%20en%20fa%20zh%20tr%20id-14161A?style=flat-square">
 </p>
 
 **按 fail-closed 原则控制出站流量。** 你选中的程序只能经由你自己的隧道访问网络；
 没有隧道，就没有网络。其他应用的流量完全不受干预。
 
-Windows 10/11。工作区 crate 中的 Rust 内核，其上是一个服务，Tauri 2.x 桌面外壳，
-前端为 Vite + React + TS + Tailwind。界面、服务和安装程序都支持六种语言。
+工作区 crate 中的 Rust 内核，其上是一个服务。在 Windows 10/11 上，还多一层
+Tauri 2.x 桌面外壳和 Vite + React + TS + Tailwind 前端——界面、服务和安装程序都
+支持六种语言。在 Linux 上目前只有服务和命令行（`proxybox`）：还没有窗口、没有
+安装包，也没有真正的白名单——详见 [docs/install.md](docs/install.md) 与
+[docs/limitations.md](docs/limitations.md)。
 
 原始技术说明（俄文）——[proxybox-prompt.md](proxybox-prompt.md)。
 
@@ -47,12 +51,15 @@ Windows 10/11。工作区 crate 中的 Rust 内核，其上是一个服务，Tau
 隐私模式已开启 + 隧道未确认 = 所选应用没有网络。不存在带直连的中间状态，也没有任何
 绕行规则。架构中其余的一切都由此推出。
 
-范围有两种，在窗口顶栏管道的左端选择。**白名单**——只有所选应用有网络，并且只能经由
-隧道。**整台计算机**——完全不做筛选，连背后没有进程的流量也会进入隧道：服务、驱动、
-DNS。不变式是同一个，改变的只是它作用于谁。
+范围有两种，在窗口顶栏管道的左端选择（Windows），或用 `proxybox scope` 命令选择
+（Linux）。**白名单**——只有所选应用有网络，并且只能经由隧道；在 Linux 上这条界线
+还没有划出来，详见 [docs/limitations.md](docs/limitations.md)。**整台计算机**——
+完全不做筛选，连背后没有进程的流量也会进入隧道：服务、驱动、DNS。不变式是同一个，
+改变的只是它作用于谁。
 
-筛选并不住在隧道配置里，而住在 Windows 防火墙里，并且发生在 `connect` 时刻，早于任何
-TUN。两种范围下的 sing-box 配置逐字节相同，其中根本没有绕过隧道的路由——所以切换范围
+筛选并不住在隧道配置里，而住在更底下一层——Windows 上是防火墙，Linux 上是
+nftables——并且发生在 `connect` 时刻，早于任何 TUN。两种范围下的 sing-box 配置逐字节
+相同，其中根本没有绕过隧道的路由——所以切换范围
 和编辑应用列表都不会重启隧道：已打开的 SSH 会话可以安然度过。
 
 ```
@@ -69,6 +76,8 @@ SOCKS5 探测 ─────┤
 per-machine，六种语言：它把窗口、服务、CLI 和 sing-box 放进同一个目录，并以
 LocalSystem 身份注册自启动的 `proxybox` 服务。本产品没有自己的网络——隧道是你自己的
 服务器。
+
+Linux 上目前还没有现成的安装包：服务需要手动编译和安装。
 
 细节、更新以及与他人的 VPN 共存——[docs/install.md](docs/install.md)。
 
@@ -101,7 +110,7 @@ LocalSystem 身份注册自启动的 `proxybox` 服务。本产品没有自己�
 | --- | --- |
 | [第一步](docs/quickstart.md) | 从空窗口到可用的隧道，以及没成功时怎么办 |
 | [工作原理](docs/how-it-works.md) | 隧道、sing-box 配置、防火墙、DNS，以及完整的原则 |
-| [在 Windows 上安装](docs/install.md) | 安装程序、更新、服务记住了什么、旁边有别的 VPN |
+| [安装](docs/install.md) | Windows 上的安装程序与更新、Linux 上的手动安装服务、服务记住了什么、旁边有别的 VPN |
 | [配置、订阅与测速](docs/profiles.md) | 导入链接与订阅、Clash YAML、测量节点 |
 | [浏览器配置](docs/browser-profiles.md) | 独立的浏览器会话，以及网站能看到它们的什么 |
 | [窗口](docs/interface.md) | 连接、语言、托盘与浮窗、设置 |
@@ -116,9 +125,11 @@ LocalSystem 身份注册自启动的 `proxybox` 服务。本产品没有自己�
 
 ## 参与贡献
 
-本项目在 Linux 上构建，却只在 Windows 上运行。因此眼下最有用的是两件事：在真实机器上
-装好之后究竟发生了什么的报告，以及校读译文——除英文外，没有任何一种语言经过母语者过目。
-其余见 [CONTRIBUTING.md](CONTRIBUTING.md)。隐私或权限方面的漏洞请勿写成公开 issue：
+Windows 是完整的产品：窗口、服务、安装程序一应俱全。Linux 上目前只有服务和命令
+行，没有窗口，没有安装包，也没有真正的白名单（见
+[docs/limitations.md](docs/limitations.md)）。眼下最有用的是两件事：不论哪个
+平台，在真实机器上装好之后究竟发生了什么的报告，以及校读译文——除英文外，没有
+任何一种语言经过母语者过目。其余见 [CONTRIBUTING.md](CONTRIBUTING.md)。隐私或权限方面的漏洞请勿写成公开 issue：
 见 [SECURITY.md](SECURITY.md)。
 
 ## 许可证

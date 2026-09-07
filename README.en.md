@@ -14,6 +14,7 @@
   <a href="https://github.com/Gerrux/proxybox/actions/workflows/ci.yml"><img alt="" src="https://img.shields.io/github/actions/workflow/status/Gerrux/proxybox/ci.yml?branch=master&style=flat-square&labelColor=14161A&label=ci"></a>
   <a href="LICENSE"><img alt="" src="https://img.shields.io/github/license/Gerrux/proxybox?style=flat-square&labelColor=14161A&color=1E9E5A"></a>
   <img alt="" src="https://img.shields.io/badge/Windows-10%20%7C%2011-14161A?style=flat-square">
+  <img alt="" src="https://img.shields.io/badge/Linux-headless-14161A?style=flat-square">
   <img alt="" src="https://img.shields.io/badge/i18n-ru%20en%20fa%20zh%20tr%20id-14161A?style=flat-square">
 </p>
 
@@ -21,9 +22,12 @@
 network only through your tunnel; no tunnel, no network. Traffic from every
 other application is left alone entirely.
 
-Windows 10/11. A Rust core in workspace crates, a service on top of it, a Tauri
-2.x desktop shell, and a Vite + React + TS + Tailwind frontend. The interface,
-the service and the installer all speak six languages.
+A Rust core in workspace crates, a service on top of it. On Windows 10/11 that
+also comes with a Tauri 2.x desktop shell and a Vite + React + TS + Tailwind
+frontend — the interface, the service and the installer all speak six
+languages. On Linux there is, for now, only the service and the console
+(`proxybox`): no window, no package and no real whitelist yet — details in
+[docs/install.md](docs/install.md) and [docs/limitations.md](docs/limitations.md).
 
 The original spec (Russian) — [proxybox-prompt.md](proxybox-prompt.md).
 
@@ -57,15 +61,18 @@ network. Intermediate states with direct access do not exist, and there are no
 bypass rules. Everything else in the architecture follows from this.
 
 There are two scopes, chosen on the window header at the left end of the
-conduit. **Whitelist** — only the selected applications have network, and only
-through the tunnel. **Whole machine** — no selection at all: traffic with no
-process behind it goes into the tunnel too, service, driver, DNS. The invariant
-is the same, only who it applies to changes.
+conduit (Windows), or with the `proxybox scope` command (Linux). **Whitelist**
+— only the selected applications have network, and only through the tunnel;
+on Linux that line has not been drawn yet, see
+[docs/limitations.md](docs/limitations.md). **Whole machine** — no selection
+at all: traffic with no process behind it goes into the tunnel too, service,
+driver, DNS. The invariant is the same, only who it applies to changes.
 
-The selection does not live in the tunnel config but in the Windows firewall,
-and it happens on `connect`, before any TUN. The sing-box config is byte for
-byte the same in both scopes, and there is no route past the tunnel in it at
-all — which is why switching scope and editing the application list do not
+The selection does not live in the tunnel config but one layer below it — the
+firewall on Windows, nftables on Linux — and it happens on `connect`, before
+any TUN. The sing-box config is byte for byte the same in both scopes, and
+there is no route past the tunnel in it at all — which is why switching scope
+and editing the application list do not
 restart the tunnel: an open SSH session survives them.
 
 ```
@@ -83,6 +90,8 @@ NSIS, per-machine, six languages: it puts the window, the service, the CLI and
 sing-box into one folder and registers the `proxybox` service under LocalSystem
 with autostart. The product has no network of its own — the tunnel is your own
 server.
+
+On Linux there is no ready package yet: the service is built and installed by hand.
 
 Details, updates and living next to somebody else's VPN — [docs/install.md](docs/install.md).
 
@@ -121,7 +130,7 @@ without them; `run.bat` warns about this when started without them.
 | --- | --- |
 | [First steps](docs/quickstart.md) | from an empty window to a working tunnel, and what to do when it did not work |
 | [How it works](docs/how-it-works.md) | the tunnel, the sing-box config, the firewall, DNS, the principles in full |
-| [Installing on Windows](docs/install.md) | the installer, updates, what the service remembers, a foreign VPN nearby |
+| [Installing](docs/install.md) | the Windows installer and updates, manual service setup on Linux, what the service remembers, a foreign VPN nearby |
 | [Profiles, subscriptions and testing](docs/profiles.md) | importing links and subscriptions, Clash YAML, measuring nodes |
 | [Browser profiles](docs/browser-profiles.md) | separate browser sessions and what a site sees of them |
 | [The window](docs/interface.md) | connections, language, tray and the panel, settings |
@@ -138,12 +147,14 @@ Building and releasing the installer — [src-tauri/BUILD-WINDOWS.md](src-tauri/
 
 ## Contributing
 
-The project is built on Linux and runs only on Windows, so the two most useful
-things right now are a report of what actually happened on a real machine, and a
-proof-read of the translations — no native speaker has read any of them except
-the English one. The rest is in [CONTRIBUTING.md](CONTRIBUTING.md). A privacy or
-privilege hole does not go into a public issue: see
-[SECURITY.md](SECURITY.md).
+Windows is the full product: window, service, installer. On Linux there is, for
+now, only the service and the console, with no window, no package and no real
+whitelist ([docs/limitations.md](docs/limitations.md)). The two most useful
+things right now are a report of what actually happened on a real machine, on
+either platform, and a proof-read of the translations — no native speaker has
+read any of them except the English one. The rest is in
+[CONTRIBUTING.md](CONTRIBUTING.md). A privacy or privilege hole does not go
+into a public issue: see [SECURITY.md](SECURITY.md).
 
 ## Licence
 
