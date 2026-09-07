@@ -1,7 +1,8 @@
-# Выпуск: тег vX.Y.Z — установщик NSIS в релизе GitHub.
+# Выпуск: тег vX.Y.Z — установщики в релизе GitHub, по одному на платформу.
 #
-# Сборка идёт тем же installer/build.ps1, что и руками: иначе в CI собиралось бы
-# не то, что у себя на машине, и расходились бы они молча.
+# Сборка идёт теми же installer/build.ps1 и installer/build.sh, что и руками:
+# иначе в CI собиралось бы не то, что у себя на машине, и расходились бы они
+# молча.
 name: release
 
 on:
@@ -57,3 +58,177 @@ jobs:
           $exe = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
           if (-not $exe) { throw "установщик не собрался" }
           gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --generate-notes $exe.FullName
+
+  # Релиз создаёт windows-job (gh release create); этот только догружает .deb
+  # в уже существующий релиз, поэтому ждёт его, а не бежит рядом.
+  linux:
+    needs: windows
+    # Приколото к конкретному LTS, а не ubuntu-latest: бинарники в .deb
+    # линкуются с glibc того образа, на котором собирает раннер, а порог
+    # `libc6 (>= 2.39)` в tauri.conf.json написан руками и сам не сдвинется.
+    # Переедь ubuntu-latest на следующий LTS без этой строки — сборка молча
+    # потребует более новый glibc, а объявленный порог соврёт, и apt поставит
+    # пакет, который не запускается. Докер-проверка ниже и так была
+    # ubuntu:24.04 — здесь та же версия для той половины, что собирает
+    # бинарники, а не только для той, что их потом ставит.
+    runs-on: ubuntu-24.04
+    # Сборка tauri (минуты) плюс докер-проверка пакета ниже (тянет образ,
+    # ставит зависимости apt дважды) — без потолка зависший шаг съел бы
+    # дефолтные 360 минут раннера, как и в job linux у ci.yml.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Тот же смысл, что и в windows-job, тем же способом: версия
+      # tauri.conf.json обязана совпадать с тегом, иначе окно на этой
+      # платформе тоже будет считать себя устаревшим сразу после установки.
+      - name: тег совпадает с версией
+        run: |
+          conf=$(jq -r .version src-tauri/tauri.conf.json)
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$conf" != "$tag" ]; then
+            echo "tauri.conf.json = $conf, а тег = $tag" >&2
+            exit 1
+          fi
+
+      # libwebkit2gtk и gtk — то же, что и в ci.yml, для сборки окна.
+      # libayatana-appindicator3-dev — трей: без него значка в трее нет, но
+      # это ещё и требование сборки, а не только рантайма — cargo-tauri сам
+      # прибавляет рантайм-зависимость в .deb, зная про неё через pkg-config,
+      # и без установленного .pc файла падает с паникой ещё на этапе `cargo
+      # tauri build`, до всякого запуска. xvfb и dbus-x11 нужны ниже, для
+      # дымового запуска собранного окна без настоящего дисплея.
+      - run: sudo apt-get update -qq && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev pkg-config xvfb dbus-x11
+
+      # Тот же сторож запуска конфига, что и в ci.yml (validate, linux):
+      # версия закреплена в get-singbox.ps1, и CI обязан собирать на той же,
+      # что и установщик, иначе он зеленеет на версии, которой ни у кого нет.
+      # Скачанное здесь же переиспользует installer/sidecars.sh — он видит
+      # готовый бинарник в src-tauri/binaries и не тянет его второй раз.
+      - name: sing-box для тестов и сборки
+        run: |
+          VER=$(grep -oP '\$Version = "\K[^"]+' installer/get-singbox.ps1)
+          curl -sL "https://github.com/SagerNet/sing-box/releases/download/v$VER/sing-box-$VER-linux-amd64.tar.gz" | tar xz
+          mkdir -p src-tauri/binaries
+          install "sing-box-$VER-linux-amd64/sing-box" src-tauri/binaries/sing-box
+          cp "sing-box-$VER-linux-amd64/LICENSE" src-tauri/binaries/LICENSE-sing-box.txt
+          echo "PG_SINGBOX=$PWD/src-tauri/binaries/sing-box" >> "$GITHUB_ENV"
+
+      - run: cargo test --workspace
+
+      # pnpm берётся из packageManager в package.json, отдельный action не нужен.
+      - run: corepack enable
+
+      - run: cargo install tauri-cli --version "^2" --locked
+
+      # build.sh собирает --bundles deb явно: bundle.targets в
+      # tauri.conf.json общий с Windows ("nsis", "deb"), и хотя
+      # tauri-bundler сам отфильтрует nsis по текущей платформе, список
+      # целей — не то же самое, что «что мы на самом деле здесь собираем».
+      - run: bash installer/build.sh
+
+      # Окно на Linux до сих пор не запускали ни разу — отдать .deb, не
+      # проверив, что оно вообще открывается, значит выложить непроверенное.
+      # Без настоящего дисплея и сессии D-Bus webkitgtk и трей не встают —
+      # xvfb-run и dbus-run-session дают им то, чего они ждут, а не что-то
+      # взамен. `timeout` живого процесса убивает его сам и возвращает 124 —
+      # это и есть «прожил отведённое», любой другой код значит, что окно
+      # упало раньше времени.
+      - name: дымовой запуск окна
+        env:
+          # Без GPU под Xvfb композитор WebKit временами падает ещё на
+          # старте — это известная особенность headless-CI, а не что-то
+          # специфичное для нас. Отключаем заранее, а не по факту первого
+          # красного прогона.
+          WEBKIT_DISABLE_COMPOSITING_MODE: "1"
+          WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+        run: |
+          set +e
+          dbus-run-session -- xvfb-run -a timeout 20 src-tauri/target/release/pg-desktop
+          code=$?
+          set -e
+          if [ "$code" -ne 124 ]; then
+            echo "окно завершилось само, код $code — упало, а не прожило отведённое время" >&2
+            exit 1
+          fi
+          echo "окно продержалось отведённые 20 секунд"
+
+      # Ревью упаковки нашло конфликт путей с официальным sing-box (C1) и
+      # хрупкую проверку systemd в postinst (I1) — оба разбором конфигов, а
+      # не живой установкой. Эта проверка — то же самое на настоящем apt:
+      # четыре строки, которые и стоило написать сразу. Ubuntu 24.04, а не
+      # Debian 12: там glibc старее объявленной зависимости (libc6 >= 2.39),
+      # и апт отказал бы по совершенно правильной причине — тест на такой
+      # базе был бы красным всегда, не поймав ничего нового.
+      #
+      # Докер в контейнере не поднимает systemd (не PID 1), и
+      # /run/systemd/system там не существует — ветки postinst/prerm/postrm
+      # со `systemctl` под этой проверкой не выполняются вовсе. Это ожидаемо:
+      # тест покрывает состав файлов, группу, главный конфликт (C1) и то, что
+      # хотя бы один бинарник действительно запускается (а не только лежит
+      # файлом — этого не проверяла ни одна строка до сих пор), а не
+      # поведение systemd (I1/I4) — им бы понадобился настоящий init.
+      - name: проверка пакета в Ubuntu 24.04
+        run: |
+          deb=$(ls src-tauri/target/release/bundle/deb/*.deb 2>/dev/null)
+          if [ -z "$deb" ]; then
+            echo "пакет не собрался" >&2
+            exit 1
+          fi
+
+          VER=$(grep -oP '\$Version = "\K[^"]+' installer/get-singbox.ps1)
+          mkdir -p /tmp/pkgs
+          cp "$deb" /tmp/pkgs/proxybox.deb
+          # Официальный .deb SagerNet — прямая проверка C1: если наш пакет
+          # конфликтует с ним за /usr/bin/sing-box, apt откажет ставить наш
+          # поверх, и именно это должно НЕ случиться.
+          curl -sL -o /tmp/pkgs/sing-box.deb \
+            "https://github.com/SagerNet/sing-box/releases/download/v$VER/sing-box_${VER}_linux_amd64.deb"
+
+          docker run --rm -v /tmp/pkgs:/pkg:ro ubuntu:24.04 bash -euxc '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+
+            # sing-box ставится первым и владеет /usr/bin/sing-box — если
+            # наш пакет туда же лезет, следующая строка и провалится с
+            # "trying to overwrite".
+            apt-get install -y /pkg/sing-box.deb
+            apt-get install -y /pkg/proxybox.deb
+
+            getent group proxybox >/dev/null
+
+            for f in /usr/bin/pg-desktop /usr/bin/pg-service /usr/bin/proxybox \
+                     /usr/lib/proxybox/sing-box /usr/lib/systemd/system/proxybox.service; do
+              test -e "$f" || { echo "нет файла: $f" >&2; exit 1; }
+            done
+
+            # Существование файла не значит, что он запускается: этот образ
+            # приколот отдельно от runs-on, и без пуска настоящего бинарника
+            # разъезд glibc между ними остался бы незамеченным — `apt`
+            # поставил бы пакет, который тут же падает на отсутствующей
+            # символьной версии libc. --help не трогает ни службу, ни сеть,
+            # печатает справку и выходит нулём.
+            /usr/bin/proxybox --help >/dev/null
+
+            # Три пути maintainer-скриптов, которые дальше пользователь
+            # видит поодиночке, а не только на первой установке.
+            apt-get remove -y proxybox
+            apt-get purge -y proxybox
+            apt-get install -y /pkg/proxybox.deb
+            getent group proxybox >/dev/null
+          '
+
+      - name: догрузить .deb в релиз
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          deb=$(ls src-tauri/target/release/bundle/deb/*.deb 2>/dev/null)
+          if [ -z "$deb" ]; then
+            echo "пакет не собрался" >&2
+            exit 1
+          fi
+          # --clobber: повторный прогон после частичной выгрузки (сеть
+          # оборвалась после первого gh release upload) иначе упирается в
+          # "asset already exists", и релиз без правки руками не починить.
+          gh release upload "${{ github.ref_name }}" "$deb" --clobber

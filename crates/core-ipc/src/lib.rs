@@ -1911,4 +1911,149 @@ mod tests {
         let driver = include_str!("../../core-wfp/Cargo.toml");
         assert!(driver.contains("\n[workspace]"), "драйверу нужен свой корень воркспейса, как у src-tauri");
     }
+
+    /// Собрать `.deb` здесь нечем (нет webkit и root), поэтому то, что иначе
+    /// проверил бы сам пакет при установке, сверяется текстом — тем же
+    /// приёмом, что и `the_installer_speaks_the_same_languages` для NSIS.
+    #[test]
+    fn the_deb_package_agrees_with_the_code_it_ships() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../../../src-tauri/tauri.conf.json")).expect("tauri.conf.json");
+
+        // mainBinaryName в конфиге нет намеренно: главный бинарник называется
+        // pg-desktop (по [package].name в src-tauri/Cargo.toml), а имя
+        // "proxybox" уже занято сайдкаром pg-cli (bundle.externalBin ниже).
+        // Поставь кто-нибудь "mainBinaryName": "proxybox" — и сайдкары,
+        // копируемые вторыми (debian.rs: главный бинарник первым, сайдкары
+        // после), перезапишут собой окно: /usr/bin/proxybox станет консолью,
+        // а .desktop (Exec=proxybox) будет звать её же.
+        //
+        // Поле верхнего уровня, а не bundle.*: по схеме
+        // schema.tauri.app/config/2 mainBinaryName стоит рядом с
+        // productName и identifier, в BundleConfig его нет вовсе. Проверка
+        // по `conf["bundle"].get(...)` не находила бы его никогда — она
+        // читает пустой объект по ключу, которого там в принципе не бывает,
+        // и была зелёной при любом содержимом файла.
+        assert!(
+            conf.get("mainBinaryName").is_none(),
+            "mainBinaryName отнял бы имя \"proxybox\" у сайдкара pg-cli и подменил бы окно консолью"
+        );
+
+        // ExecStart юнита обязан звать тот же файл, что кладёт в /usr/bin
+        // externalBin: tauri-bundler кладёт туда все бинарники безусловно
+        // (bin_dir = data_dir/"usr/bin" в debian.rs), беря имя из этого же
+        // списка, — переименуй кто-нибудь бинарник pg-service, юнит продолжит
+        // звать старое имя молча, и служба не запустится вовсе.
+        let external_bin = conf["bundle"]["externalBin"].as_array().expect("bundle.externalBin");
+        let pg_service = external_bin
+            .iter()
+            .filter_map(|v| v.as_str())
+            .find(|p| p.ends_with("pg-service"))
+            .expect("externalBin содержит pg-service")
+            .rsplit('/')
+            .next()
+            .unwrap();
+        let service = include_str!("../../../installer/proxybox.service");
+        let exec_start = service
+            .lines()
+            .find(|l| l.starts_with("ExecStart="))
+            .expect("ExecStart в proxybox.service")
+            .trim_start_matches("ExecStart=");
+        assert_eq!(
+            exec_start,
+            format!("/usr/bin/{pg_service}"),
+            "ExecStart разошёлся с именем pg-service из bundle.externalBin"
+        );
+
+        // Имя группы называют трое: код сокета, postinst (заводит и впускает
+        // человека) и postrm/prerm (её не трогают). Разойдись оно с
+        // unix_socket::GROUP — постановка заведёт группу, которую сокет не
+        // слушает, и окно от обычного пользователя до службы не достучится
+        // никогда, при этом молча.
+        let unix_socket = include_str!("unix_socket.rs");
+        let group = unix_socket
+            .lines()
+            .find(|l| l.trim_start().starts_with("const GROUP"))
+            .and_then(|l| l.split('"').nth(1))
+            .expect("const GROUP в unix_socket.rs");
+        let postinst = include_str!("../../../installer/postinst");
+        assert!(
+            postinst.contains(&format!("groupadd -r {group}")),
+            "postinst заводит не ту группу, что unix_socket::GROUP"
+        );
+        assert!(
+            postinst.contains(&format!("usermod -aG {group} ")),
+            "postinst впускает человека не в ту группу, что unix_socket::GROUP"
+        );
+
+        // Место sing-box называют дважды — build.sh кладёт его файлом в
+        // deb.files, core_tunnel::binary() ищет его тем же путём последним
+        // запасным шагом (после PG_SINGBOX, настройки и поиска рядом с
+        // pg-service) — и это не одна переменная в юните, а совпадение двух
+        // строк в разных языках (bash и Rust). В юните эта переменная больше
+        // не нужна и не стоит: она перебивала настройку из окна на каждом
+        // старте службы («настройки перебиты окружением: PG_SINGBOX») и не
+        // была видна `proxybox doctor`, запущенному руками.
+        let build_sh = include_str!("../../../installer/build.sh");
+        let sb_path = "/usr/lib/proxybox/sing-box";
+        let core_tunnel = include_str!("../../core-tunnel/src/lib.rs");
+        assert!(
+            core_tunnel.contains(&format!("\"{sb_path}\"")),
+            "core_tunnel::binary() не знает запасной путь {sb_path}"
+        );
+        assert!(
+            !service.contains("Environment=PG_SINGBOX"),
+            "proxybox.service не должен задавать PG_SINGBOX: путь ищет сам core_tunnel::binary(), \
+             а переменная в юните перебивала бы настройку из окна на каждом старте"
+        );
+
+        // Подстрока выше проверяет форму, а не смысл: ей удовлетворил бы и
+        // комментарий со словом sing-box. DEB_CONFIG — это json-merge-patch
+        // поверх tauri.conf.json (installer/build.sh), и разбираем его как
+        // JSON, чтобы потребовать главного — sing-box обязан пропасть из
+        // externalBin (иначе он снова уедет в /usr/bin рядом с официальным
+        // пакетом SagerNet, ровно то, что чинил C1 прошлой волны) и
+        // появиться файлом в deb.files по адресу sb_path.
+        let line = build_sh
+            .lines()
+            .find(|l| l.trim_start().starts_with("DEB_CONFIG="))
+            .expect("DEB_CONFIG= в build.sh");
+        let json_literal = line
+            .trim_start()
+            .strip_prefix("DEB_CONFIG=\"")
+            .and_then(|s| s.strip_suffix('"'))
+            .expect("DEB_CONFIG=\"...\" одной строкой")
+            .replace("\\\"", "\"")
+            // $TRIPLE — подстановка bash, а не JSON; для разбора годится
+            // любое непустое значение, реальное значение не проверяем.
+            .replace("$TRIPLE", "x86_64-unknown-linux-gnu");
+        let deb_config: serde_json::Value =
+            serde_json::from_str(&json_literal).expect("DEB_CONFIG обязан быть валидным JSON");
+        let overridden_bin = deb_config["bundle"]["externalBin"]
+            .as_array()
+            .expect("DEB_CONFIG.bundle.externalBin");
+        assert!(
+            !overridden_bin.iter().filter_map(|v| v.as_str()).any(|p| p.ends_with("sing-box")),
+            "DEB_CONFIG обязан убрать sing-box из externalBin — иначе он снова уедет в /usr/bin \
+             рядом с официальным пакетом SagerNet"
+        );
+        let deb_files = deb_config["bundle"]["linux"]["deb"]["files"]
+            .as_object()
+            .expect("DEB_CONFIG.bundle.linux.deb.files");
+        assert!(deb_files.contains_key(sb_path), "DEB_CONFIG обязан класть sing-box файлом в {sb_path}");
+
+        // preRemoveScript — единственная строка, которая держит C2 прошлой
+        // волны (apt remove не может оставить машину без исходящей сети):
+        // без неё dpkg не зовёт installer/prerm, замок не снимается через
+        // SIGTERM, и удаление пакета обрывает сеть у всей машины молча.
+        // include_str! ниже заодно проверяет, что файл вообще существует —
+        // строка, указывающая в никуда, не собралась бы.
+        let deb = &conf["bundle"]["linux"]["deb"];
+        assert_eq!(
+            deb.get("preRemoveScript").and_then(|v| v.as_str()),
+            Some("../installer/prerm"),
+            "preRemoveScript обязан звать installer/prerm — без него apt remove не снимает замок"
+        );
+        let _ = include_str!("../../../installer/prerm");
+    }
 }
