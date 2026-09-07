@@ -1924,10 +1924,18 @@ mod tests {
         // pg-desktop (по [package].name в src-tauri/Cargo.toml), а имя
         // "proxybox" уже занято сайдкаром pg-cli (bundle.externalBin ниже).
         // Поставь кто-нибудь "mainBinaryName": "proxybox" — и сайдкары,
-        // копируемые вторыми, перезапишут собой окно: /usr/bin/proxybox
-        // станет консолью, а .desktop (Exec=proxybox) будет звать её же.
+        // копируемые вторыми (debian.rs: главный бинарник первым, сайдкары
+        // после), перезапишут собой окно: /usr/bin/proxybox станет консолью,
+        // а .desktop (Exec=proxybox) будет звать её же.
+        //
+        // Поле верхнего уровня, а не bundle.*: по схеме
+        // schema.tauri.app/config/2 mainBinaryName стоит рядом с
+        // productName и identifier, в BundleConfig его нет вовсе. Проверка
+        // по `conf["bundle"].get(...)` не находила бы его никогда — она
+        // читает пустой объект по ключу, которого там в принципе не бывает,
+        // и была зелёной при любом содержимом файла.
         assert!(
-            conf["bundle"].get("mainBinaryName").is_none(),
+            conf.get("mainBinaryName").is_none(),
             "mainBinaryName отнял бы имя \"proxybox\" у сайдкара pg-cli и подменил бы окно консолью"
         );
 
@@ -1990,5 +1998,54 @@ mod tests {
             service.contains(&format!("PG_SINGBOX={sb_path}")),
             "proxybox.service не указывает PG_SINGBOX на {sb_path}"
         );
+
+        // Подстрока выше проверяет форму, а не смысл: ей удовлетворил бы и
+        // комментарий со словом sing-box. DEB_CONFIG — это json-merge-patch
+        // поверх tauri.conf.json (installer/build.sh), и разбираем его как
+        // JSON, чтобы потребовать главного — sing-box обязан пропасть из
+        // externalBin (иначе он снова уедет в /usr/bin рядом с официальным
+        // пакетом SagerNet, ровно то, что чинил C1 прошлой волны) и
+        // появиться файлом в deb.files по адресу sb_path.
+        let line = build_sh
+            .lines()
+            .find(|l| l.trim_start().starts_with("DEB_CONFIG="))
+            .expect("DEB_CONFIG= в build.sh");
+        let json_literal = line
+            .trim_start()
+            .strip_prefix("DEB_CONFIG=\"")
+            .and_then(|s| s.strip_suffix('"'))
+            .expect("DEB_CONFIG=\"...\" одной строкой")
+            .replace("\\\"", "\"")
+            // $TRIPLE — подстановка bash, а не JSON; для разбора годится
+            // любое непустое значение, реальное значение не проверяем.
+            .replace("$TRIPLE", "x86_64-unknown-linux-gnu");
+        let deb_config: serde_json::Value =
+            serde_json::from_str(&json_literal).expect("DEB_CONFIG обязан быть валидным JSON");
+        let overridden_bin = deb_config["bundle"]["externalBin"]
+            .as_array()
+            .expect("DEB_CONFIG.bundle.externalBin");
+        assert!(
+            !overridden_bin.iter().filter_map(|v| v.as_str()).any(|p| p.ends_with("sing-box")),
+            "DEB_CONFIG обязан убрать sing-box из externalBin — иначе он снова уедет в /usr/bin \
+             рядом с официальным пакетом SagerNet"
+        );
+        let deb_files = deb_config["bundle"]["linux"]["deb"]["files"]
+            .as_object()
+            .expect("DEB_CONFIG.bundle.linux.deb.files");
+        assert!(deb_files.contains_key(sb_path), "DEB_CONFIG обязан класть sing-box файлом в {sb_path}");
+
+        // preRemoveScript — единственная строка, которая держит C2 прошлой
+        // волны (apt remove не может оставить машину без исходящей сети):
+        // без неё dpkg не зовёт installer/prerm, замок не снимается через
+        // SIGTERM, и удаление пакета обрывает сеть у всей машины молча.
+        // include_str! ниже заодно проверяет, что файл вообще существует —
+        // строка, указывающая в никуда, не собралась бы.
+        let deb = &conf["bundle"]["linux"]["deb"];
+        assert_eq!(
+            deb.get("preRemoveScript").and_then(|v| v.as_str()),
+            Some("../installer/prerm"),
+            "preRemoveScript обязан звать installer/prerm — без него apt remove не снимает замок"
+        );
+        let _ = include_str!("../../../installer/prerm");
     }
 }
