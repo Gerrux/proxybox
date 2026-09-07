@@ -78,6 +78,7 @@
           "/usr/lib/systemd/system/proxybox.service": "../installer/proxybox.service"
         },
         "postInstallScript": "../installer/postinst",
+        "preRemoveScript": "../installer/prerm",
         "postRemoveScript": "../installer/postrm"
       }
     }
