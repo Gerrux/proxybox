@@ -17,6 +17,7 @@ import {
   Panel,
   SearchField,
   Segmented,
+  useNarrow,
 } from "./ui";
 
 /** Чем окажется набранное в поле импорта — по одному лишь префиксу и до
@@ -244,6 +245,9 @@ export function Profiles({
       if (!data.link) return onError?.(s.noLink);
       setQr(data.link);
     });
+  // В 380 px действия списка уходят под «⋯»: шапка плиты обязана остаться
+  // одной строкой, иначе её второй ряд съедает строку профиля.
+  const narrow = useNarrow();
   // Открытое меню — одно на панель: второе, оставшееся от прошлой строки,
   // делало бы вид, что относится к этой.
   const [menu, setMenu] = useState<{ at: [number, number]; items: MenuItem[] } | null>(null);
@@ -384,6 +388,76 @@ export function Profiles({
       onPick: () => void act({ cmd: "remove-subscription", arg: { url: sub.url } }),
     },
   ];
+  // Действия списка — одним набором на оба вида шапки. В широком окне они
+  // стоят кнопками, в плашке из трея уходят под «⋯»: четыре подписи в 380 px
+  // не вставали в строку и разворачивали шапку плиты во второй ряд, а это
+  // 40 px — почти строка профиля, ради которой плашку и открывают.
+  //
+  // Набором, а не двумя разметками: одно и то же действие, написанное дважды,
+  // разъезжается на первой же правке — и разъехалось бы молча.
+  const tools: (MenuItem & { pressed?: boolean })[] = [
+    // Включённый порядок по задержке снимается тем же пунктом, и он об этом
+    // говорит прямо: «сбросить» вместо «по задержке». Пока он об этом молчал,
+    // порядок выглядел свойством списка, а не включённым переключателем, — и
+    // вернуть свой человек не мог.
+    ...(measured
+      ? [
+          {
+            label: byLatency ? s.byLatencyOff : s.byLatency,
+            hint: s.byLatencyHint,
+            pressed: byLatency,
+            mark: byLatency,
+            onPick: () => setByLatency((v) => !v),
+          },
+        ]
+      : []),
+    ...(fastest && status?.profile !== fastest.name
+      ? [
+          {
+            label: s.fastest,
+            hint: s.fastestHint,
+            disabled: busy,
+            onPick: () => void act({ cmd: "on", arg: { profile: fastest.name } }),
+          },
+        ]
+      : []),
+    ...(subscriptions.length > 1
+      ? [
+          {
+            label: s.refreshAll,
+            hint: s.refreshAllHint,
+            disabled: busy,
+            // По одной, а не залпом: каждая — поход в сеть до двадцати секунд,
+            // и пять параллельных закачек под общим замком службы означали бы
+            // окно без статуса всё это время.
+            onPick: () =>
+              void (async () => {
+                for (const sub of subscriptions) {
+                  await act({ cmd: "add-profile", arg: { link: sub.url } });
+                }
+              })(),
+          },
+        ]
+      : []),
+    ...(profiles.length > 0
+      ? [
+          {
+            // Пока прогон идёт, пункт заперт: второй прогон добил бы sing-box
+            // первого — они делят каталог проверки. Счёт пройденного стоит на
+            // самой подписи: узел стоит секунд, и на сотне это минуты, за
+            // которые панель обязана отличаться от зависшей.
+            label: testing
+              ? s.testingProgress(testing.done, testing.total)
+              : busy
+                ? s.testing
+                : s.testProfiles,
+            hint: s.testProfilesHint,
+            disabled: busy,
+            onPick: () => void act({ cmd: "test-profiles", arg: { only: null } }),
+          },
+        ]
+      : []),
+  ];
   return (
     <Panel
       className={className}
@@ -403,63 +477,32 @@ export function Profiles({
       }
       action={
         <>
-          {measured && (
-            // Включённый порядок по задержке снимается той же кнопкой, и она
-            // об этом говорит прямо: «сбросить» вместо «по задержке». Пока она
-            // об этом молчала, порядок выглядел свойством списка, а не
-            // включённым переключателем, — и вернуть свой человек не мог.
-            <Button
-              variant="quiet"
-              aria-pressed={byLatency}
-              title={s.byLatencyHint}
-              onClick={() => setByLatency((v) => !v)}
-            >
-              {byLatency ? s.byLatencyOff : s.byLatency}
-            </Button>
-          )}
-          {fastest && status?.profile !== fastest.name && (
-            <Button
-              variant="quiet"
-              disabled={busy}
-              title={s.fastestHint}
-              onClick={() => void act({ cmd: "on", arg: { profile: fastest.name } })}
-            >
-              {s.fastest}
-            </Button>
-          )}
-          {subscriptions.length > 1 && (
-            <Button
-              variant="quiet"
-              disabled={busy}
-              title={s.refreshAllHint}
-              onClick={() => {
-                // По одной, а не залпом: каждая — поход в сеть до двадцати
-                // секунд, и пять параллельных закачек под общим замком службы
-                // означали бы окно без статуса всё это время.
-                void (async () => {
-                  for (const sub of subscriptions) {
-                    await act({ cmd: "add-profile", arg: { link: sub.url } });
-                  }
-                })();
-              }}
-            >
-              {s.refreshAll}
-            </Button>
-          )}
-          {profiles.length > 0 && (
-            // Пока прогон идёт, кнопка заперта: второй прогон добил бы sing-box
-            // первого — они делят каталог проверки. На ней же и бегунок: узел
-            // стоит секунд, и на сотне это минуты, за которые панель обязана
-            // отличаться от зависшей.
-            <Button
-              variant="quiet"
-              disabled={busy}
-              title={s.testProfilesHint}
-              onClick={() => void act({ cmd: "test-profiles", arg: { only: null } })}
-            >
-              {testing ? s.testingProgress(testing.done, testing.total) : busy ? s.testing : s.testProfiles}
-            </Button>
-          )}
+          {narrow
+            ? tools.length > 0 && (
+                <Button
+                  variant="quiet"
+                  aria-label={s.actions}
+                  aria-haspopup="menu"
+                  onClick={(e) => openMenu(e, tools)}
+                >
+                  ⋯
+                </Button>
+              )
+            : tools.map((t) => (
+                <Button
+                  key={t.label}
+                  variant="quiet"
+                  aria-pressed={t.pressed}
+                  disabled={t.disabled}
+                  title={t.hint}
+                  onClick={t.onPick}
+                >
+                  {t.label}
+                </Button>
+              ))}
+          {/* «+» остаётся кнопкой в любой ширине и не уезжает в меню: пустой
+              список заводят только им, и прятать единственную дверь под «⋯»
+              значило бы не показать её тому, кому она и нужна. */}
           <Button
             aria-haspopup="dialog"
             aria-label={s.importLink}
@@ -472,7 +515,10 @@ export function Profiles({
         </>
       }
     >
-      <div className="flex flex-col gap-3">
+      {/* Группы стоят вплотную: разводит их не пустота между ними, а полоса
+          заголовка (`.sub-head`). Пока разводила пустота, её приходилось
+          держать в 12 px — и три подписки стоили целой строки профиля. */}
+      <div className="flex flex-col gap-2">
         {adding && (
           <Modal title={s.importLink} onClose={() => setAdding(false)}>
             {/* Окно не закрывается на удачный импорт: ответом приезжает счёт
@@ -569,7 +615,7 @@ export function Profiles({
                       commit();
                     }}
                     onContextMenu={(e) => sub !== null && openMenu(e, subMenu(sub))}
-                    className={`engraved flex cursor-pointer list-none items-center gap-2 rounded-md px-2.5 py-1.5 text-muted hover:bg-surface-2 [&::-webkit-details-marker]:hidden ${
+                    className={`sub-head engraved flex cursor-pointer list-none items-center gap-2 px-2.5 py-1 text-muted [&::-webkit-details-marker]:hidden ${
                       dragged === sub?.url ? "opacity-40" : ""
                     }`}
                   >
@@ -577,7 +623,7 @@ export function Profiles({
                         обязан замирать при prefers-reduced-motion. */}
                     <span className="shrink-0 text-[9px] motion-safe:transition group-open/sub:rotate-90">▶</span>
                     {sub === null ? (
-                      <span className="min-w-0 flex-1 truncate">{s.ownProfiles}</span>
+                      <span className="min-w-0 flex-1 truncate text-ink">{s.ownProfiles}</span>
                     ) : renaming === sub.url ? (
                       // Поле стоит на месте подписи и по любому клику внутри
                       // себя не сворачивает группу: <summary> переключает
@@ -614,7 +660,7 @@ export function Profiles({
                       // адреса; полный адрес остаётся по наведению в обоих
                       // случаях.
                       <span
-                        className={`selectable min-w-0 flex-1 truncate ${
+                        className={`selectable min-w-0 flex-1 truncate text-ink ${
                           sub.name ? "" : "font-mono text-[11px] font-normal normal-case tracking-normal"
                         }`}
                         title={sub.url}

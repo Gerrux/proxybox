@@ -23,7 +23,7 @@ import { Settings, useReleases, useTheme } from "./Settings";
 import { StatusBar, tunnelState } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
 import { Welcome } from "./Welcome";
-import { Button, Icon, type IconName } from "./ui";
+import { Button, Icon, type IconName, useNarrow } from "./ui";
 
 /** Что делать с крестиком, если человек попросил больше не спрашивать. Живёт в
  *  localStorage окна, а не в настройках службы: это привычка к окну, а не
@@ -228,7 +228,7 @@ export function App() {
           Страница не прокручивается никогда: высоту делят шапка и ровно одна
           панель, и прокрутка живёт внутри неё. Это и есть цена, ради которой
           панели разошлись по вкладкам. */}
-      <div className="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col gap-2.5 overflow-hidden p-3 xl:max-w-[1600px]">
+      <div className="shell mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col gap-2.5 overflow-hidden p-3 xl:max-w-[1600px]">
         <StatusBar
           status={status}
           busy={busy > 0}
@@ -388,10 +388,13 @@ function CloseDialog({
 /** Кнопка таба: подпись и счётчик строк за ней. Счётчик — не украшение: он
  *  единственное, что говорит о закрытой панели хоть что-то.
  *
- *  В плашке из трея подписи нет: 380 px на пять табов — это «Соединения»,
- *  обрезанные до «Сое…», то есть подпись, которая уже ничего не подписывает.
- *  Значок в ту же ширину помещается целиком, а имя таба остаётся в
- *  `aria-label` и всплывающей подсказке. */
+ *  Значок стоит всегда, подпись — пока для неё есть ширина. Ниже 470 px её
+ *  нет: 380 px на пять табов — это «Соединения», обрезанные до «Сое…», то есть
+ *  подпись, которая уже ничего не подписывает. Значок в ту же ширину помещается
+ *  целиком, а имя таба остаётся в `aria-label` и всплывающей подсказке.
+ *
+ *  Шире значок не лишний, а второй способ различить вкладку: пять надписей в
+ *  разрядку читаются по буквам, а полосу пробегают боковым зрением. */
 function TabButton({
   label,
   icon,
@@ -407,7 +410,12 @@ function TabButton({
   onClick: () => void;
   className?: string;
 }) {
-  const bare = isFlyout();
+  // Подпись уходит по ширине, а не по тому, чьё это окно. Раньше спрашивали
+  // `isFlyout()` — и главное окно, ужатое до тех же 380 px, показывало «ПР…»,
+  // «Ж…», «БРА…»: подписи, которые уже ничего не подписывают, и при этом без
+  // значка, по которому вкладку можно было бы узнать. Теснота у обоих окон
+  // одна, и порог у неё один.
+  const bare = useNarrow();
   return (
     <button
       type="button"
@@ -415,13 +423,17 @@ function TabButton({
       aria-label={bare ? label : undefined}
       title={bare ? label : undefined}
       onClick={onClick}
-      className={`smooth inline-flex min-w-0 flex-1 justify-center gap-1.5 rounded-[3px] px-1.5 py-1.5 ${
-        bare ? "items-center" : "items-baseline"
-      } ${
+      className={`smooth inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-[3px] px-1.5 py-1.5 ${
         active ? "bg-surface text-ink" : "text-muted hover:text-ink"
       } ${className}`}
     >
-      {bare ? <Icon name={icon} /> : <span className="engraved truncate">{label}</span>}
+      {/* Значок стоит и там, где есть подпись. Пять надписей в разрядку
+          («ПРОФИЛИ», «ПРИЛОЖЕНИЯ», «ЖУРНАЛ», «БРАУЗЕРЫ», «СОЕДИНЕНИЯ») читаются
+          только по буквам, а различать вкладки надо боковым зрением: рисунок
+          отличается от рисунка в тот же взгляд, которым полосу пробегают. Тон
+          у него приглушённый — подпись остаётся главной, значок её метит. */}
+      <Icon name={icon} className={active ? "" : "opacity-70"} />
+      {!bare && <span className="engraved truncate">{label}</span>}
       {count != null && <span className="shrink-0 text-[11px] text-muted">{count}</span>}
     </button>
   );
