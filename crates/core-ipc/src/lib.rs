@@ -509,6 +509,23 @@ pub enum Request {
     /// бинарнику действует со следующего запуска, проба и страна со следующего
     /// измерения, сверка подписок со следующего круга.
     SetSettings { settings: Settings },
+    /// Лёгкий статус: только то, что меняется само по себе — состояние
+    /// туннеля, счётчики, отсчёт до попытки, бегунок прогона — и отпечаток
+    /// всего остального (`Pulse::cold`). Полный `Status` везёт каждые две
+    /// секунды весь список профилей, подписок, приложений и журнал: на
+    /// подписке в сотни узлов это сотня килобайт JSON и полная перерисовка
+    /// окна на каждый опрос — ради чисел, которые в нём же и сменились.
+    /// Окно спрашивает пульс, а за полным статусом идёт, только когда
+    /// отпечаток сменился.
+    Pulse,
+    /// Что вышло бы из импорта этой вставки, не заводя ничего: сколько узлов
+    /// нашлось, сколько уже есть, сколько ушло бы у подписки. Ответ — тот же
+    /// `Imported`, что и у настоящего импорта, только ничего не сбылось.
+    /// Подписка при этом качается целиком — иначе пересчитать нечего, — и
+    /// на согласие качается второй раз: держать скачанное в службе ради
+    /// «а вдруг нажмут» значило бы завести состояние, которое живёт между
+    /// двумя командами и умирает непонятно когда.
+    Preview { link: String },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -545,6 +562,15 @@ pub struct Probe {
     #[serde(default)]
     pub code: Option<String>,
     pub error: Option<String>,
+    /// Причина отказа в два слова — «таймаут», «отказ TLS», «соединение
+    /// отклонено» — ровно того размера, что помещается в строку списка рядом
+    /// с именем. Полная строка остаётся в `error` и живёт подсказкой: она
+    /// длиной с журнал и на нужном языке, но в строке от неё видно только
+    /// «не отв…». Считает её служба из своего же текста отказа и из хвоста
+    /// журнала проверочного sing-box (`brief_reason`). None — узел ответил
+    /// или измерение из прошлых версий.
+    #[serde(default)]
+    pub brief: Option<String>,
     /// Когда измерено, unix-время в секундах. 0 — неизвестно: так выглядят
     /// записи из состояния, сохранённого прошлыми версиями.
     #[serde(default)]
@@ -669,6 +695,16 @@ pub struct Settings {
     /// Спрашивать точку выхода у внешнего сервиса. Единственный запрос службы
     /// наружу, и потому он выключаемый. `PG_GEO=0` — то же самое.
     pub geo: bool,
+    /// Переходить на другой узел, когда выбранный перестал отвечать пробе.
+    /// Выключено по умолчанию, и это не осторожность ради осторожности: узел
+    /// человек выбирает сам, и продукт, молча уводящий трафик на соседний
+    /// сервер, — это выход в другой стране без единого слова. Кто включил,
+    /// тот согласился: ему важнее сеть, чем конкретный узел. Переключает одна
+    /// ветка `supervise`, и только после `PROBE_MISSES` промахов подряд —
+    /// тех же, после которых запирается брандмауэр. Переменной окружения у
+    /// поля нет: это выбор человека, а не диагностика.
+    #[serde(default)]
+    pub failover: bool,
 }
 
 /// Умолчание срока сверки. Функцией, а не константой: `serde(default = …)`
@@ -683,7 +719,7 @@ fn six_hours() -> u32 {
 /// страна спрашивается.
 impl Default for Settings {
     fn default() -> Self {
-        Self { refresh: true, refresh_hours: six_hours(), probe: String::new(), singbox: String::new(), geo: true }
+        Self { refresh: true, refresh_hours: six_hours(), probe: String::new(), singbox: String::new(), geo: true, failover: false }
     }
 }
 
@@ -776,6 +812,81 @@ pub struct TestRun {
     pub total: usize,
 }
 
+/// Горячая часть статуса — то, что двигается само, без команды человека, —
+/// и отпечаток холодной. Поля те же, что у `Status`, и с теми же смыслами:
+/// пульс не второй статус, а его вырезка.
+///
+/// `cold` — хеш всего остального в `Status` (профили, подписки, приложения,
+/// журнал, измерения, настройки, язык, охват). Считается сериализацией, а не
+/// счётчиком поколений: счётчик пришлось бы двигать в каждом месте, где
+/// статус меняется, и одно забытое место означало бы окно, которое не видит
+/// новую строку журнала, пока не сменится что-то ещё.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Pulse {
+    pub tunnel: Tunnel,
+    pub profile: Option<String>,
+    pub latency_ms: Option<u32>,
+    pub country: Option<String>,
+    pub rx: u64,
+    pub tx: u64,
+    pub traffic_at: u64,
+    pub retry_in: Option<u32>,
+    pub testing: Option<TestRun>,
+    pub cold: u64,
+}
+
+impl Pulse {
+    /// Вырезка из статуса. `cold` считается здесь же, чтобы у отпечатка было
+    /// ровно одно определение: окно сравнивает два пульса между собой, и
+    /// разойтись им не с чем.
+    pub fn of(status: &Status) -> Self {
+        Self {
+            tunnel: status.tunnel,
+            profile: status.profile.clone(),
+            latency_ms: status.latency_ms,
+            country: status.country.clone(),
+            rx: status.rx,
+            tx: status.tx,
+            traffic_at: status.traffic_at,
+            retry_in: status.retry_in,
+            testing: status.testing,
+            cold: cold_hash(status),
+        }
+    }
+}
+
+/// Отпечаток холодной части статуса: тот же `Status` с обнулёнными горячими
+/// полями, сериализованный и прогнанный через FNV. Горячие поля обнуляются, а
+/// не вырезаются: список того, что «горячее», тогда лежит в одном месте — здесь
+/// и в `Pulse::of`, — и сторож `the_pulse_notices_every_cold_change` сверяет их
+/// между собой.
+pub fn cold_hash(status: &Status) -> u64 {
+    let cold = Status {
+        tunnel: Tunnel::default(),
+        profile: None,
+        latency_ms: None,
+        country: None,
+        rx: 0,
+        tx: 0,
+        traffic_at: 0,
+        retry_in: None,
+        testing: None,
+        ..status.clone()
+    };
+    let raw = serde_json::to_vec(&cold).unwrap_or_default();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in raw {
+        hash = (hash ^ byte as u64).wrapping_mul(0x100_0000_01b3);
+    }
+    // Отпечаток едет в окно числом JSON, а число у JavaScript — double с 53
+    // битами мантиссы: полные 64 бита округлялись бы при разборе. Округление
+    // детерминировано и сравнение всё равно сошлось бы, но два разных
+    // отпечатка, различающихся только в отброшенных битах, стали бы одним.
+    // Срезаем сами, чтобы то, что сравнивает окно, и было тем, что посчитала
+    // служба.
+    hash & ((1 << 53) - 1)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "reply", content = "data", rename_all = "kebab-case")]
 pub enum Response {
@@ -823,6 +934,8 @@ pub enum Response {
     /// Хвост журнала sing-box строками, от старых к новым и уже без ANSI.
     /// Пусто — файла нет вовсе: sing-box ни разу не запускался.
     SingboxLog { lines: Vec<String> },
+    /// Ответ на `Request::Pulse`.
+    Pulse(Pulse),
     Error { message: String },
 }
 
@@ -1111,8 +1224,11 @@ mod tests {
                     probe: "1.1.1.1:443".into(),
                     singbox: r"C:\Program Files\sing-box\sing-box.exe".into(),
                     geo: false,
+                    failover: true,
                 },
             },
+            Request::Pulse,
+            Request::Preview { link: "https://panel/sub\nvless://u@a.com:443#дом".into() },
         ];
         let mut seen = Vec::new();
         for r in reqs {
@@ -1150,6 +1266,7 @@ mod tests {
                     country: Some("Нидерланды, Амстердам".into()),
                     code: Some("NL".into()),
                     error: None,
+                    brief: None,
                     at: 1_755_000_000,
                 }],
                 log: vec![LogLine { at: 1_755_000_000, text: "туннель поднят".into(), bad: false }],
@@ -1182,6 +1299,18 @@ mod tests {
             Response::ProfileNode { json: "{}".into(), link: String::new() },
             Response::SingboxLog { lines: vec!["INFO[0000] router: started".into()] },
             Response::SingboxLog { lines: Vec::new() },
+            Response::Pulse(Pulse {
+                tunnel: Tunnel::Up,
+                profile: Some("myvpn".into()),
+                latency_ms: Some(42),
+                country: Some("Нидерланды".into()),
+                rx: 1,
+                tx: 2,
+                traffic_at: 1_755_000_000_000,
+                retry_in: None,
+                testing: Some(TestRun { done: 1, total: 2 }),
+                cold: 7,
+            }),
             Response::Error { message: "нет".into() },
         ];
         let mut seen = Vec::new();
@@ -1192,6 +1321,50 @@ mod tests {
         }
         for tag in tags("pub enum Response {") {
             assert!(seen.contains(&tag), "ответ {tag} roundtrip не проверяет");
+        }
+    }
+
+    /// Пульс замечает любую смену холодной части и не дёргается от горячей.
+    /// Иначе либо окно не увидит новую строку журнала, пока не сменится что-то
+    /// ещё, либо будет ходить за полным статусом каждые две секунды — ровно то,
+    /// ради чего пульс и заведён.
+    #[test]
+    fn the_pulse_notices_every_cold_change() {
+        let base = Status::default();
+        let cold = cold_hash(&base);
+        let mut hot = base.clone();
+        hot.tunnel = Tunnel::Up;
+        hot.profile = Some("a".into());
+        hot.latency_ms = Some(1);
+        hot.country = Some("NL".into());
+        hot.rx = 5;
+        hot.tx = 6;
+        hot.traffic_at = 7;
+        hot.retry_in = Some(3);
+        hot.testing = Some(TestRun { done: 1, total: 2 });
+        assert_eq!(cold_hash(&hot), cold, "горячие поля не двигают отпечаток");
+        let pulse = Pulse::of(&hot);
+        assert_eq!((pulse.tunnel, pulse.rx, pulse.tx, pulse.cold), (Tunnel::Up, 5, 6, cold));
+
+        let changes: [(&str, fn(&mut Status)); 9] = [
+            ("profiles", |s| s.profiles.push(ProfileInfo { name: "x".into(), ..Default::default() })),
+            ("subscriptions", |s| {
+                s.subscriptions.push(Subscription { url: "https://p".into(), name: String::new(), nodes: vec![], quota: None })
+            }),
+            ("apps", |s| s.apps.push(App { path: "a.exe".into(), name: "a".into(), enabled: true })),
+            ("log", |s| s.log.push(LogLine { at: 1, text: "t".into(), bad: false })),
+            ("probes", |s| {
+                s.probes.push(Probe { name: "x".into(), latency_ms: None, country: None, code: None, error: None, brief: None, at: 0 })
+            }),
+            ("browser_profiles", |s| s.browser_profiles.push(BrowserProfile { name: "b".into(), ..Default::default() })),
+            ("settings", |s| s.settings.failover = true),
+            ("lang", |s| s.lang = Lang::En),
+            ("refreshed_at", |s| s.refreshed_at = Some(1)),
+        ];
+        for (what, change) in changes {
+            let mut s = base.clone();
+            change(&mut s);
+            assert_ne!(cold_hash(&s), cold, "{what} не двигает отпечаток");
         }
     }
 

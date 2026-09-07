@@ -710,13 +710,37 @@ pub fn measure(node: &Value, dir: &Path, target: (&str, u16), geo: bool) -> io::
     // через мёртвый некого. Не узнали — не показываем: вердикт профиля решает
     // задержка, а не страна.
     let country = match (&result, geo) {
-        (Ok(_), true) => exit_country(socks).ok(),
+        (Ok(_), true) => {
+            geo_gate();
+            exit_country(socks).ok()
+        }
         _ => None,
     };
     // Отметку с мёртвым номером `stop()` уносит сам — и за прогоном, и за
     // сеансом браузера, и за общим туннелем одинаково.
     proc.stop();
     result.map(|ms| (ms, country))
+}
+
+/// Не чаще одного вопроса о стране в `GEO_SPACING`. Прогон профилей идёт
+/// несколькими sing-box разом, и живые узлы спрашивали бы третью сторону
+/// залпом, а та отвечает отказом на полсотни запросов в минуту — и отказ этот
+/// выглядел бы как узел без страны. Полторы секунды — это сорок в минуту, с
+/// запасом под живой туннель, который спрашивает то же самое на подъёме.
+/// Ждут под замком, то есть по очереди: так и задумано, очередь и есть
+/// ограничитель. Сторож — `parallel_probes_do_not_flood_the_geo_service`.
+const GEO_SPACING: Duration = Duration::from_millis(1500);
+static GEO_LAST: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn geo_gate() {
+    let mut last = GEO_LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(at) = *last {
+        let wait = GEO_SPACING.saturating_sub(at.elapsed());
+        if !wait.is_zero() {
+            std::thread::sleep(wait);
+        }
+    }
+    *last = Some(Instant::now());
 }
 
 /// Проверочный sing-box: без TUN, на свободных портах. Отдельно от `measure`
@@ -976,6 +1000,15 @@ fn socks5_connect(port: u16, (host, target_port): (&str, u16)) -> io::Result<Tcp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Сервис страны терпит около сорока пяти запросов в минуту; параллельный
+    /// прогон обязан укладываться в это независимо от числа воркеров.
+    #[test]
+    fn parallel_probes_do_not_flood_the_geo_service() {
+        assert!(GEO_SPACING >= Duration::from_millis(60_000 / 45 + 1), "чаще 45 в минуту — отказ сервиса");
+        let body = include_str!("lib.rs").split("pub fn measure(").nth(1).and_then(|s| s.split("\nfn ").next()).expect("measure");
+        assert!(body.contains("geo_gate();"), "страну спрашивают, не выждав очередь");
+    }
     use std::collections::BTreeMap;
 
     /// Порядок поиска sing-box сильнее к слабее: переменная окружения,

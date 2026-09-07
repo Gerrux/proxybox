@@ -11,7 +11,7 @@ mod service;
 
 use core_ipc::{
     dir_name, t, tf, App, BrowserProfile, Conn, Endpoint, Listener, LogLine, Probe, ProfileInfo,
-    Quota, Request, Response, Scope, Settings, Status, Stream, Subscription, TestRun,
+    Pulse, Quota, Request, Response, Scope, Settings, Status, Stream, Subscription, TestRun,
     Tunnel as TunnelState,
 };
 use core_tunnel::{build_config, Options, Tunnel as Process};
@@ -98,6 +98,19 @@ fn lock(svc: &Mutex<Service>) -> std::sync::MutexGuard<'_, Service> {
 /// см. `Request::TestProfiles`.
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 
+/// Сколько узлов прогон меряет одновременно. Мёртвый узел стоит
+/// `PROBE_TIMEOUT` (8 с), и по одному подписка в сотню узлов, половина которых
+/// мертва, шла семь минут — человек за это время успевал решить, что прогон
+/// завис. Шесть параллельных sing-box — это шесть процессов по паре десятков
+/// мегабайт на несколько секунд, и то же самое за минуту с небольшим.
+///
+/// Не больше: каждый воркер — свой sing-box, а живые узлы ещё и спрашивают
+/// страну у третьей стороны, и та считает флудом полсотни запросов в минуту.
+/// Частоту этих запросов держит `core_tunnel` (`GEO_SPACING`), а не число
+/// воркеров, но и раздувать очередь к нему незачем. Сторож —
+/// `a_probe_run_measures_in_parallel_but_in_separate_dirs`.
+const PROBE_WORKERS: usize = 6;
+
 /// Где служба держит состояние. Грязная половина: спрашивает окружение и
 /// права, а решает `base_dir` — её и проверяет сторож.
 ///
@@ -108,6 +121,20 @@ static PROBE_LOCK: Mutex<()> = Mutex::new(());
 /// там значение всё равно никуда не идёт. Короткое замыкание `&&` не даёт
 /// `elevated()` даже начаться на Windows — дешевле кеша и честнее вопроса,
 /// ответ на который не читают.
+/// Файл состояния — через временный рядом и переименование, а не `fs::write`
+/// поверх. `fs::write` сперва обрезает файл до нуля, потом пишет: погасшее в
+/// эту миллисекунду питание или убитая служба оставляют пустой `state.json`, и
+/// служба, поднявшись, выглядит как продукт, забывший все профили, пароли и
+/// список приложений. Переименование у обеих систем атомарно на уровне
+/// каталога: на диске в любой момент лежит либо прошлая версия целиком, либо
+/// новая целиком. Права новый файл берёт у каталога — те же, что брал и
+/// старый. Сторож — `the_state_is_written_atomically`.
+fn write_atomic(path: &Path, raw: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, raw)?;
+    std::fs::rename(&tmp, path)
+}
+
 fn dir() -> PathBuf {
     let base = base_dir(
         !cfg!(windows) && elevated(),
@@ -403,17 +430,33 @@ fn now_ms() -> u64 {
 /// Запомнить измерение профиля. Страна остаётся от прошлого раза, если в этот
 /// узнать её не вышло: узел из страны в страну не переезжает, а не ответить он
 /// может по дороге — и терять из-за этого уже известное незачем.
-fn remember(probes: &mut Vec<Probe>, name: &str, latency_ms: Option<u32>, exit: Option<core_tunnel::Exit>, error: Option<String>) {
+fn remember(
+    probes: &mut Vec<Probe>,
+    name: &str,
+    latency_ms: Option<u32>,
+    exit: Option<core_tunnel::Exit>,
+    error: Option<String>,
+    brief: Option<String>,
+) {
     let i = match probes.iter().position(|p| p.name == name) {
         Some(i) => i,
         None => {
-            probes.push(Probe { name: name.to_string(), latency_ms: None, country: None, code: None, error: None, at: 0 });
+            probes.push(Probe {
+                name: name.to_string(),
+                latency_ms: None,
+                country: None,
+                code: None,
+                error: None,
+                brief: None,
+                at: 0,
+            });
             probes.len() - 1
         }
     };
     let p = &mut probes[i];
     p.latency_ms = latency_ms;
     p.error = error;
+    p.brief = brief;
     p.at = now();
     if let Some(exit) = exit {
         p.code = exit.code;
@@ -492,6 +535,15 @@ struct Service {
     /// перезапустить, а порты у нас постоянные. Номер отличает ответ про
     /// нынешний процесс от ответа про прошлый.
     generation: u64,
+    /// Узлы, на которые автопереключение уже уходило с тех пор, как туннель
+    /// последний раз подтверждался. Без этой памяти два мёртвых узла
+    /// перекидывали бы друг на друга бесконечно — по девять секунд на круг, с
+    /// перезапуском sing-box и запертыми приложениями на каждом. Чистится
+    /// подтверждённой пробой и выбором человека (`Request::On`).
+    failover_tried: BTreeSet<String>,
+    /// «Переключаться не на кого» уже сказано: строка эта иначе шла бы в
+    /// журнал каждые три секунды, а журнал пишется на диск каждой строкой.
+    failover_stuck: bool,
 }
 
 impl Service {
@@ -572,6 +624,8 @@ impl Service {
             probe_now: false,
             browsers: BTreeMap::new(),
             generation: 0,
+            failover_tried: BTreeSet::new(),
+            failover_stuck: false,
         };
         arrange(&mut me.status, &me.order, &me.sub_order);
         me.apply_settings();
@@ -669,7 +723,7 @@ impl Service {
         };
         let _ = std::fs::create_dir_all(dir());
         if let Ok(raw) = serde_json::to_string_pretty(&saved) {
-            let _ = std::fs::write(dir().join("state.json"), raw);
+            let _ = write_atomic(&dir().join("state.json"), raw.as_bytes());
         }
     }
 
@@ -705,7 +759,7 @@ impl Service {
         // цена этой лени три килобайта на запись.
         let _ = std::fs::create_dir_all(dir());
         if let Ok(raw) = serde_json::to_string(&self.status.log) {
-            let _ = std::fs::write(dir().join("journal.json"), raw);
+            let _ = write_atomic(&dir().join("journal.json"), raw.as_bytes());
         }
     }
 
@@ -879,6 +933,10 @@ impl Service {
                 // приложения заперты, и каждая лишняя секунда здесь это просто
                 // время без сети, а не запас прочности.
                 self.probe_now = true;
+                // Новому процессу — счёт промахов с нуля: унаследованные от
+                // прошлого узла, они запирали бы новый на первом же промахе,
+                // а с автопереключением — тут же уводили бы с него дальше.
+                self.misses = 0;
                 self.retry_at = None;
                 self.retry_delay = RETRY_BASE;
                 // Приложений, а не путей: в конфиг на каждое уходит до двух форм
@@ -1406,6 +1464,21 @@ impl Tally {
         self.added == 0 && self.kept == 0 && self.gone == 0
     }
 
+    /// Пустой счёт — это отказ, а не пустой успех: «импортировано 0» в красной
+    /// рамке не сказало бы, чего не хватило, поэтому единственная причина — она
+    /// же и весь ответ.
+    fn into_response_or_error(self) -> Response {
+        if self.empty() {
+            let message = match self.skipped.first() {
+                Some(first) if self.skipped.len() == 1 => first.clone(),
+                Some(first) => tf!("ни одной строки не импортировано, первая причина — {}", first),
+                None => t("импортировать нечего"),
+            };
+            return Response::Error { message };
+        }
+        self.into_response()
+    }
+
     fn into_response(mut self) -> Response {
         let skipped_total = self.skipped.len();
         self.skipped.truncate(MAX_SKIPPED);
@@ -1442,17 +1515,63 @@ fn import(svc: &Mutex<Service>, urls: &[String], rest: &str) -> Response {
             Err(why) => tally.skipped.push(why),
         }
     }
-    if tally.empty() {
-        // Единственная причина — она же и весь ответ: «импортировано 0» в
-        // красной рамке не сказало бы, чего не хватило.
-        let message = match tally.skipped.first() {
-            Some(first) if tally.skipped.len() == 1 => first.clone(),
-            Some(first) => tf!("ни одной строки не импортировано, первая причина — {}", first),
-            None => t("импортировать нечего"),
+    tally.into_response_or_error()
+}
+
+/// Что вышло бы из вставки, не заводя ничего. Считает тот же счёт, что и
+/// `import()`, — тем же сравнением узлов, а не имён, — только ничего не пишет:
+/// ни профилей, ни подписок, ни строки в журнал. Подписка качается по-настоящему
+/// (иначе пересчитать нечего), но состояние берётся под замок только на само
+/// сравнение. Сторож — `a_preview_changes_nothing`.
+fn preview(svc: &Mutex<Service>, urls: &[String], rest: &str) -> Response {
+    let mut tally = Tally::default();
+    for url in urls {
+        let via_tunnel = lock(svc).status.tunnel == TunnelState::Up;
+        let (body, _) = match fetch(url, via_tunnel) {
+            Ok(got) => got,
+            Err(why) => {
+                tally.skipped.push(format!("{url}: {why}"));
+                continue;
+            }
         };
-        return Response::Error { message };
+        let batch = core_config::parse_many(&body);
+        if batch.found.is_empty() {
+            tally.skipped.push(format!("{url}: {}", t("в ответе подписки нет ни одного узла — проверьте адрес")));
+            continue;
+        }
+        let s = lock(svc);
+        let was: Vec<Value> = s
+            .subscriptions
+            .get(url)
+            .map(|names| names.iter().filter_map(|n| s.profiles.get(n).cloned()).collect())
+            .unwrap_or_default();
+        for p in &batch.found {
+            if was.contains(&p.node) {
+                tally.kept += 1;
+            } else {
+                tally.added += 1;
+            }
+        }
+        tally.gone += was.iter().filter(|node| !batch.found.iter().any(|p| p.node == **node)).count();
+        tally.skipped.extend(batch.skipped);
     }
-    tally.into_response()
+    if !rest.is_empty() {
+        match parse_pasted(rest) {
+            Ok(batch) => {
+                let s = lock(svc);
+                for p in &batch.found {
+                    if s.profiles.values().any(|node| *node == p.node) {
+                        tally.kept += 1;
+                    } else {
+                        tally.added += 1;
+                    }
+                }
+                tally.skipped.extend(batch.skipped);
+            }
+            Err(why) => tally.skipped.push(why),
+        }
+    }
+    tally.into_response_or_error()
 }
 
 /// Завести профили из разобранной вставки. Узел, который уже заведён, вторым
@@ -1969,6 +2088,12 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
         let (urls, rest) = split_paste(link);
         return import(svc, &urls, &rest);
     }
+    // Предпросмотр — тот же поход в сеть, только без записи: и до замка он по
+    // той же причине.
+    if let Request::Preview { link } = &req {
+        let (urls, rest) = split_paste(link);
+        return preview(svc, &urls, &rest);
+    }
     // Иконку служба не хранит и не спрашивает у состояния вовсе: путь пришёл в
     // запросе, ответ достаётся из самого файла. Под общим замком этот поход по
     // диску стоял зря и стоил дорого — иконок спрашивают не одну, а по одной на
@@ -1994,8 +2119,12 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
         return Response::SingboxLog { lines: core_tunnel::log_tail(&dir()) };
     }
     let mut s = lock(svc);
+    // Пульс — вырезка из того же статуса и с той же прополкой сеансов: окно
+    // спрашивает теперь в основном его, и умерший сеанс иначе терял бы пропуск
+    // только на редком полном статусе.
+    let pulse = matches!(req, Request::Pulse);
     match req {
-        Request::Status => {
+        Request::Status | Request::Pulse => {
             // Прокси под окна браузера не помнятся в статусе, а спрашиваются
             // здесь: процесс мог умереть сам, и запомненное «открыто» пережило
             // бы его — ровно та же ложь, что и «туннель поднят» после падения.
@@ -2015,13 +2144,21 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             // число соврало бы через секунду. Пауза в службе — `Instant`, наружу
             // едут секунды.
             s.status.retry_in = retry_in(s.retry_at, Instant::now());
-            Response::Status(s.status.clone())
+            if pulse {
+                Response::Pulse(Pulse::of(&s.status))
+            } else {
+                Response::Status(s.status.clone())
+            }
         }
         Request::ListApps => Response::Apps(s.status.apps.clone()),
         // Все они разобраны до замка и сюда не доходят. Паника тут безопасна:
         // до `lock(svc)` управление не дошло, отравить замок нечем, а поток
         // на этом соединении свой — уронить она может только его.
-        Request::Icon { .. } | Request::Discover { .. } | Request::AddProfile { .. } | Request::SingboxLog => {
+        Request::Icon { .. }
+        | Request::Discover { .. }
+        | Request::AddProfile { .. }
+        | Request::Preview { .. }
+        | Request::SingboxLog => {
             unreachable!("разбирается до замка")
         }
         Request::AddApp { path } => {
@@ -2186,6 +2323,10 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             Response::Done
         }
         Request::On { profile } => {
+            // Человек выбрал сам — прошлые попытки автопереключения его
+            // выбора не касаются.
+            s.failover_tried.clear();
+            s.failover_stuck = false;
             // Команда пользователя — пробуем сразу, накопленная пауза не в счёт.
             s.retry_at = None;
             s.retry_delay = RETRY_BASE;
@@ -2342,9 +2483,9 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             let _one_at_a_time = PROBE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             let probe_dir = dir().join("probe");
             // Точка выхода — та же третья сторона и тот же выключатель, что у
-            // живого туннеля. Прогон идёт по профилю за раз и по запросу на
-            // профиль: сервис считает флудом десятки запросов в минуту, а
-            // столько подряд у нас и не выходит — каждый профиль стоит секунд.
+            // живого туннеля. Воркеров несколько, и живые узлы отвечали бы ей
+            // залпом — частоту запросов к ней держит `core_tunnel`
+            // (`GEO_SPACING`), а не порядок обхода.
             let (geo, target) = {
                 let s = lock(svc);
                 (s.status.settings.geo, s.status.settings.probe.clone())
@@ -2359,22 +2500,53 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             // Замок берётся на каждый узел отдельно и только на запись: держать
             // его через `measure` нельзя — под ним стоит весь GUI, ровно та
             // причина, по которой список и снят копией выше.
-            let mut live = 0usize;
+            // Узлы разбирают из общей очереди `PROBE_WORKERS` потоков, и у
+            // каждого свой подкаталог: `Tunnel::start` добивает предшественника
+            // по `singbox.pid` в каталоге, и общий каталог означал бы, что
+            // воркеры гасят друг друга — половина рабочих узлов выглядела бы
+            // мёртвой. Порты каждому выдаёт ядро (`free_port`), они и так свои.
+            //
+            // Причина отказа берётся из журнала того же подкаталога: в нём
+            // писал только этот sing-box про этот узел, и «последнее от
+            // sing-box» здесь — не подсказка, как у живого туннеля, а сама
+            // причина. Из неё же считается короткое слово для строки списка.
             let all = profiles.len();
-            for (done, (name, node)) in profiles.iter().enumerate() {
-                let (host, port) = probe_target(&target, node);
-                let (latency, exit, error) = match core_tunnel::measure(node, &probe_dir, (&host, port), geo) {
-                    Ok((ms, exit)) => (Some(ms), exit, None),
-                    Err(e) => (None, None, Some(e.to_string())),
-                };
-                live += usize::from(latency.is_some());
-                // Не замена списка, а обновление: прогон переписывает задержку и
-                // отказ, но страну неответившего оставляет — она от того, что узел
-                // сегодня молчит, не изменилась.
-                let mut s = lock(svc);
-                remember(&mut s.status.probes, name, latency, exit, error);
-                s.status.testing = Some(TestRun { done: done + 1, total: all });
-            }
+            let queue = Mutex::new(std::collections::VecDeque::from(profiles));
+            let done = std::sync::atomic::AtomicUsize::new(0);
+            let live = std::sync::atomic::AtomicUsize::new(0);
+            std::thread::scope(|scope| {
+                for worker in 0..PROBE_WORKERS.min(all) {
+                    let (queue, done, live, target) = (&queue, &done, &live, &target);
+                    let worker_dir = probe_dir.join(worker.to_string());
+                    scope.spawn(move || loop {
+                        let next = queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).pop_front();
+                        let Some((name, node)) = next else { break };
+                        let (host, port) = probe_target(target, &node);
+                        let (latency, exit, error, brief) =
+                            match core_tunnel::measure(&node, &worker_dir, (&host, port), geo) {
+                                Ok((ms, exit)) => (Some(ms), exit, None, None),
+                                Err(e) => {
+                                    let why = core_tunnel::last_failure(&worker_dir);
+                                    let brief = brief_reason(&e.to_string(), why.as_deref());
+                                    let error = match why {
+                                        Some(why) => format!("{e}; {}", tf!("последнее от sing-box: {}", why)),
+                                        None => e.to_string(),
+                                    };
+                                    (None, None, Some(error), Some(brief))
+                                }
+                            };
+                        live.fetch_add(usize::from(latency.is_some()), std::sync::atomic::Ordering::Relaxed);
+                        let finished = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        // Не замена списка, а обновление: прогон переписывает
+                        // задержку и отказ, но страну неответившего оставляет —
+                        // она от того, что узел сегодня молчит, не изменилась.
+                        let mut s = lock(svc);
+                        remember(&mut s.status.probes, &name, latency, exit, error, brief);
+                        s.status.testing = Some(TestRun { done: finished, total: all });
+                    });
+                }
+            });
+            let live = live.into_inner();
             let mut s = lock(svc);
             // Бегунок гаснет здесь и только здесь: оставленный взведённым, он
             // означал бы вечный прогон — кнопка заперта, а мерить некому.
@@ -2388,6 +2560,66 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             Response::Status(s.status.clone())
         }
     }
+}
+
+/// Куда уйти автопереключению. Сперва узлы, которые в последнем прогоне
+/// отвечали, — по задержке; потом не мерянные ни разу; в конце те, что молчали.
+/// Внутри разряда порядок — порядок списка, то есть расставленный человеком
+/// или звёздочкой (`arrange`). Ни текущий, ни уже пробованные с последнего
+/// подтверждения не годятся: без этого два мёртвых узла перекидывали бы друг
+/// на друга без конца. Ничего не осталось — `None`, и надзор остаётся на том
+/// узле, где стоит: замок стоит, приложения заперты, и это по-прежнему
+/// fail-closed. Сторож — `failover_prefers_the_fastest_live_node`.
+fn next_node(profiles: &[ProfileInfo], probes: &[Probe], current: Option<&str>, tried: &BTreeSet<String>) -> Option<String> {
+    let rank = |name: &str| match probes.iter().find(|p| p.name == name) {
+        Some(p) if p.latency_ms.is_some() => (0u8, p.latency_ms.unwrap_or(u32::MAX)),
+        None => (1, 0),
+        Some(_) => (2, 0),
+    };
+    profiles
+        .iter()
+        .map(|p| p.name.as_str())
+        .filter(|name| Some(*name) != current && !tried.contains(*name))
+        .min_by_key(|name| rank(name))
+        .map(str::to_string)
+}
+
+/// Причина отказа узла в два слова — для строки списка. Полная строка длиной с
+/// журнал и остаётся подсказкой; здесь — разряд, к которому она относится.
+///
+/// Разбирается по следам Go и Windows, а не по нашему переводу: `error` уже
+/// на языке окна, а строка sing-box — всегда на английском. Код SOCKS
+/// вытаскивается цифрами из последних скобок, потому что слово перед ним
+/// («код», «code», «کد») зависит от языка. Ни к чему не подошло — «сбой»:
+/// хуже неопознанного разряда только выдуманный.
+fn brief_reason(error: &str, why: Option<&str>) -> String {
+    let text = format!("{error} {}", why.unwrap_or_default()).to_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| text.contains(n));
+    // Журнала нет — есть только код SOCKS, и он единственное, что известно.
+    // Смотрится до разрядов: перевод «отказал в соединении» иначе попадал бы
+    // в «соединение отклонено», хотя отказал не сервер, а sing-box.
+    if why.is_none() && error.ends_with(')') {
+        let code: String = error.rsplit('(').next().unwrap_or_default().chars().filter(char::is_ascii_digit).collect();
+        if !code.is_empty() {
+            return tf!("не пропустил (код {})", code);
+        }
+    }
+    if has(&["завершился сразу", "exited immediately", "не запускается", "cannot start"]) {
+        return t("не запустился");
+    }
+    if has(&["i/o timeout", "timed out", "10060", "deadline exceeded"]) {
+        return t("таймаут");
+    }
+    if has(&["tls", "certificate", "handshake", "reality"]) {
+        return t("отказ TLS");
+    }
+    if has(&["refused", "10061", "reset by peer", "10054"]) {
+        return t("соединение отклонено");
+    }
+    if has(&["no such host", "lookup", "dns", "nxdomain"]) {
+        return t("имя не разрешилось");
+    }
+    t("сбой")
 }
 
 /// Пауза перед следующей пробой, во время которой служба всё-таки не спит:
@@ -2564,6 +2796,10 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
         match result {
             Ok(latency) => {
                 s.misses = 0;
+                // Подтверждённый туннель — чистый лист для автопереключения:
+                // узлы, с которых уходили, могли ожить.
+                s.failover_tried.clear();
+                s.failover_stuck = false;
                 if s.status.tunnel != TunnelState::Up {
                     s.log(tf!("туннель поднят, задержка {} мс", latency));
                     s.guard(false); // дальше маршрутизацией занимается сам sing-box
@@ -2588,7 +2824,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
                 // прогона, пока туннель под ней жив. На диск не пишем — надзор
                 // тикает каждые три секунды, а сохранит это ближайший save().
                 if let Some(name) = s.status.profile.clone() {
-                    remember(&mut s.status.probes, &name, Some(latency), None, None);
+                    remember(&mut s.status.probes, &name, Some(latency), None, None, None);
                 }
             }
             Err(e) => {
@@ -2601,6 +2837,36 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
                     s.status.tunnel = TunnelState::Down;
                     s.status.latency_ms = None;
                     s.status.country = None;
+                }
+                // Автопереключение. Только отсюда: перезапуском заведует эта
+                // ветка, и вторая точка, поднимающая туннель, — это два
+                // sing-box на один TUN (`the_death_watch_only_blocks`). Порог
+                // тот же, что у замка, — `PROBE_MISSES` подряд, — и не зависит
+                // от состояния: узел, выбранный человеком и мёртвый с первой
+                // пробы, тоже уходит, иначе после перезапуска службы на
+                // мёртвом узле переключаться было бы нечему. `start()` запирает
+                // до запуска и обнуляет счёт промахов — новый узел получает
+                // своё терпение целиком. Сторож —
+                // `the_failover_switches_only_from_supervise`.
+                if s.misses >= PROBE_MISSES && s.status.settings.failover {
+                    let current = s.status.profile.clone();
+                    let next = next_node(&s.status.profiles, &s.status.probes, current.as_deref(), &s.failover_tried);
+                    match (next, current) {
+                        (Some(next), current) => {
+                            if let Some(from) = current {
+                                s.failover_tried.insert(from.clone());
+                                s.warn(tf!("узел «{}» не отвечает, переключаюсь на «{}»", from, next));
+                            }
+                            s.failover_stuck = false;
+                            let _ = s.start(&next);
+                            continue;
+                        }
+                        (None, Some(from)) if !s.failover_stuck => {
+                            s.failover_stuck = true;
+                            s.warn(tf!("узел «{}» не отвечает, переключаться не на кого: остальные молчат или уже пробовались", from));
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -2633,7 +2899,7 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
                     // подключения и заставить прогонять профили ради известного.
                     if let Some(profile) = s.status.profile.clone() {
                         let latency = s.status.latency_ms;
-                        remember(&mut s.status.probes, &profile, latency, Some(exit), None);
+                        remember(&mut s.status.probes, &profile, latency, Some(exit), None, None);
                         s.save();
                     }
                 }
@@ -2977,8 +3243,8 @@ mod tests {
     fn a_silent_run_does_not_erase_the_country() {
         let mut probes = Vec::new();
         let nl = core_tunnel::Exit { name: "Нидерланды, Амстердам".into(), code: Some("NL".into()) };
-        remember(&mut probes, "myvpn", Some(84), Some(nl), None);
-        remember(&mut probes, "myvpn", None, None, Some("таймаут".into()));
+        remember(&mut probes, "myvpn", Some(84), Some(nl), None, None);
+        remember(&mut probes, "myvpn", None, None, Some("таймаут".into()), None);
 
         assert_eq!(probes.len(), 1, "профиль один — и запись одна");
         assert_eq!(probes[0].country.as_deref(), Some("Нидерланды, Амстердам"));
@@ -3177,7 +3443,7 @@ mod tests {
     #[test]
     fn a_dead_session_takes_its_pass_with_it() {
         let handle = include_str!("main.rs").split_once("\nfn handle(").expect("handle()").1;
-        let status = handle.split_once("Request::Status => {").expect("ответ на Status").1;
+        let status = handle.split_once("Request::Status | Request::Pulse => {").expect("ответ на Status").1;
         let status = status.split_once("Request::ListApps").expect("конец ответа на Status").0;
         assert!(status.contains("retain(|_, proc| proc.alive())"), "мёртвые сеансы перестали пропалываться: {status}");
         assert!(status.contains("s.refence()"), "прополка не снимает пропуск умершего сеанса: {status}");
@@ -3846,6 +4112,149 @@ mod tests {
         assert!(body.contains("watch_for_signals("), "main не ставит обработчик сигналов");
         assert!(!body.contains("run(None)"), "вне Windows служба обязана останавливаться по сигналу, а не только по Ctrl+C");
     }
+
+    /// `state.json` и `journal.json` пишутся через временный файл и
+    /// переименование: `fs::write` поверх сперва обрезает файл, и погасшее в
+    /// эту миллисекунду питание оставляло бы службу без единого профиля.
+    #[test]
+    fn the_state_is_written_atomically() {
+        let src = include_str!("main.rs").split("\nmod tests").next().unwrap_or_default();
+        assert!(!src.contains("std::fs::write(dir().join("), "состояние пишется мимо write_atomic");
+        for file in ["state.json", "journal.json"] {
+            assert!(src.contains(&format!("write_atomic(&dir().join(\"{file}\")")), "{file} пишется не атомарно");
+        }
+
+        let home = std::env::temp_dir().join("pg-atomic-write");
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("временный каталог");
+        let path = home.join("state.json");
+        write_atomic(&path, b"first").expect("первая запись");
+        write_atomic(&path, b"second").expect("вторая запись поверх");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+        let left: Vec<_> = std::fs::read_dir(&home).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left.len(), 1, "временный файл обязан исчезнуть переименованием: {left:?}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Автопереключение выключено, пока человек его не включил: узел он выбрал
+    /// сам, и продукт, молча уводящий трафик на соседний сервер, — это выход в
+    /// другой стране без единого слова.
+    #[test]
+    fn failover_is_off_by_default() {
+        assert!(!Settings::default().failover);
+        // И из state.json прошлых версий, где поля нет вовсе.
+        let old: Settings = serde_json::from_str(r#"{"refresh":true,"probe":"","singbox":"","geo":true}"#).unwrap();
+        assert!(!old.failover, "старое состояние обязано читаться как «выключено»");
+    }
+
+    /// Куда уходит автопереключение: живые по задержке, потом не мерянные,
+    /// потом молчавшие; текущий и уже пробованные — никогда.
+    #[test]
+    fn failover_prefers_the_fastest_live_node() {
+        let profiles: Vec<ProfileInfo> = ["A", "B", "C", "D", "E"]
+            .iter()
+            .map(|n| ProfileInfo { name: n.to_string(), ..Default::default() })
+            .collect();
+        let mut probes = Vec::new();
+        remember(&mut probes, "A", None, None, Some("таймаут".into()), None);
+        remember(&mut probes, "B", Some(120), None, None, None);
+        remember(&mut probes, "C", Some(40), None, None, None);
+        remember(&mut probes, "E", None, None, Some("отказ TLS".into()), None);
+        // D не мерян ни разу.
+        let none = BTreeSet::new();
+        assert_eq!(next_node(&profiles, &probes, Some("A"), &none).as_deref(), Some("C"), "живой и самый быстрый");
+        let mut tried: BTreeSet<String> = ["C".to_string()].into();
+        assert_eq!(next_node(&profiles, &probes, Some("A"), &tried).as_deref(), Some("B"), "следующий живой");
+        tried.insert("B".into());
+        assert_eq!(next_node(&profiles, &probes, Some("A"), &tried).as_deref(), Some("D"), "не мерянный впереди молчавшего");
+        tried.insert("D".into());
+        assert_eq!(next_node(&profiles, &probes, Some("A"), &tried).as_deref(), Some("E"), "молчавший — последним");
+        tried.insert("E".into());
+        assert_eq!(next_node(&profiles, &probes, Some("A"), &tried), None, "текущий сам себе не кандидат");
+        // Никого нет, кроме текущего, — переключаться некуда, а не на себя.
+        assert_eq!(next_node(&profiles[..1], &probes, Some("A"), &none), None);
+    }
+
+    /// Поднимать туннель по автопереключению может только ветка надзора: вторая
+    /// точка перезапуска — это два sing-box на один TUN. И само переключение
+    /// обязано считаться промахами, а не состоянием: узел, мёртвый с первой
+    /// пробы, иначе не уходил бы никогда.
+    #[test]
+    fn the_failover_switches_only_from_supervise() {
+        let src = include_str!("main.rs").split("\nmod tests").next().unwrap_or_default();
+        assert_eq!(src.matches("next_node(").count(), 2, "кандидата спрашивают в одном месте, кроме определения");
+        let body = src
+            .split("fn supervise(")
+            .nth(1)
+            .and_then(|s| s.split("\nfn ").next())
+            .expect("надзор на месте");
+        assert!(body.contains("next_node("), "автопереключение живёт в надзоре");
+        assert!(body.contains("s.misses >= PROBE_MISSES && s.status.settings.failover"), "порог — промахи и настройка: {body}");
+        // Действующая настройка, а не сохранённая: перебитое окружением поле
+        // должно перебивать и здесь.
+        assert_eq!(
+            body.matches("settings.failover").count(),
+            body.matches("status.settings.failover").count(),
+            "надзор смотрит в сохранённое, а не в действующее"
+        );
+        // Новому процессу — новое терпение, иначе следующий узел уходит на
+        // первом же промахе.
+        let start = src.split("fn start(&mut self, profile: &str)").nth(1).and_then(|s| s.split("\n    fn ").next()).expect("start()");
+        assert!(start.contains("self.misses = 0;"), "start() не обнуляет промахи");
+    }
+
+    /// Прогон идёт несколькими sing-box разом, и у каждого свой подкаталог:
+    /// общий означал бы, что воркеры добивают друг друга по `singbox.pid`.
+    #[test]
+    fn a_probe_run_measures_in_parallel_but_in_separate_dirs() {
+        assert!(PROBE_WORKERS >= 2, "иначе это не параллельный прогон");
+        assert!(PROBE_WORKERS <= 8, "каждый воркер — свой процесс sing-box");
+        let handle = include_str!("main.rs").split_once("\nfn handle(").expect("handle()").1;
+        let run = handle.split_once("Request::TestProfiles { only } => {").expect("прогон").1;
+        let run = run.split_once("\n        }\n").expect("конец прогона").0;
+        assert!(run.contains("std::thread::scope("), "прогон снова идёт по одному");
+        assert!(run.contains("probe_dir.join(worker.to_string())"), "воркеры делят один каталог: {run}");
+        assert!(run.contains("core_tunnel::measure(&node, &worker_dir,"), "мерить обязаны в своём подкаталоге");
+        assert!(run.contains("core_tunnel::last_failure(&worker_dir)"), "причина берётся из своего же журнала");
+    }
+
+    /// Короткая причина — по следам Go и Windows, не по переводу.
+    #[test]
+    fn brief_reason_names_the_cause() {
+        core_ipc::set_lang(core_ipc::Lang::Ru);
+        assert_eq!(brief_reason("туннель не пропустил соединение (код 1)", Some("outbound/vless[proxy]: dial tcp 1.2.3.4:443: i/o timeout")), "таймаут");
+        assert_eq!(brief_reason("os error 10060", None), "таймаут");
+        assert_eq!(brief_reason("туннель не пропустил соединение (код 1)", Some("outbound: tls: handshake failure")), "отказ TLS");
+        assert_eq!(brief_reason("туннель не пропустил соединение (код 1)", Some("dial tcp: connectex: connection refused")), "соединение отклонено");
+        assert_eq!(brief_reason("туннель не пропустил соединение (код 1)", Some("lookup vpn.example: no such host")), "имя не разрешилось");
+        assert_eq!(brief_reason("sing-box завершился сразу: FATAL bad config", None), "не запустился");
+        assert_eq!(brief_reason("туннель не пропустил соединение (код 5)", None), "не пропустил (код 5)");
+        assert_eq!(brief_reason("the tunnel refused the connection (code 5)", None), "не пропустил (код 5)", "код читается из скобок на любом языке");
+        assert_eq!(brief_reason("что-то", Some("outbound: something odd")), "сбой");
+    }
+
+    /// Предпросмотр считает тот же счёт, что и импорт, но не заводит ничего:
+    /// ни профиля, ни строки в журнале.
+    #[test]
+    fn a_preview_changes_nothing() {
+        let _state = scratch("pg-preview-test");
+        let svc = Mutex::new(Service::load());
+        let link = "vless://11111111-1111-1111-1111-111111111111@a.com:443?security=tls#дом";
+        let log_before = lock(&svc).status.log.len();
+        match preview(&svc, &[], link) {
+            Response::Imported { added, kept, gone, .. } => assert_eq!((added, kept, gone), (1, 0, 0)),
+            other => panic!("предпросмотр ответил не счётом: {other:?}"),
+        }
+        assert!(lock(&svc).profiles.is_empty(), "предпросмотр завёл профиль");
+        assert_eq!(lock(&svc).status.log.len(), log_before, "предпросмотр написал в журнал");
+
+        assert!(matches!(import(&svc, &[], link), Response::Imported { added: 1, .. }));
+        match preview(&svc, &[], link) {
+            Response::Imported { added, kept, .. } => assert_eq!((added, kept), (0, 1), "уже заведённый узел — «уже есть»"),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(preview(&svc, &[], "мусор"), Response::Error { .. }), "непонятая вставка — отказ, как и у импорта");
+    }
 }
 
 /// Меняет ли команда то, что делает машина. Разрушающие называют в журнале
@@ -3889,6 +4298,8 @@ fn changes_the_machine(req: &Request) -> bool {
         | Request::SetOrder { .. }
         | Request::SetLang { .. }
         | Request::TestProfiles { .. }
+        | Request::Pulse
+        | Request::Preview { .. }
         | Request::Connections => false,
     }
 }

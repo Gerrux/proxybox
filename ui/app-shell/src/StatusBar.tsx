@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { Scope, Status } from "./platform";
-import { strings } from "./i18n";
-import { Button, Segmented, flag } from "./ui";
+import { call, type Scope, type Status } from "./platform";
+import { strings, type Strings } from "./i18n";
+import { Button, CopyButton, Modal, Segmented, flag } from "./ui";
 
 /** Длина доезда числа. Заметно меньше периода опроса (2 с), иначе счётчик не
  *  успевал бы доехать до следующего значения и полз бы вечно. */
@@ -221,6 +221,7 @@ export function StatusBar({
   onScope: (scope: Scope) => void;
 }) {
   const s = strings(status?.lang);
+  const [trouble, setTrouble] = useState(false);
   const scope = status?.scope ?? "all";
   const all = scope === "all";
   const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
@@ -320,6 +321,14 @@ export function StatusBar({
           <p key={view.hint} title={view.hint} className="st-hint swap mt-2 text-[13px] text-muted">
             {view.hint}
           </p>
+          {/* Дверь к причине там, где её ищут: «доступ закрыт» читают в ту
+              секунду, когда пропала сеть, а хвост журнала sing-box до этого
+              лежал только в настройках. */}
+          {status?.tunnel === "down" && (
+            <Button variant="quiet" className="st-why -ms-2 mt-1 h-7 px-2 text-[12px]" onClick={() => setTrouble(true)}>
+              {s.whatsWrong}
+            </Button>
+          )}
         </div>
         <Button
           variant={on ? "ghost" : "primary"}
@@ -447,7 +456,63 @@ export function StatusBar({
       {busy && (
         <div className="bar absolute inset-x-0 bottom-0 h-0.5 overflow-hidden text-[color:var(--tone)]" />
       )}
+      {trouble && status && <Trouble s={s} status={status} onClose={() => setTrouble(false)} />}
     </header>
+  );
+}
+
+/** Что не так: последние поломки из ленты службы и хвост журнала sing-box —
+ *  одним окном, из шапки. Хвост спрашивается один раз на открытие: это
+ *  взгляд, а не наблюдение, наблюдать — в настройках (`SingboxLog`). */
+function Trouble({ s, status, onClose }: { s: Strings; status: Status; onClose: () => void }) {
+  const [lines, setLines] = useState<string[] | null>(null);
+  useEffect(() => {
+    let gone = false;
+    void call({ cmd: "singbox-log" })
+      .then((r) => {
+        if (!gone && r.reply === "singbox-log") setLines(r.data.lines.slice(-40));
+      })
+      .catch(() => {});
+    return () => {
+      gone = true;
+    };
+  }, []);
+  const bad = status.log.filter((line) => line.bad).slice(0, 3);
+  const text = () => [...bad.map((line) => line.text), "", ...(lines ?? [])].join("\n");
+  return (
+    <Modal title={s.whatsWrong} onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <section>
+          <h3 className="engraved mb-1 text-muted">{s.whatsWrongJournal}</h3>
+          {bad.length === 0 ? (
+            <p className="text-[12.5px] text-muted">—</p>
+          ) : (
+            <ul className="flex flex-col gap-1">
+              {bad.map((line, i) => (
+                <li key={i} className="selectable font-mono text-[11.5px] leading-snug text-fault">
+                  {line.text}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+        <section>
+          <h3 className="engraved mb-1 text-muted">{s.whatsWrongLog}</h3>
+          <div className="scroll max-h-[45vh] overflow-auto rounded-md bg-surface-2 p-2">
+            {lines == null || lines.length === 0 ? (
+              <p className="p-1 text-[12.5px] text-muted">{lines == null ? "…" : s.whatsWrongEmpty}</p>
+            ) : (
+              <pre className="selectable whitespace-pre-wrap break-all font-mono text-[11px] leading-[17px] text-muted">
+                {lines.join("\n")}
+              </pre>
+            )}
+          </div>
+        </section>
+        <div className="flex justify-end">
+          <CopyButton text={text} label={s.copyLog} done={s.copied} />
+        </div>
+      </div>
+    </Modal>
   );
 }
 

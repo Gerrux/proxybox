@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   browse as openBrowser,
   call,
@@ -89,6 +89,27 @@ export function App() {
       // следующая команда или крестик.
       if (r.reply === "error") setError(r.data.message);
       if (r.reply === "status") setStatus(r.data);
+      // Пульс — вырезка из статуса: подменяются только горячие поля, всё
+      // остальное (списки, журнал, настройки) остаётся тем, что приехало с
+      // последним полным статусом.
+      if (r.reply === "pulse") {
+        const p = r.data;
+        setStatus(
+          (was) =>
+            was && {
+              ...was,
+              tunnel: p.tunnel,
+              profile: p.profile,
+              latency_ms: p.latency_ms,
+              country: p.country,
+              rx: p.rx,
+              tx: p.tx,
+              traffic_at: p.traffic_at,
+              retry_in: p.retry_in,
+              testing: p.testing,
+            },
+        );
+      }
       return r;
     } catch {
       // Служба не отвечает — про это во весь рост говорит шапка (status === null),
@@ -99,7 +120,23 @@ export function App() {
     }
   }, []);
 
-  const refresh = useCallback(() => send({ cmd: "status" }), [send]);
+  // Опрос идёт пульсом, а не статусом: полный статус везёт весь список
+  // профилей и журнал, и на подписке в сотни узлов это сотня килобайт и полная
+  // перерисовка окна каждые две секунды — ради двух чисел трафика. За полным
+  // окно идёт, когда отпечаток холодной части (`cold`) сменился или статуса
+  // ещё нет вовсе. Отпечаток запоминается вместе с пульсом, а не с ответом:
+  // сменившееся между пульсом и статусом всплывёт следующим пульсом.
+  const coldRef = useRef<number | null>(null);
+  const haveStatus = status !== null;
+  const refresh = useCallback(async () => {
+    if (!haveStatus) return send({ cmd: "status" });
+    const r = await send({ cmd: "pulse" });
+    if (r?.reply === "pulse" && r.data.cold !== coldRef.current) {
+      coldRef.current = r.data.cold;
+      return send({ cmd: "status" });
+    }
+    return r;
+  }, [send, haveStatus]);
 
   const connecting = status?.tunnel === "connecting";
   useEffect(() => {
@@ -133,6 +170,20 @@ export function App() {
 
   // Настройки из меню значка: оболочка поднимает окно и говорит, что показать.
   useEffect(() => onShell("open-settings", () => setSettings(true)), []);
+  // Ctrl+, — настройки, как в редакторах. По коду клавиши, а не по символу:
+  // на русской раскладке та же клавиша даёт «б». Остальные клавиши живут у
+  // своих панелей (`Profiles`): им нужно знать, видна ли панель.
+  useEffect(() => {
+    if (flyout) return;
+    const key = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.code === "Comma") {
+        e.preventDefault();
+        setSettings((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [flyout]);
 
   // Направление письма ставится на корне документа, а не на панелях: с фарси
   // зеркалить надо и раскладку, и прокрутку, и порядок слов внутри строки, а

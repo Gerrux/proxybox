@@ -301,6 +301,15 @@ export function Settings({
             />
           </Row>
 
+          <Row title={s.failoverTitle} note={s.failoverHint}>
+            <OnOff
+              lang={lang}
+              value={settings?.failover ?? false}
+              disabled={!settings}
+              onPick={(failover) => patch({ failover })}
+            />
+          </Row>
+
           <Row title={s.singboxTitle} note={s.singboxHint}>
             <TextSetting
               lang={lang}
@@ -387,6 +396,10 @@ export function Settings({
           {/* Дыры продукта видит тот, у кого он не работает, а до трекера от
               него дороги не было вовсе. Ведёт на форму заведения — снимок
               экрана человек прикладывает там же, перетаскиванием. */}
+          <Row title={s.shortcutsTitle} note={s.shortcutsHint}>
+            {null}
+          </Row>
+
           <Row title={s.issueTitle} note={s.issueHint}>
             <Button variant="quiet" onClick={() => void openUrl(`https://github.com/${REPO}/issues/new`)}>
               {s.issueOpen}

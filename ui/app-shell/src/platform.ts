@@ -44,6 +44,8 @@ export type Probe = {
   /** Код страны ISO 3166-1 alpha-2 («NL»): им подписана строка профиля. */
   code: string | null;
   error: string | null;
+  /** Причина отказа в два слова — для строки; полная остаётся в `error`. */
+  brief: string | null;
   /** Когда измерено, unix-секунды. 0 — неизвестно (состояние прошлых версий). */
   at: number;
 };
@@ -139,6 +141,23 @@ export type ProfileInfo = {
 /** Идущий прогон профилей: сколько смерено из скольких. null — не идёт. */
 export type TestRun = { done: number; total: number };
 
+/** Горячая часть статуса и отпечаток холодной (`cold`). Окно спрашивает его
+ *  каждые две секунды вместо полного статуса и идёт за полным, только когда
+ *  отпечаток сменился: список профилей на сотни узлов иначе ехал и
+ *  перерисовывался на каждый опрос ради двух чисел трафика. */
+export type Pulse = {
+  tunnel: Tunnel;
+  profile: string | null;
+  latency_ms: number | null;
+  country: string | null;
+  rx: number;
+  tx: number;
+  traffic_at: number;
+  retry_in: number | null;
+  testing: TestRun | null;
+  cold: number;
+};
+
 export type Status = {
   tunnel: Tunnel;
   profile: string | null;
@@ -194,6 +213,9 @@ export type Settings = {
   /** Спрашивать точку выхода у внешнего сервиса — единственный запрос службы
    *  наружу. */
   geo: boolean;
+  /** Переходить на другой узел, когда выбранный трижды подряд не ответил
+   *  пробе. Выключено по умолчанию — узел выбирает человек. */
+  failover: boolean;
 };
 
 /** Отправить команду службе. Возвращает ответ целиком, а не «приняли ли»:
@@ -259,6 +281,8 @@ export type Request =
   /** Настройки службы приходят набором целиком: команда на поле означала бы
    *  четыре ветки в службе ради экрана, который отдаёт их разом. */
   | { cmd: "set-settings"; arg: { settings: Settings } }
+  | { cmd: "pulse" }
+  | { cmd: "preview"; arg: { link: string } }
   /** Живые соединения туннеля. Спрашивается только пока панель открыта. */
   | { cmd: "connections" };
 
@@ -286,6 +310,7 @@ export type Response =
   /** Хвост журнала sing-box строками, от старых к новым. Пусто — sing-box ни
    *  разу не запускался. */
   | { reply: "singbox-log"; data: { lines: string[] } }
+  | { reply: "pulse"; data: Pulse }
   | { reply: "error"; data: { message: string } };
 
 /** Подставляется сборкой из src-tauri/tauri.conf.json (см. vite.config.ts). */

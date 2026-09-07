@@ -17,7 +17,7 @@ use core_ipc::{call, t, tf, Request, Response, Status};
 use std::collections::HashSet;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -72,6 +72,29 @@ fn ipc(req: Request) -> Result<Response, String> {
         if let Ok(mut seen) = SEEN.lock() {
             *seen = Some((Instant::now(), s.clone()));
         }
+    }
+    // Пульс — те же горячие поля, и значку их хватает: он читает состояние,
+    // профиль, страну и задержку. Подмешивается в запомненный статус и
+    // освежает отметку; статуса ещё не было — значок спросит сам.
+    if let Ok(Response::Pulse(p)) = &out {
+        if let Ok(mut seen) = SEEN.lock() {
+            if let Some((at, s)) = seen.as_mut() {
+                s.tunnel = p.tunnel;
+                s.profile = p.profile.clone();
+                s.latency_ms = p.latency_ms;
+                s.country = p.country.clone();
+                s.rx = p.rx;
+                s.tx = p.tx;
+                s.traffic_at = p.traffic_at;
+                s.retry_in = p.retry_in;
+                s.testing = p.testing;
+                *at = Instant::now();
+            }
+        }
+    }
+    // Включили или выключили из окна — значку не ждать своего круга.
+    if matches!(req, Request::On { .. } | Request::Off) {
+        nudge();
     }
     out.map_err(|e| match e.kind() {
         // Ни канала, ни сокета — служба не запущена. Код ошибки об этом не
@@ -615,11 +638,15 @@ const HOLE_AT: (f32, f32) = (36.0, 62.0);
 /// янтарь остаётся свой, из токенов окна (`ui/app-shell/src/tokens.css`,
 /// тёмный вариант). Остальные четыре взяты у стиля как есть.
 ///
-/// Формой состояние больше не различается, и это осознанная потеря. Круг
-/// раньше рубился поперёк, и это читалось без цвета; на знаке тот же разрез
-/// сливается с лазом — в 16 px выходит не «перерубленный канал», а клякса,
-/// которую уже не опознать как марку. Проверено рисованием. Словами состояние
-/// говорят подсказка значка и плашка, цветом — сам значок.
+/// Форма марки одна на все состояния: круг раньше рубился поперёк, но на знаке
+/// тот же разрез сливается с лазом — в 16 px выходит клякса, которую уже не
+/// опознать как марку. Проверено рисованием. Второй канал, помимо цвета, —
+/// бляшка в нижнем углу (`badge_at`), и только у двух состояний, которые
+/// требуют человека: «заперто» — чёрточка, «сбой» — точка; «выключено» —
+/// та же марка вполсилы. У остальных бляшки нет: «защищено» и «подключение»
+/// — работа продукта, не тревога. Марку бляшка не трогает — она стоит на ней
+/// с зазором, так что константы знака остаются знаком
+/// (`the_mark_is_one_shape`).
 fn tray_icon(look: Look) -> Image<'static> {
     let (r, g, b) = match look {
         Look::Up => (0x2F, 0xBE, 0x6C),     // поток
@@ -640,7 +667,8 @@ fn tray_icon(look: Look) -> Image<'static> {
                 for sx in 0..4 {
                     let px = (x as f32 + (sx as f32 + 0.5) / 4.0) * 100.0 / ICON as f32;
                     let py = (y as f32 + (sy as f32 + 0.5) / 4.0) * 100.0 / ICON as f32;
-                    if inside(px, py) {
+                    let (badge, gap) = badge_at(look, px, py);
+                    if badge || (inside(px, py) && !gap) {
                         hits += 1;
                     }
                 }
@@ -649,10 +677,33 @@ fn tray_icon(look: Look) -> Image<'static> {
             rgba[i] = r;
             rgba[i + 1] = g;
             rgba[i + 2] = b;
-            rgba[i + 3] = (hits * 255 / 16) as u8;
+            // «Выключено» — марка вполсилы: цвет серый, и без этого на серой
+            // панели задач она читалась бы как «защищено» тем, кто цветов не
+            // различает.
+            let alpha = hits * 255 / 16;
+            let alpha = if look == Look::Off { alpha * 55 / 100 } else { alpha };
+            rgba[i + 3] = alpha as u8;
         }
     }
     Image::new_owned(rgba, ICON, ICON)
+}
+
+/// Бляшка состояния в поле 100×100: сама и зазор вокруг неё. Зазор вычитается
+/// из марки, чтобы бляшка не слилась с корпусом — цвет у них один. Размеры под
+/// 16 px: точка выходит около четырёх пикселей, чёрточка — пять на два; меньше
+/// не читается, больше съедает лаз. Центр — нижний угол, дальний от лаза.
+fn badge_at(look: Look, x: f32, y: f32) -> (bool, bool) {
+    const AT: (f32, f32) = (78.0, 78.0);
+    const GAP: f32 = 7.0;
+    let (dx, dy) = ((x - AT.0).abs(), (y - AT.1).abs());
+    match look {
+        Look::Fault => {
+            let d = (dx * dx + dy * dy).sqrt();
+            (d <= 13.0, d <= 13.0 + GAP)
+        }
+        Look::Closed => (dx <= 17.0 && dy <= 6.0, dx <= 17.0 + GAP && dy <= 6.0 + GAP),
+        Look::Up | Look::Wait | Look::Off => (false, false),
+    }
 }
 
 /// Точка внутри массы знака: в корпусе и не в лазу. Лаз сквозной, поэтому он
@@ -835,7 +886,25 @@ fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
 fn detached(req: Request) {
     std::thread::spawn(move || {
         let _ = call(&req);
+        nudge();
     });
+}
+
+/// Толчок кругу значка: команда из меню значка или окна только что сменила
+/// состояние, и ждать до трёх секунд, показывая прежнее, незачем — выбрали
+/// профиль, а галочка и подпись стоят на старом. Запомненный статус
+/// забывается, чтобы круг не взял его из отметки: он старше команды. Сам круг
+/// ждёт на условной переменной, а не спит, — иначе будить его было бы нечем.
+static NUDGE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+
+fn nudge() {
+    if let Ok(mut seen) = SEEN.lock() {
+        *seen = None;
+    }
+    if let Ok(mut due) = NUDGE.0.lock() {
+        *due = true;
+    }
+    NUDGE.1.notify_all();
 }
 
 /// Плашка гаснет при потере фокуса — а клик по значку фокус и уводит. Без этой
@@ -931,6 +1000,7 @@ fn tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                             let _ = call(&Request::Off);
                         }
                     }
+                    nudge();
                 });
             }
             // Имя профиля приходит из подписки и содержит что угодно, включая
@@ -1020,7 +1090,14 @@ fn tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            std::thread::sleep(TRAY_EVERY);
+            // До следующего круга — или до толчка (`nudge`), смотря что раньше.
+            let (due, wake) = &NUDGE;
+            if let Ok(due) = due.lock() {
+                let (mut due, _) = wake
+                    .wait_timeout_while(due, TRAY_EVERY, |due| !*due)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                *due = false;
+            }
         }
     });
     Ok(())

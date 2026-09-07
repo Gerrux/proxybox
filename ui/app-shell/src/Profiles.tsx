@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import qrcode from "qrcode-generator";
 import type { Act, Lang, ProfileInfo, Probe, Quota, Response, Status, Subscription } from "./platform";
 import type { Strings } from "./i18n";
@@ -62,6 +62,32 @@ function imported(s: Strings, r: Response | null): Outcome {
   return { ok: true, note: lines.join("\n"), bad: r.data.added === 0 && r.data.skipped_total > 0 };
 }
 
+/** Есть ли во вставке адрес подписки. Предпросмотр нужен только ей: подписка
+ *  заменяет свой набор целиком, и «нашли 84 узла, три уйдут — применить?»
+ *  спрашивается до замены, а не сообщается после. Голые ссылки заводятся сразу,
+ *  как и раньше: у них нечему пропадать, а лишний шаг на каждую — это лишний
+ *  шаг. */
+function hasSubscription(text: string): boolean {
+  return text.split("\n").some((line) => /^https?:\/\//i.test(line.trim()));
+}
+
+/** Ответ предпросмотра — тем же счётом, но в будущем времени и с кнопкой
+ *  «Применить». `ok: false` здесь значит «поле не чистить»: текст ещё нужен
+ *  второму шагу. */
+function previewed(s: Strings, r: Response | null, apply: () => Promise<Outcome>): Outcome {
+  if (r == null) return { ok: false };
+  if (r.reply === "error") return { ok: false, note: r.data.message, bad: true };
+  if (r.reply !== "imported") return { ok: false };
+  const lines = [s.previewNote(r.data.added, r.data.kept, r.data.gone)];
+  if (r.data.skipped_total > 0) lines.push(s.skipped(r.data.skipped_total), ...r.data.skipped);
+  return {
+    ok: false,
+    note: lines.join("\n"),
+    bad: r.data.added === 0 && r.data.skipped_total > 0,
+    confirm: { label: s.previewApply, run: apply },
+  };
+}
+
 /** Остаток по подписке: сколько израсходовано из лимита и до какого числа.
  *
  *  Ноль в поле значит «панель не прислала», и то же значение стоит у
@@ -122,8 +148,11 @@ function Verdict({ probe, failed, measured }: { probe: Probe | undefined; failed
     // Мёртвый профиль — поломка, которую чинит человек, а не запертый канал:
     // цвет тот же, что у «служба не отвечает».
     // Она же длиннее всего в строке и потому уступает место первой.
+    // В строке — причина в два слова, если служба её разобрала («таймаут»,
+    // «отказ TLS»): «не отвечает» у всех одинаково, а чинят их по-разному.
+    // Полная строка остаётся подсказкой.
     <span className="min-w-0 truncate font-mono text-[11px] text-fault" title={probe.error ?? failed}>
-      {failed}
+      {probe.brief ?? failed}
     </span>
   );
 }
@@ -199,6 +228,41 @@ export function Profiles({
   const profiles = status?.profiles ?? [];
   const subscriptions = status?.subscriptions ?? [];
   const [query, setQuery] = useState("");
+  // Клавиши панели. Обе смотрят, видна ли панель: в узком окне она одна из
+  // трёх, и Ctrl+F в открытом списке приложений не должен уводить фокус в
+  // невидимое поле. `offsetParent` у скрытого `display: none` — null.
+  // Вставка — с чем открыли поле; поиск по Ctrl+F показывается и в коротком
+  // списке, где кнопки поиска нет.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [pasted, setPasted] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  useEffect(() => {
+    const visible = () => bodyRef.current?.offsetParent != null && document.querySelector("dialog[open]") == null;
+    const editable = (t: EventTarget | null) =>
+      t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
+    const onPaste = (e: ClipboardEvent) => {
+      if (!visible() || editable(e.target)) return;
+      const text = e.clipboardData?.getData("text") ?? "";
+      if (!text.trim()) return;
+      e.preventDefault();
+      setPasted(text);
+      setAdding(true);
+    };
+    // По коду клавиши, а не по символу: на русской раскладке это «а».
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.code !== "KeyF" || !visible()) return;
+      e.preventDefault();
+      setSearchOpen(true);
+      requestAnimationFrame(() => searchRef.current?.focus());
+    };
+    window.addEventListener("paste", onPaste);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("paste", onPaste);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, []);
   // Импорт — отдельным окном поверх панели, а не полем внутри неё. Полем оно и
   // было: две строки раздвигали список сверху, и всё, ради чего панель
   // открывали, уезжало вниз — в том числе строка, на которую человек уже
@@ -259,7 +323,7 @@ export function Profiles({
   };
   // Поле не прячем, пока в нём что-то есть: иначе фильтр остался бы включённым
   // и невидимым, а строки просто пропали бы.
-  const searchable = profiles.length > SEARCH_FROM || query !== "";
+  const searchable = profiles.length > SEARCH_FROM || query !== "" || searchOpen;
   // Прогон запускают ровно затем, чтобы выбрать быстрый узел, — а в списке на
   // сотню строк 40 ms до сих пор искали глазами. Переключатель показывается,
   // только когда есть что упорядочивать: без единого измерения он не сделал бы
@@ -518,9 +582,15 @@ export function Profiles({
       {/* Группы стоят вплотную: разводит их не пустота между ними, а полоса
           заголовка (`.sub-head`). Пока разводила пустота, её приходилось
           держать в 12 px — и три подписки стоили целой строки профиля. */}
-      <div className="flex flex-col gap-2">
+      <div ref={bodyRef} className="flex flex-col gap-2">
         {adding && (
-          <Modal title={s.importLink} onClose={() => setAdding(false)}>
+          <Modal
+            title={s.importLink}
+            onClose={() => {
+              setAdding(false);
+              setPasted("");
+            }}
+          >
             {/* Окно не закрывается на удачный импорт: ответом приезжает счёт
                 («заведено 12, пропущено 38»), и закрыть его вместе с окном
                 значило бы снова не сказать, куда делись остальные. */}
@@ -530,11 +600,20 @@ export function Profiles({
               busyLabel={s.importing}
               fileLabel={s.fromFile}
               hint={(value) => sniff(s, value)}
-              onSubmit={(link) => act({ cmd: "add-profile", arg: { link } }).then((r) => imported(s, r))}
+              initial={pasted}
+              onSubmit={(link) => {
+                const apply = () => act({ cmd: "add-profile", arg: { link } }).then((r) => imported(s, r));
+                // Подписка — сперва счёт без замены, потом «Применить»;
+                // ссылки — сразу, у них нечему пропадать.
+                if (!hasSubscription(link)) return apply();
+                return act({ cmd: "preview", arg: { link } }).then((r) => previewed(s, r, apply));
+              }}
             />
           </Modal>
         )}
-        {searchable && <SearchField value={query} onChange={setQuery} placeholder={s.searchProfiles} />}
+        {searchable && (
+          <SearchField inputRef={searchRef} value={query} onChange={setQuery} placeholder={s.searchProfiles} />
+        )}
         {!grouped && profiles.length === 0 ? (
           // Пустому списку нужна не подпись, а дверь: поле импорта больше не
           // открыто само, и «+» в шапке — единственное, чем этот список
@@ -1192,7 +1271,10 @@ function Rows({
         return (
           <li
             key={name}
-            className="flex flex-col"
+            // `cv-row`: строка под прокруткой не раскладывается, пока не
+            // видна (`index.css`) — подписка в сотни узлов иначе платила
+            // раскладкой всех на каждый опрос.
+            className="cv-row flex flex-col"
             draggable={onReorder != null}
             onDragStart={(e) => {
               setDragged(name);

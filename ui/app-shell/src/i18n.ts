@@ -347,6 +347,19 @@ const RU = {
     "Это не поломка, а само обещание.",
   welcomeHide: "Скрыть",
   welcomeStepDone: "готово",
+  failoverTitle: "Автопереключение узла",
+  failoverHint:
+    "Узел трижды подряд не ответил пробе — служба сама переходит на самый быстрый из отвечавших в последнем прогоне, потом на остальные по кругу. Выключено: узел выбираете вы, а другой сервер — это другая страна выхода. Упавший процесс sing-box сюда не относится: его надзор и так поднимает заново",
+  previewNote: (added: number, kept: number, gone: number) =>
+    `Будет заведено: ${added}, уже есть: ${kept}, уйдёт из подписки: ${gone}`,
+  previewApply: "Применить",
+  whatsWrong: "Что не так?",
+  whatsWrongJournal: "Последнее из журнала службы",
+  whatsWrongLog: "Хвост журнала sing-box",
+  whatsWrongEmpty: "sing-box ещё ничего не записал",
+  shortcutsTitle: "Клавиши",
+  shortcutsHint:
+    "Ctrl+V поверх списка — импорт из буфера, Ctrl+F — поиск по профилям, Ctrl+, — настройки, Esc — закрыть окно поверх",
 };
 
 const EN: typeof RU = {
@@ -656,6 +669,19 @@ const EN: typeof RU = {
     "That is not a fault — it is the promise itself.",
   welcomeHide: "Hide",
   welcomeStepDone: "done",
+  failoverTitle: "Automatic node switching",
+  failoverHint:
+    "When the node misses three probes in a row, the service moves to the fastest node that answered in the last run, then through the rest in turn. Off: you pick the node, and another server means another exit country. A crashed sing-box process is not covered here: the supervisor restarts it anyway",
+  previewNote: (added: number, kept: number, gone: number) =>
+    `Will add: ${added}, already present: ${kept}, will leave the subscription: ${gone}`,
+  previewApply: "Apply",
+  whatsWrong: "What's wrong?",
+  whatsWrongJournal: "Latest from the service journal",
+  whatsWrongLog: "Tail of the sing-box log",
+  whatsWrongEmpty: "sing-box has not written anything yet",
+  shortcutsTitle: "Keys",
+  shortcutsHint:
+    "Ctrl+V over the list — import from the clipboard, Ctrl+F — search profiles, Ctrl+, — settings, Esc — close the overlay",
 };
 
 const FA: typeof RU = {
@@ -968,6 +994,19 @@ const FA: typeof RU = {
     "این خرابی نیست، خودِ همان وعده است.",
   welcomeHide: "پنهان کردن",
   welcomeStepDone: "انجام شد",
+  failoverTitle: "سوئیچ خودکار گره",
+  failoverHint:
+    "اگر گره سه بار پشت سر هم به آزمایش پاسخ ندهد، سرویس خودش به سریع‌ترین گره‌ای که در آخرین آزمون پاسخ داده می‌رود و بعد به بقیه به ترتیب. خاموش: گره را شما انتخاب می‌کنید و سرور دیگر یعنی کشور خروجی دیگر. فرآیند sing-box که از کار افتاده اینجا حساب نمی‌شود: ناظر خودش آن را دوباره راه می‌اندازد",
+  previewNote: (added: number, kept: number, gone: number) =>
+    `اضافه می‌شود: ${added}، از قبل هست: ${kept}، از اشتراک می‌رود: ${gone}`,
+  previewApply: "اعمال",
+  whatsWrong: "مشکل چیست؟",
+  whatsWrongJournal: "آخرین مورد از گزارش سرویس",
+  whatsWrongLog: "انتهای گزارش sing-box",
+  whatsWrongEmpty: "sing-box هنوز چیزی ننوشته است",
+  shortcutsTitle: "کلیدها",
+  shortcutsHint:
+    "Ctrl+V روی فهرست — وارد کردن از کلیپ‌بورد، Ctrl+F — جستجوی پروفایل‌ها، Ctrl+, — تنظیمات، Esc — بستن پنجرهٴ رویی",
 };
 
 /** Китайский (упрощённое письмо). */
@@ -1279,6 +1318,18 @@ const ZH: typeof RU = {
     "隧道未确认之前，选中的程序一直没有网络。这不是故障，这正是那个承诺本身。",
   welcomeHide: "隐藏",
   welcomeStepDone: "已完成",
+  failoverTitle: "自动切换节点",
+  failoverHint:
+    "节点连续三次探测无响应时，服务自动切换到上次检测中响应最快的节点，之后依次尝试其余节点。关闭：节点由您选择，换服务器就意味着换出口国家。sing-box 进程崩溃不在此列：监管本来就会重新拉起它",
+  previewNote: (added: number, kept: number, gone: number) =>
+    `将添加：${added}，已有：${kept}，将从订阅中移除：${gone}`,
+  previewApply: "应用",
+  whatsWrong: "出了什么问题？",
+  whatsWrongJournal: "服务日志最新记录",
+  whatsWrongLog: "sing-box 日志尾部",
+  whatsWrongEmpty: "sing-box 尚未写入任何内容",
+  shortcutsTitle: "快捷键",
+  shortcutsHint: "在列表上 Ctrl+V — 从剪贴板导入，Ctrl+F — 搜索配置，Ctrl+, — 设置，Esc — 关闭弹层",
 };
 
 /** Турецкий. */
@@ -1592,6 +1643,19 @@ const TR: typeof RU = {
     "Bu bir arıza değil, vaadin ta kendisidir.",
   welcomeHide: "Gizle",
   welcomeStepDone: "tamam",
+  failoverTitle: "Düğümü otomatik değiştir",
+  failoverHint:
+    "Düğüm üç yoklamaya art arda yanıt vermezse hizmet son denemede yanıt veren en hızlı düğüme, ardından sırayla diğerlerine geçer. Kapalı: düğümü siz seçersiniz, başka sunucu başka çıkış ülkesi demektir. Çöken sing-box süreci buna dahil değil: gözetim onu zaten yeniden başlatır",
+  previewNote: (added: number, kept: number, gone: number) =>
+    `Eklenecek: ${added}, zaten var: ${kept}, abonelikten çıkacak: ${gone}`,
+  previewApply: "Uygula",
+  whatsWrong: "Sorun ne?",
+  whatsWrongJournal: "Hizmet günlüğünden son kayıt",
+  whatsWrongLog: "sing-box günlüğünün sonu",
+  whatsWrongEmpty: "sing-box henüz bir şey yazmadı",
+  shortcutsTitle: "Tuşlar",
+  shortcutsHint:
+    "Liste üzerinde Ctrl+V — panodan içe aktar, Ctrl+F — profillerde ara, Ctrl+, — ayarlar, Esc — üstteki pencereyi kapat",
 };
 
 /** Индонезийский. */
@@ -1906,6 +1970,19 @@ const ID: typeof RU = {
     "Itu bukan kerusakan, melainkan janjinya sendiri.",
   welcomeHide: "Sembunyikan",
   welcomeStepDone: "selesai",
+  failoverTitle: "Ganti node otomatis",
+  failoverHint:
+    "Bila node tiga kali berturut-turut tidak menjawab probe, layanan sendiri beralih ke node tercepat yang menjawab pada uji terakhir, lalu ke yang lain bergiliran. Mati: node Anda pilih sendiri, dan server lain berarti negara keluar lain. Proses sing-box yang jatuh tidak termasuk: pengawas memang menjalankannya lagi",
+  previewNote: (added: number, kept: number, gone: number) =>
+    `Akan ditambahkan: ${added}, sudah ada: ${kept}, akan keluar dari langganan: ${gone}`,
+  previewApply: "Terapkan",
+  whatsWrong: "Ada apa?",
+  whatsWrongJournal: "Terbaru dari jurnal layanan",
+  whatsWrongLog: "Bagian akhir log sing-box",
+  whatsWrongEmpty: "sing-box belum menulis apa pun",
+  shortcutsTitle: "Tombol",
+  shortcutsHint:
+    "Ctrl+V di atas daftar — impor dari papan klip, Ctrl+F — cari profil, Ctrl+, — pengaturan, Esc — tutup jendela di atas",
 };
 
 export type Strings = typeof RU;

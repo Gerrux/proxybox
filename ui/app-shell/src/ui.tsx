@@ -225,7 +225,15 @@ const FIELD_MULTI = `${FIELD.replace("h-8", "h-auto")} resize-none py-[5px] lead
 /** Чем кончилась отправка: приняли ли и что сказали. Служба отвечает не только
  *  «да» и «нет» — из импорта приезжает счёт («заведено 12, пропущено 38»), и
  *  показывать его надо там же, куда вставляли. */
-export type Outcome = { ok: boolean; note?: string; bad?: boolean };
+export type Outcome = {
+  ok: boolean;
+  note?: string;
+  bad?: boolean;
+  /** Второй шаг: подпись и действие. Так возвращается предпросмотр импорта —
+   *  счёт «будет заведено / уйдёт» и кнопка «Применить» под ним; поле при
+   *  этом не чистится, пока второй шаг не сбылся. */
+  confirm?: { label: string; run: () => Promise<Outcome> };
+};
 
 /** Поле «ввести и добавить»: своё состояние держит само — снаружи оно не нужно.
  *
@@ -248,6 +256,7 @@ export function AddField({
   busyLabel,
   fileLabel,
   className = "",
+  initial,
 }: {
   placeholder: string;
   label: string;
@@ -264,8 +273,17 @@ export function AddField({
    *  приложений набирают путём, а не файлом. */
   fileLabel?: string;
   className?: string;
+  /** Чем поле заполнено при открытии: Ctrl+V поверх списка открывает его уже
+   *  со вставленным. */
+  initial?: string;
 }) {
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(initial ?? "");
+  // Итог шага — под поле; на «приняли» поле чистится. Общий для отправки и
+  // для второго шага (`confirm`), чтобы они не разошлись в том, когда чистить.
+  const finish = (outcome: Outcome) => {
+    setSaid(outcome.note ? outcome : null);
+    if (outcome.ok) setValue("");
+  };
   // Что ответила служба на прошлую отправку. Живёт под этим полем, а не в общей
   // рамке наверху окна: «пропущено 38 строк» — это про то, что вставили сюда, и
   // читать это надо не отводя глаз от вставленного.
@@ -294,10 +312,7 @@ export function AddField({
           if (!trimmed || busy) return;
           setBusy(true);
           void onSubmit(trimmed)
-            .then((outcome) => {
-              setSaid(outcome.note ? outcome : null);
-              if (outcome.ok) setValue("");
-            })
+            .then(finish)
             .finally(() => setBusy(false));
         }}
       >
@@ -348,7 +363,25 @@ export function AddField({
         </div>
       </form>
       {said?.note && (
-        <span className={`text-[11px] ${said.bad ? "text-fault" : "text-muted"}`}>{said.note}</span>
+        <div className="flex items-start gap-2">
+          <span className={`min-w-0 flex-1 whitespace-pre-line text-[11px] ${said.bad ? "text-fault" : "text-muted"}`}>
+            {said.note}
+          </span>
+          {said.confirm && (
+            <Button
+              variant="primary"
+              disabled={busy}
+              onClick={() => {
+                const run = said.confirm?.run;
+                if (!run) return;
+                setBusy(true);
+                void run().then(finish).finally(() => setBusy(false));
+              }}
+            >
+              {said.confirm.label}
+            </Button>
+          )}
+        </div>
       )}
       {!said && sniffed && <span className="text-[11px] text-muted">{sniffed}</span>}
     </div>
@@ -545,13 +578,17 @@ export function SearchField({
   value,
   onChange,
   placeholder,
+  inputRef,
 }: {
   value: string;
   onChange: (value: string) => void;
   placeholder: string;
+  /** Кому отдать фокус по Ctrl+F. */
+  inputRef?: React.Ref<HTMLInputElement>;
 }) {
   return (
     <input
+      ref={inputRef}
       type="search"
       value={value}
       onChange={(e) => onChange(e.target.value)}
