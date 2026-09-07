@@ -121,4 +121,9 @@ jobs:
       # здесь оно оказалось включённым: молчаливый откат на путь до узла
       # (отвалившийся `apt-get`, смена образа раннера, потерянный `sudo -E`)
       # иначе зеленил бы job, не проверив инвариант вовсе.
-      - run: sudo -E PG_SINGBOX=/usr/local/bin/sing-box PG_E2E_FULL=1 scripts/e2e.sh
+      #
+      # `env "PATH=$PATH"` обязателен: sudo сбрасывает PATH по `secure_path` из
+      # sudoers, а cargo лежит в `~/.cargo/bin`, которого там нет, — скрипт
+      # падал на `cargo: command not found` первой же строкой сборки. `-E`
+      # сохраняет переменные, но PATH к ним не относится.
+      - run: sudo -E env "PATH=$PATH" PG_SINGBOX=/usr/local/bin/sing-box PG_E2E_FULL=1 scripts/e2e.sh
