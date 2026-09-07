@@ -313,7 +313,11 @@ export function StatusBar({
           >
             {view.title}
           </h1>
-          <p key={view.hint} className="st-hint swap mt-2 text-[13px] text-muted">
+          {/* Подсказка целиком остаётся в `title`: в плашке из трея она
+              обрезается до одной строки (`index.css`), а обрезается там как раз
+              хвост — отсчёт до следующей попытки. Ради него подсказка и
+              дописывается, и терять его молча нельзя. */}
+          <p key={view.hint} title={view.hint} className="st-hint swap mt-2 text-[13px] text-muted">
             {view.hint}
           </p>
         </div>
@@ -353,8 +357,15 @@ export function StatusBar({
               съедать и его выезд с въездом — иначе он выныривал бы за лампой. */}
           <span className="conduit-glow" />
         </span>
-        <span className="conduit-end smooth" />
-        <span className="engraved shrink-0 text-muted">{s.conduitTo}</span>
+        {/* Подпись приёмника уходит с глаз в плашке из трея, а сам приёмник
+            остаётся: 380 px эта строка не выдерживала и переносила канал под
+            охват — целый ряд ради одного слова, которое и так стоит на конце
+            картинки. Слово при этом не пропадает: оно на самом приёмнике, для
+            подсказки и для чтения с экрана. */}
+        <span className="conduit-end smooth" title={s.conduitTo} aria-label={s.conduitTo} />
+        <span className="conduit-to engraved shrink-0 text-muted" aria-hidden="true">
+          {s.conduitTo}
+        </span>
       </div>
 
       {/* Пять колонок или ни одной: промежуточные сетки из двух и трёх колонок

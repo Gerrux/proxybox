@@ -40,6 +40,34 @@ export function Panel({
   );
 }
 
+/** Порог узкого окна — тот же, по которому сжимается раскладка в `index.css`
+ *  (`@media (max-width: 470px)`): плашка из трея открывается в 380 px, и
+ *  главное окно ужимается до тех же 380 (`minWidth` в `tauri.conf.json`).
+ *  Второй порог рядом с первым разъезжался бы с ним молча.
+ *
+ *  Спрашиваем в JS, а не прячем классом, ровно там, где меняется не вид, а
+ *  разметка: свернуть четыре кнопки в одно меню классом нельзя — пришлось бы
+ *  держать в дереве оба комплекта, то есть два обработчика на одно действие и
+ *  вдвое больше того, что зачитывает экранный диктор.
+ *
+ *  Ширина, а не `isFlyout()`: главное окно, растянутое на 380 px, — та же
+ *  теснота, и разбирать её вторым правилом незачем. */
+const NARROW = "(max-width: 470px)";
+
+export function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(NARROW);
+    const seen = () => setNarrow(mq.matches);
+    // Первый замер сделан в инициализаторе состояния, но между ним и подпиской
+    // окно могли успеть потянуть за угол: сверяемся ещё раз.
+    seen();
+    mq.addEventListener("change", seen);
+    return () => mq.removeEventListener("change", seen);
+  }, []);
+  return narrow;
+}
+
 const VARIANTS = {
   primary: "border-transparent bg-accent text-bg hover:opacity-90",
   ghost: "border-edge bg-surface-2 hover:border-accent",
