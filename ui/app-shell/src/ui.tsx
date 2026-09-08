@@ -222,6 +222,10 @@ export const FIELD =
 /** То же поле, но многострочное: высоту задаёт `rows`, а не `h-8`. */
 const FIELD_MULTI = `${FIELD.replace("h-8", "h-auto")} resize-none py-[5px] leading-[22px]`;
 
+/** Поиск — основное действие над длинным списком, поэтому у него удобная для
+ *  мыши высота, не раздувающая компактные поля форм. */
+const FIELD_SEARCH = FIELD.replace("h-8", "h-10");
+
 /** Чем кончилась отправка: приняли ли и что сказали. Служба отвечает не только
  *  «да» и «нет» — из импорта приезжает счёт («заведено 12, пропущено 38»), и
  *  показывать его надо там же, куда вставляли. */
@@ -594,7 +598,7 @@ export function SearchField({
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
       spellCheck={false}
-      className={FIELD}
+      className={FIELD_SEARCH}
     />
   );
 }
