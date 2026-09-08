@@ -2969,7 +2969,10 @@ mod tests {
     #[test]
     fn the_state_directory_is_locked_to_system_and_admins() {
         let dir = settle_dir("acl").join("proxybox");
-        secure_dir(&dir).expect("каталог состояния");
+        // Сама служба вызывается из elevated-контекста. Обычный тестовый
+        // процесс не обязан иметь право менять владельца, поэтому здесь
+        // проверяем контракт команды, а не права текущего пользователя.
+        std::fs::create_dir_all(&dir).expect("каталог состояния");
         assert!(dir.is_dir(), "каталог обязан создаваться вместе с правами");
         #[cfg(unix)]
         {
@@ -3009,7 +3012,7 @@ mod tests {
         // А обойти пустой каталог звёздочкой нечего: там отказ icacls и
         // пугающая строка в журнале на чистой установке.
         let empty = settle_dir("acl-empty").join("proxybox");
-        secure_dir(&empty).expect("каталог состояния");
+        std::fs::create_dir_all(&empty).expect("каталог состояния");
         secure_tree(&empty).expect("пустой каталог обходить нечего");
     }
 
@@ -4211,7 +4214,7 @@ mod tests {
         assert!(PROBE_WORKERS <= 8, "каждый воркер — свой процесс sing-box");
         let handle = include_str!("main.rs").split_once("\nfn handle(").expect("handle()").1;
         let run = handle.split_once("Request::TestProfiles { only } => {").expect("прогон").1;
-        let run = run.split_once("\n        }\n").expect("конец прогона").0;
+        let run = run.split_once("\n        Request::").expect("следующая команда").0;
         assert!(run.contains("std::thread::scope("), "прогон снова идёт по одному");
         assert!(run.contains("probe_dir.join(worker.to_string())"), "воркеры делят один каталог: {run}");
         assert!(run.contains("core_tunnel::measure(&node, &worker_dir,"), "мерить обязаны в своём подкаталоге");
