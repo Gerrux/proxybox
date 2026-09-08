@@ -35,6 +35,7 @@ export function Journal({ lines, lang, className }: { lines: LogLine[]; lang?: L
       .join("\n");
   return (
     <Panel
+      pad="p-3.5"
       className={className}
       title={s.journal}
       action={

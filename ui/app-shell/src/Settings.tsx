@@ -215,6 +215,7 @@ export function Settings({
 
   return (
     <Panel
+      pad="p-3.5"
       className={className}
       title={s.settings}
       action={
