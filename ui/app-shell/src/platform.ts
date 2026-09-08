@@ -262,7 +262,7 @@ export type Request =
    *  только имя. Узел из подписки служба править не даст: сверка вернёт своё. */
   | { cmd: "edit-profile"; arg: { name: string; rename: string; node: string } }
   | { cmd: "remove-profile"; arg: { name: string } }
-  /** Подписки заводятся через add-profile с https-адресом; повторный импорт
+  /** Подписки заводятся через add-profile с адресом http(s); повторный импорт
    *  того же адреса её обновляет. Отдельная команда нужна только на «отписаться». */
   | { cmd: "remove-subscription"; arg: { url: string } }
   /** Назвать подписку по-человечески. Пустое имя возвращает показ адреса. */

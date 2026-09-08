@@ -21,7 +21,7 @@ const USAGE_RU: &str = "proxybox <команда>
   scope whitelist|all    охват: сеть только выбранным приложениям и только
                          через туннель; либо весь трафик машины в туннель
   add-profile --link <l> импортировать share-link (vless/vmess/trojan/ss/hy2/tuic/wg),
-                         JSON-конфиг sing-box или подписку по https-адресу;
+                         JSON-конфиг sing-box или подписку по адресу http(s);
                          тот же адрес повторно — обновить подписку
   profiles               список профилей: имя, тип узла и куда он ведёт
   test [--profile <имя>] прогнать профили: кто отвечает и за сколько.
@@ -59,7 +59,7 @@ const USAGE_EN: &str = "proxybox <command>
   scope whitelist|all    scope: network for selected apps only and only
                          through the tunnel; or all machine traffic
   add-profile --link <l> import a share-link (vless/vmess/trojan/ss/hy2/tuic/wg),
-                         a sing-box JSON config or a subscription https URL;
+                         a sing-box JSON config or a subscription http(s) URL;
                          the same URL again refreshes the subscription
   profiles               list profiles: name, node type and where it points
   test [--profile <name>] run profiles: who answers and how fast.
@@ -97,7 +97,7 @@ const USAGE_FA: &str = "proxybox <فرمان>
   scope whitelist|all    دامنه: شبکه فقط برای برنامه‌های انتخاب‌شده و فقط از
                          راه تونل؛ یا همهٔ ترافیک رایانه در تونل
   add-profile --link <l> وارد کردن share-link (vless/vmess/trojan/ss/hy2/tuic/wg)،
-                         پیکربندی JSON سینگ‌باکس یا اشتراک با نشانی https؛
+                         پیکربندی JSON سینگ‌باکس یا اشتراک با نشانی http(s)؛
                          همان نشانی برای بار دوم — به‌روزرسانی اشتراک
   profiles               فهرست پروفایل‌ها: نام، نوع گره و مقصد آن
   test [--profile <نام>] آزمودن پروفایل‌ها: کدام پاسخ می‌دهد و در چه زمانی.
@@ -135,7 +135,7 @@ const USAGE_ZH: &str = "proxybox <命令>
   scope whitelist|all    范围：仅所选应用联网且只能走隧道；
                          或整机流量进入隧道
   add-profile --link <l> 导入 share-link（vless/vmess/trojan/ss/hy2/tuic/wg）、
-                         sing-box 的 JSON 配置，或 https 订阅地址；
+                         sing-box 的 JSON 配置，或 http(s) 订阅地址；
                          同一地址再来一次即更新订阅
   profiles               配置列表：名称、节点类型及去向
   test [--profile <名称>] 检测配置：谁有响应、用时多少。
@@ -173,7 +173,7 @@ const USAGE_TR: &str = "proxybox <komut>
   scope whitelist|all    kapsam: ağ yalnızca seçili uygulamalara ve yalnızca
                          tünel üzerinden; ya da makinenin tüm trafiği tünele
   add-profile --link <l> share-link (vless/vmess/trojan/ss/hy2/tuic/wg),
-                         sing-box JSON yapılandırması ya da https abonelik
+                         sing-box JSON yapılandırması ya da http(s) abonelik
                          adresi içe aktar; aynı adres yeniden — aboneliği tazeler
   profiles               profil listesi: ad, düğüm türü ve nereye gittiği
   test [--profile <ad>]  profilleri dene: kim yanıt veriyor, ne kadar sürede.
@@ -211,7 +211,7 @@ const USAGE_ID: &str = "proxybox <perintah>
   scope whitelist|all    cakupan: jaringan hanya untuk aplikasi terpilih dan
                          hanya lewat terowongan; atau seluruh lalu lintas mesin
   add-profile --link <l> impor share-link (vless/vmess/trojan/ss/hy2/tuic/wg),
-                         konfigurasi JSON sing-box, atau alamat langganan https;
+                         konfigurasi JSON sing-box, atau alamat langganan http(s);
                          alamat yang sama sekali lagi — menyegarkan langganan
   profiles               daftar profil: nama, jenis node, dan tujuannya
   test [--profile <nama>] uji profil: siapa yang menjawab dan seberapa cepat.

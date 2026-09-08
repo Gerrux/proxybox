@@ -1190,15 +1190,21 @@ fn probe_target(configured: &str, node: &Value) -> (String, u16) {
 /// подписку импортируют ровно тогда, когда туннеля ещё нет, поэтому без него
 /// идём напрямую; а не вышло через туннель — пробуем напрямую, потому что отказ
 /// сервера от блокировки здесь ничем не отличается.
+///
+/// Схема — любая из двух. Тело ответа — список серверов, через которые пойдёт
+/// весь трафик выбранных приложений, и по открытому каналу его подменяет любой,
+/// кто на пути: это не утечка, а подмена VPN целиком. Поэтому `http` здесь долго
+/// был отказом — пока не выяснилось, кому он отказывает: своей же панели (3x-ui
+/// отдаёт подписку с порта 2096 без TLS по умолчанию), которую человек ставил
+/// себе сам. Отказ вынуждал вписать `https://`, и SChannel отвечал на это кодом
+/// Windows (`SEC_E_INVALID_TOKEN`), из которого не прочесть ничего. Размен: по
+/// `http` качаем, но об этом сказано — строкой в журнале на нажатие
+/// (`subscribe`) и схемой в заголовке группы, которую окно у `https` прячет, а у
+/// `http` оставляет. Поднятый туннель закрывает открытый участок от провайдера:
+/// он остаётся между выходным узлом и панелью, а у панели на том же сервере, что
+/// и узел, его нет вовсе. Сторож —
+/// `a_subscription_is_fetched_over_plain_http`.
 fn fetch(url: &str, via_tunnel: bool) -> Result<(String, Option<String>), String> {
-    // Только https, и проверка здесь, а не в разборе команды: этот же fetch
-    // ходит за плановым обновлением подписки, адрес которой мог приехать в
-    // state.json ещё до этой проверки. Тело ответа — список серверов, через
-    // которые пойдёт весь трафик выбранных приложений; по открытому каналу его
-    // подменяет любой, кто на пути, и это не утечка, а подмена VPN целиком.
-    if !url.starts_with("https://") {
-        return Err(t("подписка только по https: по http список узлов подменит любой, кто на пути"));
-    }
     let direct = || get(url, None);
     if !via_tunnel {
         return direct();
@@ -1699,6 +1705,13 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Result<Tally, 
     let (body, userinfo) = fetch(url, via_tunnel)?;
     let batch = core_config::parse_many(&body);
     let mut s = lock(svc);
+    // Открытый канал называется в журнале на нажатие, а не на каждую сверку:
+    // сверка идёт в фоне и через поднятый туннель, если он есть, а строка раз в
+    // несколько часов читалась бы как новое событие. Событие же одно — человек
+    // так решил, — и стоит оно там, где он на журнал и смотрит.
+    if !scheduled && url.starts_with("http://") {
+        s.log(tf!("подписка {} качается по http: список узлов подменит любой, кто на пути", url));
+    }
     if batch.found.is_empty() {
         // Пустой ответ — это чаще всего не пустая подписка, а неверный адрес
         // или чужой формат. Старые профили в таком случае не трогаем.
@@ -3284,12 +3297,38 @@ mod tests {
         assert_eq!(explain("порт занят"), "порт занят", "не про TUN — не додумываем");
     }
 
-    /// Отказ от http обязан случиться до сети: этим же fetch ходит плановое
-    /// обновление подписки, а её адрес мог сохраниться до появления проверки.
+    /// Подписка по голому http качается, а не отвергается: свою панель человек
+    /// ставит без TLS чаще, чем с ним, и отказ бил ровно по нему. Сервер тут
+    /// свой, на петле, — сеть тесту не нужна, — а ответ обязан доехать целиком,
+    /// вместе с заголовком остатка. Адрес без схемы подпиской по-прежнему не
+    /// считается.
     #[test]
-    fn subscription_requires_https() {
-        let err = fetch("http://panel.example/sub", false).unwrap_err();
-        assert!(err.contains("https"), "{err}");
+    fn a_subscription_is_fetched_over_plain_http() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("порт на петле");
+        let port = listener.local_addr().unwrap().port();
+        let served = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().expect("подключение");
+            // Запрос дочитывается до пустой строки: ответ на недочитанный запрос
+            // клиент вправе счесть обрывом.
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n")
+                && std::io::Read::read(&mut conn, &mut byte).unwrap_or(0) == 1
+            {
+                request.push(byte[0]);
+            }
+            let body = "vless://11111111-1111-1111-1111-111111111111@a.com:443?security=tls#дом\n";
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nSubscription-Userinfo: upload=1; download=2; total=0; expire=0\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            std::io::Write::write_all(&mut conn, reply.as_bytes()).expect("ответ");
+        });
+        let (body, userinfo) = fetch(&format!("http://127.0.0.1:{port}/sub/russia"), false)
+            .expect("подписка по http обязана скачаться");
+        assert!(body.starts_with("vless://"), "тело доехало не то: {body}");
+        assert_eq!(userinfo.as_deref(), Some("upload=1; download=2; total=0; expire=0"));
+        served.join().expect("сервер отработал");
         assert!(fetch("panel.example/sub", false).is_err(), "схемы нет — тоже не подписка");
     }
 
