@@ -582,7 +582,7 @@ export function Profiles({
       {/* Группы стоят вплотную: разводит их не пустота между ними, а полоса
           заголовка (`.sub-head`). Пока разводила пустота, её приходилось
           держать в 12 px — и три подписки стоили целой строки профиля. */}
-      <div ref={bodyRef} className="flex flex-col gap-2">
+      <div ref={bodyRef} className="flex flex-col">
         {adding && (
           <Modal
             title={s.importLink}
