@@ -208,6 +208,7 @@ function Editor({
       className="enter fixed inset-0 z-10 flex flex-col bg-bg p-3"
     >
       <Panel
+        pad="p-3.5"
         className="min-h-0 flex-1"
         title={title}
         action={
@@ -444,6 +445,7 @@ export function Browsers({
   };
   return (
     <Panel
+      pad="p-3.5"
       className={className}
       title={s.browsers}
       note={items.length > 0 && <span className="text-muted">{items.length}</span>}

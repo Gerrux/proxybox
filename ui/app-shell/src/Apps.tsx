@@ -134,6 +134,7 @@ export function Apps({
 
   return (
     <Panel
+      pad="p-3.5"
       className={className}
       title={s.apps}
       note={

@@ -71,6 +71,7 @@ export function Conns({ status, className }: { status: Status | null; className?
 
   return (
     <Panel
+      pad="p-3.5"
       className={className}
       title={s.conns}
       note={

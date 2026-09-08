@@ -581,7 +581,14 @@ export function Profiles({
     >
       {/* Группы стоят вплотную: разводит их не пустота между ними, а полоса
           заголовка (`.sub-head`). Пока разводила пустота, её приходилось
-          держать в 12 px — и три подписки стоили целой строки профиля. */}
+          держать в 12 px — и три подписки стоили целой строки профиля.
+
+          Отступа у прокрутки нет вовсе (`pad` панели пуст), и это не экономия
+          места: липкий заголовок липнет не к кромке прокрутки, а к её полю за
+          вычетом отступа — с ним в полоске сверху были видны строки, уезжающие
+          под заголовок, то есть липкое не закрывало собой ровно то, ради чего
+          оно и липкое. Список поэтому идёт во всю ширину плиты, а поле поиска
+          и пустые состояния просят отступ сами. */}
       <div ref={bodyRef} className="flex flex-col">
         {adding && (
           <Modal
@@ -612,20 +619,24 @@ export function Profiles({
           </Modal>
         )}
         {searchable && (
-          <SearchField inputRef={searchRef} value={query} onChange={setQuery} placeholder={s.searchProfiles} />
+          <div className="p-3.5 pb-2">
+            <SearchField inputRef={searchRef} value={query} onChange={setQuery} placeholder={s.searchProfiles} />
+          </div>
         )}
         {!grouped && profiles.length === 0 ? (
           // Пустому списку нужна не подпись, а дверь: поле импорта больше не
           // открыто само, и «+» в шапке — единственное, чем этот список
           // заводят.
-          <div className="flex flex-col items-center gap-2">
+          <div className="flex flex-col items-center gap-2 p-3.5">
             <Empty>{s.noProfiles}</Empty>
             <Button variant="primary" onClick={() => setAdding(true)}>
               {s.importLink}
             </Button>
           </div>
         ) : shown === 0 && needle !== "" ? (
-          <Empty>{s.noMatches}</Empty>
+          <div className="p-3.5">
+            <Empty>{s.noMatches}</Empty>
+          </div>
         ) : !grouped ? (
           <Rows
             items={groups[0].items}
@@ -1202,7 +1213,10 @@ function Rows({
   const [dragged, setDragged] = useState<string | null>(null);
   const names = items.map((i) => i.name);
   return (
-    <ul className="flex flex-col gap-1">
+    // Отступ строк — на самом списке, а не на прокрутке: скруглённая подсветка
+    // строки иначе упирается в кромку плиты. Заголовок группы при этом остаётся
+    // во всю ширину — он рубеж списка, а не его строка.
+    <ul className="flex flex-col gap-1 px-1.5 py-1">
       {items.map((item) => {
         const name = item.name;
         const active = status?.profile === name;

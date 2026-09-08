@@ -9,12 +9,19 @@ export function Panel({
   note,
   action,
   className = "",
+  pad = "",
   children,
 }: {
   title: string;
   note?: ReactNode;
   action?: ReactNode;
   className?: string;
+  /** Отступ содержимого. Панель не даёт его сама: липкое внутри прокрутки
+   *  (`.sub-head` в списке профилей) липнет не к её кромке, а к полю за
+   *  вычетом её же отступа, и в полоске между ними видны строки, уезжающие
+   *  под заголовок. Список поэтому просит пустой отступ, а панели с обычным
+   *  содержимым — `p-3.5`; сторож — `the_sticky_head_sits_on_the_scroll_edge`. */
+  pad?: string;
   children: ReactNode;
 }) {
   return (
@@ -35,7 +42,7 @@ export function Panel({
         </h2>
         {action}
       </header>
-      <div className="scroll min-h-0 flex-1 overflow-y-auto p-3.5">{children}</div>
+      <div className={`scroll min-h-0 flex-1 overflow-y-auto ${pad}`}>{children}</div>
     </section>
   );
 }
