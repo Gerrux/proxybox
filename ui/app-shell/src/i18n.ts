@@ -246,7 +246,19 @@ const RU = {
     "Владельца ищет служба по локальному порту соединения. Имени нет, если соединение уже закрылось, порт делят два сокета или это трафик драйвера, службы и DNS.",
   connsEmptyFenced:
     "Невыбранные приложения заперты брандмауэром, и их соединений тут не бывает: пустой список и есть признак того, что отбор работает.",
-  rateHint: (peak: string) =>
+  connsFind: "приложение или адрес",
+  connsFindHint:
+    "Ищет служба, а не окно: список приезжает обрезанным по громкости, и тихое соединение окно бы уже не нашло.",
+  connsFound: (shown: number, matched: number, total: number) =>
+    shown < matched ? `${shown} из ${matched} — самые говорливые, всего ${total}` : `${matched} из ${total}`,
+  connsNothing: "Ничего не нашлось.",
+  connsFenced: (count: number) => `Заперты: ${count}`,
+  connsFencedHint:
+    "Запущенные приложения, которых нет в белом списке: сети у них нет, пока включён приватный режим. Что именно они пробовали открыть, не знает никто — отбитое соединение не оставляет следа нигде.",
+  connsAdd: "В белый список",
+  connsDrop: "Убрать из белого списка",
+  connsDropHint:
+    "Новых соединений мимо туннеля не появится. Живые правка не рвёт: правило работает на подключении, и уже открытый сокет идёт как шёл.",  rateHint: (peak: string) =>
     `Скорость канала: ↓ принято, ↑ отправлено. Шкала плавающая, пик окна — ${peak}. Считается по счётчикам туннеля прямо в окне и нигде не сохраняется; служба снимает их своим тактом, поэтому и график едет её шагом, а не шагом опроса.`,
   perSecond: "/с",
   hideMessage: "Скрыть сообщение",
@@ -570,7 +582,19 @@ const EN: typeof RU = {
     "The service finds the owner by the connection's local port. There is no name when the connection has already closed, two sockets share the port, or it is driver, service and DNS traffic.",
   connsEmptyFenced:
     "Apps you did not pick are fenced off by the firewall, and their connections never show up here: an empty list is the sign that the picking works.",
-  rateHint: (peak: string) =>
+  connsFind: "app or address",
+  connsFindHint:
+    "The service does the searching, not the window: the list arrives already cut by volume, and a quiet connection would be missing from it.",
+  connsFound: (shown: number, matched: number, total: number) =>
+    shown < matched ? `${shown} of ${matched} — the loudest, ${total} in all` : `${matched} of ${total}`,
+  connsNothing: "Nothing found.",
+  connsFenced: (count: number) => `Fenced: ${count}`,
+  connsFencedHint:
+    "Running apps that are not on the whitelist: they have no network while private mode is on. What they tried to reach nobody knows — a blocked connection leaves no trace anywhere.",
+  connsAdd: "Add to whitelist",
+  connsDrop: "Remove from whitelist",
+  connsDropHint:
+    "No new connection will go around the tunnel. Live ones are not cut: the rule works on connect, and an already open socket goes on as before.",  rateHint: (peak: string) =>
     `Link speed: ↓ received, ↑ sent. The scale floats with the window, peaking at ${peak}. Counted from the tunnel counters right here in the window and stored nowhere; the service samples them at its own pace, so the graph advances at that pace, not at the polling one.`,
   perSecond: "/s",
   hideMessage: "Hide message",
@@ -895,7 +919,19 @@ const FA: typeof RU = {
     "سرویس صاحب اتصال را از روی درگاه محلی آن می‌یابد. وقتی اتصال بسته شده باشد، دو سوکت درگاه را شریک باشند یا ترافیک از آنِ درایور، سرویس و DNS باشد، نامی در کار نیست.",
   connsEmptyFenced:
     "برنامه‌های انتخاب‌نشده را دیوارهٔ آتش بسته است و اتصال‌هایشان هرگز اینجا پیدا نمی‌شود: فهرست خالی خودْ نشانهٔ کار کردن گزینش است.",
-  rateHint: (peak: string) =>
+  connsFind: "برنامه یا نشانی",
+  connsFindHint:
+    "جست‌وجو را سرویس انجام می‌دهد، نه پنجره: فهرست بریده‌شده بر پایهٔ حجم می‌رسد و اتصال کم‌سروصدا دیگر در آن نیست.",
+  connsFound: (shown: number, matched: number, total: number) =>
+    shown < matched ? `${shown} از ${matched} — پرسروصداترین‌ها، در کل ${total}` : `${matched} از ${total}`,
+  connsNothing: "چیزی پیدا نشد.",
+  connsFenced: (count: number) => `بسته‌شده: ${count}`,
+  connsFencedHint:
+    "برنامه‌های در حال اجرا که در فهرست سفید نیستند: تا وقتی حالت خصوصی روشن است شبکه ندارند. اینکه چه چیزی را می‌خواستند باز کنند کسی نمی‌داند — اتصال مسدودشده هیچ ردی به جا نمی‌گذارد.",
+  connsAdd: "افزودن به فهرست سفید",
+  connsDrop: "برداشتن از فهرست سفید",
+  connsDropHint:
+    "اتصال تازه‌ای از کنار تونل نخواهد رفت. اتصال‌های زنده قطع نمی‌شوند: قاعده هنگام برقراری اتصال کار می‌کند و سوکت بازشده مثل قبل ادامه می‌دهد.",  rateHint: (peak: string) =>
     `سرعت کانال: ↓ دریافت، ↑ ارسال. مقیاس شناور است و اوج پنجره ${peak} است. از شمارنده‌های تونل همین‌جا در پنجره حساب می‌شود و هیچ‌جا ذخیره نمی‌شود؛ سرویس آن‌ها را با ضرب‌آهنگ خودش برمی‌دارد، پس نمودار هم با همان گام پیش می‌رود، نه با گام پرس‌وجو.`,
   perSecond: "/ث",
   hideMessage: "پنهان کردن پیام",
@@ -1221,7 +1257,19 @@ const ZH: typeof RU = {
     "服务按连接的本地端口寻找归属。若连接已关闭、两个套接字共用端口，或这是驱动、服务和 DNS 的流量，就没有名字。",
   connsEmptyFenced:
     "未被选中的应用已被防火墙隔离，它们的连接从不出现在这里：空列表正是挑选生效的标志。",
-  rateHint: (peak: string) =>
+  connsFind: "程序或地址",
+  connsFindHint:
+    "搜索由服务完成，而不是窗口：列表按流量截断之后才到达窗口，安静的连接早已不在其中。",
+  connsFound: (shown: number, matched: number, total: number) =>
+    shown < matched ? `${matched} 条中的 ${shown} 条 — 最活跃的，共 ${total} 条` : `${total} 条中的 ${matched} 条`,
+  connsNothing: "没有找到。",
+  connsFenced: (count: number) => `已封锁：${count}`,
+  connsFencedHint:
+    "正在运行但不在白名单中的程序：私密模式开启时它们没有网络。它们想访问什么无人知晓 — 被拦下的连接不会在任何地方留下痕迹。",
+  connsAdd: "加入白名单",
+  connsDrop: "移出白名单",
+  connsDropHint:
+    "不会再有新连接绕过隧道。已有连接不会被切断：规则作用于连接建立时，已打开的套接字照旧。",  rateHint: (peak: string) =>
     `通道速度：↓ 接收，↑ 发送。刻度随窗口浮动，峰值为 ${peak}。就在窗口里按隧道计数器算出，不存到任何地方；服务按自己的节拍取数，所以图线也按那个步子走，而不是按轮询的步子。`,
   perSecond: "/秒",
   hideMessage: "隐藏消息",
@@ -1544,7 +1592,19 @@ const TR: typeof RU = {
     "Hizmet sahibi, bağlantının yerel kapısından bulur. Bağlantı çoktan kapandıysa, kapıyı iki soket paylaşıyorsa ya da bu sürücü, hizmet ve DNS trafiğiyse ad çıkmaz.",
   connsEmptyFenced:
     "Seçmediğiniz uygulamalar güvenlik duvarıyla çevrildi ve bağlantıları burada hiç görünmez: boş liste, seçmenin işlediğinin ta kendisidir.",
-  rateHint: (peak: string) =>
+  connsFind: "uygulama ya da adres",
+  connsFindHint:
+    "Aramayı pencere değil servis yapar: liste hacme göre kırpılmış gelir ve sessiz bağlantı ondan çoktan çıkmıştır.",
+  connsFound: (shown: number, matched: number, total: number) =>
+    shown < matched ? `${matched} içinden ${shown} — en gürültülüleri, toplam ${total}` : `${total} içinden ${matched}`,
+  connsNothing: "Bir şey bulunamadı.",
+  connsFenced: (count: number) => `Kilitli: ${count}`,
+  connsFencedHint:
+    "Çalışan ama beyaz listede olmayan uygulamalar: gizli mod açıkken ağa çıkamazlar. Neye ulaşmak istediklerini kimse bilmiyor — engellenen bağlantı hiçbir yerde iz bırakmaz.",
+  connsAdd: "Beyaz listeye ekle",
+  connsDrop: "Beyaz listeden çıkar",
+  connsDropHint:
+    "Tünelin yanından yeni bağlantı geçmeyecek. Canlı bağlantılar kesilmez: kural bağlanma anında çalışır, açık soket eskisi gibi devam eder.",  rateHint: (peak: string) =>
     `Kanal hızı: ↓ alınan, ↑ gönderilen. Ölçek pencereyle birlikte oynar, tepe ${peak}. Tünel sayaçlarından tam burada, pencerede hesaplanır ve hiçbir yere kaydedilmez; hizmet onları kendi temposuyla alır, bu yüzden grafik de o adımla ilerler, sorgulama adımıyla değil.`,
   perSecond: "/sn",
   hideMessage: "İletiyi gizle",
@@ -1870,7 +1930,19 @@ const ID: typeof RU = {
     "Layanan mencari pemiliknya lewat porta lokal koneksi. Nama tidak ada bila koneksi sudah tertutup, dua soket berbagi porta, atau itu lalu lintas penggerak, layanan dan DNS.",
   connsEmptyFenced:
     "Aplikasi yang tidak Anda pilih dipagari firewall, dan koneksinya tidak pernah muncul di sini: daftar kosong justru tanda bahwa pemilihan bekerja.",
-  rateHint: (peak: string) =>
+  connsFind: "aplikasi atau alamat",
+  connsFindHint:
+    "Pencarian dilakukan layanan, bukan jendela: daftar tiba sudah dipotong menurut volume, dan koneksi yang sepi sudah tidak ada di dalamnya.",
+  connsFound: (shown: number, matched: number, total: number) =>
+    shown < matched ? `${shown} dari ${matched} — yang paling ramai, total ${total}` : `${matched} dari ${total}`,
+  connsNothing: "Tidak ada yang ditemukan.",
+  connsFenced: (count: number) => `Terkunci: ${count}`,
+  connsFencedHint:
+    "Aplikasi yang berjalan tetapi tidak ada di daftar putih: tanpa jaringan selama mode privat menyala. Apa yang hendak mereka buka tidak diketahui siapa pun — koneksi yang ditolak tidak meninggalkan jejak di mana pun.",
+  connsAdd: "Tambahkan ke daftar putih",
+  connsDrop: "Hapus dari daftar putih",
+  connsDropHint:
+    "Tidak akan ada koneksi baru yang lewat di luar terowongan. Koneksi hidup tidak diputus: aturan bekerja saat menyambung, dan soket yang sudah terbuka berjalan seperti semula.",  rateHint: (peak: string) =>
     `Kecepatan saluran: ↓ diterima, ↑ dikirim. Skalanya mengambang, puncak jendela ${peak}. Dihitung dari penghitung terowongan langsung di jendela ini dan tidak disimpan di mana pun; layanan mengambilnya dengan iramanya sendiri, jadi grafiknya pun melaju dengan langkah itu, bukan langkah permintaan.`,
   perSecond: "/dtk",
   hideMessage: "Sembunyikan pesan",

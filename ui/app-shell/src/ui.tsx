@@ -469,6 +469,16 @@ export type MenuItem = {
  *  Координаты физические (`clientX`), и логическими они быть не могут: это
  *  место курсора, а не отступ в раскладке. Упирается в край экрана — сдвигаем;
  *  до первого замера меню спрятано, иначе оно мигало бы на прежнем месте. */
+/** Где открыть меню. Точка курсора, а если нажали с клавиатуры (координат нет)
+ *  — под самой кнопкой. Живёт рядом с `Menu`, а не у вызывающего: панелей с
+ *  меню две, и разъехавшийся выбор точки читался бы как разное поведение
+ *  одного и того же меню. */
+export function spot(e: React.MouseEvent<HTMLElement>): [number, number] {
+  if (e.clientX || e.clientY) return [e.clientX, e.clientY];
+  const rect = e.currentTarget.getBoundingClientRect();
+  return [rect.left, rect.bottom];
+}
+
 export function Menu({
   at,
   items,

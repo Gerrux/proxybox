@@ -340,7 +340,7 @@ export function App() {
             {tab === "browsers" ? (
               <Browsers status={status} act={act} browse={browse} className="min-h-0 flex-1" />
             ) : tab === "conns" ? (
-              <Conns status={status} className="min-h-0 flex-1" />
+              <Conns status={status} act={act} className="min-h-0 flex-1" />
             ) : (
               <div className="panes gap-2.5">
                 <Profiles

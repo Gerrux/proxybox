@@ -351,7 +351,9 @@ fn parse(args: &[String]) -> Result<Request, String> {
         Some("profiles") => Ok(Request::Status),
         Some("settings") => Ok(Request::Status),
         Some("test") => Ok(Request::TestProfiles { only: flag(args, "--profile") }),
-        Some("conns") => Ok(Request::Connections),
+        // Отбор уходит в службу, а не режется здесь: список приезжает обрезанным
+        // по громкости, и `grep` по выводу нашёл бы только среди показанных.
+        Some("conns") => Ok(Request::Connections { filter: flag(args, "--find").unwrap_or_default() }),
         Some("browse") => flag(args, "--profile")
             .map(|profile| match args.iter().any(|a| a == "--stop") {
                 true => Request::BrowseStop { profile },
@@ -457,11 +459,14 @@ fn main() -> std::process::ExitCode {
         // (`ProfileNode`) спрашивает только форма правки в окне: править JSON в
         // одну строку аргумента незачем, когда рядом есть `add-profile`. Хвост
         // журнала sing-box (`SingboxLog`) — панель окна, а в консоли тот же
-        // файл читается чем угодно, и путь к нему говорит `doctor`.
+        // файл читается чем угодно, и путь к нему говорит `doctor`. Список
+        // запертых (`Fenced`) — кнопка «добавить» рядом со списком, и без
+        // кнопки он превращается в перечень всего запущенного.
         Ok(Response::Done
         | Response::Icon(_)
         | Response::ProfileNode { .. }
         | Response::SingboxLog { .. }
+        | Response::Fenced { .. }
         | Response::Pulse(_)) => {
             std::process::ExitCode::SUCCESS
         }
@@ -486,7 +491,7 @@ fn main() -> std::process::ExitCode {
             println!("socks5://127.0.0.1:{port}");
             std::process::ExitCode::SUCCESS
         }
-        Ok(Response::Connections { conns, total }) => {
+        Ok(Response::Connections { conns, total, matched }) => {
             for c in &conns {
                 // Маршрут первой колонкой: ради него список и спрашивают.
                 // Процесс — именем файла: путь целиком гонит строку за край, а
@@ -495,8 +500,13 @@ fn main() -> std::process::ExitCode {
                 let name = c.process.rsplit(['\\', '/']).next().unwrap_or("—");
                 println!("{route:<10} {:<24} {:<40} ↓{} ↑{}", if name.is_empty() { "—" } else { name }, c.host, bytes(c.rx), bytes(c.tx));
             }
-            if total > conns.len() {
-                println!("{}", tf!("… и ещё {}", total - conns.len()));
+            // Обрезано считается от совпавших, а не от всех: с непустым
+            // отбором «всего» — это вся машина, а не то, что искали.
+            if matched > conns.len() {
+                println!("{}", tf!("… и ещё {}", matched - conns.len()));
+            }
+            if matched != total {
+                println!("{}", tf!("совпало {} из {}", matched, total));
             }
             std::process::ExitCode::SUCCESS
         }

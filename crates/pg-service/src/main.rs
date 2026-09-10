@@ -2018,18 +2018,38 @@ fn leaks_first(conns: &mut [Conn], picked: &BTreeSet<String>) {
     for c in conns.iter_mut() {
         // Путь из sing-box и путь из списка — одна строка с точностью до
         // регистра: на Windows их не различает и сама файловая система.
-        c.leak = !c.tunneled && picked.contains(&c.process.to_lowercase());
+        c.picked = picked.contains(&c.process.to_lowercase());
+        c.leak = !c.tunneled && c.picked;
     }
     conns.sort_by_key(|c| !c.leak);
+}
+
+/// Отбор по подстроке: путь процесса или адрес назначения. Регистр не важен, а
+/// слова ищутся по отдельности — как в списке приложений, где тем же способом
+/// «google chrome» находит «Chrome (Google Inc.)».
+///
+/// Пустой отбор — «всё», а не «ничего»: поле поиска пустует ровно тогда, когда
+/// его не трогали, и отвечать на это пустым списком значило бы прятать
+/// соединения от того, кто ничего не искал.
+fn matching(conns: &mut Vec<Conn>, filter: &str) {
+    let words: Vec<String> = filter.split_whitespace().map(str::to_lowercase).collect();
+    if words.is_empty() {
+        return;
+    }
+    conns.retain(|c| {
+        let haystack = format!("{} {}", c.process, c.host).to_lowercase();
+        words.iter().all(|word| haystack.contains(word))
+    });
 }
 
 /// Есть ли уже это приложение в списке. С точностью до регистра — как и всё
 /// прочее сравнение путей у нас (`leaks_first` выше, охват в `supervise`):
 /// на Windows `…\store.exe` и `…\Store.exe` — один и тот же файл.
 ///
-/// Спрашивает автообнаружение, и только оно: остальные команды получают путь
-/// из самого списка, где он совпадает побайтово по построению. А находка из
-/// реестра приходит в том регистре, в каком её записал установщик, — побайтовое
+/// Спрашивают автообнаружение и `AddApp`: путь у обоих приходит со стороны, а
+/// не из самого списка, где он совпадает побайтово по построению. Находка из
+/// реестра приходит в том регистре, в каком её записал установщик, а путь из
+/// панели соединений — в том, как его пишет файловая система; побайтовое
 /// сравнение заводило второй экземпляр того же exe, и список показывал его
 /// дважды. Сторож — `discovery_knows_a_path_it_already_has`.
 fn knows(apps: &[App], path: &str) -> bool {
@@ -2175,7 +2195,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             unreachable!("разбирается до замка")
         }
         Request::AddApp { path } => {
-            if !s.status.apps.iter().any(|a| a.path == path) {
+            if !knows(&s.status.apps, &path) {
                 let name = path
                     .rsplit(['\\', '/'])
                     .next()
@@ -2416,7 +2436,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             s.save();
             Response::Done
         }
-        Request::Connections => {
+        Request::Connections { filter } => {
             // Порт снимается под замком, а список качается без него: ходить в
             // сеть (пусть и по петле) под общим замком нельзя — на том конце
             // sing-box, и его молчание стоило бы окну всего статуса.
@@ -2435,7 +2455,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             let Some(port) = port else {
                 // Туннеля нет — и соединений нет. Это не ошибка: ровно так
                 // выглядит выключенный приватный режим и fail-closed.
-                return Response::Connections { conns: Vec::new(), total: 0 };
+                return Response::Connections { conns: Vec::new(), total: 0, matched: 0 };
             };
             // Кто держит порт — снимок машины, а не туннеля, и снимается он
             // без замка по той же причине, что и сам список: обход таблицы
@@ -2453,16 +2473,72 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             match core_tunnel::connections(port, &owner_of) {
                 Ok(mut conns) => {
                     let total = conns.len();
+                    // Отбор — первым, и это не про экономию строк. Список
+                    // режется сотней по громкости, поэтому отбор, сделанный
+                    // окном, ищет среди показанных: тихое соединение, ради
+                    // которого поиск и завели, срезано ещё до него, а ответ
+                    // «ничего не нашлось» при живом соединении читается как
+                    // «его нет». Тот же тихий промах, из-за которого утечка
+                    // поднимается наверх до обрезки. Сторож —
+                    // `a_filter_is_applied_before_the_cut`.
+                    matching(&mut conns, &filter);
+                    let matched = conns.len();
                     // Обрезаем осознанно: в охвате «весь компьютер» соединений
                     // бывают тысячи, а прочитать человек успевает десятки.
                     // Сколько их было всего, едет рядом — молча обрезанный
                     // список читался бы как полный.
                     leaks_first(&mut conns, &picked);
                     conns.truncate(MAX_CONNS);
-                    Response::Connections { conns, total }
+                    Response::Connections { conns, total, matched }
                 }
                 Err(e) => Response::Error { message: e.to_string() },
             }
+        }
+        Request::Fenced => {
+            // Заперт ли кто-нибудь вообще, решается здесь и по двум признакам
+            // сразу: приватный режим включён и охват отбирает. В «весь
+            // компьютер» пропусков нет, потому что делить некого, — и список
+            // там пуст не от незнания, а по устройству.
+            let fencing = s.private && s.status.scope != Scope::All;
+            // Тот же список, что уходит в пропуска, и по той же причине, что у
+            // соединений: путь у выбранного приложения бывает в двух формах, а
+            // сверять здесь что-то другое значило бы звать запертым то, что
+            // ходит.
+            let picked: BTreeSet<String> =
+                Service::selected(&s.status).iter().map(|p| p.to_lowercase()).collect();
+            // Свой sing-box запертым не бывает: пропуск ему выдан вместе с
+            // политикой, до запуска процесса. Путь берём действующий, а не
+            // сохранённый: его перебивает `PG_SINGBOX`.
+            let singbox = s.status.settings.singbox.to_lowercase();
+            drop(s);
+            if !fencing {
+                return Response::Fenced { apps: Vec::new() };
+            }
+            // Обход процессов — то же, что снимок сокетов у соединений: без
+            // замка и только пока панель открыта. Под замком за ним стояли бы
+            // и статус окна, и надзор за туннелем.
+            let ours = std::env::current_exe().ok().map(|p| p.to_string_lossy().into_owned());
+            // Себя и свой sing-box не показываем вовсе: служба ходит от
+            // LocalSystem, sing-box держит пропуск вместе с политикой, и
+            // предложить «добавить их в белый список» значило бы предложить
+            // починить то, что не сломано. Своими считаем только пока знаем,
+            // где лежим: `foreign` на пустом ответе `current_exe` называет своим
+            // кого угодно, а свои из списка выброшены — то есть неизвестный
+            // собственный путь отдал бы пустой список вместо ответа.
+            let mine = |path: &str| ours.is_some() && !foreign(path, ours.as_deref());
+            let mut apps: Vec<String> = core_apps::running()
+                .into_iter()
+                .map(|found| found.path)
+                .filter(|path| {
+                    let low = path.to_lowercase();
+                    low != singbox && !picked.contains(&low) && !mine(path)
+                })
+                .collect();
+            // Один exe запускают десятками процессов (вкладки браузера), а
+            // заперт он один раз: правило брандмауэра ставится на путь.
+            apps.sort_by_key(|path| path.to_lowercase());
+            apps.dedup_by_key(|path| path.to_lowercase());
+            Response::Fenced { apps }
         }
         Request::TestProfiles { only } => {
             // Список снимается под замком, а меряется без него: профиль тратит
@@ -3076,6 +3152,7 @@ mod tests {
             process: process.into(),
             host: "example.org:443".into(),
             tunneled,
+            picked: false,
             leak: false,
             rx: bytes,
             tx: 0,
@@ -3243,6 +3320,54 @@ mod tests {
         assert!(conns[0].leak, "и помечена утечкой — окно красит по этому полю, а не по своей сверке");
         assert!(!conns[1].leak, "чужой трафик в туннеле утечкой не зовётся");
         assert_eq!(conns[1].rx, 1_000_000, "внутри групп порядок по громкости не тронут");
+    }
+
+    /// Отбор обязан считаться до обрезки.
+    ///
+    /// Список приходит по громкости и режется сотней, а искомое соединение
+    /// громким быть не обязано — чаще наоборот: ищут то, что не нашли глазами.
+    /// Отбор, наложенный после обрезки, до такой строки не добирается вовсе, и
+    /// поиск отвечает пустотой при живом соединении. Прочитать это можно только
+    /// как «его нет» — тот же тихий промах, ради которого утечка едет впереди
+    /// обрезки.
+    #[test]
+    fn a_filter_is_applied_before_the_cut() {
+        let mut conns: Vec<Conn> = (0..MAX_CONNS as u64)
+            .map(|i| conn(r"c:\apps\torrent.exe", true, 1_000_000 - i))
+            .collect();
+        // Тише всех, то есть последним в списке: ровно там, где обрезка.
+        conns.push(conn(r"C:\Program Files\Mail\mail.exe", true, 8));
+        assert!(conns.len() > MAX_CONNS, "проверять нечего: список короче обрезки");
+
+        matching(&mut conns, "MAIL");
+        let matched = conns.len();
+        conns.truncate(MAX_CONNS);
+
+        assert_eq!(matched, 1, "отбор нашёл не то");
+        assert_eq!(conns.len(), 1, "тихое соединение срезано обрезкой");
+        assert!(conns[0].process.ends_with("mail.exe"), "регистр в поиске не различие");
+
+        // Пустой отбор — «всё»: поле пустует, когда его не трогали.
+        let mut untouched = vec![conn(r"c:\apps\a.exe", true, 1), conn(r"c:\apps\b.exe", true, 2)];
+        matching(&mut untouched, "   ");
+        assert_eq!(untouched.len(), 2, "пустой отбор спрятал соединения");
+
+        // Ищется и по процессу, и по адресу, и словами по отдельности.
+        let mut both = vec![conn(r"c:\apps\mail.exe", true, 1)];
+        matching(&mut both, "example mail");
+        assert_eq!(both.len(), 1, "слова обязаны искаться по отдельности");
+        matching(&mut both, "example nowhere");
+        assert!(both.is_empty(), "нашлось по слову, которого нет");
+
+        // …и в самой ветке порядок именно такой: проверенный выше помощник
+        // ничего не стоит, если его зовут после обрезки.
+        let branch = include_str!("main.rs")
+            .split_once("Request::Connections { filter } =>")
+            .expect("ветка соединений")
+            .1;
+        let cut = branch.find("conns.truncate(MAX_CONNS)").expect("обрезка");
+        let sift = branch.find("matching(&mut conns").expect("отбор");
+        assert!(sift < cut, "отбор считается после обрезки");
     }
 
     /// Прямое соединение невыбранного приложения — не утечка, а задуманный путь,
@@ -3964,7 +4089,8 @@ mod tests {
         // …и то, что её не меняет.
         for req in [
             Request::Status,
-            Request::Connections,
+            Request::Connections { filter: String::new() },
+            Request::Fenced,
             Request::TestProfiles { only: None },
             Request::SetLang { lang: core_ipc::Lang::En },
             Request::SetFavorite { name: "myvpn".into(), on: true },
@@ -4347,7 +4473,8 @@ fn changes_the_machine(req: &Request) -> bool {
         | Request::TestProfiles { .. }
         | Request::Pulse
         | Request::Preview { .. }
-        | Request::Connections => false,
+        | Request::Fenced
+        | Request::Connections { .. } => false,
     }
 }
 

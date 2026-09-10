@@ -17,6 +17,7 @@ import {
   Panel,
   SearchField,
   Segmented,
+  spot,
   useNarrow,
 } from "./ui";
 
@@ -200,13 +201,6 @@ function moved(names: string[], from: string, to: string): string[] {
   return out;
 }
 
-/** Где открыть меню. Точка курсора, а если нажали с клавиатуры (координат нет)
- *  — под самой кнопкой. */
-function spot(e: React.MouseEvent<HTMLElement>): [number, number] {
-  if (e.clientX || e.clientY) return [e.clientX, e.clientY];
-  const rect = e.currentTarget.getBoundingClientRect();
-  return [rect.left, rect.bottom];
-}
 
 export function Profiles({
   status,

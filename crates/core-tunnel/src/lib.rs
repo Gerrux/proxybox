@@ -947,8 +947,9 @@ fn parse_conn(c: &Value, owner_of: &dyn Fn(&'static str, u16, &str) -> Option<St
             .unwrap_or_default()
             .iter()
             .any(|tag| tag == TAG_PROXY),
-        // Утечка — это уже сверка со списком выбранных, а списка здесь нет:
-        // проставляет её служба (`leaks_first`), она же и сортирует.
+        // Выбранность и утечка — это уже сверка со списком выбранных, а списка
+        // здесь нет: проставляет обе служба (`leaks_first`), она же и сортирует.
+        picked: false,
         leak: false,
         rx: c["download"].as_u64().unwrap_or(0),
         tx: c["upload"].as_u64().unwrap_or(0),
