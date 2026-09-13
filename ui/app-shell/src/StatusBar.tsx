@@ -226,7 +226,6 @@ export function StatusBar({
   const all = scope === "all";
   const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
   // Профиль не выбран, но включать есть что: поднимется первый по алфавиту.
-  const pending = status != null && !status.profile && status.profiles.length > 0;
   const latency = useCounted(status?.latency_ms ?? null);
   const rates = useRates(status);
   // Байты не доезжают: между двумя статусами их набегают десятки килобайт, и
@@ -310,7 +309,7 @@ export function StatusBar({
             key={view.title}
             // Не обрезаем: в узком окне «Туннеля нет — доступ закрыт» обрубается
             // до «Туннел…», а это ровно та надпись, ради которой окно открыли.
-            className="st-title swap font-display text-[26px] font-semibold uppercase leading-[1.05] tracking-[0.055em] text-[color:var(--tone)]"
+            className="st-title swap font-display text-[26px] font-semibold leading-tight text-[color:var(--tone)]"
           >
             {view.title}
           </h1>
@@ -332,9 +331,9 @@ export function StatusBar({
         </div>
         <Button
           variant={on ? "ghost" : "primary"}
-          disabled={!status || (!on && !status.profile && status.profiles.length === 0)}
+          disabled={busy || !status || (!on && !status.profile && status.profiles.length === 0)}
           onClick={onToggle}
-          className={`st-toggle ${on ? "st-on" : "st-off"} h-9 px-5 font-display uppercase tracking-[0.08em]`}
+          className={`st-toggle ${on ? "st-on" : "st-off"} h-10 px-5 font-sans`}
         >
           {on ? s.turnOff : s.turnOn}
         </Button>
@@ -349,82 +348,48 @@ export function StatusBar({
           в настройках через две панели от него. Полоска стоит ровно там, где
           раньше стояла подпись, и говорит то же самое. */}
       <div className="st-cond mt-5 flex items-center gap-2.5">
+        <span className="scope-label text-[13px] text-muted">{s.scope}</span>
         <Segmented
           label={s.scope}
           options={[
-            ["whitelist", s.scopeWhitelist, inTunnel === 0 ? s.noAppsAhead : s.scopeHintWhitelist],
             ["all", s.scopeAll, s.scopeHint],
+
+            ["whitelist", s.scopeWhitelist, inTunnel === 0 ? s.noAppsAhead : s.scopeHintWhitelist],
           ]}
           value={scope}
           className="well"
           disabled={!status || busy}
           onPick={(v) => onScope(v as Scope)}
         />
-        <span className="conduit-lamp smooth" />
-        <span className="conduit-line smooth">
-          {/* Блик живёт внутри канала: маска, растворяющая края штрихов, обязана
-              съедать и его выезд с въездом — иначе он выныривал бы за лампой. */}
-          <span className="conduit-glow" />
-        </span>
-        {/* Подпись приёмника уходит с глаз в плашке из трея, а сам приёмник
-            остаётся: 380 px эта строка не выдерживала и переносила канал под
-            охват — целый ряд ради одного слова, которое и так стоит на конце
-            картинки. Слово при этом не пропадает: оно на самом приёмнике, для
-            подсказки и для чтения с экрана. */}
-        <span className="conduit-end smooth" title={s.conduitTo} aria-label={s.conduitTo} />
-        <span className="conduit-to engraved shrink-0 text-muted" aria-hidden="true">
-          {s.conduitTo}
-        </span>
       </div>
 
       {/* Пять колонок или ни одной: промежуточные сетки из двух и трёх колонок
           уносили счётчики трафика на второй-третий ряд, а его — за нижний край
           окна. Ниже 768 px линейка целиком уходит в строку (`index.css`). */}
-      <dl className="st-metrics mt-4 grid grid-cols-5 gap-y-3 border-t border-edge pt-3">
+      <div className="route-map">
+        <div className="route-origin">
+          <span className="route-device" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="5" y="5" width="22" height="16" rx="3"/><path d="M11 27h10M16 21v6"/></svg></span>
+          <span>{all ? s.scopeAll : s.scopeWhitelist}</span>
+        </div>
+        <div className="route-wire" aria-hidden="true" />
+        <div className="route-profile">
+          <span className="route-caption">{s.profile}</span>
+          <strong title={status?.profile ?? undefined}>{status?.profile ?? status?.profiles[0]?.name ?? s.noProfile}</strong>
+          <span className="route-protocol">{status?.profiles.find((p) => p.name === status.profile)?.kind || "—"}</span>
+        </div>
+        <div className="route-wire" aria-hidden="true" />
+        <div className="route-exit">
+          <span className="route-caption">{s.exit}</span>
+          <strong><span aria-hidden="true">{exitFlag}</span> {exitCountry || "—"}</strong>
+          <span className="route-city">{exitCity || s.exitUnknown}</span>
+        </div>
+      </div>
+
+      <dl className="st-metrics mt-4 grid grid-cols-3 gap-y-3 border-t border-edge pt-3">
         {/* «Не выбран» — не то же, что «неизвестен»: `App.tsx` включает первый
             по алфавиту, и молчание тут уводит в чужую страну без единого слова.
             Показываем предстоящий профиль приглушённо и с подсказкой — так
             видно и что поднимется, и что выбран он не человеком. */}
-        <Metric
-          name={s.profile}
-          value={status?.profile ?? status?.profiles[0]?.name ?? s.noProfile}
-          tone={pending ? "text-muted" : ""}
-          hint={pending ? s.profileFirst : undefined}
-        />
-        {/* Флаг перед названием: точка выхода — единственная метрика, которую
-            читают глазом, а не цифрой, и в узкой ячейке название всё равно
-            обрезается. Код берётся из измерений того же профиля: страну и код
-            узнают одним запросом, и второго поля в статусе для этого не нужно. */}
-        {/* Прочерк без объяснения читается как поломка. Настоящую страну при
-            выключенном режиме не показываем намеренно: спросить её можно только
-            у стороннего сервиса, а без туннеля запрос ушёл бы с настоящего
-            адреса — продукт про приватность выдал бы человека ровно тогда,
-            когда он не прикрыт. */}
-        <Metric name={s.exit} value={status?.country ?? "—"} hint={status?.country ? undefined : s.exitUnknown}>
-          {status?.country ? (
-            <>
-              {exitFlag && (
-                <span className="shrink-0 leading-none" aria-hidden="true">
-                  {exitFlag}
-                </span>
-              )}
-              {/* Название прячется только тогда, когда вместо него остаётся
-                  флаг: без флага пустая ячейка не значила бы ничего. */}
-              <span className={`min-w-0 leading-tight ${exitFlag ? "m-country" : ""}`}>
-                <span className="block truncate">{exitCountry}</span>
-                {/* Город — второй строкой и только если он есть: служба склеивает
-                    его со страной через запятую, а при пустом городе не склеивает
-                    вовсе. В одну строку они не помещались, и обрезалось при этом
-                    название страны — то есть главное. */}
-                {exitCity && <span className="m-city block truncate text-[11.5px] text-muted">{exitCity}</span>}
-              </span>
-            </>
-          ) : (
-            "—"
-          )}
-        </Metric>
-        {/* Цвет — по настоящей задержке, а не по кадру анимации: порог должен
-            переключаться по факту, а не по тому, докуда доехало число. */}
         <Metric
           name={s.latency}
           value={latency != null ? `${Math.round(latency)} ms` : "—"}

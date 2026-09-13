@@ -1,0 +1,49 @@
+.flow-concept { height: 100%; overflow: auto; color-scheme: light; background: #fafaf9; color: #242625; font: 14px/1.5 "Segoe UI", sans-serif; --flow-muted: #707571; --flow-line: #dfe3df; --flow-accent: #254e42; }
+.flow-concept button { cursor: pointer; }
+.flow-concept button:disabled { opacity: .35; cursor: default; }
+.flow-concept button:focus-visible, .flow-concept input:focus-visible { outline: 2px solid #789e89; outline-offset: 3px; }
+.flow-top { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 22px 30px; }
+.flow-top > :last-child { font-size: 10px; color: var(--flow-muted); }
+.flow-brand { font-size: 18px; font-weight: 650; letter-spacing: -.7px; }
+.flow-brand > span { font-size: 9px; vertical-align: top; margin-left: 3px; }
+.flow-code { font-size: 12px; font-weight: 600; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: #e9ede9; color: #4c6256; flex: none; }
+.flow-primary { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 19px; background: var(--flow-accent); color: white; border-radius: 7px; font-weight: 500; }
+.flow-primary:hover { filter: brightness(1.12); }
+.flow-locations { border-top: 1px solid var(--flow-line); margin-block: 10px; }
+.flow-locations > button { width: 100%; display: flex; align-items: center; gap: 14px; text-align: left; padding: 15px 10px; border-bottom: 1px solid var(--flow-line); }
+.flow-locations > button:hover, .flow-locations > button[aria-pressed="true"] { background: #7186730a; }
+.flow-locations > button > :nth-child(2) { flex: 1; }
+.flow-locations strong, .flow-locations small { display: block; }
+.flow-locations strong { font-weight: 500; }.flow-locations small { color: var(--flow-muted); font-size: 12px; }
+.flow-locations > button > :nth-last-child(2) { color: var(--flow-muted); font-size: 12px; }.flow-locations > button > :last-child { width: 15px; }
+.flow-details { margin-top: 22px; border-top: 1px solid var(--flow-line); }
+.flow-details > span { display: flex; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--flow-line); color: var(--flow-muted); font-size: 12px; }
+.flow-details strong { color: inherit; font-weight: 500; text-align: right; }
+.flow-empty { padding: 25px 0; color: var(--flow-muted); }
+.focus-main { max-width: 470px; margin: 46px auto 30px; padding: 0 28px; }
+.focus-status { font-size: 12px; color: var(--flow-muted); display: flex; align-items: center; gap: 8px; }
+.focus-status i, .launcher-summary i { width: 6px; height: 6px; border-radius: 50%; background: #929992; display: inline-block; }.focus-status i.is-on, .launcher-summary i.is-on { background: #32936e; }
+.focus-main h1 { font-size: clamp(35px, 7vw, 52px); line-height: 1.12; letter-spacing: -.055em; font-weight: 500; margin: 25px 0 18px; }.focus-main h1 span { color: #8a938c; }
+.focus-description { color: var(--flow-muted); max-width: 340px; font-size: 14px; }
+.focus-action-area { margin-top: 38px; }
+.focus-destination { width: 100%; display: flex; align-items: center; text-align: left; gap: 14px; border-top: 1px solid var(--flow-line); padding: 18px 0; }
+.focus-destination > :nth-child(2) { flex: 1; }.focus-destination small { display: block; font-size: 11px; color: var(--flow-muted); }.focus-destination strong { font-weight: 500; }.focus-latency { color: var(--flow-muted); font-size: 12px; }
+.focus-footer { display: flex; justify-content: space-between; gap: 10px; margin-top: 20px; font-size: 11px; color: var(--flow-muted); }.focus-footer button { text-decoration: underline; text-underline-offset: 4px; }
+.flow-guided { background: #fff; --flow-accent: #2d394c; }
+.guided-main { max-width: 650px; margin: 8px auto 30px; padding: 0 30px; }
+.guided-steps { display: flex; border-bottom: 1px solid var(--flow-line); gap: 30px; padding: 10px 0 20px; }
+.guided-steps button { display: flex; gap: 8px; align-items: center; color: var(--flow-muted); font-size: 12px; }.guided-steps button[aria-current="step"] { color: #253650; font-weight: 600; }.guided-steps button span { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid #d3d9e0; border-radius: 50%; font-size: 10px; }.guided-steps button[aria-current="step"] span { color: white; background: #2d394c; border-color: #2d394c; }
+.guided-content { padding-top: 28px; }.flow-eyebrow { color: var(--flow-muted); font-size: 11px; }
+.guided-content h1 { font-size: 31px; letter-spacing: -.04em; font-weight: 550; margin: 9px 0; }.guided-content > p { color: var(--flow-muted); font-size: 13px; max-width: 470px; margin-bottom: 22px; }
+.flow-search { width: 100%; border: 1px solid var(--flow-line); padding: 10px 12px; border-radius: 5px; font-size: 13px; }
+.flow-app-list { margin-top: 8px; }.flow-app-list label { display: flex; gap: 12px; align-items: center; padding: 11px 2px; border-bottom: 1px solid var(--flow-line); cursor: pointer; }.flow-app-list strong { flex: 1; font-size: 13px; font-weight: 500; }.flow-app-list input { accent-color: var(--flow-accent); width: 16px; height: 16px; }
+.flow-app-icon { display: grid; place-items: center; width: 27px; height: 27px; background: #e9edf3; color: #62718b; border-radius: 7px; font-size: 13px; font-weight: 600; }
+.guided-footer { position: sticky; bottom: 0; display: flex; align-items: center; justify-content: space-between; margin-top: 22px; padding-block: 14px; border-top: 1px solid var(--flow-line); background: #fff; gap: 20px; font-size: 12px; color: var(--flow-muted); }.guided-footer .flow-primary { width: auto; min-width: 180px; }
+.guided-review > div { padding: 20px 0; border-bottom: 1px solid var(--flow-line); display: flex; gap: 9px; flex-wrap: wrap; }.guided-review > div > span { width: 100%; color: var(--flow-muted); font-size: 12px; }.guided-review strong { flex: 1; font-weight: 500; }.guided-review button { font-size: 12px; color: #647ba1; }
+.flow-launcher { color-scheme: dark; background: #191a1c; color: #e6e7e9; --flow-muted: #909398; --flow-line: #323438; --flow-accent: #546b60; }
+.launcher-main { max-width: 580px; margin: 32px auto; padding: 0 25px; }.launcher-summary { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--flow-muted); }.launcher-summary i { margin-right: 8px; }.launcher-summary button { border: 1px solid #3e4247; border-radius: 5px; padding: 5px 12px; color: #e0e3e7; }
+.launcher-main h1 { font-size: 29px; font-weight: 450; letter-spacing: -.035em; margin: 37px 0 20px; }
+.launcher-input { display: flex; gap: 12px; align-items: center; border: 1px solid #53575d; border-radius: 8px; padding: 14px; background: #222428; }.launcher-input > span { font-size: 24px; line-height: 1; color: #9ea6af; }.launcher-input input { width: 100%; min-width: 0; outline: none; font-size: 13px; }.launcher-input kbd { font-size: 10px; color: #858b92; border: 1px solid #43464c; border-radius: 3px; padding: 2px 4px; }
+.launcher-results { margin-top: 24px; }.launcher-results .flow-eyebrow { margin-bottom: 10px; }.launcher-results > button { display: flex; align-items: center; gap: 15px; width: 100%; text-align: left; padding: 14px 10px; border-radius: 6px; }.launcher-results > button:hover, .launcher-results > button:focus-visible { background: #292c30; }.launcher-symbol { width: 30px; font: 20px Consolas, monospace; color: #9aa3aa; }.launcher-results > button > :nth-child(2) { flex: 1; }.launcher-results strong { font-size: 14px; font-weight: 450; display: block; }.launcher-results small { display: block; color: var(--flow-muted); font-size: 11px; margin-top: 3px; }.launcher-results > button > :last-child { color: #686e75; font-size: 13px; }
+.launcher-footer { margin-top: 35px; padding-top: 16px; border-top: 1px solid var(--flow-line); font-size: 10px; display: flex; justify-content: space-between; gap: 10px; color: #7d838a; }.launcher-sub { padding-top: 20px; }.launcher-sub h2 { margin: 20px 0 8px; font-size: 20px; font-weight: 500; }.flow-back { color: var(--flow-muted); font-size: 12px; }.flow-launcher .flow-code { background: #303b35; color: #c3d5c8; }.flow-launcher .flow-app-icon { background: #30363f; color: #bdc6d3; }
+@media(max-width: 470px) { .flow-top { padding: 15px 18px; gap: 10px; }.flow-top > :last-child { max-width: 150px; text-align: right; }.focus-main { margin-top: 24px; padding-inline: 22px; }.guided-main { padding-inline: 20px; }.guided-steps { gap: 14px; }.guided-steps button { font-size: 10px; gap: 5px; }.guided-content h1 { font-size: 26px; }.guided-footer .flow-primary { min-width: 150px; }.launcher-main { padding-inline: 20px; }.launcher-input kbd { display: none; }.launcher-main h1 { font-size: 25px; } }

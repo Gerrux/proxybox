@@ -1,0 +1,214 @@
+.design-preview { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.design-stage { min-height: 0; color: var(--pg-text); }
+.design-picker { background: #f2f2f3; color: #272932; padding: 12px 16px 10px; border-bottom: 1px solid #c7cad0; font-family: "Segoe UI", sans-serif; }
+.design-picker-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 9px; font-size: 12px; font-weight: 600; }
+.design-picker-top > :last-child { font: 10px Consolas, monospace; color: #686c75; }
+.design-choices { display: flex; flex-wrap: wrap; gap: 5px; }
+.design-choices button { display: flex; align-items: center; justify-content: center; gap: 7px; flex: 1; padding: 7px 9px; border: 1px solid #d4d6da; border-radius: 6px; background: #fff; color: #555966; font-size: 12px; cursor: pointer; }
+.design-choices button[aria-pressed="true"] { background: #252936; color: #fff; border-color: #252936; }
+.design-choices i { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.swatch-instrument { background: #4ecfac; }.swatch-daylight { background: #e1e7f1; border: 1px solid #8595ae; }.swatch-console { background: #e3ad58; }.swatch-network { background: #789bf8; }
+.swatch-latch { background: #2f3236; border: 1px solid #7d838f; }.swatch-paper { background: #f0ece2; border: 1px solid #b9b2a3; }.swatch-card { background: #8f7cf0; }
+.swatch-switchboard { background: #4fd18f; }.swatch-gate { background: #e0705f; }.swatch-sheets { background: #2f6ee0; }
+.swatch-focus { background: #718d7d; }.swatch-guided { background: #8d9db5; }.swatch-launcher { background: #888a90; }
+.design-choices button { flex-basis: 21%; }
+.design-picker p { margin-top: 7px; font-size: 11px; color: #696d76; }
+
+/* Daylight: typographic hierarchy, an open route, and quiet blue actions. */
+[data-design="daylight"] .design-stage {
+  color-scheme: light;
+  --pg-bg: #e9edf2; --pg-surface: #ffffff; --pg-surface-2: #f4f6f8;
+  --pg-text: #202d42; --pg-muted: #627084; --pg-border: #d9e0e8;
+  --pg-open: #18725e; --pg-accent: #365ed2; --pg-open-soft: #eef7f3;
+  --pg-lift: #ffffffa0; --pg-well: #24385605;
+}
+[data-design="daylight"] .app { background: var(--pg-bg); }
+[data-design="daylight"] .shell { padding: 18px; gap: 12px; }
+[data-design="daylight"] .st { background: #fff; border: 0; padding: 25px 25px 0; border-radius: 16px; box-shadow: 0 5px 20px #25365808; }
+[data-design="daylight"] .st-title { color: var(--pg-text); font-family: var(--font-sans); font-weight: 600; font-size: 34px; letter-spacing: -.045em; }
+[data-design="daylight"] .st-title::before { box-shadow: none; background: var(--tone); }
+[data-design="daylight"] .st-toggle { box-shadow: none; border: 1px solid #d5dde7; background: #f7f9fc; }
+[data-design="daylight"] .route-map { border-top: 1px solid var(--pg-border); margin-top: 20px; padding-block: 22px; }
+[data-design="daylight"] .route-device { border-radius: 50%; background: #edf1f8; border: 0; color: #365ed2; }
+[data-design="daylight"] .route-profile strong, [data-design="daylight"] .route-exit strong { font-family: var(--font-sans); letter-spacing: -.035em; }
+[data-design="daylight"] .route-wire { background: #cad6e0; box-shadow: none; color: #cad6e0; }
+[data-design="daylight"] .st-metrics { background: #f6f8fa; border-color: #e4e9ee; margin-inline: -25px; padding-inline: 25px; }
+[data-design="daylight"] .st-metrics .m-value { font-family: var(--font-sans); font-weight: 500; font-size: 25px; letter-spacing: -.04em; }
+[data-design="daylight"] .tabs { background: none; }
+[data-design="daylight"] .tabs > button[aria-pressed="true"] { background: #243957; color: #fff; box-shadow: none; }
+[data-design="daylight"] .tabs > button[aria-pressed="true"] .text-muted { color: #bccde4; }
+[data-design="daylight"] .plate { border: 0; box-shadow: 0 2px 8px #25365805; }
+[data-design="daylight"] .plate-head { background: #fff; }
+
+/* Console: tightly set rows, a squared chassis, and amber operator accents. */
+[data-design="console"] .design-stage {
+  color-scheme: dark;
+  --pg-bg: #151516; --pg-surface: #202022; --pg-surface-2: #19191b;
+  --pg-text: #e9e7e2; --pg-muted: #a1a09d; --pg-border: #39383a;
+  --pg-accent: #e8b46a; --pg-open: #acd3aa; --pg-open-soft: #242a25;
+  --pg-lift: #ffffff07; --pg-well: #00000025;
+}
+[data-design="console"] .app { background: #151516; }
+[data-design="console"] .shell { gap: 8px; }
+[data-design="console"] .st { background: #202022; border-radius: 3px; padding: 17px 19px 0; box-shadow: inset 3px 0 var(--tone); border-color: #39383a; }
+[data-design="console"] .st-title { font-family: var(--font-mono); font-size: 25px; text-transform: uppercase; letter-spacing: -.03em; }
+[data-design="console"] .st-title::before { border-radius: 0; box-shadow: none; width: 7px; height: 16px; }
+[data-design="console"] .st-toggle { border-radius: 2px; box-shadow: none; font-family: var(--font-mono); }
+[data-design="console"] .st-cond { margin-top: 14px; }
+[data-design="console"] .st-cond .well { border-radius: 2px; }
+[data-design="console"] .route-map { grid-template-columns: minmax(140px, 1fr) 45px minmax(150px, 1fr); padding: 17px 0; }
+[data-design="console"] .route-origin, [data-design="console"] .route-origin + .route-wire { display: none; }
+[data-design="console"] .route-profile strong, [data-design="console"] .route-exit strong { font-family: var(--font-mono); font-size: 16px; }
+[data-design="console"] .route-caption { font-family: var(--font-mono); color: #c9a36d; font-size: 10px; }
+[data-design="console"] .route-wire { box-shadow: none; }
+[data-design="console"] .st-metrics { margin-inline: -19px; padding: 11px 19px; background: #18181a; }
+[data-design="console"] .st-metrics .m-value { font-family: var(--font-mono); font-size: 21px; }
+[data-design="console"] .tabs { min-height: 34px; gap: 0; }
+[data-design="console"] .tabs .engraved { font-family: var(--font-mono); font-size: 11px; }
+[data-design="console"] .tabs > button { border-radius: 0; }
+[data-design="console"] .tabs > button[aria-pressed="true"] { background: #342c22; color: #f3c17c; box-shadow: inset 0 -2px #e8b46a; }
+[data-design="console"] .plate { border-radius: 3px; }
+[data-design="console"] .plate-head { padding-block: 8px; background: #262527; }
+[data-design="console"] .journal-list { font-size: 12px; line-height: 1.5; }
+[data-design="console"] .journal-list li > div.relative { padding-block: 0; }
+
+/* Network: a blue chart surface with the destination as the visual anchor. */
+[data-design="network"] .design-stage {
+  color-scheme: dark;
+  --pg-bg: #111726; --pg-surface: #1a2438; --pg-surface-2: #141d2e;
+  --pg-text: #e9effc; --pg-muted: #9caecb; --pg-border: #2e3e5d;
+  --pg-accent: #98b5ff; --pg-open: #7de0d0; --pg-open-soft: #182e3c;
+  --pg-lift: #d3e2ff0c; --pg-well: #030a1829;
+}
+[data-design="network"] .app { background: radial-gradient(ellipse at 100% 0, #25376655, transparent 60%), #111726; }
+[data-design="network"] .st { border-color: #3a527b; border-radius: 16px; background: radial-gradient(ellipse at 95% 45%, #3864aa40, transparent 65%), #1a2438; padding: 22px 24px 0; }
+[data-design="network"] .st-title { font-family: var(--font-sans); font-size: 25px; font-weight: 500; letter-spacing: -.02em; }
+[data-design="network"] .route-map { position: relative; padding-block: 30px; margin-top: 12px; background-image: radial-gradient(#7a9ed324 .7px, transparent .7px); background-size: 12px 12px; }
+[data-design="network"] .route-device { width: 50px; height: 50px; border-radius: 50%; border-color: #6e8bc36b; background: #22324f; box-shadow: 0 0 0 7px #9bbdff08; }
+[data-design="network"] .route-exit strong { color: #fff; font-size: 24px; letter-spacing: -.025em; }
+[data-design="network"] .route-caption { color: #a2b8db; }
+[data-design="network"] .route-wire { background: linear-gradient(90deg, #7de0d0, #98b5ff); }
+[data-design="network"] .st-metrics { background: #101a2b80; padding-block: 16px; }
+[data-design="network"] .st-metrics .m-value { font-size: 24px; }
+[data-design="network"] .tabs > button[aria-pressed="true"] { background: #304b7a; box-shadow: inset 0 1px #ffffff15; color: #fff; }
+[data-design="network"] .plate { border-radius: 12px; background: #172134; }
+[data-design="network"] .plate-head { background: #1c2940; }
+@media (max-width: 470px) {
+  .design-picker { padding-inline: 8px; }
+  .design-choices button { padding-inline: 5px; font-size: 10px; gap: 4px; }
+  [data-design="daylight"] .shell { padding: 8px; }
+  [data-design="daylight"] .st, [data-design="console"] .st, [data-design="network"] .st { padding: 14px 14px 0; }
+  [data-design="daylight"] .st-title, [data-design="console"] .st-title, [data-design="network"] .st-title { font-size: 20px; }
+  [data-design="daylight"] .st-metrics, [data-design="console"] .st-metrics, [data-design="network"] .st-metrics { margin-inline: -14px; padding-inline: 14px; }
+  [data-design="console"] .route-map { grid-template-columns: minmax(100px, 1fr) 20px minmax(110px, 1fr); }
+  [data-design="console"] .route-profile strong, [data-design="console"] .route-exit strong { font-size: 13px; }
+  [data-design="network"] .route-exit strong { font-size: 19px; }
+}
+
+/* Latch: the invariant is the hero. The state colour runs as a bar across the
+   whole header instead of a dot beside the word, and the route drops to a
+   caption — in a fail-closed tool the lock, not the topology, is the news. */
+[data-design="latch"] .design-stage {
+  color-scheme: dark;
+  --pg-bg: #161719; --pg-surface: #1f2124; --pg-surface-2: #1a1c1e;
+  --pg-text: #eeece8; --pg-muted: #96928c; --pg-border: #34373b;
+  --pg-accent: #ded8ce; --pg-open: #74c294; --pg-open-soft: #1b2a21;
+  --pg-lift: #fff6e80a; --pg-well: #00000030;
+}
+[data-design="latch"] .app { background: #161719; }
+[data-design="latch"] .st {
+  padding: 0 0 16px; border-radius: 5px; border-color: #34373b; box-shadow: none;
+  background: linear-gradient(var(--tone) 0 7px, transparent 7px), var(--pg-surface);
+}
+[data-design="latch"] .st-head { padding: 24px 24px 0; }
+[data-design="latch"] .st-title { font-size: 27px; letter-spacing: -.02em; color: var(--pg-text); }
+/* Точки у надписи нет намеренно: цвет состояния и так идёт полосой во всю
+   ширину, и вторым знаком того же самого он читался бы как другое событие. */
+[data-design="latch"] .st-title::before { display: none; }
+[data-design="latch"] .st-cond { padding-inline: 24px; }
+[data-design="latch"] .route-map {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px;
+  margin: 18px 24px 0; padding: 14px 0 0; border-top: 1px solid var(--pg-border);
+}
+[data-design="latch"] .route-origin, [data-design="latch"] .route-wire { display: none; }
+[data-design="latch"] .route-profile strong { font-size: 14px; }
+[data-design="latch"] .route-exit strong { font-size: 15px; }
+[data-design="latch"] .st-metrics { margin: 16px 0 0; padding: 14px 24px; background: transparent; border-top: 1px solid var(--pg-border); }
+[data-design="latch"] .st-metrics .m-value { font-size: 20px; font-weight: 400; }
+[data-design="latch"] .tabs > button[aria-pressed="true"] { background: transparent; box-shadow: inset 0 -2px var(--tone); }
+[data-design="latch"] .plate { border-radius: 5px; }
+[data-design="latch"] .plate-head { background: transparent; }
+
+/* Paper: a documentary look — antiqua headings, hairlines, one ink. Nothing
+   glows and nothing floats, so the only thing that catches the eye is the
+   state word itself. */
+[data-design="paper"] .design-stage {
+  color-scheme: light;
+  --pg-bg: #f3f1ec; --pg-surface: #faf8f4; --pg-surface-2: #f0ede6;
+  --pg-text: #23211d; --pg-muted: #6f6a62; --pg-border: #d8d3c8;
+  --pg-accent: #1f3a2e; --pg-open: #1f5c40; --pg-open-soft: #e7efe8;
+  --pg-lift: transparent; --pg-well: #00000008;
+}
+[data-design="paper"] .app { background: var(--pg-bg); }
+[data-design="paper"] .shell { padding: 20px; gap: 14px; }
+[data-design="paper"] .st { background: var(--pg-surface); border-color: var(--pg-border); border-radius: 2px; box-shadow: none; padding: 24px 26px 0; }
+/* Антиква названа стеком, а не токеном: своего серифного стека у окна нет, а
+   Georgia стоит на Windows со времён 2000 — та же пара, что у аватарок. */
+[data-design="paper"] .st-title { font-family: Georgia, "Times New Roman", serif; font-weight: 400; font-size: 31px; letter-spacing: -.01em; color: var(--pg-text); }
+[data-design="paper"] .st-title::before { width: 6px; height: 6px; box-shadow: none; }
+[data-design="paper"] .st-hint { font-family: Georgia, "Times New Roman", serif; font-size: 14px; }
+[data-design="paper"] .st-toggle { border-radius: 2px; box-shadow: none; }
+[data-design="paper"] .st-cond .well { border-radius: 2px; background: transparent; box-shadow: inset 0 0 0 1px var(--pg-border); }
+[data-design="paper"] .route-map { border-top: 1px solid var(--pg-border); margin-top: 20px; padding-block: 20px; }
+[data-design="paper"] .route-device { border-radius: 2px; background: transparent; box-shadow: none; }
+[data-design="paper"] .route-wire { background: repeating-linear-gradient(90deg, var(--pg-muted) 0 1px, transparent 1px 5px); opacity: .6; box-shadow: none; }
+[data-design="paper"] .route-profile strong, [data-design="paper"] .route-exit strong { font-family: Georgia, "Times New Roman", serif; font-weight: 400; }
+[data-design="paper"] .st-metrics { background: transparent; border-top: 1px solid var(--pg-border); margin-inline: -26px; padding-inline: 26px; }
+[data-design="paper"] .st-metrics .m-value { font-family: Georgia, "Times New Roman", serif; font-weight: 400; font-size: 24px; }
+[data-design="paper"] .tabs > button[aria-pressed="true"] { background: transparent; box-shadow: inset 0 -2px var(--pg-text); }
+[data-design="paper"] .plate { border-radius: 2px; box-shadow: none; }
+[data-design="paper"] .plate-head { background: transparent; }
+
+/* Cards: every surface is a lifted card on a tinted ground — big radii, soft
+   depth, round targets. Плата за это высотой: скруглений и теней здесь столько,
+   что в плашке из трея строк профилей остаётся меньше, чем у любого другого. */
+[data-design="card"] .design-stage {
+  color-scheme: dark;
+  --pg-bg: #0f1115; --pg-surface: #1b1f27; --pg-surface-2: #232833;
+  --pg-text: #eef1f6; --pg-muted: #98a1b2; --pg-border: #2b313d;
+  --pg-accent: #8f7cf0; --pg-open: #5fd6a4; --pg-open-soft: #16302a;
+  --pg-lift: #ffffff0e; --pg-well: #0000002b;
+}
+[data-design="card"] .app { background: radial-gradient(ellipse at 50% -12%, #2a2450, transparent 55%), #0f1115; }
+[data-design="card"] .shell { padding: 16px; gap: 14px; }
+[data-design="card"] .st { border: 0; border-radius: 22px; padding: 24px 24px 0; background: linear-gradient(160deg, var(--pg-surface-2), var(--pg-surface)); box-shadow: 0 18px 40px #00000040; }
+[data-design="card"] .st-title { font-family: var(--font-sans); font-weight: 600; font-size: 28px; letter-spacing: -.03em; }
+[data-design="card"] .st-title::before { width: 10px; height: 10px; }
+[data-design="card"] .st-toggle { border-radius: 999px; min-width: 132px; }
+[data-design="card"] .st-cond .well { border-radius: 999px; }
+[data-design="card"] .st-cond .seg-btn { border-radius: 999px; padding: 6px 16px; }
+[data-design="card"] .route-map { margin-top: 18px; padding-block: 22px; }
+[data-design="card"] .route-device { width: 52px; height: 52px; border: 0; border-radius: 18px; background: var(--pg-surface-2); }
+/* Нижняя кромка шапки скруглена, а линейка прижата к ней — поэтому и её
+   собственные углы скруглены снизу, иначе паз выпирает из-под карточки. */
+[data-design="card"] .st-metrics { margin: 0 -24px; padding: 18px 24px; background: #0000002b; border: 0; border-radius: 0 0 22px 22px; }
+[data-design="card"] .st-metrics .m-cell { border: 0; }
+[data-design="card"] .st-metrics .m-value { font-size: 23px; }
+[data-design="card"] .tabs > button { border-radius: 999px; }
+[data-design="card"] .tabs > button[aria-pressed="true"] { background: var(--pg-surface-2); box-shadow: none; }
+[data-design="card"] .plate { border: 0; border-radius: 18px; background: var(--pg-surface); box-shadow: 0 8px 22px #00000030; }
+[data-design="card"] .plate-head { background: transparent; }
+
+/* Тот же порог, что и у самого окна: в 380 px отступы шапки съедают строку
+   профиля, а их и видно-то три. */
+@media (max-width: 470px) {
+  [data-design="latch"] .st-head, [data-design="latch"] .st-cond { padding-inline: 14px; }
+  [data-design="latch"] .route-map { margin-inline: 14px; }
+  [data-design="latch"] .st-metrics { padding-inline: 14px; }
+  [data-design="paper"] .shell, [data-design="card"] .shell { padding: 8px; }
+  [data-design="paper"] .st, [data-design="card"] .st { padding: 14px 14px 0; }
+  [data-design="latch"] .st-title, [data-design="paper"] .st-title, [data-design="card"] .st-title { font-size: 20px; }
+  [data-design="paper"] .st-metrics, [data-design="card"] .st-metrics { margin-inline: -14px; padding-inline: 14px; }
+  [data-design="card"] .st { border-radius: 16px; }
+  [data-design="card"] .st-metrics { border-radius: 0 0 16px 16px; }
+}

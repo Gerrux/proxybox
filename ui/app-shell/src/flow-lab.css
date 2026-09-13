@@ -1,0 +1,214 @@
+.flow-lab {
+  height: 100%; overflow: auto; color-scheme: dark;
+  background: #14161a; color: #e8eaee;
+  font: 14px/1.5 "Segoe UI", sans-serif;
+  --lab-muted: #8d939c; --lab-line: #2b2f36; --lab-plate: #1c1f25;
+  --lab-on: #4fd18f; --lab-cut: #e0705f; --lab-wait: #e3b768;
+}
+.flow-lab button { cursor: pointer; color: inherit; }
+.flow-lab button:disabled { opacity: .35; cursor: default; }
+.flow-lab :focus-visible { outline: 2px solid #6f8fd6; outline-offset: 3px; }
+.lab-top { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 28px; }
+.lab-top > :last-child { font-size: 10px; color: var(--lab-muted); }
+.lab-brand { font-size: 18px; font-weight: 650; letter-spacing: -.7px; }
+.lab-brand > span { font-size: 9px; vertical-align: top; margin-left: 3px; }
+.lab-eyebrow { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--lab-muted); }
+.lab-code { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: #262b33; color: #b6c2d2; font-size: 12px; font-weight: 600; flex: none; }
+.lab-app-icon { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; background: #2a3038; color: #c0c8d4; font-size: 13px; font-weight: 600; flex: none; }
+.lab-ms { color: var(--lab-muted); font-size: 12px; }
+.lab-seg { display: inline-flex; gap: 2px; padding: 3px; border-radius: 8px; background: #00000038; }
+.lab-seg button { padding: 6px 13px; border-radius: 6px; font-size: 12px; color: var(--lab-muted); }
+.lab-seg button[aria-pressed="true"] { background: #2e343d; color: #eef1f5; }
+
+/* ── Рубильник ─────────────────────────────────────────────────────────── */
+
+.sw-main { max-width: 520px; margin: 30px auto 40px; padding: 0 28px; }
+.sw-track {
+  position: relative; margin-top: 14px; height: 74px; border-radius: 12px;
+  background: #1a1d22; border: 1px solid var(--lab-line);
+  box-shadow: inset 0 2px 10px #0000005c; overflow: hidden;
+  display: flex; align-items: center; justify-content: space-between;
+  touch-action: none; user-select: none;
+}
+/* Подписи стоят по центру половин, а ручка узкая и ходит по самым краям:
+   иначе она накрывает ту из них, которая как раз и называет текущее положение,
+   и на экране остаётся ровно противоположное слово. */
+.sw-side { flex: 1; text-align: center; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #565d67; transition: color .3s; }
+.sw-track.is-on .sw-side-on { color: var(--lab-on); }
+.sw-track:not(.is-on) .sw-side-off { color: #cfd4db; }
+.sw-track[data-state="down"] .sw-side-on { color: var(--lab-cut); }
+.sw-track[data-state="connecting"] .sw-side-on { color: var(--lab-wait); }
+/* Ручка стоит там, куда её дотянули. `--at` приезжает процентом, а не числом,
+   и умножения в calc тут нет ни одного намеренно: `число * (100% - Npx)`
+   сборщик выкидывает молча — правило просто не доезжает до браузера, и ручка
+   навсегда остаётся у левого края. Проценты — это середина ручки, отсюда
+   вычитание половины её ширины, а `clamp` держит её в пазу.
+   Пружина живёт в переходе и на время перетаскивания снимается: иначе она
+   догоняет палец. */
+.sw-handle {
+  position: absolute; top: 5px; bottom: 5px; width: 46px;
+  display: grid; grid-auto-flow: column; gap: 3px; place-content: center;
+  border-radius: 9px; background: linear-gradient(#3c434e, #2a3038);
+  box-shadow: 0 6px 14px #00000059, inset 0 1px #ffffff1f;
+  left: clamp(5px, calc(var(--at) - 23px), calc(100% - 51px));
+  transition: left .42s cubic-bezier(.2, .9, .25, 1.25), background .3s;
+}
+.sw-track.is-dragging .sw-handle { transition: none; }
+.sw-handle i { width: 2px; height: 16px; border-radius: 1px; background: #8b94a1; }
+.sw-track.is-on .sw-handle { background: linear-gradient(#46505d, #313943); }
+.sw-spark { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at 50% 50%, #ffffff26, transparent 60%); animation: sw-spark .55s ease-out both; }
+@keyframes sw-spark { from { opacity: 1; transform: scale(.6); } to { opacity: 0; transform: scale(1.4); } }
+
+.sw-circuit { display: flex; align-items: center; gap: 14px; margin-top: 26px; font-size: 11px; color: var(--lab-muted); }
+.sw-node { flex: none; }
+.sw-wire { flex: 1; height: 2px; border-radius: 2px; background: var(--lab-line); }
+.sw-circuit.is-up .sw-wire { background: repeating-linear-gradient(90deg, var(--lab-on) 0 9px, transparent 9px 21px); animation: sw-flow .9s linear infinite; }
+@keyframes sw-flow { to { background-position: 21px 0; } }
+.sw-circuit.is-connecting .sw-wire { background: repeating-linear-gradient(90deg, var(--lab-wait) 0 4px, transparent 4px 12px); animation: sw-flow 1.6s linear infinite; }
+/* Перерубленный канал рисуется дырой посередине, а не другим цветом: цвет
+   читается как «плохо», дыра — как «пути нет», и это разные сообщения. */
+.sw-circuit.is-down .sw-wire { background: linear-gradient(90deg, var(--lab-cut) 44%, transparent 44% 56%, var(--lab-cut) 56%); }
+.sw-circuit.is-down { animation: sw-jolt .34s ease-in-out; }
+@keyframes sw-jolt { 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+.sw-verdict { margin-top: 12px; font-size: 13px; color: #c4cad3; min-height: 42px; animation: lab-rise .3s ease-out both; }
+@keyframes lab-rise { from { opacity: 0; transform: translateY(4px); } }
+
+.sw-rows { margin-top: 22px; border-top: 1px solid var(--lab-line); }
+.sw-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 15px 0; border-bottom: 1px solid var(--lab-line); font-size: 12px; color: var(--lab-muted); }
+.lab-exit { border-bottom: 1px solid var(--lab-line); }
+.lab-exit-head { width: 100%; display: flex; align-items: center; gap: 13px; text-align: left; padding: 14px 0; }
+.lab-exit-head > :nth-child(2) { flex: 1; }
+.lab-exit small, .lab-exit-list small { display: block; font-size: 11px; color: var(--lab-muted); }
+.lab-exit strong { font-weight: 500; }
+.lab-chev { color: var(--lab-muted); transition: transform .25s; }
+.lab-chev.is-open { transform: rotate(180deg); }
+.lab-exit-list { padding-bottom: 8px; animation: lab-rise .22s ease-out both; }
+.lab-exit-list button { width: 100%; display: flex; align-items: center; gap: 13px; text-align: left; padding: 10px 8px; border-radius: 8px; }
+.lab-exit-list button > :nth-child(2) { flex: 1; }
+.lab-exit-list button:hover, .lab-exit-list button[aria-pressed="true"] { background: #ffffff0a; }
+.sw-foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 18px; font-size: 11px; color: var(--lab-muted); }
+.sw-foot button { text-decoration: underline; text-underline-offset: 4px; color: var(--lab-cut); }
+
+/* ── Проходная ─────────────────────────────────────────────────────────── */
+
+.gate-main { max-width: 860px; margin: 6px auto 30px; padding: 0 28px; }
+.gate-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 18px; }
+.gate-power { padding: 9px 18px; border-radius: 8px; background: #2e343d; font-size: 13px; font-weight: 500; }
+.gate-power[data-state="up"] { background: #1e4436; color: #c8f0dc; }
+.gate-power[data-state="down"] { background: #46251f; color: #f4c9c1; }
+.gate-yard { display: grid; grid-template-columns: 1fr 92px 1fr; gap: 0; align-items: start; }
+/* Карточка приезжает со сдвигом, и в узком окне этот сдвиг вылезал бы за край
+   страницы. `clip` держит проезд внутри столбца и не заводит прокрутки. */
+.gate-col { padding: 18px 0; min-width: 0; overflow-x: clip; }
+.gate-col h2 { font-size: 12px; letter-spacing: .09em; text-transform: uppercase; color: var(--lab-muted); }
+.gate-col > p { margin: 7px 0 14px; font-size: 12px; color: var(--lab-muted); min-height: 52px; }
+.gate-col-in { text-align: right; }
+.gate-col-in .gate-card { flex-direction: row-reverse; }
+.gate-stack { display: flex; flex-direction: column; gap: 7px; }
+.gate-card {
+  display: flex; align-items: center; gap: 11px; width: 100%; text-align: left;
+  padding: 10px 12px; border-radius: 10px; background: var(--lab-plate);
+  border: 1px solid var(--lab-line); font-size: 13px;
+}
+.gate-card strong { flex: 1; font-weight: 500; }
+.gate-card:hover { border-color: #46505d; }
+.gate-arrow { color: var(--lab-muted); font-size: 13px; opacity: 0; transition: opacity .2s; }
+.gate-card:hover .gate-arrow { opacity: 1; }
+/* Карточка приезжает с той стороны, откуда её перевели: ключ у неё меняется
+   вместе со столбцом, поэтому анимация играет ровно на переходе. */
+.gate-from-out { animation: gate-in-left .3s cubic-bezier(.2, .8, .3, 1) both; }
+.gate-from-in { animation: gate-in-right .3s cubic-bezier(.2, .8, .3, 1) both; }
+@keyframes gate-in-left { from { opacity: 0; transform: translateX(46px); } }
+@keyframes gate-in-right { from { opacity: 0; transform: translateX(-46px); } }
+.gate-card.is-bumped { animation: gate-bump .4s ease-in-out; border-color: var(--lab-cut); }
+@keyframes gate-bump { 30% { transform: translateX(10px); } 60% { transform: translateX(-5px); } }
+
+.gate-bar { position: relative; display: grid; place-items: center; gap: 10px; align-self: stretch; min-height: 220px; }
+.gate-bolt { width: 5px; height: 100%; border-radius: 3px; background: var(--lab-line); transition: background .35s, box-shadow .35s, transform .35s; }
+.gate-bar[data-state="up"] .gate-bolt { background: linear-gradient(var(--lab-on), #1f6f52); box-shadow: 0 0 18px #4fd18f40; transform: scaleY(.24); }
+.gate-bar[data-state="connecting"] .gate-bolt { background: var(--lab-wait); animation: gate-throb 1s ease-in-out infinite; }
+.gate-bar[data-state="down"] .gate-bolt { background: linear-gradient(var(--lab-cut), #7d332a); box-shadow: 0 0 18px #e0705f33; transform: none; }
+@keyframes gate-throb { 50% { opacity: .4; } }
+.gate-word { position: absolute; bottom: -4px; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--lab-muted); }
+/* Приглушены те, у кого сети нет прямо сейчас, и в этом весь смысл картинки:
+   при поднятом канале гаснет левый столбец, при перерубленном — оба. Не гасить
+   левый было нельзя: «без сети» в заголовке и живые карточки под ним читаются
+   ровно наоборот. */
+.gate-col.is-locked .gate-stack { opacity: .45; filter: saturate(.4); }
+.gate-col.is-locked .gate-card { border-style: dashed; }
+.gate-yard.is-all .gate-bar { opacity: .35; }
+.gate-foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--lab-line); font-size: 11px; color: var(--lab-muted); }
+.gate-foot button { text-decoration: underline; text-underline-offset: 4px; color: var(--lab-cut); }
+
+/* ── Шторки ────────────────────────────────────────────────────────────── */
+
+/* Шторка приезжает снизу, значит «низ» обязан быть у сцены, а не у текста:
+   иначе она встаёт посреди пустого экрана и читается как обычная панель. */
+/* `overflow-x: clip`, а не `hidden`: затемнение выходит за колонку на всю
+   ширину окна, и с `auto` это дало бы полосу прокрутки под ним. */
+.lab-sheets { display: grid; grid-template-rows: auto minmax(0, 1fr); overflow-x: clip; }
+.sh-main { max-width: 400px; width: 100%; margin: 0 auto; padding: 8px 20px 20px; position: relative; height: 100%; }
+/* Подложка отъезжает назад, пока шторка поднята: без этого шторка читается как
+   ещё одна панель того же экрана, а не как то, что лежит поверх. */
+.sh-stage { transition: transform .32s cubic-bezier(.2, .8, .3, 1), opacity .32s; transform-origin: 50% 0; }
+.sh-stage.is-behind { transform: scale(.94); opacity: .5; }
+.sh-state { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; align-items: center; padding: 20px 0 6px; }
+.sh-dot { width: 9px; height: 9px; border-radius: 50%; background: #5a616b; grid-row: 1; }
+.sh-state[data-state="up"] .sh-dot { background: var(--lab-on); box-shadow: 0 0 0 5px #4fd18f1f; }
+.sh-state[data-state="connecting"] .sh-dot { background: var(--lab-wait); animation: gate-throb 1s ease-in-out infinite; }
+.sh-state[data-state="down"] .sh-dot { background: var(--lab-cut); box-shadow: 0 0 0 5px #e0705f1f; }
+.sh-state strong { font-size: 21px; font-weight: 550; letter-spacing: -.02em; }
+.sh-state small { grid-column: 2; font-size: 12px; color: var(--lab-muted); min-height: 36px; }
+.sh-act { width: 100%; display: flex; align-items: center; justify-content: space-between; margin-top: 16px; padding: 17px 20px; border-radius: 14px; background: #2f6ee0; color: #fff; font-size: 15px; font-weight: 500; transition: background .25s; }
+.sh-act.is-on { background: #2a3038; }
+.sh-act i { width: 18px; height: 18px; border-radius: 50%; border: 2px solid currentColor; border-top-color: transparent; transition: transform .3s; }
+.sh-act.is-on i { transform: rotate(135deg); }
+.sh-chips { display: grid; gap: 8px; margin-top: 16px; }
+.sh-chips button { display: grid; gap: 2px; text-align: left; padding: 13px 16px; border-radius: 12px; background: var(--lab-plate); border: 1px solid var(--lab-line); }
+.sh-chips small { font-size: 11px; color: var(--lab-muted); }
+.sh-chips strong { font-size: 14px; font-weight: 500; }
+/* Затемнение выходит за колонку до краёв окна: шторка накрывает экран, а не
+   свои же четыреста пикселей. */
+.sh-scrim { position: absolute; inset: 0 calc(50% - 50vw); background: #0a0c0fa6; backdrop-filter: blur(2px); animation: lab-fade .25s ease-out both; }
+@keyframes lab-fade { from { opacity: 0; } }
+.sh-sheet {
+  position: absolute; inset: auto 0 0; max-height: 76%; display: flex; flex-direction: column;
+  border-radius: 20px 20px 0 0; background: #1b1e24; border: 1px solid var(--lab-line); border-bottom: 0;
+  box-shadow: 0 -18px 40px #00000059;
+  transform: translateY(var(--pull, 0px));
+  animation: sh-up .34s cubic-bezier(.2, .85, .3, 1) both;
+}
+@keyframes sh-up { from { transform: translateY(100%); } }
+.sh-grip { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; padding: 8px 16px 12px; touch-action: none; cursor: grab; }
+.sh-grip i { grid-column: 1 / -1; justify-self: center; width: 38px; height: 4px; border-radius: 2px; background: #40464f; margin-bottom: 8px; }
+.sh-grip h2 { font-size: 15px; font-weight: 550; }
+.sh-grip button { font-size: 13px; color: var(--lab-muted); padding: 4px 6px; }
+.sh-body { overflow: auto; padding: 0 10px 16px; }
+.sh-row { width: 100%; display: flex; align-items: center; gap: 12px; text-align: left; padding: 11px 10px; border-radius: 10px; }
+.sh-row > :nth-child(2) { flex: 1; min-width: 0; }
+.sh-row strong { font-weight: 500; font-size: 13.5px; display: block; }
+.sh-row small { display: block; font-size: 11px; color: var(--lab-muted); }
+.sh-row:hover { background: #ffffff0a; }
+.sh-row[aria-pressed="true"] { background: #ffffff0f; }
+.sh-mark { color: var(--lab-on); width: 14px; }
+.sh-log { padding: 6px 10px; font: 12px/1.9 Consolas, monospace; color: #c1c7d0; }
+.sh-log time { display: inline-block; width: 52px; color: var(--lab-muted); }
+
+@media (max-width: 470px) {
+  .lab-top { padding: 14px 16px; gap: 10px; }
+  .lab-top > :last-child { max-width: 140px; text-align: right; }
+  .sw-main, .gate-main, .sh-main { padding-inline: 16px; }
+  .sw-row { flex-direction: column; align-items: flex-start; gap: 8px; }
+  /* Два столбца в 380 px не живут: проходная разворачивается в две полки, а
+     засов ложится поперёк между ними — картинка та же, поворот другой. */
+  .gate-head { flex-wrap: wrap; }
+  .lab-seg button { padding-inline: 10px; }
+  .gate-yard { grid-template-columns: 1fr; }
+  .gate-bar { min-height: 0; height: 34px; grid-auto-flow: column; }
+  .gate-bolt { width: 100%; height: 5px; }
+  .gate-bar[data-state="up"] .gate-bolt { transform: scaleX(.24); }
+  .gate-word { position: static; }
+  .gate-col-in { text-align: left; }
+  .gate-col-in .gate-card { flex-direction: row; }
+  .gate-col > p { min-height: 0; }
+}

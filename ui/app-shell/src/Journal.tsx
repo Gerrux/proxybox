@@ -45,7 +45,7 @@ export function Journal({ lines, lang, className }: { lines: LogLine[]; lang?: L
       {lines.length === 0 ? (
         <Empty>{s.emptyJournal}</Empty>
       ) : (
-        <ol className="flex flex-col font-mono text-[11.5px] leading-snug">
+        <ol className="journal-list flex flex-col font-mono text-[12.5px] leading-relaxed">
           {lines.map((line, i) => {
             const prev = lines[i - 1];
             // Группа — не «сутки», а «другие сутки, чем у строки выше»: список

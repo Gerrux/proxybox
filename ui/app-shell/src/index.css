@@ -143,10 +143,10 @@ body {
    от надписей на самом приборе, а не от типографики веб-страниц. */
 .engraved {
   font-family: var(--font-display);
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  letter-spacing: 0.01em;
+  text-transform: none;
 }
 
 /* Цвет состояния — один на всю панель: заголовок, канал и бегунок берут его
@@ -923,4 +923,81 @@ body {
 .cv-row {
   content-visibility: auto;
   contain-intrinsic-size: auto 46px;
+}
+
+/* A route instrument: illuminated topology over a quiet telemetry strip. */
+.app {
+  background: radial-gradient(ellipse at 80% 0%, color-mix(in oklch, var(--pg-accent) 7%, transparent), transparent 60%), var(--pg-bg);
+}
+.st {
+  padding: 22px 24px 0;
+  border-radius: 12px;
+  background:
+    radial-gradient(ellipse at 8% 0%, color-mix(in oklch, var(--tone) 14%, transparent), transparent 65%),
+    linear-gradient(125deg, var(--pg-surface), var(--pg-surface-2));
+  border-color: color-mix(in oklch, var(--tone) 26%, var(--pg-border));
+  box-shadow: inset 0 1px var(--pg-lift), 0 8px 24px #00000012;
+}
+.st-title { display: flex; align-items: center; gap: 12px; font-size: 29px; letter-spacing: .015em; }
+.st-title::before {
+  content: ""; width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--tone);
+  box-shadow: 0 0 0 5px color-mix(in oklch, var(--tone) 10%, transparent), 0 0 18px color-mix(in oklch, var(--tone) 35%, transparent);
+}
+.st-hint { font-size: 13px; margin-top: 6px; }
+.st-toggle { border-radius: 7px; min-width: 112px; font-size: 13px; }
+.st-cond { margin-top: 20px; gap: 14px; }
+.scope-label { font-size: 12px; }
+.st-cond .well { border-radius: 7px; background: var(--pg-well); padding: 3px; }
+.st-cond .seg-btn { font-family: var(--font-sans); font-size: 12px; text-transform: none; letter-spacing: 0; padding: 5px 12px; }
+.route-map { display: grid; grid-template-columns: 80px minmax(24px, .35fr) minmax(145px, 1.4fr) minmax(24px, .35fr) minmax(160px, 1.3fr); align-items: center; gap: 12px; padding: 25px 0 24px; }
+.route-origin { display: flex; align-items: center; flex-direction: column; gap: 8px; font-size: 11px; color: var(--pg-muted); text-align: center; }
+.route-device { display: grid; place-items: center; width: 44px; height: 44px; border: 1px solid var(--pg-border); border-radius: 12px; background: linear-gradient(var(--pg-lift), transparent); color: var(--pg-text); box-shadow: inset 0 1px var(--pg-lift); }
+.route-device svg { width: 27px; height: 27px; }
+.route-profile, .route-exit { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.route-caption { color: var(--pg-muted); font-size: 10px; letter-spacing: .09em; text-transform: uppercase; font-family: var(--font-display); }
+.route-profile strong { font-family: var(--font-display); font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.route-exit strong { display: flex; align-items: center; gap: 8px; font-family: var(--font-display); font-size: 22px; font-weight: 500; line-height: 1.25; }
+.route-exit strong > span { flex: none; font-size: 17px; }
+.route-protocol { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; color: var(--tone); letter-spacing: .07em; }
+.route-city { font-size: 12px; color: var(--pg-muted); }
+.route-wire { position: relative; height: 1px; background: repeating-linear-gradient(90deg, var(--tone) 0 3px, transparent 3px 8px); opacity: .35; }
+.route-wire::before, .route-wire::after { content: ""; width: 5px; height: 5px; position: absolute; top: -2px; border-radius: 50%; background: var(--tone); }
+.route-wire::after { right: 0; }
+.st[data-state="up"] .route-wire { opacity: .85; box-shadow: 0 0 12px color-mix(in oklch, var(--tone) 25%, transparent); }
+.st[data-state="down"] .route-wire, .st[data-state="fault"] .route-wire { background: linear-gradient(90deg, var(--tone) 42%, transparent 42% 58%, var(--tone) 58%); }
+.st-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; margin: 0 -24px; padding: 14px 24px; background: var(--pg-well); }
+.st-metrics .m-cell { display: block; min-width: 0; padding: 0 16px; border-inline-start: 1px solid var(--pg-border); }
+.st-metrics .m-cell:first-child { border: 0; padding-inline-start: 0; }
+.st-metrics .m-label { position: static; width: auto; height: auto; clip-path: none; font-size: 11px; letter-spacing: .03em; }
+.st-metrics .m-value { margin-top: 5px; font-size: 22px; font-weight: 500; }
+.st-metrics .rates { display: block; margin-top: 3px; font-size: 11px; }
+.st-metrics .m-icon { display: none; }
+.st-metrics .spark { display: block; opacity: .5; }
+.tabs { min-height: 44px; background: transparent; border-color: transparent; gap: 4px; }
+.tabs > button { border-radius: 6px; position: relative; }
+.tabs > button[aria-pressed="true"] { background: linear-gradient(var(--pg-lift), transparent), var(--pg-surface); box-shadow: inset 0 0 0 1px var(--pg-border), inset 0 -2px var(--pg-accent); }
+.tabs .engraved { font-size: 12px; letter-spacing: .025em; }
+.plate { border-radius: 10px; }
+.plate-head { background: linear-gradient(var(--pg-lift), transparent); padding-block: 12px; }
+.plate-head .engraved { font-size: 12px; letter-spacing: .07em; }
+.journal-list time { font-size: 11px; }
+.journal-list li > div.relative { padding-block: 2px; }
+@media (max-width: 650px) {
+  .route-map { grid-template-columns: 64px minmax(16px, .5fr) minmax(110px, 1fr) minmax(16px, .5fr) minmax(118px, 1fr); gap: 8px; }
+  .route-exit strong { font-size: 18px; }
+  .route-profile strong { font-size: 14px; }
+}
+@media (max-width: 470px) {
+  .st { padding: 14px 14px 0; }
+  .st-title { font-size: 19px; gap: 9px; }
+  .st-hint { font-size: 11px; }
+  .scope-label { display: none; }
+  .st-cond { margin-top: 12px; }
+  .st-cond .seg-btn { padding: 4px 9px; }
+  .route-map { grid-template-columns: minmax(100px, 1fr) 24px minmax(110px, 1fr); padding: 18px 0; }
+  .route-origin, .route-origin + .route-wire { display: none; }
+  .st-metrics { margin-inline: -14px; padding: 10px 14px; }
+  .st-metrics .m-cell { padding-inline: 10px; }
+  .st-metrics .m-value { font-size: 17px; }
+  .st-metrics .rates { font-size: 10px; }
 }
