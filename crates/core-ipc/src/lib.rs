@@ -670,6 +670,11 @@ pub struct ProfileInfo {
     /// первом пире, а у правленного руками узла его может не быть вовсе.
     #[serde(default)]
     pub server: String,
+    /// Идёт ли трафик до сервера открытым текстом (`core_config::plain`):
+    /// SOCKS5, HTTP без TLS, VLESS и trojan без него. Считает служба — где у
+    /// узла TLS, окно не знает, узла целиком у него нет.
+    #[serde(default)]
+    pub plain: bool,
     /// Отмечен ли профиль звёздочкой. Помнит это служба, а не окно: подписка на
     /// сотню узлов — это сотня строк, среди которых человек пользуется тремя, и
     /// на второй машине они те же самые. Порядок сортировки окно помнит у себя
@@ -1300,6 +1305,7 @@ mod tests {
                     name: "myvpn".into(),
                     kind: "vless".into(),
                     server: "a.com:443".into(),
+                    plain: true,
                     favorite: true,
                 }],
                 testing: Some(TestRun { done: 3, total: 8 }),

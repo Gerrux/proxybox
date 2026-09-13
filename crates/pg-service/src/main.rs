@@ -947,7 +947,14 @@ impl Service {
                     Scope::Whitelist => tf!("приложений с сетью: {}, у остальных её нет", count),
                     Scope::None => t("никто: туннель поднят, но пропусков нет ни у кого"),
                 };
-                self.log(tf!("профиль «{}»: sing-box запущен, {}", profile, scope));
+                // Открытый узел называется в той же строке, а не своей: `start`
+                // зовётся и на каждом круге перезапуска, и отдельная строка
+                // чередовалась бы с этой, обходя дедупликацию журнала.
+                if core_config::plain(&node) {
+                    self.log(tf!("профиль «{}» без шифрования, провайдер видит, куда идут соединения: sing-box запущен, {}", profile, scope));
+                } else {
+                    self.log(tf!("профиль «{}»: sing-box запущен, {}", profile, scope));
+                }
                 Ok(())
             }
             Err(e) => {
@@ -1312,7 +1319,7 @@ fn profiles_of(profiles: &BTreeMap<String, Value>, favorites: &BTreeSet<String>)
         .iter()
         .map(|(name, node)| {
             let (kind, server) = core_config::describe(node);
-            ProfileInfo { favorite: favorites.contains(name), name: name.clone(), kind, server }
+            ProfileInfo { favorite: favorites.contains(name), name: name.clone(), kind, server, plain: core_config::plain(node) }
         })
         .collect()
 }
@@ -1432,7 +1439,9 @@ fn split_paste(text: &str) -> (Vec<String>, String) {
     }
     let (mut urls, mut rest) = (Vec::new(), Vec::new());
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-        if line.starts_with("http://") || line.starts_with("https://") {
+        // Адрес прокси тоже начинается с `http://`, но это узел, а не подписка
+        // (`core_config::is_proxy_url`).
+        if (line.starts_with("http://") || line.starts_with("https://")) && !core_config::is_proxy_url(line) {
             urls.push(line.to_string());
         } else {
             rest.push(line);
@@ -3925,6 +3934,10 @@ mod tests {
         let (urls, rest) = split_paste(json);
         assert!(urls.is_empty(), "адрес внутри JSON не адрес подписки: {urls:?}");
         assert_eq!(rest, json, "JSON уходит на разбор целиком");
+
+        let (urls, rest) = split_paste("https://panel/one\nhttp://user:pass@1.2.3.4:8080");
+        assert_eq!(urls, ["https://panel/one"], "адрес прокси — узел, а не подписка");
+        assert_eq!(rest, "http://user:pass@1.2.3.4:8080");
     }
 
     /// Тот же узел вторым профилем не заводится. Имя ему `free_name` выдал бы
