@@ -258,7 +258,8 @@ const RU = {
   connsAdd: "В белый список",
   connsDrop: "Убрать из белого списка",
   connsDropHint:
-    "Новых соединений мимо туннеля не появится. Живые правка не рвёт: правило работает на подключении, и уже открытый сокет идёт как шёл.",  rateHint: (peak: string) =>
+    "Новых соединений мимо туннеля не появится. Живые правка не рвёт: правило работает на подключении, и уже открытый сокет идёт как шёл.",
+  rateHint: (peak: string) =>
     `Скорость канала: ↓ принято, ↑ отправлено. Шкала плавающая, пик окна — ${peak}. Считается по счётчикам туннеля прямо в окне и нигде не сохраняется; служба снимает их своим тактом, поэтому и график едет её шагом, а не шагом опроса.`,
   perSecond: "/с",
   hideMessage: "Скрыть сообщение",
@@ -594,7 +595,8 @@ const EN: typeof RU = {
   connsAdd: "Add to whitelist",
   connsDrop: "Remove from whitelist",
   connsDropHint:
-    "No new connection will go around the tunnel. Live ones are not cut: the rule works on connect, and an already open socket goes on as before.",  rateHint: (peak: string) =>
+    "No new connection will go around the tunnel. Live ones are not cut: the rule works on connect, and an already open socket goes on as before.",
+  rateHint: (peak: string) =>
     `Link speed: ↓ received, ↑ sent. The scale floats with the window, peaking at ${peak}. Counted from the tunnel counters right here in the window and stored nowhere; the service samples them at its own pace, so the graph advances at that pace, not at the polling one.`,
   perSecond: "/s",
   hideMessage: "Hide message",
@@ -931,7 +933,8 @@ const FA: typeof RU = {
   connsAdd: "افزودن به فهرست سفید",
   connsDrop: "برداشتن از فهرست سفید",
   connsDropHint:
-    "اتصال تازه‌ای از کنار تونل نخواهد رفت. اتصال‌های زنده قطع نمی‌شوند: قاعده هنگام برقراری اتصال کار می‌کند و سوکت بازشده مثل قبل ادامه می‌دهد.",  rateHint: (peak: string) =>
+    "اتصال تازه‌ای از کنار تونل نخواهد رفت. اتصال‌های زنده قطع نمی‌شوند: قاعده هنگام برقراری اتصال کار می‌کند و سوکت بازشده مثل قبل ادامه می‌دهد.",
+  rateHint: (peak: string) =>
     `سرعت کانال: ↓ دریافت، ↑ ارسال. مقیاس شناور است و اوج پنجره ${peak} است. از شمارنده‌های تونل همین‌جا در پنجره حساب می‌شود و هیچ‌جا ذخیره نمی‌شود؛ سرویس آن‌ها را با ضرب‌آهنگ خودش برمی‌دارد، پس نمودار هم با همان گام پیش می‌رود، نه با گام پرس‌وجو.`,
   perSecond: "/ث",
   hideMessage: "پنهان کردن پیام",
@@ -1269,7 +1272,8 @@ const ZH: typeof RU = {
   connsAdd: "加入白名单",
   connsDrop: "移出白名单",
   connsDropHint:
-    "不会再有新连接绕过隧道。已有连接不会被切断：规则作用于连接建立时，已打开的套接字照旧。",  rateHint: (peak: string) =>
+    "不会再有新连接绕过隧道。已有连接不会被切断：规则作用于连接建立时，已打开的套接字照旧。",
+  rateHint: (peak: string) =>
     `通道速度：↓ 接收，↑ 发送。刻度随窗口浮动，峰值为 ${peak}。就在窗口里按隧道计数器算出，不存到任何地方；服务按自己的节拍取数，所以图线也按那个步子走，而不是按轮询的步子。`,
   perSecond: "/秒",
   hideMessage: "隐藏消息",
@@ -1604,7 +1608,8 @@ const TR: typeof RU = {
   connsAdd: "Beyaz listeye ekle",
   connsDrop: "Beyaz listeden çıkar",
   connsDropHint:
-    "Tünelin yanından yeni bağlantı geçmeyecek. Canlı bağlantılar kesilmez: kural bağlanma anında çalışır, açık soket eskisi gibi devam eder.",  rateHint: (peak: string) =>
+    "Tünelin yanından yeni bağlantı geçmeyecek. Canlı bağlantılar kesilmez: kural bağlanma anında çalışır, açık soket eskisi gibi devam eder.",
+  rateHint: (peak: string) =>
     `Kanal hızı: ↓ alınan, ↑ gönderilen. Ölçek pencereyle birlikte oynar, tepe ${peak}. Tünel sayaçlarından tam burada, pencerede hesaplanır ve hiçbir yere kaydedilmez; hizmet onları kendi temposuyla alır, bu yüzden grafik de o adımla ilerler, sorgulama adımıyla değil.`,
   perSecond: "/sn",
   hideMessage: "İletiyi gizle",
@@ -1942,7 +1947,8 @@ const ID: typeof RU = {
   connsAdd: "Tambahkan ke daftar putih",
   connsDrop: "Hapus dari daftar putih",
   connsDropHint:
-    "Tidak akan ada koneksi baru yang lewat di luar terowongan. Koneksi hidup tidak diputus: aturan bekerja saat menyambung, dan soket yang sudah terbuka berjalan seperti semula.",  rateHint: (peak: string) =>
+    "Tidak akan ada koneksi baru yang lewat di luar terowongan. Koneksi hidup tidak diputus: aturan bekerja saat menyambung, dan soket yang sudah terbuka berjalan seperti semula.",
+  rateHint: (peak: string) =>
     `Kecepatan saluran: ↓ diterima, ↑ dikirim. Skalanya mengambang, puncak jendela ${peak}. Dihitung dari penghitung terowongan langsung di jendela ini dan tidak disimpan di mana pun; layanan mengambilnya dengan iramanya sendiri, jadi grafiknya pun melaju dengan langkah itu, bukan langkah permintaan.`,
   perSecond: "/dtk",
   hideMessage: "Sembunyikan pesan",
