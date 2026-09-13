@@ -187,7 +187,8 @@ pub fn firefox() -> Option<Found> {
     discover_from(&catalog(), &[]).into_iter().find(|f| f.name == "Mozilla Firefox")
 }
 
-/// `user.js` профиля Firefox: прокси, WebRTC и защита от отпечатка.
+/// `user.js` профиля Firefox: прокси, WebRTC и, когда попросили, защита от
+/// отпечатка.
 ///
 /// Флага `--proxy-server` у Firefox нет, прокси живёт в настройках профиля, а
 /// `user.js` Firefox перечитывает на каждом запуске и накладывает поверх
@@ -207,7 +208,7 @@ pub fn firefox() -> Option<Found> {
 /// по списку окрестных точек Wi-Fi, и через любой прокси это настоящий адрес
 /// человека. Язык ставится, только если выбран, — тогда и английский RFP не
 /// навязывает (`spoof_english = 1`). Сторож — `firefox_never_goes_around_the_proxy`.
-pub fn firefox_user_js(port: u16, lang: &str, once: bool) -> String {
+pub fn firefox_user_js(port: u16, lang: &str, once: bool, compatibility: bool) -> String {
     let mut prefs: Vec<(&str, String)> = vec![
         ("network.proxy.type", "1".into()),
         ("network.proxy.socks", "\"127.0.0.1\"".into()),
@@ -220,7 +221,6 @@ pub fn firefox_user_js(port: u16, lang: &str, once: bool) -> String {
         ("media.peerconnection.ice.proxy_only", "true".into()),
         ("media.peerconnection.ice.default_address_only", "true".into()),
         ("media.peerconnection.ice.no_host", "true".into()),
-        ("privacy.resistFingerprinting", "true".into()),
         ("geo.enabled", "false".into()),
         // Одноразовому восстанавливать нечего; остальным — вкладки прошлого
         // раза, как у Chromium с `--restore-last-session`.
@@ -232,6 +232,10 @@ pub fn firefox_user_js(port: u16, lang: &str, once: bool) -> String {
         ("toolkit.telemetry.enabled", "false".into()),
         ("app.normandy.enabled", "false".into()),
     ];
+    // Пишем оба значения явно: Firefox сохраняет применённый прежде user.js в
+    // prefs.js, поэтому простое отсутствие строки не выключило бы RFP у уже
+    // открывавшегося профиля. Транспортные запреты выше от этого не ослабевают.
+    prefs.push(("privacy.resistFingerprinting", (!compatibility).to_string()));
     if !lang.is_empty() {
         prefs.push(("intl.accept_languages", serde_json::Value::String(lang.to_string()).to_string()));
         prefs.push(("privacy.spoof_english", "1".into()));
@@ -1530,7 +1534,7 @@ mod tests {
     /// включена — ради неё движок и выбирают.
     #[test]
     fn firefox_never_goes_around_the_proxy() {
-        let js = firefox_user_js(48321, "nl-NL,nl,en-US,en", false);
+        let js = firefox_user_js(48321, "nl-NL,nl,en-US,en", false, false);
         for line in [
             r#"user_pref("network.proxy.type", 1);"#,
             r#"user_pref("network.proxy.socks", "127.0.0.1");"#,
@@ -1546,11 +1550,14 @@ mod tests {
         ] {
             assert!(js.contains(line), "нет строки {line}:\n{js}");
         }
-        let once = firefox_user_js(1, "", true);
+        let once = firefox_user_js(1, "", true, false);
         assert!(once.contains(r#"user_pref("browser.startup.page", 0);"#), "одноразовому восстанавливать нечего");
         assert!(!once.contains("accept_languages"), "системный язык — без строки");
         // Кавычка в языке не должна разорвать строку настройки.
-        assert!(firefox_user_js(1, "a\"b", false).contains(r#""a\"b""#));
+        assert!(firefox_user_js(1, "a\"b", false, false).contains(r#""a\"b""#));
+        let compatible = firefox_user_js(1, "", false, true);
+        assert!(compatible.contains(r#"user_pref("privacy.resistFingerprinting", false);"#));
+        assert!(compatible.contains(r#"user_pref("network.proxy.failover_direct", false);"#));
     }
 
     #[test]

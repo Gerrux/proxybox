@@ -272,7 +272,7 @@ pub fn lang_from_env() -> Lang {
 /// профилей одной машины общие и настоящие. Это разделение аккаунтов, а не
 /// антидетект: тот делается патченным Chromium, а одинаковый для всех отпечаток
 /// даёт движок Firefox (`Engine::Firefox`).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BrowserProfile {
     pub name: String,
     /// Имя профиля узла — ключ из `Status::profiles`. Узел могли удалить: тогда
@@ -317,6 +317,36 @@ pub struct BrowserProfile {
     /// защитой от отпечатка это поле не читает — у него всегда UTC.
     #[serde(default)]
     pub timezone: String,
+    /// Совместимость с проверками живого браузера: не подменять UA, Client
+    /// Hints и часовой пояс через DevTools, а у Firefox не включать RFP.
+    /// Отдельный каталог, SOCKS, удалённый DNS и защита WebRTC остаются.
+    ///
+    /// Для старых записей включена: DevTools/RFP появились позже самих
+    /// профилей, а после обновления не должны молча ломать Cloudflare и
+    /// похожие проверки.
+    #[serde(default = "browser_compatibility_default")]
+    pub compatibility: bool,
+}
+
+fn browser_compatibility_default() -> bool {
+    true
+}
+
+impl Default for BrowserProfile {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            node: String::new(),
+            ua: String::new(),
+            lang: String::new(),
+            icon: String::new(),
+            tags: Vec::new(),
+            ephemeral: false,
+            engine: Engine::default(),
+            timezone: String::new(),
+            compatibility: true,
+        }
+    }
 }
 
 /// Движок окна браузерного профиля, и разница между ними не во вкусе.
@@ -1328,6 +1358,7 @@ mod tests {
                     ephemeral: true,
                     engine: Engine::Firefox,
                     timezone: "auto".into(),
+                    compatibility: true,
                 },
             },
             Request::RemoveBrowserProfile { name: "работа".into() },
@@ -1490,6 +1521,17 @@ mod tests {
             change(&mut s);
             assert_ne!(cold_hash(&s), cold, "{what} не двигает отпечаток");
         }
+    }
+
+    #[test]
+    fn old_browser_profiles_enable_site_compatibility() {
+        let profile: BrowserProfile = serde_json::from_value(serde_json::json!({
+            "name": "работа",
+            "node": "NL-01"
+        }))
+        .unwrap();
+        assert!(profile.compatibility, "обновление не должно включать DevTools/RFP молча");
+        assert!(BrowserProfile::default().compatibility, "новый профиль тоже должен быть совместимым");
     }
 
     #[test]

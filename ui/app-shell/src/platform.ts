@@ -79,6 +79,9 @@ export type BrowserProfile = {
   /** Часовой пояс окна Chromium: `auto` — по стране узла, IANA-имя — свой,
    *  пусто — системный. В `browse` уезжает уже раскрытым. */
   timezone: string;
+  /** Обычное окружение браузера для Cloudflare и похожих проверок: без
+   *  DevTools-подмены Chromium и без RFP у Firefox. */
+  compatibility: boolean;
 };
 
 /** Движок окна браузерного профиля — `core_ipc::Engine`. */
@@ -419,6 +422,7 @@ export async function browse(profile: BrowserProfile, color: string): Promise<vo
     once: profile.ephemeral,
     engine: profile.engine,
     timezone: profile.timezone,
+    compatibility: profile.compatibility,
   });
 }
 

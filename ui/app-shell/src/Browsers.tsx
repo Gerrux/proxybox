@@ -186,6 +186,9 @@ const EMPTY: BrowserProfile = {
   engine: "chromium",
   // Новым — по стране узла; заведённые до поля остаются с системным.
   timezone: AUTO,
+  // Проверки сайтов важнее подмены по умолчанию: расширенную личность человек
+  // включает осознанно, когда знает её цену.
+  compatibility: true,
 };
 
 /** Метки из строки: через запятую, без пустых и без повторов. Регистр
@@ -414,17 +417,33 @@ function Editor({
               заполнять ниже. У Firefox с защитой от отпечатка строку UA пишет
               он сам, и конструктор под ним был бы полем, которое ничего не
               делает. */}
-          <Field icon="browser" label={s.browserEngine} hint={draft.engine === "firefox" ? s.browserFirefoxHint : s.browserChromiumHint}>
+          <Field
+            icon="browser"
+            label={s.browserEngine}
+            hint={draft.compatibility ? s.browserCompatibleEngineHint : draft.engine === "firefox" ? s.browserFirefoxHint : s.browserChromiumHint}
+          >
             <select
               value={draft.engine}
               onChange={(e) => setDraft({ ...draft, engine: e.target.value as Engine })}
               className={FIELD}
             >
               <option value="chromium">Chromium</option>
-              <option value="firefox">{s.browserFirefox}</option>
+              <option value="firefox">{draft.compatibility ? "Firefox" : s.browserFirefox}</option>
             </select>
           </Field>
-          {draft.engine === "chromium" && (
+          <label className="flex items-start gap-2 text-[13px]">
+            <input
+              type="checkbox"
+              checked={draft.compatibility}
+              onChange={(e) => setDraft({ ...draft, compatibility: e.target.checked })}
+              className="mt-0.5 accent-[var(--pg-accent)]"
+            />
+            <span className="flex flex-col gap-0.5">
+              {s.browserCompatibility}
+              <span className="text-[11px] text-muted">{s.browserCompatibilityHint}</span>
+            </span>
+          </label>
+          {draft.engine === "chromium" && !draft.compatibility && (
           /* Конструктор личности. Поля не декоративные: каждое попадает в
               строку user-agent, а строка остаётся редактируемой — вписанную
               руками конструктор не переписывает, он её разбирает. */
@@ -542,7 +561,7 @@ function Editor({
           )}
           {/* Пояс — только Chromium: Firefox с защитой от отпечатка всегда
               отдаёт UTC и поле бы не читал. */}
-          {draft.engine === "chromium" && (
+          {draft.engine === "chromium" && !draft.compatibility && (
             <Field icon="clock" label={s.browserZone} hint={s.browserZoneHint(timeZone(draft.timezone, code))}>
               <select
                 value={draft.timezone === AUTO || draft.timezone === "" ? draft.timezone : "custom"}
@@ -780,7 +799,11 @@ export function Browsers({
                       )}
                       {/* Личность целиком в строку не влезает никогда, а знать
                           про неё надо ровно одно: подменена она или настоящая. */}
-                      {item.engine === "firefox" ? (
+                      {item.compatibility ? (
+                        <span className="min-w-0 truncate" title={s.browserCompatibilityHint}>
+                          {s.browserCompatibilityMark}
+                        </span>
+                      ) : item.engine === "firefox" ? (
                         <span className="min-w-0 truncate" title={s.browserFirefoxHint}>
                           {s.browserFirefox}
                         </span>

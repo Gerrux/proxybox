@@ -244,6 +244,11 @@ fn session_dir(profile: &str) -> std::path::PathBuf {
 /// подмены значило бы показать сайту московское время и настоящее
 /// местоположение под обещанием обратного.
 ///
+/// `compatibility` оставляет сайтам настоящее цельное окружение браузера:
+/// Chromium запускается без DevTools-канала и не получает подменённый UA, а у
+/// Firefox не включается RFP. Отдельный каталог, SOCKS и защита WebRTC при этом
+/// остаются — меняется отпечаток, не маршрут.
+///
 /// `async` — по тому же правилу, что и у `ipc`.
 #[tauri::command(async)]
 fn open_browser(
@@ -255,6 +260,7 @@ fn open_browser(
     once: bool,
     engine: String,
     timezone: String,
+    compatibility: bool,
 ) -> Result<(), String> {
     let data = session_dir(&profile);
     let open = waiting().lock().is_ok_and(|w| w.contains(&profile));
@@ -270,7 +276,7 @@ fn open_browser(
     // Трубы DevTools — только новому окну Chromium: второе нажатие при живом
     // окне отдаёт аргументы уже запущенному экземпляру, и канал у того свой.
     #[cfg(windows)]
-    let pipes = match !firefox && !open {
+    let pipes = match !compatibility && !firefox && !open {
         true => Some(core_apps::cdp::Pipes::new().map_err(|e| tf!("не удалось открыть канал DevTools: {}", e))?),
         false => None,
     };
@@ -278,7 +284,7 @@ fn open_browser(
         let browser = core_apps::firefox().ok_or_else(|| t("Firefox не найден: установите его или выберите профилю Chromium"))?;
         let dir = data.join("firefox");
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        std::fs::write(dir.join("user.js"), core_apps::firefox_user_js(port, &lang, once))
+        std::fs::write(dir.join("user.js"), core_apps::firefox_user_js(port, &lang, once, compatibility))
             .map_err(|e| format!("{}: {e}", dir.display()))?;
         let mut command = quiet(&browser.path);
         // `-no-remote` — свой процесс, а не вкладка в уже открытом Firefox
@@ -301,7 +307,7 @@ fn open_browser(
         if !once {
             command.arg("--restore-last-session");
         }
-        if !ua.is_empty() {
+        if !compatibility && !ua.is_empty() {
             command.arg(format!("--user-agent={ua}"));
         }
         // Языков в списке несколько, а интерфейсу браузера нужен один — первый.
