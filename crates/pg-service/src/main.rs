@@ -10,7 +10,7 @@
 mod service;
 
 use core_ipc::{
-    dir_name, t, tf, App, BrowserProfile, Conn, Endpoint, Listener, LogLine, Probe, ProfileInfo,
+    dir_name, t, tf, App, BrowserProfile, TrashedBrowser, Conn, Endpoint, Listener, LogLine, Probe, ProfileInfo,
     Pulse, Quota, Request, Response, Scope, Settings, Status, Stream, Subscription, TestRun,
     Tunnel as TunnelState,
 };
@@ -400,6 +400,10 @@ struct Saved {
     /// бы потерять вход.
     #[serde(default)]
     browser_profiles: Vec<BrowserProfile>,
+    /// Корзина браузерных профилей: переживает перезапуск по той же причине —
+    /// каталог с входами удалённого профиля лежит, пока его не стёрли.
+    #[serde(default)]
+    browser_trash: Vec<TrashedBrowser>,
     /// Настройки службы — то, что выбрал человек, без учёта переменных
     /// окружения: перебивка окружением не должна записываться на диск и
     /// переживать ту сессию, в которой переменная стояла.
@@ -601,6 +605,7 @@ impl Service {
                 ),
                 probes: saved.probes,
                 browser_profiles: saved.browser_profiles,
+                browser_trash: saved.browser_trash,
                 refreshed_at: saved.refreshed_at,
                 log,
                 ..Default::default()
@@ -719,6 +724,7 @@ impl Service {
             all_traffic: false,
             probes: self.status.probes.clone(),
             browser_profiles: self.status.browser_profiles.clone(),
+            browser_trash: self.status.browser_trash.clone(),
             settings: self.settings.clone(),
         };
         let _ = std::fs::create_dir_all(dir());
@@ -947,7 +953,14 @@ impl Service {
                     Scope::Whitelist => tf!("приложений с сетью: {}, у остальных её нет", count),
                     Scope::None => t("никто: туннель поднят, но пропусков нет ни у кого"),
                 };
-                self.log(tf!("профиль «{}»: sing-box запущен, {}", profile, scope));
+                // Открытый узел называется в той же строке, а не своей: `start`
+                // зовётся и на каждом круге перезапуска, и отдельная строка
+                // чередовалась бы с этой, обходя дедупликацию журнала.
+                if core_config::plain(&node) {
+                    self.log(tf!("профиль «{}» без шифрования, провайдер видит, куда идут соединения: sing-box запущен, {}", profile, scope));
+                } else {
+                    self.log(tf!("профиль «{}»: sing-box запущен, {}", profile, scope));
+                }
                 Ok(())
             }
             Err(e) => {
@@ -1030,6 +1043,67 @@ impl Service {
             self.browsers.remove(&name);
         }
         self.refence();
+    }
+
+    /// Завести браузерный профиль или переписать существующий с тем же именем.
+    ///
+    /// Имя из корзины новым профилем занять нельзя: каталог сеанса зовётся по
+    /// имени (`dir_name`), и новый профиль открылся бы с входами удалённого —
+    /// чужие аккаунты под новой личностью, ровно то, что разделение профилей и
+    /// обещает не допускать. Сторож — `a_trashed_name_is_not_reused`.
+    fn set_browser(&mut self, profile: BrowserProfile) -> Result<(), String> {
+        match self.status.browser_profiles.iter_mut().find(|b| b.name == profile.name) {
+            Some(existing) => *existing = profile,
+            None if self.status.browser_trash.iter().any(|t| t.profile.name == profile.name) => {
+                return Err(tf!("имя «{}» занято профилем в корзине: верните его или сотрите навсегда", profile.name));
+            }
+            None => self.status.browser_profiles.push(profile),
+        }
+        self.save();
+        Ok(())
+    }
+
+    /// Убрать профиль в корзину. Сеанс гаснет сразу — окно остаётся без сети, —
+    /// а каталог с входами лежит, пока профиль не вернули или не стёрли.
+    fn trash_browser(&mut self, name: &str) {
+        let Some(at) = self.status.browser_profiles.iter().position(|b| b.name == name) else {
+            return;
+        };
+        let profile = self.status.browser_profiles.remove(at);
+        if self.browsers.remove(name).is_some() {
+            self.refence();
+        }
+        self.status.browser_trash.insert(0, TrashedBrowser { profile, at: now() });
+        self.save();
+        self.log(tf!("браузерный профиль «{}» убран в корзину", name));
+    }
+
+    fn restore_browser(&mut self, name: &str) -> Result<(), String> {
+        if self.status.browser_profiles.iter().any(|b| b.name == name) {
+            return Err(tf!("профиль «{}» уже есть", name));
+        }
+        let at = self
+            .status
+            .browser_trash
+            .iter()
+            .position(|t| t.profile.name == name)
+            .ok_or_else(|| tf!("в корзине нет профиля «{}»", name))?;
+        let trashed = self.status.browser_trash.remove(at);
+        self.status.browser_profiles.push(trashed.profile);
+        self.save();
+        Ok(())
+    }
+
+    /// Стереть запись из корзины. Каталог к этому моменту уже снёс клиент:
+    /// служба до него не дотягивается, а запись без каталога — это ровно
+    /// «стёрт», тогда как каталог без записи — входы, о которых никто не знает.
+    fn purge_browser(&mut self, name: &str) {
+        let was = self.status.browser_trash.len();
+        self.status.browser_trash.retain(|t| t.profile.name != name);
+        if self.status.browser_trash.len() != was {
+            self.save();
+            self.log(tf!("браузерный профиль «{}» стёрт", name));
+        }
     }
 
     /// Сеанс браузера погашен. Процесс уходит Drop'ом, порт закрывается — и
@@ -1312,7 +1386,7 @@ fn profiles_of(profiles: &BTreeMap<String, Value>, favorites: &BTreeSet<String>)
         .iter()
         .map(|(name, node)| {
             let (kind, server) = core_config::describe(node);
-            ProfileInfo { favorite: favorites.contains(name), name: name.clone(), kind, server }
+            ProfileInfo { favorite: favorites.contains(name), name: name.clone(), kind, server, plain: core_config::plain(node) }
         })
         .collect()
 }
@@ -1432,7 +1506,9 @@ fn split_paste(text: &str) -> (Vec<String>, String) {
     }
     let (mut urls, mut rest) = (Vec::new(), Vec::new());
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-        if line.starts_with("http://") || line.starts_with("https://") {
+        // Адрес прокси тоже начинается с `http://`, но это узел, а не подписка
+        // (`core_config::is_proxy_url`).
+        if (line.starts_with("http://") || line.starts_with("https://")) && !core_config::is_proxy_url(line) {
             urls.push(line.to_string());
         } else {
             rest.push(line);
@@ -1659,7 +1735,8 @@ fn edit_profile(s: &mut Service, name: &str, rename: &str, node: &str) -> Respon
         // На узел по имени смотрят браузерные профили и измерения. Забыть
         // перевесить их значило бы окно браузера без узла и цифру задержки,
         // приклеенную к чужой строке.
-        for b in s.status.browser_profiles.iter_mut().filter(|b| b.node == name) {
+        let trashed = s.status.browser_trash.iter_mut().map(|t| &mut t.profile);
+        for b in s.status.browser_profiles.iter_mut().chain(trashed).filter(|b| b.node == name) {
             b.node = to.clone();
         }
         for p in s.status.probes.iter_mut().filter(|p| p.name == name) {
@@ -2388,14 +2465,10 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
         // куками привязан к имени и переживает её. Живой сеанс не трогаем: UA и
         // язык браузер прочитал при запуске, применятся они со следующего окна,
         // а гасить окно ради этого — потерять то, что человек в нём делает.
-        Request::SetBrowserProfile { profile } => {
-            match s.status.browser_profiles.iter_mut().find(|b| b.name == profile.name) {
-                Some(existing) => *existing = profile,
-                None => s.status.browser_profiles.push(profile),
-            }
-            s.save();
-            Response::Done
-        }
+        Request::SetBrowserProfile { profile } => match s.set_browser(profile) {
+            Ok(()) => Response::Done,
+            Err(message) => Response::Error { message },
+        },
         Request::SetSettings { settings } => {
             // Клиент показывает действующие значения и присылает их обратно
             // набором. Перебитые окружением поля при этом возвращаем к
@@ -2431,9 +2504,15 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             Response::Status(s.status.clone())
         }
         Request::RemoveBrowserProfile { name } => {
-            s.browsers.remove(&name);
-            s.status.browser_profiles.retain(|b| b.name != name);
-            s.save();
+            s.trash_browser(&name);
+            Response::Done
+        }
+        Request::RestoreBrowserProfile { name } => match s.restore_browser(&name) {
+            Ok(()) => Response::Done,
+            Err(message) => Response::Error { message },
+        },
+        Request::PurgeBrowserProfile { name } => {
+            s.purge_browser(&name);
             Response::Done
         }
         Request::Connections { filter } => {
@@ -3925,6 +4004,10 @@ mod tests {
         let (urls, rest) = split_paste(json);
         assert!(urls.is_empty(), "адрес внутри JSON не адрес подписки: {urls:?}");
         assert_eq!(rest, json, "JSON уходит на разбор целиком");
+
+        let (urls, rest) = split_paste("https://panel/one\nhttp://user:pass@1.2.3.4:8080");
+        assert_eq!(urls, ["https://panel/one"], "адрес прокси — узел, а не подписка");
+        assert_eq!(rest, "http://user:pass@1.2.3.4:8080");
     }
 
     /// Тот же узел вторым профилем не заводится. Имя ему `free_name` выдал бы
@@ -3976,6 +4059,40 @@ mod tests {
     /// её стирал бы каждый круг. И профиль, которого не стало, уносит её с
     /// собой — иначе `state.json` копил бы имена вечно, а вернувшийся под тем
     /// же именем чужой узел получил бы чужую звезду.
+    /// Удалённый профиль уходит в корзину, а не пропадает: с ним ушли бы
+    /// входы во все аккаунты окна. И пока он там, его имя новому профилю не
+    /// достаётся — каталог сеанса зовётся по имени, и новый открылся бы со
+    /// старыми входами.
+    #[test]
+    fn a_trashed_name_is_not_reused() {
+        let _state = scratch("pg-browser-trash-test");
+        let mut s = Service::load();
+        let work = BrowserProfile { name: "работа".into(), node: "NL-01".into(), ..Default::default() };
+        s.set_browser(work.clone()).unwrap();
+        s.trash_browser("работа");
+        assert!(s.status.browser_profiles.is_empty());
+        assert_eq!(s.status.browser_trash.len(), 1, "профиль обязан лечь в корзину, а не пропасть");
+
+        let err = s.set_browser(BrowserProfile { node: "DE-01".into(), ..work.clone() }).unwrap_err();
+        assert!(err.contains("корзин"), "{err}");
+
+        // Переименованный узел перевешивается и у профиля в корзине: вернуть
+        // его значит вернуть рабочим, а не с узлом, которого больше нет.
+        s.profiles.insert("NL-01".into(), json!({"type": "vless", "server": "a.com"}));
+        assert!(matches!(edit_profile(&mut s, "NL-01", "дом", ""), Response::Done));
+        assert_eq!(s.status.browser_trash[0].profile.node, "дом");
+
+        s.restore_browser("работа").unwrap();
+        assert!(s.status.browser_trash.is_empty());
+        assert_eq!(s.status.browser_profiles[0].node, "дом");
+
+        s.trash_browser("работа");
+        s.purge_browser("работа");
+        assert!(s.status.browser_trash.is_empty());
+        s.set_browser(work).expect("стёртое имя свободно");
+        assert_eq!(Service::load().status.browser_profiles.len(), 1, "корзина и профили переживают перезапуск");
+    }
+
     #[test]
     fn a_favourite_follows_the_profile_and_not_the_node() {
         let _state = scratch("pg-favourite-test");
@@ -4456,7 +4573,9 @@ fn changes_the_machine(req: &Request) -> bool {
         | Request::Browse { .. }
         | Request::BrowseStop { .. }
         | Request::SetBrowserProfile { .. }
-        | Request::RemoveBrowserProfile { .. } => true,
+        | Request::RemoveBrowserProfile { .. }
+        | Request::RestoreBrowserProfile { .. }
+        | Request::PurgeBrowserProfile { .. } => true,
         // Чтение и то, что видно только в окне: язык, имя подписки, звёздочка.
         // Прогон профилей сюда же — он ничего не переключает, только меряет, и
         // хуже от него не станет никому, кроме терпения.

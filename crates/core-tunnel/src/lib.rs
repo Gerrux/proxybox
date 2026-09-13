@@ -1710,6 +1710,8 @@ mod tests {
             "ss://YWVzLTI1Ni1nY206cGFzcw@a.com:8388",
             "hy2://p@a.com:443?obfs-password=o&insecure=1&sni=a.com",
             "wg://QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNk@a.com:51820?publickey=QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNk&address=10.0.0.2/32",
+            "socks5://u:p@a.com:1080",
+            "https://u:p@a.com:8443",
         ] {
             let node = core_config::parse(link).expect(link).node;
             let cfg = build_config(&node, &Options { tun: false, ..Default::default() });
@@ -1862,8 +1864,10 @@ mod tests {
     /// порты столкнулись бы с живой службой на машине разработчика.
     #[test]
     fn the_config_actually_starts() {
-        let node = core_config::parse("trojan://p@127.0.0.1:1").unwrap().node;
-        for tun in [false, true] {
+        // Прокси — отдельной строкой: у HTTP нет UDP, и `remote` DNS через него
+        // обязан хотя бы не валить старт.
+        for (link, tun) in [("trojan://p@127.0.0.1:1", false), ("trojan://p@127.0.0.1:1", true), ("socks5://u:p@127.0.0.1:1", true), ("http://u:p@127.0.0.1:1", true)] {
+            let node = core_config::parse(link).unwrap().node;
             let Ok((socks_port, api_port)) = free_port().and_then(|a| Ok((a, free_port()?))) else {
                 return;
             };
@@ -1883,7 +1887,7 @@ mod tests {
                 // sing-box не установлен — проверять нечем; отличаем по тексту,
                 // потому что любой другой отказ здесь обязан валить тест.
                 Err(e) if e.to_string().contains("не запускается") || e.to_string().contains("cannot start") => return,
-                Err(e) => panic!("конфиг (tun={tun}) разбирается, но служба на нём не поднимается: {e}"),
+                Err(e) => panic!("конфиг {link} (tun={tun}) разбирается, но служба на нём не поднимается: {e}"),
             }
         }
     }

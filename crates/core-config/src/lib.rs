@@ -30,6 +30,9 @@ pub fn parse(link: &str) -> Result<Profile, String> {
     if link.starts_with('{') {
         return from_json(link);
     }
+    if let Some(url) = bare_proxy(link) {
+        return socks(&url);
+    }
     // Строка без «://» — не ссылка вовсе, и звать её протоколом нельзя: до
     // этого причина отказа выходила вида «протокол не поддерживается: не ссылка
     // вовсе», то есть повторяла саму строку вместо объяснения. Раньше это
@@ -47,7 +50,9 @@ pub fn parse(link: &str) -> Result<Profile, String> {
         "hy2" | "hysteria2" => hysteria2(link),
         "tuic" => tuic(link),
         "wg" | "wireguard" => wireguard(link),
-        "" => Err(t("не ссылка: нет схемы")),
+        "socks" | "socks5" | "socks5h" => socks(link),
+        "http" | "https" => http(link),
+        "" =>Err(t("не ссылка: нет схемы")),
         s => Err(tf!("протокол не поддерживается: {}", s)),
     }
 }
@@ -121,9 +126,101 @@ pub fn parse_many(body: &str) -> Batch {
 /// надписью «Защищено». Чёрный список этого не ловит: он и не мог, он про
 /// служебные outbound'ы, да и работал только для конфига целиком — голый
 /// объект проходил мимо него.
-const NODES: [&str; 10] = [
-    "vless", "vmess", "trojan", "shadowsocks", "hysteria", "hysteria2", "tuic", "anytls", "wireguard", "ssh",
+const NODES: [&str; 12] = [
+    "vless", "vmess", "trojan", "shadowsocks", "hysteria", "hysteria2", "tuic", "anytls", "wireguard", "ssh", "socks",
+    "http",
 ];
+
+/// Идёт ли трафик до сервера узла открытым текстом: провайдер видит, куда
+/// ходят соединения, а у прокси — ещё и логин с паролем.
+///
+/// Такие узлы не запрещены: купленный резидентный или мобильный прокси — это
+/// SOCKS5 или HTTP, и другого у человека нет. Инвариант они не трогают: мимо
+/// узла трафик по-прежнему не идёт. Но слово «Защищено» рядом с ними
+/// обязано оговориться, и оговаривается оно здесь, в одном месте: у VLESS и
+/// trojan без TLS шифрования нет точно так же, как у голого SOCKS. Сторож —
+/// `a_plain_node_is_named_plain`.
+pub fn plain(node: &Value) -> bool {
+    let tls = node["tls"]["enabled"] == true;
+    match node["type"].as_str().unwrap_or_default() {
+        "socks" => true,
+        "http" | "vless" | "trojan" => !tls,
+        "shadowsocks" => matches!(node["method"].as_str(), Some("none" | "plain")),
+        "vmess" => !tls && matches!(node["security"].as_str(), Some("none" | "zero")),
+        _ => false,
+    }
+}
+
+/// Строка `http(s)://` — адрес прокси, а не подписки: путь пустой, запроса
+/// нет, а в адресе стоят логин или явный порт.
+///
+/// Вставка уводит `http(s)` в закачку подписки (`split_paste` в службе), и
+/// `http://user:pass@1.2.3.4:8080` уехал бы туда же и вернулся «подписка не
+/// скачалась». Подписки без пути не бывает: панель отдаёт её по токену в пути
+/// или в запросе. Голое `https://example.com` без порта и логина остаётся
+/// подпиской — принять его за прокси значило бы молча завести мёртвый узел.
+///
+/// То же правило стоит регуляркой в окне (`isProxyUrl` в `Profiles.tsx`), но
+/// там оно только подпись: решает служба. Сторож —
+/// `a_proxy_address_is_not_a_subscription`.
+pub fn is_proxy_url(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix("http://").or_else(|| lower.strip_prefix("https://")) else {
+        return false;
+    };
+    let rest = rest.split('#').next().unwrap_or_default();
+    let authority = rest.strip_suffix('/').unwrap_or(rest);
+    if authority.contains(['/', '?']) {
+        return false;
+    }
+    let (auth, host) = match authority.rsplit_once('@') {
+        Some((auth, host)) => (Some(auth), host),
+        None => (None, authority),
+    };
+    let port = host
+        .rsplit_once(':')
+        .is_some_and(|(name, port)| !name.is_empty() && !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()));
+    !host.is_empty() && (auth.is_some() || port)
+}
+
+/// Строка без схемы — `host:port`, `host:port:user:pass` или
+/// `user:pass@host:port` — так отдают списки прокси продавцы резидентных и
+/// мобильных адресов. Читается она как SOCKS5: он везёт и UDP, которого у
+/// HTTP-прокси нет, а кому нужен HTTP, тот пишет схему.
+///
+/// Строгость тут не придирка: разбор тем же путём идёт и по телу подписки, и
+/// мусорная строка, похожая на адрес, стала бы узлом. Поэтому порт обязан быть
+/// числом, а пробелов в строке быть не должно.
+fn bare_proxy(line: &str) -> Option<String> {
+    if line.contains("://") || line.contains(char::is_whitespace) {
+        return None;
+    }
+    let (host, port, auth) = match line.rsplit_once('@') {
+        Some((auth, addr)) => {
+            let (host, port) = addr.split_once(':')?;
+            (host, port, Some(auth.split_once(':').unwrap_or((auth, ""))))
+        }
+        None => {
+            let mut parts = line.splitn(4, ':');
+            let (host, port) = (parts.next()?, parts.next()?);
+            match (parts.next(), parts.next()) {
+                (None, None) => (host, port, None),
+                (Some(user), Some(pass)) => (host, port, Some((user, pass))),
+                _ => return None,
+            }
+        }
+    };
+    if host.is_empty() || port.parse::<u16>().ok().filter(|p| *p > 0).is_none() {
+        return None;
+    }
+    let auth = match auth {
+        Some((user, "")) if !user.is_empty() => format!("{}@", enc(user)),
+        Some((user, pass)) if !user.is_empty() => format!("{}:{}@", enc(user), enc(pass)),
+        Some(_) => return None,
+        None => String::new(),
+    };
+    Some(format!("socks5://{auth}{host}:{port}"))
+}
 
 /// Куда ведёт узел: тип sing-box и `host:port` сервера. Ровно это едет в окно
 /// вместе с именем — имя профилю даёт чужая панель, и по нему не отличить два
@@ -382,6 +479,42 @@ fn trojan(link: &str) -> Result<Profile, String> {
     });
     finish(&mut node, &l);
     Ok(Profile { name: l.name(&format!("trojan-{}", l.host()?)), node })
+}
+
+/// Логин и пароль прокси — из userinfo ссылки. Пустые поля в узел не кладутся:
+/// sing-box понимает их отсутствие как «без авторизации», а пустая строка в
+/// узле разошлась бы с собранной обратно ссылкой.
+fn credentials(node: &mut Value, l: &Link) {
+    let (user, password) = (l.user(), decode(l.url.password().unwrap_or_default()));
+    if !user.is_empty() {
+        node["username"] = json!(user);
+    }
+    if !password.is_empty() {
+        node["password"] = json!(password);
+    }
+}
+
+fn socks(link: &str) -> Result<Profile, String> {
+    let l = Link::new(link)?;
+    let (host, port) = (l.host()?, l.port(1080));
+    let mut node = json!({ "type": "socks", "server": host, "server_port": port });
+    credentials(&mut node, &l);
+    Ok(Profile { name: l.name(&format!("socks-{host}:{port}")), node })
+}
+
+/// HTTP-прокси, `https://` — он же поверх TLS. Порт по умолчанию берётся у
+/// схемы: `url` выбрасывает из адреса `:80` у `http` и `:443` у `https`, и
+/// `port()` отдал бы на них пустоту.
+fn http(link: &str) -> Result<Profile, String> {
+    let l = Link::new(link)?;
+    let host = l.host()?;
+    let port = l.url.port_or_known_default().unwrap_or(80);
+    let mut node = json!({ "type": "http", "server": host, "server_port": port });
+    credentials(&mut node, &l);
+    if l.url.scheme() == "https" {
+        node["tls"] = json!({ "enabled": true });
+    }
+    Ok(Profile { name: l.name(&format!("http-{host}:{port}")), node })
 }
 
 fn vmess(link: &str) -> Result<Profile, String> {
@@ -928,7 +1061,7 @@ fn add(q: &mut Vec<String>, key: &str, value: &str) {
 }
 
 /// Узел Clash → share-link. Узел, который так не переложить (ssr, snell,
-/// socks5, tuic v4 с одним `token` или наш же протокол без обязательного поля),
+/// socks5 поверх TLS, tuic v4 с одним `token` или наш же протокол без обязательного поля),
 /// пропускается: неполная ссылка дала бы профиль, который молча не соединяется.
 fn link_of(node: &HashMap<String, String>) -> Option<String> {
     let get = |key: &str| node.get(key).map(String::as_str).unwrap_or_default();
@@ -1034,6 +1167,25 @@ fn link_of(node: &HashMap<String, String>) -> Option<String> {
                 .collect();
             add(&mut q, "address", &address.join(","));
             format!("wg://{}@{server}:{port}", enc(private))
+        }
+        // TLS у SOCKS5 и непроверяемый сертификат у HTTP ссылка не несёт —
+        // такой узел без них стал бы другим узлом.
+        "socks5" | "http" => {
+            let tls = get("tls") == "true";
+            if (kind == "socks5" && tls) || get("skip-cert-verify") == "true" {
+                return None;
+            }
+            let auth = match (get("username"), get("password")) {
+                ("", _) => String::new(),
+                (user, "") => format!("{}@", enc(user)),
+                (user, pass) => format!("{}:{}@", enc(user), enc(pass)),
+            };
+            let scheme = match kind {
+                "socks5" => "socks5",
+                _ if tls => "https",
+                _ => "http",
+            };
+            format!("{scheme}://{auth}{server}:{port}")
         }
         _ => return None,
     };
@@ -1187,6 +1339,21 @@ fn build(name: &str, node: &Node) -> Option<String> {
             add(&mut q, "mtu", &node["mtu"].as_u64().map(|m| m.to_string()).unwrap_or_default());
             add(&mut q, "address", &join(&node["address"]));
             format!("wg://{}@{server}:{port}", enc(s("private_key")))
+        }
+        // `version` и прочие поля ссылка не несёт — узел с ними не сойдётся со
+        // своей же ссылкой, и сверка оставит его JSON.
+        "socks" | "http" => {
+            let auth = match (s("username"), s("password")) {
+                ("", _) => String::new(),
+                (user, "") => format!("{}@", enc(user)),
+                (user, pass) => format!("{}:{}@", enc(user), enc(pass)),
+            };
+            let scheme = match kind {
+                "socks" => "socks5",
+                _ if node["tls"]["enabled"] == true => "https",
+                _ => "http",
+            };
+            format!("{scheme}://{auth}{server}:{port}")
         }
         // hysteria (первая), anytls и ssh в `NODES` есть, а ссылки у нас не
         // разбираются — собирать её значило бы собрать то, что не читается.
@@ -1390,6 +1557,12 @@ mod tests {
             "hy2://pass@a.com:443?obfs-password=o&sni=b.com&insecure=1#H".into(),
             "tuic://11111111-2222-3333-4444-555555555555:pa%3Ass@a.com:8443?sni=a.com&alpn=h3&congestion_control=bbr&udp_relay_mode=native&allow_insecure=1#Т".into(),
             "wg://cHJpdmF0ZQ@a.com:51820?publickey=cHVibGlj&psk=cHNr&reserved=1,2,3&address=10.0.0.2/32&mtu=1408#W".into(),
+            "socks5://user:p%40ss%3Aw@1.2.3.4:10001#Резидентный".into(),
+            "socks5://1.2.3.4:1080#Без логина".into(),
+            "http://user:pass@proxy.example:8080#H".into(),
+            // `:80` и `:443` адрес выбрасывает сам — порт обязан вернуться из схемы.
+            "http://user:pass@proxy.example:80#H80".into(),
+            "https://user:pass@proxy.example#HS".into(),
         ];
         for link in links {
             let profile = parse(&link).unwrap_or_else(|why| panic!("{link}: {why}"));
@@ -1424,6 +1597,94 @@ mod tests {
         let wg = parse("wg://cHJpdmF0ZQ@a.com:51820?publickey=cHVibGlj&address=10.0.0.2/32").unwrap();
         assert_eq!(describe(&wg.node), ("wireguard".into(), "a.com:51820".into()));
         assert_eq!(describe(&serde_json::json!({})), (String::new(), String::new()), "пустой узел не паникует");
+    }
+
+    /// Список прокси от продавца приходит без схемы, и каждая из трёх форм
+    /// обязана дать тот же узел, что и полная ссылка. Мусор, похожий на адрес,
+    /// узлом не становится: тот же разбор идёт по телу подписки.
+    #[test]
+    fn a_bare_proxy_line_is_socks5() {
+        let full = parse("socks5://user:p%3Ass@1.2.3.4:10001").unwrap().node;
+        assert_eq!(full, json!({ "type": "socks", "server": "1.2.3.4", "server_port": 10001, "username": "user", "password": "p:ss" }));
+        for line in ["1.2.3.4:10001:user:p:ss", "user:p:ss@1.2.3.4:10001"] {
+            assert_eq!(parse(line).unwrap_or_else(|why| panic!("{line}: {why}")).node, full, "{line}");
+        }
+        let open = parse("proxy.example:1080").unwrap();
+        assert_eq!(open.node, json!({ "type": "socks", "server": "proxy.example", "server_port": 1080 }));
+        assert_eq!(open.name, "socks-proxy.example:1080");
+
+        for junk in ["a.com:порт", "a.com:0", "a.com:1080:user", "a b:1080", ":1080", "a.com:99999", "@a.com:1080"] {
+            assert!(parse(junk).is_err(), "{junk} стал узлом");
+        }
+        let got = parse_many("1.2.3.4:1080:u:p\n5.6.7.8:1080:u:p\nмусор\n");
+        assert_eq!((got.found.len(), got.skipped.len()), (2, 1), "{got:?}");
+    }
+
+    #[test]
+    fn http_proxy_link() {
+        let p = parse("https://u:p@proxy.example#П").unwrap();
+        assert_eq!(p.name, "П");
+        assert_eq!(
+            p.node,
+            json!({ "type": "http", "server": "proxy.example", "server_port": 443, "username": "u", "password": "p", "tls": { "enabled": true } })
+        );
+        assert_eq!(parse("http://proxy.example:3128").unwrap().node["server_port"], 3128);
+    }
+
+    /// Прокси вставляют ссылкой `http://`, а вставка уводит `http` в закачку
+    /// подписки. Отличает их одно правило, и ошибиться оно не должно ни в
+    /// одну сторону: подписка, принятая за прокси, — мёртвый узел молча.
+    #[test]
+    fn a_proxy_address_is_not_a_subscription() {
+        for proxy in [
+            "http://user:pass@1.2.3.4:8080",
+            "http://1.2.3.4:3128",
+            "https://user:pass@proxy.example",
+            "HTTP://u:p@a.com:8080/",
+            "http://u:p@a.com:8080#Имя",
+            "http://[2001:db8::1]:8080",
+        ] {
+            assert!(is_proxy_url(proxy), "{proxy} ушёл бы в подписки");
+        }
+        for sub in [
+            "https://panel.example:2096/sub/token",
+            "https://panel.example/sub?token=x",
+            "https://example.com",
+            "https://example.com/",
+            "http://[2001:db8::1]",
+            "vless://u@a.com:443",
+            "1.2.3.4:1080",
+        ] {
+            assert!(!is_proxy_url(sub), "{sub} принят за прокси");
+        }
+    }
+
+    /// Пометка «без шифрования» обязана стоять на каждом узле, чей трафик до
+    /// сервера идёт открытым текстом, — и не только на прокси: VLESS без TLS
+    /// шифрует ровно столько же, сколько голый SOCKS.
+    #[test]
+    fn a_plain_node_is_named_plain() {
+        for link in [
+            "socks5://1.2.3.4:1080",
+            "http://1.2.3.4:3128",
+            &format!("vless://{UUID}@a.com:80?type=ws&path=/"),
+            "trojan://pass@a.com:80?security=none",
+        ] {
+            assert!(plain(&parse(link).unwrap().node), "{link} выдан за шифрованный");
+        }
+        assert!(plain(&json!({ "type": "shadowsocks", "method": "none" })));
+        assert!(plain(&json!({ "type": "vmess", "security": "zero" })));
+        for link in [
+            "https://u:p@proxy.example",
+            &format!("vless://{UUID}@a.com:443?security=reality&pbk=K&sid=a"),
+            "trojan://pass@a.com:443",
+            &format!("vmess://{UUID}@a.com:443?type=tcp"),
+            "ss://aes-256-gcm:pass@a.com:8388",
+            "hy2://pass@a.com:443",
+            "wg://cHJpdmF0ZQ@a.com:51820?publickey=cHVibGlj&address=10.0.0.2/32",
+        ] {
+            assert!(!plain(&parse(link).unwrap().node), "{link} назван открытым");
+        }
     }
 
     #[test]
@@ -1713,6 +1974,17 @@ proxy-groups:
         assert_eq!(outside["type"], "trojan");
         assert_eq!(outside["server"], "sh.example.com");
         assert_eq!(outside["password"], "shpass");
+    }
+
+    #[test]
+    fn clash_proxies_become_proxy_nodes() {
+        let got = parse_many(
+            "proxies:\n  - {name: S, type: socks5, server: 1.2.3.4, port: 1080, username: u, password: p}\n  - {name: H, type: http, server: a.com, port: 443, tls: true}\n  - {name: T, type: socks5, server: a.com, port: 1080, tls: true}\n",
+        );
+        let nodes: Vec<_> = got.found.iter().map(|p| (p.name.as_str(), p.node["type"].as_str().unwrap())).collect();
+        assert_eq!(nodes, [("S", "socks"), ("H", "http")], "SOCKS5 поверх TLS ссылкой не переложить: {got:?}");
+        assert_eq!(got.found[0].node["password"], "p");
+        assert_eq!(got.found[1].node["tls"]["enabled"], true);
     }
 
     /// Разбор YAML — запасной путь, и включаться он должен только вместо ссылок.

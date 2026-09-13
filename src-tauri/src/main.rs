@@ -215,30 +215,118 @@ fn session_dir(profile: &str) -> std::path::PathBuf {
 /// человека при поднятом туннеле. Обещание «прямого доступа не даёт ни на такт»
 /// без этого флага неправда.
 ///
+/// `--restore-last-session` — вкладки прошлого раза. Окно профиля открывают,
+/// чтобы вернуться к тому же аккаунту, и чистая стартовая страница заставляла
+/// бы искать всё заново. Флагом, а не `session.restore_on_startup` в
+/// `Preferences`, как язык: стартовые настройки Chromium охраняет подписью в
+/// `Secure Preferences` и на Windows правку снаружи сбрасывает к умолчанию.
+/// Восстановление работает только на старте процесса, так что второе нажатие
+/// при живом окне вкладок не удваивает.
+///
+/// `once` — одноразовый профиль: каталог стирается, когда окно закрыли, и ещё
+/// раз перед запуском, если окна нет. Второе не лишнее: оболочку могли закрыть
+/// раньше браузера, и ждать окна было уже некому — тогда каталог прошлого раза
+/// дожил бы до этого запуска со всеми входами. Пока окно живо, каталог не
+/// трогаем: второе нажатие — это вкладка в том же окне, и стирать каталог из-под
+/// работающего браузера значило бы испортить ему профиль на ходу. Вкладки
+/// одноразовому не восстанавливаются — восстанавливать нечего.
+///
+/// `engine` — `chromium` или `firefox` (`core_ipc::Engine`). Firefox берёт
+/// прокси не из аргументов, а из `user.js` своего профиля
+/// (`core_apps::firefox_user_js`), и профиль этот лежит подкаталогом `firefox`
+/// в том же каталоге сеанса: стирание и корзина остаются одними на оба движка.
+///
+/// `timezone` — IANA-имя часового пояса, уже раскрытое окном из «авто»; пусто —
+/// системный. Chromium его, как и `Sec-CH-UA` и запрет геолокации, получает не
+/// флагом, а через DevTools-канал (`core_apps::cdp`): флага для этого нет, а
+/// переменную `TZ` Chromium на Windows не читает. Канал держит свой поток, пока
+/// окно живо. Не поднялся канал — окно не открывается вовсе: открыть его без
+/// подмены значило бы показать сайту московское время и настоящее
+/// местоположение под обещанием обратного.
+///
 /// `async` — по тому же правилу, что и у `ipc`.
 #[tauri::command(async)]
-fn open_browser(port: u16, profile: String, ua: String, lang: String, color: String) -> Result<(), String> {
-    let browser = core_apps::browser().ok_or_else(|| {
-        t("браузер на Chromium не найден: нужен Chrome, Edge, Brave или Яндекс")
-    })?;
+fn open_browser(
+    port: u16,
+    profile: String,
+    ua: String,
+    lang: String,
+    color: String,
+    once: bool,
+    engine: String,
+    timezone: String,
+) -> Result<(), String> {
     let data = session_dir(&profile);
-    set_accept_language(&data, &lang);
-    let mut command = quiet(&browser.path);
-    command
-        .arg(format!("--proxy-server=socks5://127.0.0.1:{port}"))
-        .arg(format!("--user-data-dir={}", data.display()))
-        .arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
-        .arg("--no-first-run");
-    if !ua.is_empty() {
-        command.arg(format!("--user-agent={ua}"));
+    let open = waiting().lock().is_ok_and(|w| w.contains(&profile));
+    let firefox = engine == "firefox";
+    // Второй Firefox на занятом профиле не открывает вкладку, как Chromium, а
+    // показывает «Firefox уже запущен»: окно и так открыто, делать нечего.
+    if firefox && open {
+        return Ok(());
     }
-    // Языков в списке несколько, а интерфейсу браузера нужен один — первый.
-    // Сайту он не виден, но окно на чужом языке смущает человека, а не сайт.
-    if let Some(first) = lang.split(',').next().filter(|l| !l.is_empty()) {
-        command.arg(format!("--lang={first}"));
+    if once && !open {
+        wipe(&data).map_err(|e| tf!("не удалось стереть сеанс браузера: {}", e))?;
     }
+    // Трубы DevTools — только новому окну Chromium: второе нажатие при живом
+    // окне отдаёт аргументы уже запущенному экземпляру, и канал у того свой.
+    #[cfg(windows)]
+    let pipes = match !firefox && !open {
+        true => Some(core_apps::cdp::Pipes::new().map_err(|e| tf!("не удалось открыть канал DevTools: {}", e))?),
+        false => None,
+    };
+    let (path, mut command) = if firefox {
+        let browser = core_apps::firefox().ok_or_else(|| t("Firefox не найден: установите его или выберите профилю Chromium"))?;
+        let dir = data.join("firefox");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        std::fs::write(dir.join("user.js"), core_apps::firefox_user_js(port, &lang, once))
+            .map_err(|e| format!("{}: {e}", dir.display()))?;
+        let mut command = quiet(&browser.path);
+        // `-no-remote` — свой процесс, а не вкладка в уже открытом Firefox
+        // человека: тот ходит в сеть сам, мимо узла. `-wait-for-browser` —
+        // `firefox.exe` на Windows только запускатель и выходит сразу, а сеанс
+        // гасится по выходу того, кого мы ждём.
+        command.arg("-profile").arg(&dir).arg("-no-remote").arg("-wait-for-browser");
+        (browser.path, command)
+    } else {
+        let browser = core_apps::browser().ok_or_else(|| {
+            t("браузер на Chromium не найден: нужен Chrome, Edge, Brave или Яндекс")
+        })?;
+        set_accept_language(&data, &lang);
+        let mut command = quiet(&browser.path);
+        command
+            .arg(format!("--proxy-server=socks5://127.0.0.1:{port}"))
+            .arg(format!("--user-data-dir={}", data.display()))
+            .arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
+            .arg("--no-first-run");
+        if !once {
+            command.arg("--restore-last-session");
+        }
+        if !ua.is_empty() {
+            command.arg(format!("--user-agent={ua}"));
+        }
+        // Языков в списке несколько, а интерфейсу браузера нужен один — первый.
+        // Сайту он не виден, но окно на чужом языке смущает человека, а не сайт.
+        if let Some(first) = lang.split(',').next().filter(|l| !l.is_empty()) {
+            command.arg(format!("--lang={first}"));
+        }
+        #[cfg(windows)]
+        if let Some(pipes) = &pipes {
+            command.args(&pipes.args);
+        }
+        (browser.path, command)
+    };
     let profile_for_icon = profile.clone();
-    let mut child = command.spawn().map_err(|e| format!("{}: {e}", browser.path))?;
+    let mut child = command.spawn().map_err(|e| format!("{path}: {e}"))?;
+    #[cfg(windows)]
+    if let Some(pipes) = pipes {
+        let (read, write) = pipes.spawned();
+        let persona = core_apps::cdp::Persona { ua: ua.clone(), lang: lang.clone(), timezone };
+        std::thread::spawn(move || {
+            let _ = core_apps::cdp::drive(read, write, &persona);
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = timezone;
     #[cfg(windows)]
     paint_icon(child.id(), &data, &profile_for_icon, &color);
     // Закрытие окна службе не видно: она видит живой sing-box, а тот переживает
@@ -258,6 +346,9 @@ fn open_browser(port: u16, profile: String, ua: String, lang: String, color: Str
     if waiting().lock().is_ok_and(|mut w| w.insert(profile.clone())) {
         std::thread::spawn(move || {
             let _ = child.wait();
+            if once {
+                let _ = wipe(&session_dir(&profile));
+            }
             let _ = waiting().lock().map(|mut w| w.remove(&profile));
             let _ = call(&Request::BrowseStop { profile });
         });
@@ -446,14 +537,37 @@ fn waiting() -> &'static Mutex<HashSet<String>> {
 ///
 /// Делает это оболочка, а не служба: каталог лежит в `%LOCALAPPDATA%` человека,
 /// а служба работает под LocalSystem и видит там системный профиль.
+///
+/// Отказ теперь не проглатывается: профиль стирают из корзины, и запись о нём
+/// уходит только после того, как каталог действительно снесён. Занят он бывает
+/// окном, которое пережило свой сеанс, — тогда человек видит «закройте окно», а
+/// не пропавший профиль с входами, оставшимися лежать.
 #[tauri::command(async)]
 fn forget_browser(profile: String) -> Result<(), String> {
-    match std::fs::remove_dir_all(session_dir(&profile)) {
-        Ok(()) => Ok(()),
-        // Сеанса просто не было: профиль в браузере ни разу не открывали.
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(tf!("не удалось стереть сеанс браузера: {}", e)),
+    wipe(&session_dir(&profile)).map_err(|e| tf!("не удалось стереть сеанс браузера: {}", e))
+}
+
+/// Снести каталог сеанса. Отсутствующий — уже снесён: профиль в браузере ни
+/// разу не открывали.
+///
+/// Несколько попыток — не суеверие: браузер выходит раньше своих помощников
+/// (crashpad, утилиты GPU), и первые полсекунды после закрытия окна файлы
+/// каталога ещё заняты. Две секунды с шагом в четверть — это про тот хвост, а не
+/// про окно, которое всё ещё открыто: его ждать бессмысленно, и отказ уедет
+/// человеку.
+fn wipe(dir: &std::path::Path) -> io::Result<()> {
+    let mut last = Ok(());
+    for _ in 0..8 {
+        last = match std::fs::remove_dir_all(dir) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            other => other,
+        };
+        if last.is_ok() {
+            return last;
+        }
+        std::thread::sleep(Duration::from_millis(250));
     }
+    last
 }
 
 /// Автозапуск окна вместе с Windows. Служба стартует сама — она в SCM, и

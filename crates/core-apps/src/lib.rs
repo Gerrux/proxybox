@@ -33,6 +33,8 @@
 //! передал — остаётся старый ответ: пройти все профили из `ProfileList`, считая
 //! их подкаталоги стандартными, потому что спросить больше не у кого.
 
+pub mod cdp;
+
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -177,6 +179,65 @@ pub fn browser() -> Option<Found> {
 /// Имена из каталога, а не пути: пути там уже описаны, и дублировать их значило
 /// бы разъехаться с ними на первом же обновлении каталога.
 const CHROMIUM: [&str; 4] = ["Google Chrome", "Microsoft Edge", "Brave", "Яндекс.Браузер"];
+
+/// Firefox для профилей с движком Firefox. Tor Browser — тоже Firefox, но не
+/// годится: он поднимает собственный tor и ведёт окно через него, то есть мимо
+/// нашего узла.
+pub fn firefox() -> Option<Found> {
+    discover_from(&catalog(), &[]).into_iter().find(|f| f.name == "Mozilla Firefox")
+}
+
+/// `user.js` профиля Firefox: прокси, WebRTC и защита от отпечатка.
+///
+/// Флага `--proxy-server` у Firefox нет, прокси живёт в настройках профиля, а
+/// `user.js` Firefox перечитывает на каждом запуске и накладывает поверх
+/// `prefs.js` — поэтому файл пишется целиком перед каждым открытием, и порт
+/// нового сеанса попадает в окно, даже если человек крутил настройки руками.
+///
+/// Три строки здесь держат обещание «мимо узла ни такта», и каждая закрывает
+/// свою дверь. `failover_direct = false`: иначе Firefox, не достучавшись до
+/// прокси, идёт напрямую — ровно тогда, когда sing-box сеанса умер.
+/// `socks_remote_dns = true`: иначе имена разрешает система, мимо узла.
+/// `ice.proxy_only = true`: WebRTC собирает кандидатов по UDP с настоящих
+/// интерфейсов, и без неё STUN показал бы сайту настоящий адрес — у Chromium
+/// то же закрывает `disable_non_proxied_udp`. DoH (`trr.mode = 5`) выключен по
+/// той же причине: у него свой резолвер и своё решение, куда ходить.
+///
+/// Геолокация выключена целиком: Firefox спрашивает местоположение у сервиса
+/// по списку окрестных точек Wi-Fi, и через любой прокси это настоящий адрес
+/// человека. Язык ставится, только если выбран, — тогда и английский RFP не
+/// навязывает (`spoof_english = 1`). Сторож — `firefox_never_goes_around_the_proxy`.
+pub fn firefox_user_js(port: u16, lang: &str, once: bool) -> String {
+    let mut prefs: Vec<(&str, String)> = vec![
+        ("network.proxy.type", "1".into()),
+        ("network.proxy.socks", "\"127.0.0.1\"".into()),
+        ("network.proxy.socks_port", port.to_string()),
+        ("network.proxy.socks_version", "5".into()),
+        ("network.proxy.socks_remote_dns", "true".into()),
+        ("network.proxy.failover_direct", "false".into()),
+        ("network.trr.mode", "5".into()),
+        ("network.dns.disablePrefetch", "true".into()),
+        ("media.peerconnection.ice.proxy_only", "true".into()),
+        ("media.peerconnection.ice.default_address_only", "true".into()),
+        ("media.peerconnection.ice.no_host", "true".into()),
+        ("privacy.resistFingerprinting", "true".into()),
+        ("geo.enabled", "false".into()),
+        // Одноразовому восстанавливать нечего; остальным — вкладки прошлого
+        // раза, как у Chromium с `--restore-last-session`.
+        ("browser.startup.page", if once { "0" } else { "3" }.into()),
+        ("browser.shell.checkDefaultBrowser", "false".into()),
+        ("browser.aboutwelcome.enabled", "false".into()),
+        ("datareporting.policy.dataSubmissionPolicyBypassNotification", "true".into()),
+        ("datareporting.healthreport.uploadEnabled", "false".into()),
+        ("toolkit.telemetry.enabled", "false".into()),
+        ("app.normandy.enabled", "false".into()),
+    ];
+    if !lang.is_empty() {
+        prefs.push(("intl.accept_languages", serde_json::Value::String(lang.to_string()).to_string()));
+        prefs.push(("privacy.spoof_english", "1".into()));
+    }
+    prefs.iter().map(|(name, value)| format!("user_pref(\"{name}\", {value});\n")).collect()
+}
 
 /// Ярлыки меню «Пуск» — список того, что человек сам считает своими
 /// программами: туда попадает и то, что не регистрируется в `Uninstall`, и
@@ -1002,6 +1063,29 @@ fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     tag.split_once(&format!("{name}=\""))?.1.split('"').next()
 }
 
+/// Процесс и его прямые дети — по снимку процессов системы.
+#[cfg(windows)]
+fn with_children(pid: u32) -> Vec<u32> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    let mut pids = vec![pid];
+    let Ok(snap) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
+        return pids;
+    };
+    let mut entry = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+    let mut more = unsafe { Process32FirstW(snap, &mut entry) }.is_ok();
+    while more {
+        if entry.th32ParentProcessID == pid {
+            pids.push(entry.th32ProcessID);
+        }
+        more = unsafe { Process32NextW(snap, &mut entry) }.is_ok();
+    }
+    let _ = unsafe { CloseHandle(snap) };
+    pids
+}
+
 /// Значок окна браузерного сеанса — тот, что видно в панели задач.
 ///
 /// Живёт здесь, а не в оболочке, по одной причине: `src-tauri` — отдельный
@@ -1050,7 +1134,7 @@ pub fn set_window_icon_for_profile(pid: u32, icon: &Path, profile: &str) -> bool
     use windows::core::PCWSTR;
 
     struct Found {
-        pid: u32,
+        pids: Vec<u32>,
         hwnds: Vec<HWND>,
     }
 
@@ -1065,13 +1149,16 @@ pub fn set_window_icon_for_profile(pid: u32, icon: &Path, profile: &str) -> bool
         let mut pid = 0u32;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
         let top = unsafe { GetWindow(hwnd, GW_OWNER) }.is_err();
-        if pid == found.pid && top && unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        if found.pids.contains(&pid) && top && unsafe { IsWindowVisible(hwnd) }.as_bool() {
             found.hwnds.push(hwnd);
         }
         TRUE
     }
 
-    let mut found = Found { pid, hwnds: Vec::new() };
+    // Окно рисует не всегда запущенный нами процесс: `firefox.exe` на Windows —
+    // это процесс-запускатель, и окно принадлежит его ребёнку. Прямые дети и
+    // есть весь нужный охват — внуков у запускателя с окнами не бывает.
+    let mut found = Found { pids: with_children(pid), hwnds: Vec::new() };
     let _ = unsafe { EnumWindows(Some(visit), LPARAM(&mut found as *mut Found as isize)) };
     if found.hwnds.is_empty() {
         return false;
@@ -1435,6 +1522,35 @@ mod tests {
             frees, loads,
             "{loads} загрузок против {frees} освобождений: дежурный цикл paint_icon жжёт хендлы"
         );
+    }
+
+    /// Профиль Firefox обязан не уметь уйти мимо узла ни одной дверью: ни
+    /// откатом на прямое соединение при мёртвом прокси, ни системным
+    /// резолвером, ни WebRTC, ни своим DoH. И защита от отпечатка обязана быть
+    /// включена — ради неё движок и выбирают.
+    #[test]
+    fn firefox_never_goes_around_the_proxy() {
+        let js = firefox_user_js(48321, "nl-NL,nl,en-US,en", false);
+        for line in [
+            r#"user_pref("network.proxy.type", 1);"#,
+            r#"user_pref("network.proxy.socks", "127.0.0.1");"#,
+            r#"user_pref("network.proxy.socks_port", 48321);"#,
+            r#"user_pref("network.proxy.socks_remote_dns", true);"#,
+            r#"user_pref("network.proxy.failover_direct", false);"#,
+            r#"user_pref("network.trr.mode", 5);"#,
+            r#"user_pref("media.peerconnection.ice.proxy_only", true);"#,
+            r#"user_pref("privacy.resistFingerprinting", true);"#,
+            r#"user_pref("geo.enabled", false);"#,
+            r#"user_pref("intl.accept_languages", "nl-NL,nl,en-US,en");"#,
+            r#"user_pref("browser.startup.page", 3);"#,
+        ] {
+            assert!(js.contains(line), "нет строки {line}:\n{js}");
+        }
+        let once = firefox_user_js(1, "", true);
+        assert!(once.contains(r#"user_pref("browser.startup.page", 0);"#), "одноразовому восстанавливать нечего");
+        assert!(!once.contains("accept_languages"), "системный язык — без строки");
+        // Кавычка в языке не должна разорвать строку настройки.
+        assert!(firefox_user_js(1, "a\"b", false).contains(r#""a\"b""#));
     }
 
     #[test]

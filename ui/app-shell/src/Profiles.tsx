@@ -29,6 +29,19 @@ import {
  *  Не узнали — молчим. Догадка «наверное, мусор» была бы враньём: base64-блоб
  *  подписки, сохранённый в файл, ни на что из перечисленного не похож, а
  *  импортируется прекрасно. */
+/** Адрес прокси, а не подписки: `http(s)://` без пути и запроса, но с логином
+ *  или явным портом. Копия `core_config::is_proxy_url` — там решение, здесь
+ *  подпись, и разойдись они, окно лишь предложит лишний предпросмотр. */
+function isProxyUrl(line: string): boolean {
+  return /^https?:\/\/(?:[^/?#]*@[^/?#@]+|[^/?#@]+:\d+)\/?(?:#.*)?$/i.test(line.trim());
+}
+
+/** Строка прокси без схемы: `host:port`, `host:port:user:pass`,
+ *  `user:pass@host:port`. Служба читает её как SOCKS5. */
+function isBareProxy(line: string): boolean {
+  return /^(?:[^\s:/@]+:\d+(?::[^\s:@]+:\S+)?|[^\s/@]+@[^\s:/@]+:\d+)$/.test(line.trim());
+}
+
 function sniff(s: Strings, value: string): string | undefined {
   const text = value.trim();
   if (text === "") return undefined;
@@ -37,6 +50,7 @@ function sniff(s: Strings, value: string): string | undefined {
     .map((line) => line.trim())
     .filter((line) => line !== "" && !line.startsWith("#"));
   if (lines.length > 1) return s.sniffList(lines.length);
+  if (isProxyUrl(text) || isBareProxy(text) || /^socks5h?:\/\//i.test(text)) return s.sniffProxy;
   if (/^https?:\/\//i.test(text)) return s.sniffSub;
   if (text.startsWith("{")) return s.sniffJson;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return s.sniffLink;
@@ -69,7 +83,7 @@ function imported(s: Strings, r: Response | null): Outcome {
  *  как и раньше: у них нечему пропадать, а лишний шаг на каждую — это лишний
  *  шаг. */
 function hasSubscription(text: string): boolean {
-  return text.split("\n").some((line) => /^https?:\/\//i.test(line.trim()));
+  return text.split("\n").some((line) => /^https?:\/\//i.test(line.trim()) && !isProxyUrl(line));
 }
 
 /** Ответ предпросмотра — тем же счётом, но в будущем времени и с кнопкой
@@ -1035,6 +1049,9 @@ const SECRET: Record<string, [string, string?]> = {
   tuic: ["uuid", "password"],
   wg: ["private-key"],
   wireguard: ["private-key"],
+  socks5: ["username", "password"],
+  http: ["username", "password"],
+  https: ["username", "password"],
 };
 
 /** Узел по полям — по тем самым, из которых состоит его ссылка.
@@ -1349,6 +1366,14 @@ function Rows({
                   {item.server && (
                     <span className="min-w-0 truncate font-mono" title={`${item.kind} → ${item.server}`}>
                       {item.server}
+                    </span>
+                  )}
+                  {/* Открытый узел оговаривается в самой строке, а не только в
+                      журнале: выбирают узел здесь, и «Защищено» в шапке без
+                      оговорки обещало бы больше, чем узел даёт. */}
+                  {item.plain && (
+                    <span className="engraved shrink-0 text-wait" title={s.plainHint}>
+                      {s.plain}
                     </span>
                   )}
                   {/* Страна — флагом: «Нидерланды, Амстердам» не

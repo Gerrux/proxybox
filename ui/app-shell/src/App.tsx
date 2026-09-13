@@ -338,7 +338,7 @@ export function App() {
             </nav>
 
             {tab === "browsers" ? (
-              <Browsers status={status} act={act} browse={browse} className="min-h-0 flex-1" />
+              <Browsers status={status} act={act} browse={browse} fail={setError} className="min-h-0 flex-1" />
             ) : tab === "conns" ? (
               <Conns status={status} act={act} className="min-h-0 flex-1" />
             ) : (

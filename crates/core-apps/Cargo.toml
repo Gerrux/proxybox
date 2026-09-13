@@ -18,6 +18,8 @@ windows = { version = "0.62", features = [
     # Кто держит локальный порт: GetExtendedTcpTable/GetExtendedUdpTable.
     "Win32_NetworkManagement_IpHelper",
     "Win32_System_Threading",
+    # Окно Firefox принадлежит ребёнку запускателя: снимок процессов с родителями.
+    "Win32_System_Diagnostics_ToolHelp",
     # Значок окна браузерного сеанса: найти окно процесса и послать ему WM_SETICON.
     "Win32_UI_WindowsAndMessaging",
     # Иконка в панели задач Windows 11: AppUserModelID + SHGetPropertyStoreForWindow
