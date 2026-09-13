@@ -2314,6 +2314,38 @@ mod tests {
         assert!(hooks.contains(&format!("net stop {SERVICE_NAME}")), "установщик не гасит свою же службу");
     }
 
+    /// Установка новой версии по умолчанию зовёт деинсталлятор старой, а тот
+    /// без `/UPDATE` открепляет и стирает ярлыки, автозапуск и службу — то есть
+    /// каждое обновление выглядело для человека переустановкой с нуля.
+    /// Деинсталлятор узнаёт установщик по мьютексу и переходит в `$UpdateMode`.
+    ///
+    /// Разъехаться тут может молча всё: имя мьютекса у двух сторон, хук
+    /// `.onGUIInit`, который его ставит, и сама переменная шаблона Tauri. Любая
+    /// из трёх пропаж компилируется и возвращает открепление.
+    #[test]
+    fn an_update_keeps_the_pinned_shortcuts() {
+        let hooks = include_str!("../../../installer/hooks.nsh");
+        assert!(
+            hooks.contains("!define MUI_CUSTOMFUNCTION_GUIINIT PbHoldSetupMutex")
+                && hooks.contains("Function PbHoldSetupMutex"),
+            "установщик больше не ставит метку до страницы «уже установлено»"
+        );
+        let create = hooks.find(r#"kernel32::CreateMutex(p 0, i 0, t "${PB_SETUP_MUTEX}")"#);
+        assert!(create.is_some(), "установщик не держит мьютекс");
+        let preuninstall = hooks.split("!macro NSIS_HOOK_PREUNINSTALL").nth(1).expect("хук PREUNINSTALL на месте");
+        let open = preuninstall.find(r#"kernel32::OpenMutex(i 0x00100000, i 0, t "${PB_SETUP_MUTEX}")"#);
+        let update = preuninstall.find("StrCpy $UpdateMode 1");
+        let uninstall = preuninstall.find("pg-service.exe\" uninstall");
+        assert!(open.is_some() && update.is_some(), "деинсталлятор не узнаёт установщик и стирает ярлыки");
+        // Службу при обновлении не удаляют: MARKED_FOR_DELETE не дал бы новой
+        // версии зарегистрировать её до перезагрузки.
+        let otherwise = preuninstall.find("${Else}");
+        assert!(
+            update < otherwise && otherwise < uninstall,
+            "служба удаляется и при обновлении, а не только при настоящем удалении"
+        );
+    }
+
     /// Знак нарисован трижды — `scripts/icons.py` собирает картинки для
     /// системы, `tray_icon` в оболочке рисует значок трея пикселями, `Mark` во
     /// фронтенде отдаёт контур для окна. Общего формата у них нет: одному нужен
