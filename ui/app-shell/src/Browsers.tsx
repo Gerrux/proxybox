@@ -1,7 +1,22 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { forgetBrowser, type Act, type BrowserProfile, type Status } from "./platform";
+import { forgetBrowser, type Act, type BrowserProfile, type Engine, type Status } from "./platform";
 import { strings } from "./i18n";
-import { Avatar, Button, ConfirmButton, Empty, FIELD, flag, Icon, Panel, profileColor, type IconName } from "./ui";
+import {
+  Avatar,
+  Button,
+  ConfirmButton,
+  Empty,
+  FIELD,
+  flag,
+  Icon,
+  Menu,
+  type MenuItem,
+  Panel,
+  profileColor,
+  SearchField,
+  spot,
+  type IconName,
+} from "./ui";
 
 /** `Accept-Language` по коду страны узла — это и есть «Авто». Список короткий
  *  намеренно: тут самые частые точки выхода, всем остальным достаётся
@@ -34,6 +49,61 @@ export const AUTO = "auto";
 function acceptLanguage(lang: string, code: string | null | undefined): string {
   if (lang !== AUTO) return lang;
   return (code && LANGS[code.toUpperCase()]) ?? "en-US,en";
+}
+
+/** Часовой пояс по коду страны узла — это «авто» для пояса. Пояс один на
+ *  страну, и в больших странах он приблизителен: восток США получит время
+ *  Нью-Йорка и в Сиэтле. Это размен сознательный — точнее страны о выходе узла
+ *  мы не знаем ничего, а время чужой страны при голландском адресе видно любому
+ *  скрипту и без всякого отпечатка. */
+const ZONES: Record<string, string> = {
+  NL: "Europe/Amsterdam",
+  DE: "Europe/Berlin",
+  FR: "Europe/Paris",
+  ES: "Europe/Madrid",
+  IT: "Europe/Rome",
+  PL: "Europe/Warsaw",
+  SE: "Europe/Stockholm",
+  FI: "Europe/Helsinki",
+  NO: "Europe/Oslo",
+  DK: "Europe/Copenhagen",
+  AT: "Europe/Vienna",
+  CH: "Europe/Zurich",
+  BE: "Europe/Brussels",
+  CZ: "Europe/Prague",
+  GB: "Europe/London",
+  IE: "Europe/Dublin",
+  PT: "Europe/Lisbon",
+  TR: "Europe/Istanbul",
+  RU: "Europe/Moscow",
+  UA: "Europe/Kyiv",
+  LV: "Europe/Riga",
+  LT: "Europe/Vilnius",
+  EE: "Europe/Tallinn",
+  RO: "Europe/Bucharest",
+  BG: "Europe/Sofia",
+  RS: "Europe/Belgrade",
+  GE: "Asia/Tbilisi",
+  AM: "Asia/Yerevan",
+  KZ: "Asia/Almaty",
+  AE: "Asia/Dubai",
+  IL: "Asia/Jerusalem",
+  IN: "Asia/Kolkata",
+  SG: "Asia/Singapore",
+  HK: "Asia/Hong_Kong",
+  JP: "Asia/Tokyo",
+  KR: "Asia/Seoul",
+  US: "America/New_York",
+  CA: "America/Toronto",
+  BR: "America/Sao_Paulo",
+  AU: "Australia/Sydney",
+};
+
+/** Пояс, который получит окно. Страна неизвестна или её нет в списке — UTC:
+ *  он ничей, а системный пояс человека как раз и выдаёт. */
+function timeZone(zone: string, code: string | null | undefined): string {
+  if (zone !== AUTO) return zone;
+  return (code && ZONES[code.toUpperCase()]) ?? "UTC";
 }
 
 /** Токены платформы в строке user-agent — ровно те, что пишет настоящий Chrome.
@@ -105,7 +175,40 @@ function versions(current: number): number[] {
   return current > 0 && !list.includes(current) ? [current, ...list] : list;
 }
 
-const EMPTY: BrowserProfile = { name: "", node: "", ua: "", lang: AUTO, icon: "" };
+const EMPTY: BrowserProfile = {
+  name: "",
+  node: "",
+  ua: "",
+  lang: AUTO,
+  icon: "",
+  tags: [],
+  ephemeral: false,
+  engine: "chromium",
+  // Новым — по стране узла; заведённые до поля остаются с системным.
+  timezone: AUTO,
+};
+
+/** Метки из строки: через запятую, без пустых и без повторов. Регистр
+ *  сохраняется — «US» и «us» человек пишет по-разному намеренно, — а повтор
+ *  сверяется без него: две метки, различимые одной буквой, отбирали бы
+ *  список по-разному при одном и том же смысле. */
+function parseTags(text: string): string[] {
+  const seen = new Set<string>();
+  return text
+    .split(",")
+    .map((t) => t.trim())
+    .filter((t) => t !== "" && !seen.has(t.toLowerCase()) && seen.add(t.toLowerCase()));
+}
+
+/** Свободное имя для клона: «работа 2», «работа 3». Занятым считается и имя из
+ *  корзины — каталог сеанса зовётся по имени, и клон открылся бы с чужими
+ *  входами. */
+function freeName(base: string, taken: string[]): string {
+  for (let n = 2; ; n++) {
+    const name = `${base} ${n}`;
+    if (!taken.includes(name)) return name;
+  }
+}
 
 /** Зерно аватарки: своё, если человек её перекатывал, иначе имя. Пустым оно
  *  приходит и от профилей, заведённых до появления поля, — тогда картинка
@@ -181,7 +284,14 @@ function Editor({
   // каталог с его куками остался бы лежать под новой личностью — то есть чужие
   // входы достались бы новому окну.
   const taken = !editing && items.some((i) => i.name === draft.name.trim());
-  const ready = draft.name.trim() !== "" && draft.node !== "" && !taken;
+  // Имя профиля из корзины занять тоже нельзя, и по той же причине: каталог
+  // сеанса зовётся по имени, и новый профиль открылся бы с входами удалённого.
+  // Отказала бы и служба, но сказать это до нажатия честнее.
+  const inTrash = !editing && (status?.browser_trash ?? []).some((t) => t.profile.name === draft.name.trim());
+  const ready = draft.name.trim() !== "" && draft.node !== "" && !taken && !inTrash;
+  // Метки правятся строкой: разбирать её в массив на каждый знак значило бы
+  // съедать запятую, едва её набрали.
+  const [tagText, setTagText] = useState(draft.tags.join(", "));
   // Поля конструктора не хранятся отдельно от строки: два источника правды
   // разъезжаются на первой же правке руками.
   const ua = parseUa(draft.ua);
@@ -258,18 +368,26 @@ function Editor({
             <Field
               icon="tag"
               label={s.browserName}
-              hint={editing ? s.browserNameLocked : taken ? s.browserNameTaken : s.browserNameHint}
+              hint={
+                editing
+                  ? s.browserNameLocked
+                  : taken
+                    ? s.browserNameTaken
+                    : inTrash
+                      ? s.browserNameInTrash
+                      : s.browserNameHint
+              }
               className="flex-1"
             >
               <input
                 autoFocus
                 readOnly={editing}
-                aria-invalid={taken}
+                aria-invalid={taken || inTrash}
                 value={draft.name}
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                 placeholder={s.browserNamePlaceholder}
                 spellCheck={false}
-                className={`${FIELD} ${editing ? "text-muted" : ""} ${taken ? "border-fault" : ""}`}
+                className={`${FIELD} ${editing ? "text-muted" : ""} ${taken || inTrash ? "border-fault" : ""}`}
               />
             </Field>
           </div>
@@ -292,9 +410,24 @@ function Editor({
               ))}
             </select>
           </Field>
-          {/* Конструктор личности. Поля не декоративные: каждое попадает в
+          {/* Движок — первым после узла: от него зависит, есть ли что
+              заполнять ниже. У Firefox с защитой от отпечатка строку UA пишет
+              он сам, и конструктор под ним был бы полем, которое ничего не
+              делает. */}
+          <Field icon="browser" label={s.browserEngine} hint={draft.engine === "firefox" ? s.browserFirefoxHint : s.browserChromiumHint}>
+            <select
+              value={draft.engine}
+              onChange={(e) => setDraft({ ...draft, engine: e.target.value as Engine })}
+              className={FIELD}
+            >
+              <option value="chromium">Chromium</option>
+              <option value="firefox">{s.browserFirefox}</option>
+            </select>
+          </Field>
+          {draft.engine === "chromium" && (
+          /* Конструктор личности. Поля не декоративные: каждое попадает в
               строку user-agent, а строка остаётся редактируемой — вписанную
-              руками конструктор не переписывает, он её разбирает. */}
+              руками конструктор не переписывает, он её разбирает. */
           <fieldset className="flex flex-col gap-2.5 rounded-md border border-edge p-2.5">
             <legend className="engraved px-1 text-[11px] text-muted">{s.browserIdentity}</legend>
             <div className="flex flex-wrap gap-2">
@@ -373,6 +506,7 @@ function Editor({
             )}
             <p className="text-[11px] text-muted">{s.browserUaHint}</p>
           </fieldset>
+          )}
           <Field icon="speech" label={s.browserLang} hint={s.browserLangHint}>
             <select
               value={draft.lang === AUTO || draft.lang === "" ? draft.lang : "custom"}
@@ -406,6 +540,58 @@ function Editor({
                 : s.browserLangAutoUnknown(acceptLanguage(AUTO, code))}
             </p>
           )}
+          {/* Пояс — только Chromium: Firefox с защитой от отпечатка всегда
+              отдаёт UTC и поле бы не читал. */}
+          {draft.engine === "chromium" && (
+            <Field icon="clock" label={s.browserZone} hint={s.browserZoneHint(timeZone(draft.timezone, code))}>
+              <select
+                value={draft.timezone === AUTO || draft.timezone === "" ? draft.timezone : "custom"}
+                onChange={(e) =>
+                  setDraft({ ...draft, timezone: e.target.value === "custom" ? timeZone(AUTO, code) : e.target.value })
+                }
+                className={FIELD}
+              >
+                <option value={AUTO}>{s.browserZoneAuto}</option>
+                <option value="">{s.browserZoneSystem}</option>
+                <option value="custom">{s.browserZoneCustom}</option>
+              </select>
+              {draft.timezone !== AUTO && draft.timezone !== "" && (
+                <input
+                  value={draft.timezone}
+                  onChange={(e) => setDraft({ ...draft, timezone: e.target.value })}
+                  placeholder="Europe/Amsterdam"
+                  spellCheck={false}
+                  className={`${FIELD} font-mono text-[11px]`}
+                />
+              )}
+            </Field>
+          )}
+          <Field icon="tag" label={s.browserTags} hint={s.browserTagsHint}>
+            <input
+              value={tagText}
+              onChange={(e) => {
+                setTagText(e.target.value);
+                setDraft({ ...draft, tags: parseTags(e.target.value) });
+              }}
+              placeholder={s.browserTagsPlaceholder}
+              spellCheck={false}
+              className={FIELD}
+            />
+          </Field>
+          {/* Одноразовость — флажок, а не отдельный вид профиля: личность у
+              одноразового та же, забываются только входы. */}
+          <label className="flex items-start gap-2 text-[13px]">
+            <input
+              type="checkbox"
+              checked={draft.ephemeral}
+              onChange={(e) => setDraft({ ...draft, ephemeral: e.target.checked })}
+              className="mt-0.5 accent-[var(--pg-accent)]"
+            />
+            <span className="flex flex-col gap-0.5">
+              {s.browserOnce}
+              <span className="text-[11px] text-muted">{s.browserOnceHint}</span>
+            </span>
+          </label>
           <div className="flex flex-wrap justify-end gap-2">
             <Button type="submit" variant="primary" disabled={!ready}>
               {editing ? s.browserSave : s.browserCreate}
@@ -417,6 +603,13 @@ function Editor({
   );
 }
 
+/** Отбирает ли строка поиска профиль: по имени, узлу и меткам. */
+function matches(item: BrowserProfile, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (q === "") return true;
+  return [item.name, item.node, ...item.tags].some((field) => field.toLowerCase().includes(q));
+}
+
 /** Браузерные профили: имя, узел, личность. Отдельным списком, а не строкой у
  *  узла, именно потому, что их бывает несколько на один узел — иначе два
  *  аккаунта через одну страну не развести. */
@@ -424,25 +617,51 @@ export function Browsers({
   status,
   act,
   browse,
+  fail,
   className,
 }: {
   status: Status | null;
   act: Act;
   browse: (profile: BrowserProfile, color: string) => void;
+  /** Показать отказ, пришедший не от службы: каталог сеанса сносит оболочка. */
+  fail: (message: string) => void;
   className?: string;
 }) {
   const s = strings(status?.lang);
   const items = status?.browser_profiles ?? [];
+  const trash = status?.browser_trash ?? [];
   const nodes = status?.profiles ?? [];
   // Черновик и есть признак открытой страницы правки: null — её нет. Рядом с
   // ним — имя, под которым профиль открыли: по нему форма и отличает правку от
   // заведения. Из самого черновика это не выводится: имя в нём набирают руками.
   const [draft, setDraft] = useState<BrowserProfile | null>(null);
   const [origin, setOrigin] = useState("");
+  const [query, setQuery] = useState("");
+  // Отбор по метке — одна за раз: «работа и магазин» здесь почти всегда
+  // значит «или», а «и» пересечением двух меток не спрашивают вовсе.
+  const [tag, setTag] = useState<string | null>(null);
+  const [trashOpen, setTrashOpen] = useState(false);
+  const [menu, setMenu] = useState<{ at: [number, number]; items: MenuItem[] } | null>(null);
   const openForm = (profile: BrowserProfile | null, from = "") => {
     setDraft(profile);
     setOrigin(from);
   };
+  const tags = [...new Set(items.flatMap((i) => i.tags))].sort((a, b) => a.localeCompare(b));
+  // Метку, которой больше ни у кого нет, отбор держать не должен: список
+  // остался бы пустым без единой кнопки, которая это объясняет.
+  const activeTag = tag != null && tags.includes(tag) ? tag : null;
+  const shown = items.filter((i) => matches(i, query) && (activeTag == null || i.tags.includes(activeTag)));
+  const allNames = [...items.map((i) => i.name), ...trash.map((t) => t.profile.name)];
+
+  /** Стереть навсегда: сперва каталог, потом запись. Наоборот — и не
+   *  снесённый каталог (занят окном) остался бы с входами и без записи о том,
+   *  чьи они. */
+  const purge = (name: string) => {
+    void forgetBrowser(name)
+      .then(() => act({ cmd: "purge-browser-profile", arg: { name } }))
+      .catch((e: unknown) => fail(e instanceof Error ? e.message : String(e)));
+  };
+
   return (
     <Panel
       pad="p-3.5"
@@ -464,20 +683,65 @@ export function Browsers({
         {draft && (
           <Editor status={status} act={act} draft={draft} origin={origin} setDraft={(d) => openForm(d, d ? origin : "")} />
         )}
+        {/* Поиск и метки — только когда есть что отбирать: над тремя
+            профилями поле поиска занимает больше места, чем сам список. */}
+        {items.length > 5 && <SearchField value={query} onChange={setQuery} placeholder={s.browserSearch} />}
+        {tags.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {[null, ...tags].map((t) => (
+              <button
+                key={t ?? ""}
+                type="button"
+                aria-pressed={activeTag === t}
+                onClick={() => setTag(t)}
+                className={`smooth rounded-full border px-2.5 py-0.5 text-[11px] ${
+                  activeTag === t ? "border-accent text-accent" : "border-edge text-muted hover:text-ink"
+                }`}
+              >
+                {t ?? s.browserTagsAll}
+              </button>
+            ))}
+          </div>
+        )}
         {items.length === 0 ? (
           <Empty>{s.browserEmpty}</Empty>
+        ) : shown.length === 0 ? (
+          <Empty>{s.browserNoMatch}</Empty>
         ) : (
           <ul className="flex flex-col gap-1">
-            {items.map((item) => {
+            {shown.map((item) => {
               const live = status?.browsers.includes(item.name) ?? false;
               // Узел могли удалить или он мог пропасть из подписки: профиль это
               // переживает — в его каталоге входы, — но открыть его нечем, и
               // молчать об этом нельзя.
               const gone = !nodes.some((n) => n.name === item.node);
               const code = status?.probes.find((p) => p.name === item.node)?.code;
+              const rowMenu = (): MenuItem[] => [
+                { label: s.browserEditItem, onPick: () => openForm(item, item.name) },
+                {
+                  label: s.browserClone,
+                  hint: s.browserCloneHint,
+                  // Клон — это личность без входов: копировать каталог сеанса
+                  // значило бы связать два профиля одними куками, то есть
+                  // сделать ровно то, от чего профили и разводят.
+                  onPick: () => openForm({ ...item, name: freeName(item.name, allNames), icon: roll() }),
+                },
+                {
+                  label: s.browserTrashAct,
+                  danger: true,
+                  // Профиль вернётся из корзины целиком, а вот открытое окно
+                  // останется без сети сразу — спрашиваем только тогда.
+                  ask: live ? s.browserTrashLive : undefined,
+                  onPick: () => void act({ cmd: "remove-browser-profile", arg: { name: item.name } }),
+                },
+              ];
               return (
                 <li
                   key={item.name}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setMenu({ at: spot(e), items: rowMenu() });
+                  }}
                   className="enter smooth flex items-center gap-2 rounded-md py-1.5 ps-3 pe-1 hover:bg-surface-2"
                 >
                   {/* Та же картинка, что человек выбрал в форме: по ней профиль
@@ -485,11 +749,27 @@ export function Browsers({
                       задач, по которому окна сопоставляют между собой. */}
                   <Avatar seed={seed(item)} name={item.name} size={26} />
                   <div className="min-w-0 flex-1 leading-tight">
-                    <span className="block truncate text-[13px]" title={item.name}>
-                      {item.name}
+                    {/* Метки обрезаются раньше имени: имя — единственное, чем
+                        строки различаются, а метки видны ещё и в отборе сверху. */}
+                    <span className="flex items-baseline gap-2">
+                      <span className="max-w-[70%] shrink-0 truncate text-[13px]" title={item.name}>
+                        {item.name}
+                      </span>
+                      <span className="flex min-w-0 gap-1 overflow-hidden" title={item.tags.join(", ")}>
+                        {item.tags.map((t) => (
+                          <span key={t} className="shrink-0 rounded-full border border-edge px-1.5 text-[10px] text-muted">
+                            {t}
+                          </span>
+                        ))}
+                      </span>
                     </span>
                     <span className="flex items-baseline gap-2 overflow-hidden text-[11px] text-muted">
                       {live && <span className="engraved shrink-0 text-open">{s.browserOpenState}</span>}
+                      {item.ephemeral && (
+                        <span className="engraved shrink-0" title={s.browserOnceHint}>
+                          {s.browserOnceMark}
+                        </span>
+                      )}
                       <span className={`shrink-0 ${gone ? "text-fault" : ""}`} title={gone ? s.browserNodeGone : item.node}>
                         {item.node}
                       </span>
@@ -500,46 +780,85 @@ export function Browsers({
                       )}
                       {/* Личность целиком в строку не влезает никогда, а знать
                           про неё надо ровно одно: подменена она или настоящая. */}
-                      <span className="min-w-0 truncate font-mono" title={item.ua || s.browserUaReal}>
-                        {item.ua ? item.ua.replace(/^.*Chrome\//, "Chrome/").replace(/ Safari.*$/, "") : s.browserUaReal}
-                      </span>
+                      {item.engine === "firefox" ? (
+                        <span className="min-w-0 truncate" title={s.browserFirefoxHint}>
+                          {s.browserFirefox}
+                        </span>
+                      ) : (
+                        <span className="min-w-0 truncate font-mono" title={item.ua || s.browserUaReal}>
+                          {item.ua ? item.ua.replace(/^.*Chrome\//, "Chrome/").replace(/ Safari.*$/, "") : s.browserUaReal}
+                        </span>
+                      )}
                     </span>
                   </div>
                   <Button
                     variant="quiet"
                     disabled={gone}
                     title={gone ? s.browserNodeGone : s.browserOpenHint(item.node)}
-                    onClick={() => browse({ ...item, lang: acceptLanguage(item.lang, code) }, profileColor(seed(item)))}
+                    onClick={() =>
+                      browse(
+                        { ...item, lang: acceptLanguage(item.lang, code), timezone: item.timezone ? timeZone(item.timezone, code) : "" },
+                        profileColor(seed(item)),
+                      )
+                    }
                   >
                     {s.browserOpen}
                   </Button>
-                  <Button variant="quiet" aria-label={s.browserEdit(item.name)} onClick={() => openForm(item, item.name)}>
-                    ✎
+                  <Button
+                    variant="quiet"
+                    aria-label={s.actions}
+                    aria-haspopup="menu"
+                    onClick={(e) => setMenu({ at: spot(e), items: rowMenu() })}
+                  >
+                    ⋯
                   </Button>
-                  {/* В два клика: с профилем уходят его куки и входы, а это
-                      единственное, чего здесь не восстановить.
-
-                      Пока окно живо, каталог сеанса занят, и `remove_dir_all`
-                      по нему падает: профиль уйдёт, а куки останутся лежать.
-                      Спрашиваем тогда другим текстом: обещание про приватность
-                      либо выполняется, либо не даётся. */}
-                  <ConfirmButton
-                    label={s.browserRemove(item.name)}
-                    ask={live ? s.confirmRemoveOpen : s.confirmRemove}
-                    onConfirm={() => {
-                      // Профиля больше нет — хранить его куки и входы не для
-                      // чего. Отказ проглатываем: каталог мог быть занят
-                      // открытым окном, а профиль уходит в любом случае.
-                      void forgetBrowser(item.name).catch(() => {});
-                      void act({ cmd: "remove-browser-profile", arg: { name: item.name } });
-                    }}
-                  />
                 </li>
               );
             })}
           </ul>
         )}
+        {/* Корзина — внизу и свёрнутой: в неё заглядывают, когда удалили не
+            то, и держать её раскрытой над живыми профилями незачем. */}
+        {trash.length > 0 && (
+          <section className="flex flex-col gap-1 border-t border-edge pt-3">
+            <button
+              type="button"
+              aria-expanded={trashOpen}
+              onClick={() => setTrashOpen(!trashOpen)}
+              title={s.browserTrashHint}
+              className="engraved flex items-center gap-2 text-start text-muted hover:text-ink"
+            >
+              <span className="w-3">{trashOpen ? "▾" : "▸"}</span>
+              {s.browserTrash}
+              <span>{trash.length}</span>
+            </button>
+            {trashOpen && (
+              <ul className="flex flex-col gap-1">
+                {trash.map(({ profile, at }) => (
+                  <li key={profile.name} className="flex items-center gap-2 rounded-md py-1 ps-3 pe-1 opacity-80">
+                    <Avatar seed={seed(profile)} name={profile.name} size={22} />
+                    <div className="min-w-0 flex-1 leading-tight">
+                      <span className="block truncate text-[13px]">{profile.name}</span>
+                      <span className="text-[11px] text-muted">
+                        {s.browserTrashedAt(new Date(at * 1000).toLocaleDateString(status?.lang))}
+                      </span>
+                    </div>
+                    <Button variant="quiet" onClick={() => void act({ cmd: "restore-browser-profile", arg: { name: profile.name } })}>
+                      {s.browserRestore}
+                    </Button>
+                    <ConfirmButton
+                      label={s.browserPurge(profile.name)}
+                      ask={s.browserPurgeAsk}
+                      onConfirm={() => purge(profile.name)}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
       </div>
+      {menu && <Menu at={menu.at} items={menu.items} onClose={() => setMenu(null)} />}
     </Panel>
   );
 }

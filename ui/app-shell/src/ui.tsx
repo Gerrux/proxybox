@@ -191,6 +191,7 @@ const ICONS = {
   screen: "M1.5 2.5h9v6h-9zM4.5 10.5h3M6 8.5v2",
   chip: "M3.5 3.5h5v5h-5zM5 1.5v2M7 1.5v2M5 8.5v2M7 8.5v2M1.5 5h2M1.5 7h2M8.5 5h2M8.5 7h2",
   speech: "M1.5 2.5h9v5.5h-5L2.5 10.5V8H1.5z",
+  clock: "M6 1a5 5 0 100 10A5 5 0 006 1ZM6 3.5V6l1.8 1.2",
   dice: "M2 2h8v8H2zM4.2 4.2h.01M7.8 7.8h.01M6 6h.01",
   warn: "M6 1.5 11 10.5H1zM6 4.5v2.5M6 9h.01",
   lines: "M1.5 2.5h9M1.5 5h9M1.5 7.5h6",

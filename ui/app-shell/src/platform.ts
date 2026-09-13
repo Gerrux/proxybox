@@ -54,10 +54,10 @@ export type Probe = {
  *  каталог сеанса — куки и входы, `ua` и `lang` — то, что видит сайт. На один
  *  узел их бывает несколько: два аккаунта через одну страну иначе не развести.
  *
- *  Чего этим не добиться: `--user-agent` меняет строку и `navigator.userAgent`,
- *  а `Sec-CH-UA` и `navigator.userAgentData` Chromium берёт из настоящей
- *  сборки. Canvas, шрифты, экран и GPU у профилей одной машины общие. Это
- *  разделение аккаунтов, а не антидетект. */
+ *  Строку UA, `Sec-CH-UA`, часовой пояс и запрет геолокации окно Chromium
+ *  получает через DevTools-канал (`core_apps::cdp`). Canvas, шрифты, экран и
+ *  GPU у профилей одной машины общие — это разделение аккаунтов, а не
+ *  антидетект; одинаковый для всех отпечаток даёт движок Firefox. */
 export type BrowserProfile = {
   name: string;
   /** Имя профиля узла. Узел могли удалить — профиль это переживает, открыть
@@ -70,7 +70,22 @@ export type BrowserProfile = {
   /** Зерно аватарки. Пусто — рисуется по имени; перекатывают её нажатием на
    *  саму картинку в форме правки. */
   icon: string;
+  /** Метки для отбора списка. */
+  tags: string[];
+  /** Одноразовый: входы и куки стираются, когда окно закрыли. */
+  ephemeral: boolean;
+  /** Движок окна. `firefox` — с защитой от отпечатка, `ua` на нём не действует. */
+  engine: Engine;
+  /** Часовой пояс окна Chromium: `auto` — по стране узла, IANA-имя — свой,
+   *  пусто — системный. В `browse` уезжает уже раскрытым. */
+  timezone: string;
 };
+
+/** Движок окна браузерного профиля — `core_ipc::Engine`. */
+export type Engine = "chromium" | "firefox";
+
+/** Браузерный профиль в корзине: удалён, но каталог с входами ещё лежит. */
+export type TrashedBrowser = { profile: BrowserProfile; at: number };
 
 /** Одно живое соединение туннеля. Смысл не в счётчиках, а в `tunneled`:
  *  правило по `process_path` сверяет путь побайтово, и промах у него тихий —
@@ -193,6 +208,8 @@ export type Status = {
   browsers: string[];
   /** Заведённые браузерные профили. */
   browser_profiles: BrowserProfile[];
+  /** Корзина браузерных профилей, последний удалённый первым. */
+  browser_trash: TrashedBrowser[];
   /** Настройки службы — уже действующие: переменные окружения к ним применены,
    *  и окно показывает то, что работает, а не то, что записано на диск. */
   settings: Settings;
@@ -285,7 +302,11 @@ export type Request =
   | { cmd: "browse-stop"; arg: { profile: string } }
   /** Завести браузерный профиль либо переписать такой же по имени. */
   | { cmd: "set-browser-profile"; arg: { profile: BrowserProfile } }
+  /** В корзину: каталог с входами остаётся лежать. */
   | { cmd: "remove-browser-profile"; arg: { name: string } }
+  | { cmd: "restore-browser-profile"; arg: { name: string } }
+  /** Стереть из корзины. Каталог сносит `forgetBrowser` — до команды. */
+  | { cmd: "purge-browser-profile"; arg: { name: string } }
   /** Настройки службы приходят набором целиком: команда на поле означала бы
    *  четыре ветки в службе ради экрана, который отдаёт их разом. */
   | { cmd: "set-settings"; arg: { settings: Settings } }
@@ -395,6 +416,9 @@ export async function browse(profile: BrowserProfile, color: string): Promise<vo
     lang: profile.lang,
     // Цвет значка окна: считает его интерфейс, оболочка только красит.
     color,
+    once: profile.ephemeral,
+    engine: profile.engine,
+    timezone: profile.timezone,
   });
 }
 

@@ -266,12 +266,12 @@ pub fn lang_from_env() -> Lang {
 /// браузере узнаёт сайт. На один узел их бывает несколько: два аккаунта через
 /// одну страну иначе не развести.
 ///
-/// Чего этим не добиться, сказано один раз и честно: `--user-agent` меняет
-/// строку запроса и `navigator.userAgent`, а `Sec-CH-UA` и
-/// `navigator.userAgentData` Chromium собирает из настоящей сборки, и флагом
-/// они не трогаются. Canvas, шрифты, экран и GPU у всех профилей одной машины
-/// общие. Это разделение аккаунтов, а не антидетект: тот делается патченным
-/// Chromium, а не набором флагов.
+/// Чего этим не добиться, сказано один раз и честно. `Sec-CH-UA`, часовой пояс
+/// и запрет геолокации Chromium получает через DevTools-канал
+/// (`core_apps::cdp`), флагами их не взять. Canvas, шрифты, экран и GPU у всех
+/// профилей одной машины общие и настоящие. Это разделение аккаунтов, а не
+/// антидетект: тот делается патченным Chromium, а одинаковый для всех отпечаток
+/// даёт движок Firefox (`Engine::Firefox`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BrowserProfile {
     pub name: String,
@@ -297,6 +297,55 @@ pub struct BrowserProfile {
     /// не меняет его картинку, если человек её выбрал сам.
     #[serde(default)]
     pub icon: String,
+    /// Метки, по которым список отбирается: «работа», «магазин», «US». Служба
+    /// в них не смотрит, но держит их она: список профилей тот же на второй
+    /// машине, и расставлять метки заново никто не станет.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Одноразовый: каталог сеанса стирается, когда окно закрыли, и следующее
+    /// открывается с чистого листа. Личность (узел, UA, язык) при этом
+    /// остаётся — забываются только входы и куки. Стирает оболочка: каталог
+    /// лежит в `%LOCALAPPDATA%` человека.
+    #[serde(default)]
+    pub ephemeral: bool,
+    /// Чем открывать окно. Пусто в старом `state.json` — Chromium, как и было.
+    #[serde(default)]
+    pub engine: Engine,
+    /// Часовой пояс окна Chromium: `auto` — по стране узла, IANA-имя — свой,
+    /// пусто — системный. Пусто и у профилей, заведённых до поля: они
+    /// открывались с системным, и молча менять им пояс незачем. Firefox с
+    /// защитой от отпечатка это поле не читает — у него всегда UTC.
+    #[serde(default)]
+    pub timezone: String,
+}
+
+/// Движок окна браузерного профиля, и разница между ними не во вкусе.
+///
+/// Chromium — это подмена: своя строка UA с подсказками, язык и часовой пояс, а
+/// всё остальное в отпечатке (canvas, шрифты, экран) настоящее и одинаковое у
+/// профилей одной машины. Firefox идёт с `privacy.resistFingerprinting`: там отпечаток не
+/// выдумывается, а приводится к общему для всех, кто с этой защитой, — UA,
+/// экран, шрифты, canvas и часовой пояс (UTC) у них одни и те же. Строку UA
+/// такой Firefox пишет свою, и поле `ua` на нём не действует.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Engine {
+    #[default]
+    Chromium,
+    Firefox,
+}
+
+/// Браузерный профиль в корзине: удалённый, но ещё не стёртый. Каталог с его
+/// входами лежит нетронутым, пока профиль не вернули или не стёрли навсегда.
+///
+/// Корзина нужна потому, что удаление профиля — единственное действие в
+/// разделе, которое не отменить: с каталогом уходят входы во все аккаунты
+/// этого окна, а кнопка стоит в строке рядом с «Открыть».
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TrashedBrowser {
+    pub profile: BrowserProfile,
+    /// Когда удалён, unix-секунды.
+    pub at: u64,
 }
 
 /// Одно живое соединение sing-box, как его видит Clash API, — и кто его завёл.
@@ -507,9 +556,16 @@ pub enum Request {
     /// Одна команда на оба случая: правка личности — это и есть перезапись, а
     /// каталог с куками привязан к имени и переживает её.
     SetBrowserProfile { profile: BrowserProfile },
-    /// Убрать браузерный профиль. Сеанс его гаснет, а каталог с куками сносит
-    /// клиент: он лежит в `%LOCALAPPDATA%` человека, куда службе не дотянуться.
+    /// Убрать браузерный профиль в корзину. Сеанс его гаснет, каталог с куками
+    /// остаётся лежать до `PurgeBrowserProfile`.
     RemoveBrowserProfile { name: String },
+    /// Вернуть профиль из корзины.
+    RestoreBrowserProfile { name: String },
+    /// Стереть профиль из корзины навсегда. Каталог с куками клиент сносит
+    /// **до** этой команды: он лежит в `%LOCALAPPDATA%` человека, куда службе
+    /// не дотянуться, и не снесённый — занятый открытым окном — оставил бы
+    /// входы лежать без единой записи о том, чьи они.
+    PurgeBrowserProfile { name: String },
     /// Живые соединения туннеля: кто, куда, каким маршрутом и сколько байт.
     /// Спрашивается по требованию и только пока панель открыта — служба
     /// соединения не хранит, не пишет в журнал и не сохраняет на диск. Это тот
@@ -815,6 +871,9 @@ pub struct Status {
     /// лежат входы человека, и потерять имя значило бы потерять и вход.
     #[serde(default)]
     pub browser_profiles: Vec<BrowserProfile>,
+    /// Корзина браузерных профилей, последний удалённый первым.
+    #[serde(default)]
+    pub browser_trash: Vec<TrashedBrowser>,
     /// Настройки службы — уже с учётом переменных окружения: окно показывает
     /// то, что действует, а не то, что записано в state.json.
     #[serde(default)]
@@ -1265,9 +1324,15 @@ mod tests {
                     ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)".into(),
                     lang: "nl-NL,nl,en-US,en".into(),
                     icon: "k3f9qa".into(),
+                    tags: vec!["магазин".into()],
+                    ephemeral: true,
+                    engine: Engine::Firefox,
+                    timezone: "auto".into(),
                 },
             },
             Request::RemoveBrowserProfile { name: "работа".into() },
+            Request::RestoreBrowserProfile { name: "работа".into() },
+            Request::PurgeBrowserProfile { name: "работа".into() },
             Request::Connections { filter: String::new() },
             Request::Connections { filter: "chrome".into() },
             Request::Fenced,
@@ -1404,7 +1469,8 @@ mod tests {
         let pulse = Pulse::of(&hot);
         assert_eq!((pulse.tunnel, pulse.rx, pulse.tx, pulse.cold), (Tunnel::Up, 5, 6, cold));
 
-        let changes: [(&str, fn(&mut Status)); 9] = [
+        let changes: [(&str, fn(&mut Status)); 10] = [
+            ("browser_trash", |s| s.browser_trash.push(TrashedBrowser::default())),
             ("profiles", |s| s.profiles.push(ProfileInfo { name: "x".into(), ..Default::default() })),
             ("subscriptions", |s| {
                 s.subscriptions.push(Subscription { url: "https://p".into(), name: String::new(), nodes: vec![], quota: None })
@@ -1677,6 +1743,20 @@ mod tests {
             assert!(bar.contains(offered), "переключатель охвата растерял варианты: нет {offered}");
         }
         assert!(!bar.contains("[\"none\","), "диагностическому охвату не место в переключателе окна");
+    }
+
+    /// Движок окно тоже пишет строкой, а оболочка сравнивает его со словом
+    /// `firefox` сама: разъедься имя, и профиль, выбранный Firefox ради защиты
+    /// от отпечатка, молча откроется Chromium.
+    #[test]
+    fn the_frontend_knows_the_same_engines() {
+        let ts = include_str!("../../../ui/app-shell/src/platform.ts");
+        let line = ts.lines().find(|l| l.starts_with("export type Engine")).expect("тип движка в platform.ts");
+        for engine in [Engine::Chromium, Engine::Firefox] {
+            let name = serde_json::to_string(&engine).unwrap();
+            assert!(line.contains(&name), "движка {name} нет в platform.ts: {line}");
+        }
+        assert_eq!(line.matches('"').count() / 2, 2, "движков ровно два: {line}");
     }
 
     /// То же и по той же причине про языки: строки `"ru"`/`"en"`/`"fa"` окно
