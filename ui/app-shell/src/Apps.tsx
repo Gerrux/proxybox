@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { call, type Act, type App, type Scope, type Status, type Tunnel } from "./platform";
 import { strings } from "./i18n";
-import { AddField, Button, Empty, Modal, Panel, SearchField } from "./ui";
+import { AddField, Button, Empty, IconButton, Modal, Panel, SearchField } from "./ui";
 
 /** `id` для связки галочки с подписью. Путь к .exe в `id` класть нельзя: там
  *  пробелы, а `id` с пробелом невалиден — сейчас это сходит с рук только
@@ -134,7 +134,7 @@ export function Apps({
 
   return (
     <Panel
-      pad="p-3.5"
+      pad="p-3"
       className={className}
       title={s.apps}
       note={
@@ -160,24 +160,22 @@ export function Apps({
           >
             {finding ? s.searching : s.discover}
           </Button>
-          <Button
+          <IconButton
+            icon="help"
             aria-pressed={noteShown}
             aria-expanded={noteShown}
-            aria-label={s.whatIsCheck}
+            label={s.whatIsCheck}
             onClick={() => setNoteOpen(!noteShown)}
-            className="w-8 px-0 text-[15px] leading-none"
-          >
-            ?
-          </Button>
-          <Button
+            className={noteShown ? "bg-press" : ""}
+          />
+          <IconButton
+            icon="plus"
+            variant="ghost"
             aria-haspopup="dialog"
-            aria-label={s.addApp}
+            label={s.addApp}
             title={s.appPlaceholder}
             onClick={() => setAdding(true)}
-            className="w-8 px-0 text-[15px] leading-none"
-          >
-            +
-          </Button>
+          />
         </>
       }
     >
@@ -203,7 +201,7 @@ export function Apps({
             раз. Судьба конкретной строки остаётся в её подсказке
             (`fateHint`). */}
         {noteShown && (
-          <p className="enter text-[13px] leading-snug text-muted">
+          <p className="enter rounded-md bg-hover px-3 py-2 text-sm text-muted">
             {all ? s.scopeAllNote : s.whitelistNote}
           </p>
         )}
@@ -231,12 +229,12 @@ export function Apps({
         ) : shown.length === 0 ? (
           <Empty>{s.noMatches}</Empty>
         ) : (
-          <ul className="flex flex-col">
+          <ul className="-mx-1.5 flex flex-col">
             {shown.map((app) => (
               <li
                 key={app.path}
                 title={fateHint(s, app.enabled, status?.tunnel, status?.scope)}
-                className="enter smooth flex items-center gap-3 rounded-md px-1 py-1.5 hover:bg-surface-2"
+                className="row enter smooth flex min-h-11 items-center gap-3 ps-2.5 pe-1"
               >
                 <input
                   id={fieldId(app.path)}
@@ -257,20 +255,19 @@ export function Apps({
                   <span className="size-5 shrink-0" />
                 )}
                 <label htmlFor={fieldId(app.path)} className="min-w-0 flex-1 cursor-pointer leading-tight">
-                  <span className={`block truncate text-[13px] ${app.enabled ? "font-medium" : "text-muted"}`}>
+                  <span className={`block truncate text-sm ${app.enabled ? "font-semibold" : ""}`}>
                     {app.name}
                   </span>
-                  <span className="selectable block truncate font-mono text-[11px] text-muted" title={app.path}>
+                  <span className="selectable block truncate text-xs text-muted" title={app.path}>
                     {app.path}
                   </span>
                 </label>
-                <Button
+                <IconButton
+                  icon="close"
                   variant="danger"
-                  aria-label={s.removeApp(app.name)}
+                  label={s.removeApp(app.name)}
                   onClick={() => void act({ cmd: "remove-app", arg: { path: app.path } })}
-                >
-                  ✕
-                </Button>
+                />
               </li>
             ))}
           </ul>

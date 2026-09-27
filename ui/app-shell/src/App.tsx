@@ -11,6 +11,7 @@ import {
   type Lang,
   type Request,
   type Response,
+  type Scope,
   type Status,
 } from "./platform";
 import { dir, strings } from "./i18n";
@@ -23,7 +24,8 @@ import { Settings, useReleases, useTheme } from "./Settings";
 import { StatusBar, tunnelState } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
 import { Welcome } from "./Welcome";
-import { Button, Icon, type IconName, useNarrow } from "./ui";
+import { Flyout } from "./Flyout";
+import { Button, Icon, IconButton, type IconName, useNarrow } from "./ui";
 
 /** Что делать с крестиком, если человек попросил больше не спрашивать. Живёт в
  *  localStorage окна, а не в настройках службы: это привычка к окну, а не
@@ -257,21 +259,36 @@ export function App() {
 
   const s = strings(status?.lang);
   const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
+  const setScope = (scope: Scope) => void act({ cmd: "set-scope", arg: { scope } });
+
+  // Плашка из трея — своя раскладка (`Flyout.tsx`): её открывают глянуть и
+  // переключить, а не читать списки.
+  if (flyout) {
+    return (
+      <div className="app h-full overflow-hidden" data-state={tunnelState(status)}>
+        <Flyout
+          status={status}
+          act={act}
+          busy={busy > 0}
+          error={error}
+          onError={setError}
+          onToggle={toggle}
+          onScope={setScope}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="app relative flex h-full flex-col overflow-hidden" data-state={tunnelState(status)}>
-      {/* У плашки полосы нет: кнопок окна ей не надо, а «открыть окно» и
-          «настройки» уже есть в меню значка. */}
-      {!flyout && (
-        <TitleBar
-          title="proxybox"
-          lang={status?.lang}
-          update={rel.latest && rel.fresh ? rel.latest.tag_name : null}
-          onUpdate={rel.openUpdate}
-          settingsOpen={settings}
-          onSettings={() => setSettings((v) => !v)}
-        />
-      )}
+      <TitleBar
+        title="proxybox"
+        lang={status?.lang}
+        update={rel.latest && rel.fresh ? rel.latest.tag_name : null}
+        onUpdate={rel.openUpdate}
+        settingsOpen={settings}
+        onSettings={() => setSettings((v) => !v)}
+      />
       {/* Содержимое не растягивается на всю ширину монитора: строки метрик и
           списков читаются глазом, а не рулеткой. Но и 1024 px на 27" — окно в
           окне, поэтому широкому экрану даётся третья колонка.
@@ -279,22 +296,17 @@ export function App() {
           Страница не прокручивается никогда: высоту делят шапка и ровно одна
           панель, и прокрутка живёт внутри неё. Это и есть цена, ради которой
           панели разошлись по вкладкам. */}
-      <div className="shell mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col gap-2.5 overflow-hidden p-3 xl:max-w-[1600px]">
-        <StatusBar
-          status={status}
-          busy={busy > 0}
-          onToggle={toggle}
-          onScope={(scope) => void act({ cmd: "set-scope", arg: { scope } })}
-        />
+      <div className="shell mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col gap-3 overflow-hidden p-3 xl:max-w-[1600px]">
+        <StatusBar status={status} busy={busy > 0} onToggle={toggle} onScope={setScope} />
 
         {error && (
           // Ошибка команды — это поломка, а не запертый канал: цвет тот же, что
-          // у «служба не отвечает», и другой, чем у сработавшей защиты.
-          <div className="enter flex shrink-0 items-start gap-3 rounded-lg border border-edge bg-fault-soft px-4 py-3 text-[13px] text-fault">
-            <p className="selectable min-w-0 flex-1">{error}</p>
-            <Button variant="quiet" aria-label={s.hideMessage} onClick={() => setError(null)}>
-              ✕
-            </Button>
+          // у «служба не отвечает», и другой, чем у сработавшей защиты. Вид —
+          // InfoBar Windows: значок, текст, крестик.
+          <div className="enter flex shrink-0 items-start gap-2.5 rounded-lg border border-edge bg-fault-soft py-1 ps-3 pe-1 text-sm">
+            <Icon name="warn" className="mt-2 text-fault" />
+            <p className="selectable min-w-0 flex-1 py-1.5">{error}</p>
+            <IconButton icon="close" label={s.hideMessage} onClick={() => setError(null)} />
           </div>
         )}
 
@@ -311,14 +323,13 @@ export function App() {
         ) : (
           <>
             {/* Что сделать, чтобы это заработало. Уходит навсегда, как только
-                сбылись все три шага, и не показывается в плашке: 380 px из
-                трея открывают, чтобы глянуть состояние, а не читать. */}
-            {status && !flyout && <Welcome status={status} />}
+                сбылись все три шага. В плашке его нет — у неё своя раскладка. */}
+            {status && <Welcome status={status} />}
             {/* Табы со счётчиками: сколько там строк, видно не открывая. Узкая
                 полоса и широкая «Главная» — одна навигация в двух видах, кто из
                 них показан, решает `index.css` по ширине окна. */}
-            <nav className="tabs flex shrink-0 gap-0.5 rounded-md border border-edge p-0.5">
-              <TabButton className="tab-narrow" icon="node" active={tab === "profiles"} onClick={() => setTab("profiles")}
+            <nav className="-my-1 flex shrink-0 gap-1">
+              <TabButton className="tab-narrow" icon="server" active={tab === "profiles"} onClick={() => setTab("profiles")}
                 label={s.profiles} count={status?.profiles.length ?? 0} />
               <TabButton className="tab-narrow" icon="screen" active={tab === "apps"} onClick={() => setTab("apps")}
                 label={s.apps} count={`${inTunnel}/${status?.apps.length ?? 0}`} />
@@ -326,7 +337,7 @@ export function App() {
                 label={s.journal} count={status?.log.length ?? 0} />
               {/* Шире 1100 px первые три стоят рядом, и выбирать между ними
                   нечего: остаётся развилка «списки или браузерные профили». */}
-              <TabButton className="tab-wide" icon="node" active={!WIDE.includes(tab)} onClick={() => setTab("profiles")}
+              <TabButton className="tab-wide" icon="server" active={!WIDE.includes(tab)} onClick={() => setTab("profiles")}
                 label={s.tabMain} />
               <TabButton icon="browser" active={tab === "browsers"} onClick={() => setTab("browsers")}
                 label={s.tabBrowsers} count={status?.browser_profiles.length ?? 0} />
@@ -342,7 +353,7 @@ export function App() {
             ) : tab === "conns" ? (
               <Conns status={status} act={act} className="min-h-0 flex-1" />
             ) : (
-              <div className="panes gap-2.5">
+              <div className="panes gap-3">
                 <Profiles
                   className={pane(tab, "profiles")}
                   status={status}
@@ -400,7 +411,7 @@ function CloseDialog({
   }, [onCancel]);
   return (
     <div
-      className="absolute inset-0 z-10 grid place-items-center bg-bg/70 p-6"
+      className="absolute inset-0 z-10 grid place-items-center bg-black/30 p-6"
       onClick={onCancel}
       role="presentation"
     >
@@ -409,12 +420,12 @@ function CloseDialog({
         aria-modal="true"
         aria-label={s.closeTitle}
         onClick={(e) => e.stopPropagation()}
-        className="enter flex w-full max-w-md flex-col gap-3 rounded-lg border border-edge bg-surface p-5 shadow-lg"
+        className="enter flex w-full max-w-md flex-col gap-3 rounded-lg border border-edge bg-surface p-5 shadow-[var(--pg-flyout-shadow)]"
       >
-        <h2 className="font-display text-[17px] font-semibold">{s.closeTitle}</h2>
-        <p className="text-[13px] text-muted">{s.closeHint}</p>
-        <p className="text-[12.5px] text-muted">{s.closeWarn}</p>
-        <label className="flex items-center gap-2 text-[12.5px] text-muted">
+        <h2 className="text-xl font-semibold">{s.closeTitle}</h2>
+        <p className="text-sm">{s.closeHint}</p>
+        <p className="text-sm text-muted">{s.closeWarn}</p>
+        <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
             checked={remember}
@@ -423,13 +434,12 @@ function CloseDialog({
           />
           {s.closeRemember}
         </label>
-        <div className="flex flex-wrap justify-end gap-2">
-          <Button variant="quiet" onClick={() => onPick("quit", remember)}>
-            {s.closeQuit}
-          </Button>
+        {/* Кнопки диалога Windows — поровну ширины, главная первой. */}
+        <div className="-mx-5 -mb-5 mt-2 grid grid-cols-2 gap-2 rounded-b-lg border-t border-edge bg-bg p-4">
           <Button variant="primary" autoFocus onClick={() => onPick("hide", remember)}>
             {s.closeToTray}
           </Button>
+          <Button onClick={() => onPick("quit", remember)}>{s.closeQuit}</Button>
         </div>
       </div>
     </div>
@@ -474,18 +484,16 @@ function TabButton({
       aria-label={bare ? label : undefined}
       title={bare ? label : undefined}
       onClick={onClick}
-      className={`smooth inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-[3px] px-1.5 py-1.5 ${
-        active ? "bg-surface text-ink" : "text-muted hover:text-ink"
-      } ${className}`}
+      className={`nav-item smooth inline-flex h-9 min-w-0 items-center justify-center gap-2 rounded-md px-3 text-sm hover:bg-hover ${
+        bare ? "flex-1" : ""
+      } ${active ? "font-semibold text-ink" : "text-muted hover:text-ink"} ${className}`}
     >
-      {/* Значок стоит и там, где есть подпись. Пять надписей в разрядку
-          («ПРОФИЛИ», «ПРИЛОЖЕНИЯ», «ЖУРНАЛ», «БРАУЗЕРЫ», «СОЕДИНЕНИЯ») читаются
-          только по буквам, а различать вкладки надо боковым зрением: рисунок
-          отличается от рисунка в тот же взгляд, которым полосу пробегают. Тон
-          у него приглушённый — подпись остаётся главной, значок её метит. */}
-      <Icon name={icon} className={active ? "" : "opacity-70"} />
-      {!bare && <span className="engraved truncate">{label}</span>}
-      {count != null && <span className="shrink-0 text-[11px] text-muted">{count}</span>}
+      {/* Значок стоит и там, где есть подпись: различать вкладки надо боковым
+          зрением, а рисунок отличается от рисунка в тот же взгляд, которым
+          полосу пробегают. */}
+      <Icon name={icon} className={active ? "text-accent" : ""} />
+      {!bare && <span className="truncate">{label}</span>}
+      {count != null && <span className="shrink-0 text-xs font-normal text-faint">{count}</span>}
     </button>
   );
 }

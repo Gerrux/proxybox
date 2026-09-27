@@ -9,7 +9,8 @@ import {
   Button,
   Empty,
   FIELD,
-  flag,
+  Icon,
+  IconButton,
   Menu,
   type MenuItem,
   Modal,
@@ -17,6 +18,7 @@ import {
   Panel,
   SearchField,
   Segmented,
+  nodeFlag,
   spot,
   useNarrow,
 } from "./ui";
@@ -134,7 +136,7 @@ function Remaining({ s, quota, lang }: { s: Strings; quota: Quota; lang: Lang | 
   return (
     <span
       title={s.quotaHint}
-      className={`shrink-0 font-sans text-[11px] font-normal normal-case tracking-normal ${tone}`}
+      className={`shrink-0 text-xs font-normal ${tone}`}
     >
       {parts.join(" · ")}
     </span>
@@ -155,7 +157,7 @@ function Verdict({ probe, failed, measured }: { probe: Probe | undefined; failed
     return (
       // Возраст — в подсказке, а не в строке: цифра из прошлой недели выглядит
       // как сегодняшняя, но занимать место в строке этому знанию незачем.
-      <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted" title={measured}>
+      <span className="shrink-0 tabular-nums" title={measured}>
         {probe.latency_ms} ms
       </span>
     );
@@ -166,20 +168,19 @@ function Verdict({ probe, failed, measured }: { probe: Probe | undefined; failed
     // В строке — причина в два слова, если служба её разобрала («таймаут»,
     // «отказ TLS»): «не отвечает» у всех одинаково, а чинят их по-разному.
     // Полная строка остаётся подсказкой.
-    <span className="min-w-0 truncate font-mono text-[11px] text-fault" title={probe.error ?? failed}>
+    <span className="min-w-0 truncate text-fault" title={probe.error ?? failed}>
       {probe.brief ?? failed}
     </span>
   );
 }
 
-/** Цвет строки. Рельс слева и подпись «активен» берут его отсюда: это одно и
- *  то же состояние, и разойтись им нельзя. */
+/** Цвет полоски выбранной строки — тон туннеля, пока узел несёт трафик. */
 const TONE = {
-  up: { rail: "bg-open", text: "text-open" },
-  connecting: { rail: "bg-wait", text: "text-wait" },
-  down: { rail: "bg-closed", text: "text-closed" },
+  up: { rail: "bg-open" },
+  connecting: { rail: "bg-wait" },
+  down: { rail: "bg-closed" },
   // Выключено — и «профиль просто выбран» тоже: это не сигнал, цвета нет.
-  off: { rail: "bg-transparent", text: "text-muted" },
+  off: { rail: "bg-accent" },
 } as const;
 
 /** Где окно помнит порядок по задержке. Он остаётся способом посмотреть, а не
@@ -551,14 +552,12 @@ export function Profiles({
         <>
           {narrow
             ? tools.length > 0 && (
-                <Button
-                  variant="quiet"
-                  aria-label={s.actions}
+                <IconButton
+                  icon="more"
+                  label={s.actions}
                   aria-haspopup="menu"
                   onClick={(e) => openMenu(e, tools)}
-                >
-                  ⋯
-                </Button>
+                />
               )
             : tools.map((t) => (
                 <Button
@@ -575,15 +574,14 @@ export function Profiles({
           {/* «+» остаётся кнопкой в любой ширине и не уезжает в меню: пустой
               список заводят только им, и прятать единственную дверь под «⋯»
               значило бы не показать её тому, кому она и нужна. */}
-          <Button
+          <IconButton
+            icon="plus"
+            variant="ghost"
             aria-haspopup="dialog"
-            aria-label={s.importLink}
+            label={s.importLink}
             title={s.linkPlaceholder}
             onClick={() => setAdding(true)}
-            className="w-8 px-0 text-[15px] leading-none"
-          >
-            +
-          </Button>
+          />
         </>
       }
     >
@@ -627,7 +625,7 @@ export function Profiles({
           </Modal>
         )}
         {searchable && (
-          <div className="p-3.5 pb-2">
+          <div className="p-3 pb-1.5">
             <SearchField inputRef={searchRef} value={query} onChange={setQuery} placeholder={s.searchProfiles} />
           </div>
         )}
@@ -635,14 +633,14 @@ export function Profiles({
           // Пустому списку нужна не подпись, а дверь: поле импорта больше не
           // открыто само, и «+» в шапке — единственное, чем этот список
           // заводят.
-          <div className="flex flex-col items-center gap-2 p-3.5">
+          <div className="flex flex-col items-center gap-2 p-3">
             <Empty>{s.noProfiles}</Empty>
             <Button variant="primary" onClick={() => setAdding(true)}>
               {s.importLink}
             </Button>
           </div>
         ) : shown === 0 && needle !== "" ? (
-          <div className="p-3.5">
+          <div className="p-3">
             <Empty>{s.noMatches}</Empty>
           </div>
         ) : !grouped ? (
@@ -713,15 +711,19 @@ export function Profiles({
                       commit();
                     }}
                     onContextMenu={(e) => sub !== null && openMenu(e, subMenu(sub))}
-                    className={`sub-head engraved flex cursor-pointer list-none items-center gap-2 px-2.5 py-1 text-muted [&::-webkit-details-marker]:hidden ${
+                    className={`sub-head flex h-9 cursor-pointer list-none items-center gap-2 ps-3 pe-2 text-sm font-semibold [&::-webkit-details-marker]:hidden ${
                       dragged === sub?.url ? "opacity-40" : ""
                     }`}
                   >
                     {/* .smooth возит только цвет — повороту нужен свой переход, и он же
                         обязан замирать при prefers-reduced-motion. */}
-                    <span className="shrink-0 text-[9px] motion-safe:transition group-open/sub:rotate-90">▶</span>
+                    <Icon
+                      name="chevron"
+                      size={12}
+                      className="text-muted motion-safe:transition group-open/sub:rotate-90 rtl:-scale-x-100"
+                    />
                     {sub === null ? (
-                      <span className="min-w-0 flex-1 truncate text-ink">{s.ownProfiles}</span>
+                      <span className="min-w-0 flex-1 truncate">{s.ownProfiles}</span>
                     ) : renaming === sub.url ? (
                       // Поле стоит на месте подписи и по любому клику внутри
                       // себя не сворачивает группу: <summary> переключает
@@ -745,7 +747,7 @@ export function Profiles({
                           placeholder={s.subName}
                           spellCheck={false}
                           onKeyDown={(e) => e.key === "Escape" && setRenaming(null)}
-                          className={`${FIELD} font-sans text-[11px] font-normal normal-case tracking-normal`}
+                          className={`${FIELD} h-7 font-normal`}
                         />
                         <Button type="submit" variant="quiet">
                           {s.save}
@@ -760,9 +762,7 @@ export function Profiles({
                       // дали, читается вместо адреса; полный адрес остаётся по
                       // наведению в обоих случаях.
                       <span
-                        className={`selectable min-w-0 flex-1 truncate text-ink ${
-                          sub.name ? "" : "font-mono text-[11px] font-normal normal-case tracking-normal"
-                        }`}
+                        className={`selectable min-w-0 flex-1 truncate ${sub.name ? "" : "font-normal"}`}
                         title={sub.url}
                       >
                         {sub.name || sub.url.replace(/^https:\/\//, "")}
@@ -778,18 +778,15 @@ export function Profiles({
                     {sub?.quota && renaming !== sub.url && (
                       <Remaining s={s} quota={sub.quota} lang={status?.lang} />
                     )}
-                    <span className="shrink-0 font-sans text-[11px] font-normal normal-case tracking-normal">
-                      {items.length}
-                    </span>
+                    <span className="shrink-0 text-xs font-normal text-muted">{items.length}</span>
                     {sub !== null && renaming !== sub.url && (
-                      <Button
-                        variant="quiet"
-                        aria-label={s.actions}
+                      <IconButton
+                        icon="more"
+                        label={s.actions}
                         aria-haspopup="menu"
+                        className="-me-1 size-7"
                         onClick={(e) => openMenu(e, subMenu(sub))}
-                      >
-                        ⋯
-                      </Button>
+                      />
                     )}
                   </summary>
                   <Rows
@@ -820,7 +817,7 @@ export function Profiles({
             <Qr link={qr} />
             {/* Сама ссылка под кодом: код снимают телефоном, а глазами сверяют,
                 что сняли тот узел. Выделяется и копируется как всякий текст. */}
-            <p className="selectable w-full break-all text-center font-mono text-[10.5px] leading-[15px] text-muted">
+            <p className="selectable w-full break-all text-center font-mono text-xs text-muted">
               {qr}
             </p>
           </div>
@@ -980,10 +977,10 @@ function Editor({
           onChange={(e) => setNode(e.target.value)}
           aria-label={s.editNode}
           spellCheck={false}
-          className={`${FIELD.replace("h-8", "h-auto")} resize-none py-[5px] font-mono text-[11px] leading-[18px]`}
+          className={`${FIELD.replace("h-8", "h-auto")} resize-none py-[5px] font-mono text-xs`}
         />
       )}
-      <span className={`text-[11px] ${error ? "text-fault" : "text-muted"}`}>{error ?? s.editNodeHint}</span>
+      <span className={`text-xs ${error ? "text-fault" : "text-muted"}`}>{error ?? s.editNodeHint}</span>
     </form>
   );
 }
@@ -1085,7 +1082,7 @@ function Fields({ s, value: p, onChange }: { s: Strings; value: Parts; onChange:
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
-        <span className="engraved w-20 shrink-0 text-muted">{p.scheme}</span>
+        <span className="w-20 shrink-0 text-xs font-semibold text-muted">{p.scheme}</span>
         <input
           value={p.host}
           onChange={(e) => edit({ host: e.target.value })}
@@ -1104,7 +1101,7 @@ function Fields({ s, value: p, onChange }: { s: Strings; value: Parts; onChange:
         />
       </div>
       <div className="flex items-center gap-2">
-        <span className="w-20 shrink-0 truncate font-mono text-[11px] text-muted" title={user}>
+        <span className="w-20 shrink-0 truncate font-mono text-xs text-muted" title={user}>
           {user}
         </span>
         <input
@@ -1112,7 +1109,7 @@ function Fields({ s, value: p, onChange }: { s: Strings; value: Parts; onChange:
           onChange={(e) => edit({ user: e.target.value })}
           aria-label={user || s.editNode}
           spellCheck={false}
-          className={`${FIELD} font-mono text-[11px]`}
+          className={`${FIELD} font-mono text-xs`}
         />
         {/* Вторая половина показывается только там, где она есть: у vless её
             нет вовсе, и пустое поле рядом означало бы забытый пароль. */}
@@ -1123,7 +1120,7 @@ function Fields({ s, value: p, onChange }: { s: Strings; value: Parts; onChange:
             placeholder={password}
             aria-label={password}
             spellCheck={false}
-            className={`${FIELD} font-mono text-[11px]`}
+            className={`${FIELD} font-mono text-xs`}
           />
         )}
       </div>
@@ -1135,24 +1132,21 @@ function Fields({ s, value: p, onChange }: { s: Strings; value: Parts; onChange:
             placeholder="sni"
             aria-label={s.nodeParam}
             spellCheck={false}
-            className={`${FIELD} w-20 flex-none font-mono text-[11px]`}
+            className={`${FIELD} w-20 flex-none font-mono text-xs`}
           />
           <input
             value={value}
             onChange={(e) => edit({ params: seatedParams(p.params, i, [key, e.target.value]) })}
             aria-label={key || s.nodeParam}
             spellCheck={false}
-            className={`${FIELD} font-mono text-[11px]`}
+            className={`${FIELD} font-mono text-xs`}
           />
           {i < p.params.length && (
-            <Button
-              variant="quiet"
-              aria-label={s.remove}
-              className="w-8 flex-none px-0"
+            <IconButton
+              icon="close"
+              label={s.remove}
               onClick={() => edit({ params: p.params.filter((_, at) => at !== i) })}
-            >
-              ✕
-            </Button>
+            />
           )}
         </div>
       ))}
@@ -1244,6 +1238,7 @@ function Rows({
         // Рельс профиля повторяет то, что показывает верх окна: выбран —
         // ещё не значит «несёт трафик», и путать это нельзя.
         const tone = TONE[live && status ? status.tunnel : "off"];
+        const [mark, label] = nodeFlag(name, probe?.code);
         // Каталоги сеансов зовутся по имени браузерного профиля, а не
         // узла: стирать тут нечего. Браузерные профили удаление узла
         // переживают намеренно — в их каталогах входы человека, и починка
@@ -1325,78 +1320,55 @@ function Rows({
               // Правая кнопка открывает меню по всей строке, включая её поля и
               // значки: целиться в «⋯» ради этого не нужно.
               onContextMenu={(e) => onMenu(e, rowMenu())}
-              className={`enter smooth relative flex items-center gap-2 rounded-md py-1.5 ps-3 pe-1 hover:bg-surface-2 ${
-                active ? "bg-surface-2" : ""
-              } ${dragged === name ? "opacity-40" : ""}`}
+              data-selected={active}
+              className={`row enter smooth flex min-h-11 items-center gap-2.5 ps-2.5 pe-1 ${
+                dragged === name ? "opacity-40" : ""
+              }`}
             >
-              <span className={`smooth absolute inset-y-1 start-0 w-[3px] rounded-full ${tone.rail}`} />
-              {/* Имя сверху, всё измеренное — строкой ниже, как в списке
-                  приложений: в одну строку имя, состояние, страна, задержка
-                  и кнопки не помещаются даже в окне минимальной ширины, и
-                  первым обрубается имя — единственное, чем строки и
-                  различаются. */}
+              {/* Полоска выбранного — как в списках Windows, и в тон туннеля:
+                  выбран — ещё не значит «несёт трафик», и путать это нельзя. */}
+              {active && <span className={`row-pill smooth ${tone.rail}`} />}
+              {/* Флаг — своей колонкой, одной на всю ширину списка: глаз ищет
+                  страну по левому краю, а не в хвосте строки. Флаг из имени
+                  («🇳🇱 Amsterdam») переезжает сюда же, а не повторяется рядом
+                  с флагом замера. */}
+              <span
+                className="grid w-5 shrink-0 place-items-center text-base leading-none text-faint"
+                title={country ?? undefined}
+                aria-label={country ?? undefined}
+              >
+                {mark ?? <Icon name="server" size={14} />}
+              </span>
               {/* Само поле строки и есть кнопка «включить»: настоящий <button>,
                   а не строка с ролью, — иначе клавиатура до профиля не
-                  добирается, а кнопка меню внутри роли ей же и мешает. Заняло
-                  оно всё, кроме звёздочки и «⋯»: промахнуться мимо профиля в
-                  строке профиля больше негде. */}
+                  добирается, а кнопка меню внутри роли ей же и мешает. Имя
+                  сверху, всё измеренное — строкой ниже: в одну строку имя,
+                  состояние, адрес и задержка не помещаются даже в окне
+                  минимальной ширины, и первым обрубается имя. */}
               <button
                 type="button"
                 aria-pressed={active}
                 onClick={pick}
-                className={`min-w-0 flex-1 text-start leading-tight ${live ? "" : "cursor-pointer"}`}
+                className={`min-w-0 flex-1 py-1 text-start ${live ? "" : "cursor-pointer"}`}
               >
-                <span
-                  className={`block truncate text-[13px] ${active ? "font-medium" : "text-muted"}`}
-                  title={name}
-                >
-                  {name}
+                <span className={`block truncate text-sm ${active ? "font-semibold" : ""}`} title={name}>
+                  {label}
+                  {live && <span className="sr-only"> — {s.active}</span>}
                 </span>
-                <span className="flex items-baseline gap-2 overflow-hidden text-[11px] text-muted">
-                  {live && <span className={`engraved shrink-0 ${tone.text}`}>{s.active}</span>}
-                  {browsing && (
-                    <span className="engraved shrink-0" title={s.browserOnHint}>
-                      {s.browserOn}
-                    </span>
-                  )}
-                  {/* Куда ведёт узел. Стоит первым и обрезается первым: имя
-                      профиля пишет чужая панель, и два одинаково названных
-                      узла различаются только этим. Пароля и ключа тут нет —
-                      их в окно не привозят вовсе. */}
+                <span className="flex items-center gap-2 overflow-hidden text-xs text-muted">
+                  {/* Куда ведёт узел. Обрезается первым: имя профиля пишет
+                      чужая панель, и два одинаково названных узла различаются
+                      только этим. Пароля и ключа тут нет — их в окно не
+                      привозят вовсе. */}
                   {item.server && (
-                    <span className="min-w-0 truncate font-mono" title={`${item.kind} → ${item.server}`}>
+                    <span className="min-w-0 truncate" title={`${item.kind} → ${item.server}`}>
                       {item.server}
                     </span>
                   )}
-                  {/* Открытый узел оговаривается в самой строке, а не только в
-                      журнале: выбирают узел здесь, и «Защищено» в шапке без
-                      оговорки обещало бы больше, чем узел даёт. */}
-                  {item.plain && (
-                    <span className="engraved shrink-0 text-wait" title={s.plainHint}>
-                      {s.plain}
-                    </span>
-                  )}
-                  {/* Страна — флагом: «Нидерланды, Амстердам» не
-                      помещается в строку вовсе, а флаг читается быстрее
-                      любой надписи. Название целиком остаётся подсказкой
-                      и подписью для чтения с экрана. Кода нет (состояние
-                      прошлых версий или сервис не прислал) — показываем
-                      название, обрезкой. */}
-                  {country &&
-                    (flag(probe?.code) ? (
-                      <span className="shrink-0 text-[13px] leading-none" title={country} aria-label={country}>
-                        {flag(probe?.code)}
-                      </span>
-                    ) : (
-                      <span className="truncate" title={country}>
-                        {country}
-                      </span>
-                    ))}
                   {/* Число, снятое при поднятом туннеле, включает и его RTT:
-                      прогон идёт цепочкой сквозь общий туннель, своего
-                      маршрута мимо TUN у него нет. Сравнивать такие числа с
-                      выключенным режимом нельзя, а выбирают узел именно
-                      сравнением — значит, сказать об этом обязано само
+                      прогон идёт цепочкой сквозь общий туннель. Сравнивать
+                      такие числа с выключенным режимом нельзя, а выбирают узел
+                      именно сравнением — значит, сказать об этом обязано само
                       число. */}
                   <Verdict
                     probe={probe}
@@ -1409,22 +1381,39 @@ function Rows({
                   />
                 </span>
               </button>
-              {/* Звёздочка осталась в строке знаком, а не кнопкой: переключают
-                  её теперь в меню, а видеть отмеченные надо, не открывая
-                  ничего, — ради этого её и ставят. */}
-              {item.favorite && (
-                <span className="shrink-0 text-accent" title={s.favorite} aria-label={s.favoriteItem}>
-                  ★
+              {/* Пометки — значками, а не словами: слово «без шифрования»
+                  заглавными в каждой строке кричало громче имени узла. Смысл
+                  остался в подсказке и для чтения с экрана, а жёлтый замок
+                  видно боковым зрением — «Защищено» в шапке без оговорки
+                  обещало бы больше, чем узел даёт. */}
+              {item.plain && (
+                <span className="shrink-0 text-wait" title={s.plainHint}>
+                  <Icon name="lockOpen" size={14} />
+                  <span className="sr-only">{s.plain}</span>
                 </span>
               )}
-              <Button
-                variant="quiet"
-                aria-label={s.actions}
+              {/* Окно браузера открыто через этот узел: узел при этом несёт
+                  трафик, а в строке об этом иначе ни слова. */}
+              {browsing && (
+                <span className="shrink-0 text-accent" title={s.browserOnHint}>
+                  <Icon name="browser" size={14} />
+                  <span className="sr-only">{s.browserOn}</span>
+                </span>
+              )}
+              {/* Звёздочка — знак, а не кнопка: переключают её в меню, а видеть
+                  отмеченные надо, не открывая ничего. */}
+              {item.favorite && (
+                <span className="shrink-0 text-accent" title={s.favorite}>
+                  <Icon name="star" size={12} />
+                  <span className="sr-only">{s.favoriteItem}</span>
+                </span>
+              )}
+              <IconButton
+                icon="more"
+                label={s.actions}
                 aria-haspopup="menu"
                 onClick={(e) => onMenu(e, rowMenu())}
-              >
-                ⋯
-              </Button>
+              />
             </div>
             {editing?.name === name && (
               <Editor s={s} name={name} text={editing.text} act={act} onDone={onDone} />

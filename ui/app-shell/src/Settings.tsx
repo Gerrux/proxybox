@@ -44,7 +44,7 @@ import {
   type Status,
 } from "./platform";
 import { strings, type Strings } from "./i18n";
-import { Button, CopyButton, FIELD, Modal, Panel, Segmented } from "./ui";
+import { Button, CopyButton, FIELD, Modal, Panel, Segmented, Switch } from "./ui";
 
 const REPO = "Gerrux/proxybox";
 
@@ -215,7 +215,7 @@ export function Settings({
 
   return (
     <Panel
-      pad="p-3.5"
+      pad="p-3"
       className={className}
       title={s.settings}
       action={
@@ -224,22 +224,32 @@ export function Settings({
         </Button>
       }
     >
-      <div className="flex flex-col gap-5">
+      <div className="mx-auto flex max-w-3xl flex-col gap-5">
         <Group title={s.groupLook}>
           <Row title={s.language} note={s.languageHint}>
-            <Segmented
-              options={[
-                ["ru", "ru", s.langRu],
-                ["en", "en", s.langEn],
-                ["fa", "fa", s.langFa],
-                ["zh", "zh", s.langZh],
-                ["tr", "tr", s.langTr],
-                ["id", "id", s.langId],
-              ]}
+            {/* Выпадающий список, а не полоска: шесть двухбуквенных кодов в ряд
+                читались шифром, а названия языков в ряд не помещаются. */}
+            <select
               value={lang ?? "ru"}
-              className="well"
-              onPick={(v) => void act({ cmd: "set-lang", arg: { lang: v as Lang } })}
-            />
+              aria-label={s.language}
+              onChange={(e) => void act({ cmd: "set-lang", arg: { lang: e.target.value as Lang } })}
+              className={`${FIELD} w-48 flex-none cursor-pointer`}
+            >
+              {(
+                [
+                  ["ru", s.langRu],
+                  ["en", s.langEn],
+                  ["fa", s.langFa],
+                  ["zh", s.langZh],
+                  ["tr", s.langTr],
+                  ["id", s.langId],
+                ] as const
+              ).map(([code, name]) => (
+                <option key={code} value={code}>
+                  {name}
+                </option>
+              ))}
+            </select>
           </Row>
 
           <Row title={s.themeTitle} note={s.themeHint}>
@@ -250,7 +260,6 @@ export function Settings({
                 ["dark", s.themeDark],
               ]}
               value={theme.theme}
-              className="well"
               onPick={(v) => theme.pick(v as Theme)}
             />
           </Row>
@@ -347,7 +356,7 @@ export function Settings({
             title={s.versionAndUpdates}
             note={
               <>
-                {s.version} <span className="font-mono text-[12px] text-ink">{VERSION}</span>
+                {s.version} <span className="font-semibold text-ink">{VERSION}</span>
                 {latest && fresh && <span className="text-accent"> · {s.updateAvailable(latest.tag_name)}</span>}
                 {releases != null && !fresh && <span> · {s.upToDate}</span>}
                 {/* Не дозвонились до GitHub — это поломка, а не запертый канал:
@@ -374,15 +383,15 @@ export function Settings({
           </Row>
 
           {expanded && releases != null && (
-            <ul className="scroll enter max-h-40 overflow-y-auto border-t border-edge px-3.5 py-1.5 text-[13px]">
+            <ul className="card scroll enter max-h-48 overflow-y-auto px-2 py-1 text-sm">
               {releases.map((r) => (
-                <li key={r.tag_name} className="flex items-center gap-3 py-1">
+                <li key={r.tag_name} className="row flex items-center gap-3 ps-2">
                   <span
-                    className={`font-mono text-[12px] tabular-nums ${r.tag_name.replace(/^v/, "") === VERSION ? "text-accent" : ""}`}
+                    className={`tabular-nums ${r.tag_name.replace(/^v/, "") === VERSION ? "font-semibold text-accent" : ""}`}
                   >
                     {r.tag_name}
                   </span>
-                  <span className="font-mono text-[11px] text-muted">
+                  <span className="text-xs text-muted">
                     {r.published_at ? new Date(r.published_at).toLocaleDateString(lang ?? "ru") : ""}
                   </span>
                   <span className="flex-1" />
@@ -454,22 +463,22 @@ function SingboxLog({ s, onClose }: { s: Strings; onClose: () => void }) {
   return (
     <Modal title={s.logsTitle} onClose={onClose}>
       <div className="flex flex-col gap-2">
-        <div className="scroll max-h-[55vh] overflow-auto rounded-md bg-surface-2 p-2">
+        <div className="field scroll max-h-[55vh] overflow-auto rounded-md p-2">
           {lines == null || lines.length === 0 ? (
             // Ответ идёт с местного диска и приходит мгновенно, так что
             // ожидание тут — не состояние, а мигание: своей строки, которую
             // пришлось бы переводить на шесть языков, оно не стоит.
-            <p className="p-1 text-[12.5px] text-muted">{lines == null ? "…" : s.logsEmpty}</p>
+            <p className="p-1 text-sm text-muted">{lines == null ? "…" : s.logsEmpty}</p>
           ) : (
             // Перенос по любому месту, а не по словам: в строках лога адреса и
             // пути без пробелов, и по словам они уезжали бы за правый край.
-            <pre className="selectable whitespace-pre-wrap break-all font-mono text-[11px] leading-[17px] text-muted">
+            <pre className="selectable whitespace-pre-wrap break-all font-mono text-xs text-muted">
               {lines.join("\n")}
             </pre>
           )}
         </div>
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] text-muted">{s.logsTail}</span>
+          <span className="text-xs text-muted">{s.logsTail}</span>
           {lines != null && lines.length > 0 && (
             <CopyButton text={() => lines.join("\n")} label={s.copyLog} done={s.copied} />
           )}
@@ -479,15 +488,15 @@ function SingboxLog({ s, onClose }: { s: Strings; onClose: () => void }) {
   );
 }
 
-/** Группа настроек: гравированная подпись снаружи, сами строки — в утопленной
- *  плите, той же, в какой лежат списки и поля. Подпись стоит над плитой, а не
- *  внутри неё: внутри она стала бы ещё одной строкой и снова сравнялась бы с
- *  настройками, от которых её и отделяют. */
+/** Группа настроек — как в «Параметрах» Windows 11: подпись над группой, а
+ *  каждая настройка своей карточкой с зазором в два пикселя. Подпись стоит
+ *  снаружи, а не внутри: внутри она стала бы ещё одной строкой и снова
+ *  сравнялась бы с настройками, от которых её и отделяют. */
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section>
-      <h3 className="engraved mb-1.5 ps-1 text-muted">{title}</h3>
-      <div className="overflow-hidden rounded-lg border border-edge bg-surface-2">{children}</div>
+      <h3 className="mb-2 text-sm font-semibold">{title}</h3>
+      <div className="flex flex-col gap-0.5">{children}</div>
     </section>
   );
 }
@@ -510,23 +519,23 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
  *  раскладывает поле и переключатель на две строки. Сторож —
  *  `no_setting_is_out_of_reach_in_the_flyout`.
  *
- *  Разделяет строки кромка самой строки, а не отдельная линейка между ними:
- *  первой она не нужна, и вычесть её из разметки — значит помнить про это в
- *  каждой группе. */
+ *  Каждая строка — своя карточка, как в «Параметрах»: общая плита с
+ *  линейками между строками читалась таблицей, а не набором настроек. */
 function Row({ title, note, children }: { title: string; note: ReactNode; children: ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2.5 border-t border-edge px-3.5 py-3 first:border-t-0">
+    <div className="card flex min-h-16 flex-wrap items-center gap-x-4 gap-y-2.5 px-4 py-3">
       <div className="min-w-[200px] flex-1">
-        <h4 className="text-[13px] font-medium text-ink">{title}</h4>
-        <p className="mt-1 text-[12.5px] leading-[1.5] text-muted">{note}</p>
+        <h4 className="text-sm">{title}</h4>
+        <p className="mt-0.5 text-xs text-muted">{note}</p>
       </div>
       <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">{children}</div>
     </div>
   );
 }
 
-/** Да/нет той же полоской, что и остальные развилки: галочка и тумблер — ещё
- *  два вида управления там, где хватает одного. */
+/** Да/нет — тумблером Fluent с подписью состояния слева, как в «Параметрах».
+ *  Полоска «вкл | выкл», которой это было, в Windows значит выбор из
+ *  вариантов, а не выключатель. */
 function OnOff({
   lang,
   value,
@@ -540,16 +549,10 @@ function OnOff({
 }) {
   const s = strings(lang);
   return (
-    <Segmented
-      options={[
-        ["on", s.switchOn],
-        ["off", s.switchOff],
-      ]}
-      value={value ? "on" : "off"}
-      className="well"
-      disabled={disabled}
-      onPick={(v) => onPick(v === "on")}
-    />
+    <label className={`flex items-center gap-3 text-sm ${disabled ? "opacity-40" : "cursor-pointer"}`}>
+      <span className="min-w-8 text-end">{value ? s.switchOn : s.switchOff}</span>
+      <Switch checked={value} disabled={disabled} label={value ? s.switchOn : s.switchOff} onChange={onPick} />
+    </label>
   );
 }
 
@@ -591,7 +594,7 @@ function TextSetting({
         placeholder={placeholder}
         spellCheck={false}
         disabled={disabled}
-        className={`${FIELD} well font-mono text-[11px]`}
+        className={`${FIELD} font-mono text-xs`}
       />
       <Button type="submit" variant="primary" disabled={disabled || !changed}>
         {s.apply}
@@ -613,7 +616,7 @@ function Autostart({ lang, onError }: { lang: Lang | undefined; onError: (messag
   }, [desktop]);
 
   if (!desktop) {
-    return <span className="text-[12.5px] text-muted">{s.autostartWindowsOnly}</span>;
+    return <span className="text-sm text-muted">{s.autostartWindowsOnly}</span>;
   }
   return (
     <OnOff

@@ -66,7 +66,7 @@ export function Welcome({ status, className = "" }: { status: Status; className?
 
   return (
     <Panel
-      pad="p-3.5"
+      pad="p-3"
       title={s.welcomeTitle}
       className={`shrink-0 ${className}`}
       action={
@@ -82,7 +82,7 @@ export function Welcome({ status, className = "" }: { status: Status; className?
       }
     >
       <div className="flex flex-col gap-3">
-        <p className="text-[13px] text-muted">{s.welcomeIntro}</p>
+        <p className="text-sm text-muted">{s.welcomeIntro}</p>
         {/* Нумерованный список, а не набор галочек: порядок тут настоящий —
             включать нечего, пока нет профиля, и выбирать некого, пока не
             включено. Номер заменяется отметкой, когда шаг сбылся. */}
@@ -91,7 +91,7 @@ export function Welcome({ status, className = "" }: { status: Status; className?
             <li key={step.title} className="flex items-start gap-3">
               <span
                 aria-hidden="true"
-                className={`mt-px grid size-5 shrink-0 place-items-center rounded-full border text-[11px] font-medium ${
+                className={`mt-px grid size-5 shrink-0 place-items-center rounded-full border text-xs font-medium ${
                   step.done ? "border-transparent bg-open text-bg" : "border-edge text-muted"
                 }`}
               >
@@ -100,11 +100,11 @@ export function Welcome({ status, className = "" }: { status: Status; className?
               <div className="min-w-0">
                 {/* Сбывшийся шаг гаснет, но не зачёркивается: зачёркнутое
                     читается как отменённое, а он именно исполнен. */}
-                <p className={`text-[13px] ${step.done ? "text-muted" : "text-ink"}`}>
+                <p className={`text-sm ${step.done ? "text-muted" : "text-ink"}`}>
                   {step.title}
                   {step.done && <span className="sr-only"> — {s.welcomeStepDone}</span>}
                 </p>
-                {(i === at || step.always) && <p className="text-[12px] text-muted">{step.hint}</p>}
+                {(i === at || step.always) && <p className="text-xs text-muted">{step.hint}</p>}
               </div>
             </li>
           ))}

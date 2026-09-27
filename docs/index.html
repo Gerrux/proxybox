@@ -173,12 +173,12 @@ footer .lockup{margin-top:0}
     <p class="claim" data-i18n="c2">Состояние — главное, что показывает окно, поэтому оно занимает верх.</p>
     <div class="shots">
       <figure>
-        <img src="interface.png" data-i18n-alt="alt1" alt="Окно в состоянии «защищено»: канал поднят, по нему идёт трафик" loading="lazy">
-        <figcaption data-i18n="cap1">Под заголовком нарисован сам путь: от выбранных программ к сети. Пока туннель поднят, по нему идут штрихи.</figcaption>
+        <img src="interface.png" data-i18n-alt="alt1" alt="Окно в состоянии «защищено»: на карте — точка выхода трафика" loading="lazy">
+        <figcaption data-i18n="cap1">Рядом с заголовком — карта мира с точкой, где трафик выходит в сеть. Сменили узел — карта переезжает к его стране.</figcaption>
       </figure>
       <figure>
-        <img src="interface-failclosed.png" data-i18n-alt="alt2" alt="Окно в состоянии «доступ закрыт»: канал перерублен" loading="lazy">
-        <figcaption data-i18n="cap2">Туннеля нет — канал перерублен и стоит. Янтарный, а не красный: сработавшая защита не поломка.</figcaption>
+        <img src="interface-failclosed.png" data-i18n-alt="alt2" alt="Окно в состоянии «доступ закрыт»: замок и янтарная точка на карте" loading="lazy">
+        <figcaption data-i18n="cap2">Туннеля нет — доступ закрыт. Янтарный, а не красный: сработавшая защита не поломка.</figcaption>
       </figure>
     </div>
   </div>
@@ -260,10 +260,10 @@ const DICT = {
     st4: "broken, a human is needed",
     s2: "The window",
     c2: "State is the main thing the window shows, so it takes the top.",
-    alt1: "The window in the \"protected\" state: the conduit is up and carrying traffic",
-    cap1: "Below the heading the path itself is drawn: from the selected programs to the network. While the tunnel is up, dashes travel along it.",
-    alt2: "The window in the \"access closed\" state: the conduit is cut",
-    cap2: "No tunnel — the conduit is cut and still. Amber, not red: a defence that fired is not a breakage.",
+    alt1: "The window in the \"protected\" state: the map shows where the traffic exits",
+    cap1: "Next to the heading is a world map with a dot where the traffic leaves for the network. Switch nodes and the map travels to the new country.",
+    alt2: "The window in the \"access closed\" state: a lock and an amber dot on the map",
+    cap2: "No tunnel — access is closed. Amber, not red: a defence that fired is not a breakage.",
     s3: "Also in the box",
     k4h: "Two scopes",
     k4p: "Whitelist — network for the selected only, and only through the tunnel. Whole machine — everything goes into the tunnel. The invariant is the same, only who it applies to changes.",
@@ -299,10 +299,10 @@ const DICT = {
     st4: "خراب است، آدم لازم است",
     s2: "پنجره",
     c2: "وضعیت مهم‌ترین چیزی است که پنجره نشان می‌دهد، پس بالای پنجره را می‌گیرد.",
-    alt1: "پنجره در وضعیت «محافظت‌شده»: مجرا بالاست و ترافیک از آن می‌گذرد",
-    cap1: "زیر عنوان، خودِ مسیر کشیده شده است: از برنامه‌های انتخاب‌شده تا شبکه. تا وقتی تونل بالاست، خط‌چین‌ها روی آن حرکت می‌کنند.",
-    alt2: "پنجره در وضعیت «دسترسی بسته»: مجرا بریده است",
-    cap2: "تونلی نیست — مجرا بریده و ساکن است. کهربایی، نه قرمز: دفاعی که کار کرده خرابی نیست.",
+    alt1: "پنجره در وضعیت «محافظت‌شده»: نقشه نشان می‌دهد ترافیک از کجا بیرون می‌رود",
+    cap1: "کنار عنوان، نقشهٔ جهان با نقطه‌ای که ترافیک از آنجا به شبکه می‌رود. گره را عوض کنید، نقشه به کشور تازه می‌رود.",
+    alt2: "پنجره در وضعیت «دسترسی بسته»: قفل و نقطهٔ کهربایی روی نقشه",
+    cap2: "تونلی نیست — دسترسی بسته است. کهربایی، نه قرمز: دفاعی که کار کرده خرابی نیست.",
     s3: "چیز دیگر در جعبه",
     k4h: "دو دامنه",
     k4p: "فهرست سفید — شبکه فقط برای انتخاب‌شده‌ها و فقط از راه تونل. همهٔ رایانه — همه‌چیز وارد تونل می‌شود. ناوردا همان است، فقط اینکه شامل چه کسی می‌شود فرق می‌کند.",
@@ -338,10 +338,10 @@ const DICT = {
     st4: "坏了，需要人来处理",
     s2: "窗口",
     c2: "窗口首先要显示的就是状态，所以它占据顶部。",
-    alt1: "处于「已保护」状态的窗口：管道已开启，流量正在通过",
-    cap1: "标题下方画的是通路本身：从所选程序到网络。隧道开启时，短划会沿着它移动。",
-    alt2: "处于「访问已关闭」状态的窗口：管道被切断",
-    cap2: "没有隧道——管道被切断并静止。琥珀色而不是红色：生效的防护不是故障。",
+    alt1: "处于「已保护」状态的窗口：地图标出流量出口",
+    cap1: "标题旁是一张世界地图，标出流量进入网络的出口点。切换节点时，地图会移到新的国家。",
+    alt2: "处于「访问已关闭」状态的窗口：锁形图标与地图上的琥珀色出口点",
+    cap2: "没有隧道——访问已关闭。琥珀色而不是红色：生效的防护不是故障。",
     s3: "盒子里还有",
     k4h: "两种范围",
     k4p: "白名单——只有所选程序有网络，并且只能经由隧道。整台计算机——一切都进入隧道。不变式是同一个，改变的只是它作用于谁。",
@@ -377,10 +377,10 @@ const DICT = {
     st4: "bozuk, insan gerekiyor",
     s2: "Pencere",
     c2: "Pencerenin gösterdiği en önemli şey durumdur, bu yüzden üstü o kaplar.",
-    alt1: "«korumada» durumundaki pencere: kanal ayakta ve trafik taşıyor",
-    cap1: "Başlığın altında yolun kendisi çizilidir: seçili programlardan ağa. Tünel ayaktayken üzerinde çizgiler ilerler.",
-    alt2: "«erişim kapalı» durumundaki pencere: kanal kesilmiş",
-    cap2: "Tünel yok — kanal kesilmiş ve hareketsiz. Kırmızı değil kehribar: iş görmüş bir savunma arıza değildir.",
+    alt1: "«korumada» durumundaki pencere: harita trafiğin çıktığı yeri gösteriyor",
+    cap1: "Başlığın yanında trafiğin ağa çıktığı noktayı gösteren bir dünya haritası durur. Düğümü değiştirin, harita yeni ülkeye kayar.",
+    alt2: "«erişim kapalı» durumundaki pencere: kilit ve haritada kehribar nokta",
+    cap2: "Tünel yok — erişim kapalı. Kırmızı değil kehribar: iş görmüş bir savunma arıza değildir.",
     s3: "Kutuda dahası",
     k4h: "İki kapsam",
     k4p: "Beyaz liste — ağ yalnızca seçililere ve yalnızca tünel üzerinden. Tüm bilgisayar — her şey tünele girer. Değişmez aynıdır, yalnızca kimi kapsadığı değişir.",
@@ -416,10 +416,10 @@ const DICT = {
     st4: "rusak, butuh orang",
     s2: "Jendela",
     c2: "Status adalah hal utama yang ditampilkan jendela, karena itu ia menempati bagian atas.",
-    alt1: "Jendela dalam keadaan «terlindungi»: saluran hidup dan dilalui lalu lintas",
-    cap1: "Di bawah judul tergambar jalurnya sendiri: dari program terpilih menuju jaringan. Selama terowongan hidup, garis-garis berjalan di sepanjangnya.",
-    alt2: "Jendela dalam keadaan «akses tertutup»: saluran terputus",
-    cap2: "Tidak ada terowongan — saluran terputus dan diam. Kuning ambar, bukan merah: pertahanan yang bekerja bukanlah kerusakan.",
+    alt1: "Jendela dalam keadaan «terlindungi»: peta menunjukkan tempat lalu lintas keluar",
+    cap1: "Di samping judul ada peta dunia dengan titik tempat lalu lintas keluar ke jaringan. Ganti node, peta bergeser ke negaranya.",
+    alt2: "Jendela dalam keadaan «akses tertutup»: gembok dan titik kuning ambar di peta",
+    cap2: "Tidak ada terowongan — akses tertutup. Kuning ambar, bukan merah: pertahanan yang bekerja bukanlah kerusakan.",
     s3: "Ada lagi dalam kotak",
     k4h: "Dua cakupan",
     k4p: "Daftar putih — jaringan hanya untuk yang terpilih dan hanya lewat terowongan. Seluruh komputer — semuanya masuk ke terowongan. Invariannya sama, yang berubah hanya siapa yang terkena.",

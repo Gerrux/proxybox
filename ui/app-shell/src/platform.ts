@@ -454,7 +454,19 @@ export async function setAutostart(enabled: boolean): Promise<boolean> {
  *  Отличать её надо: рамки у неё нет и быть не должно, разворачивать некуда, а
  *  «закрыть» для неё значит спрятаться. Метка окна, а не параметр адреса: окно
  *  заводит оболочка, и метка у неё уже есть. */
-export const isFlyout = () => isTauri() && getCurrentWindow().label === "tray";
+export const isFlyout = () =>
+  isTauri()
+    ? getCurrentWindow().label === "tray"
+    : // Плашку при разработке смотрят в браузере: `?flyout` в адресе. В сборке
+      // этой двери нет — там окно всегда говорит своей меткой.
+      import.meta.env.DEV && new URLSearchParams(location.search).has("flyout");
+
+/** Из плашки — в главное окно: плашка гаснет, окно поднимается, а с
+ *  `settings` ещё и открывает настройки. Поднимает оболочка: из вебвью чужое
+ *  окно не достать. В браузере при разработке второго окна нет. */
+export async function openMain(settings: boolean): Promise<void> {
+  if (isTauri()) await invoke("open_main", { settings });
+}
 
 /** Спрятать своё окно. Главное так уходит в трей, плашка — гаснет. */
 export async function hideWindow(): Promise<void> {
