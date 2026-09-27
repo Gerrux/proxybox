@@ -36,9 +36,9 @@ Spesifikasi asli (bahasa Rusia) — [proxybox-prompt.md](proxybox-prompt.md).
 ![Jendela proxybox](docs/interface.png)
 
 Status adalah hal utama yang ditampilkan jendela, karena itu ia menempati bagian
-atas: ikon, judul, dan peta dunia dengan titik tempat lalu lintas keluar ke
-jaringan. Ganti node, peta bergeser ke negaranya; selama terowongan hidup, titik
-itu berdenyut.
+atas: kata status dan peta dunia yang negara keluarnya diwarnai dengan warna
+status — penuh selama lalu lintas berjalan, diarsir selama akses tertutup. Ganti
+node, peta terbang ke negaranya.
 
 ![Tidak ada terowongan — akses tertutup](docs/interface-failclosed.png)
 

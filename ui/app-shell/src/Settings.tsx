@@ -215,7 +215,7 @@ export function Settings({
 
   return (
     <Panel
-      pad="p-3"
+      pad="p-4"
       className={className}
       title={s.settings}
       action={
@@ -224,7 +224,7 @@ export function Settings({
         </Button>
       }
     >
-      <div className="mx-auto flex max-w-3xl flex-col gap-5">
+      <div className="mx-auto flex max-w-3xl flex-col gap-6 px-1 pb-4">
         <Group title={s.groupLook}>
           <Row title={s.language} note={s.languageHint}>
             {/* Выпадающий список, а не полоска: шесть двухбуквенных кодов в ряд
@@ -383,7 +383,7 @@ export function Settings({
           </Row>
 
           {expanded && releases != null && (
-            <ul className="card scroll enter max-h-48 overflow-y-auto px-2 py-1 text-sm">
+            <ul className="scroll enter max-h-48 overflow-y-auto border-b border-edge px-2 py-1 text-sm">
               {releases.map((r) => (
                 <li key={r.tag_name} className="row flex items-center gap-3 ps-2">
                   <span
@@ -488,21 +488,23 @@ function SingboxLog({ s, onClose }: { s: Strings; onClose: () => void }) {
   );
 }
 
-/** Группа настроек — как в «Параметрах» Windows 11: подпись над группой, а
- *  каждая настройка своей карточкой с зазором в два пикселя. Подпись стоит
- *  снаружи, а не внутри: внутри она стала бы ещё одной строкой и снова
- *  сравнялась бы с настройками, от которых её и отделяют. */
+/** Группа настроек: подпись над группой, под ней строки, разделённые
+ *  волосяными линиями, — как в плоских окнах системы, а не карточки
+ *  «Параметров»: в стопке одинаковых карточек глаз не отличал группу от
+ *  строки. Подпись стоит снаружи, а не внутри: внутри она стала бы ещё одной
+ *  строкой и снова сравнялась бы с настройками, от которых её и отделяют. */
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section>
-      <h3 className="mb-2 text-sm font-semibold">{title}</h3>
-      <div className="flex flex-col gap-0.5">{children}</div>
+      <h3 className="mb-1 text-base font-semibold">{title}</h3>
+      <div className="flex flex-col">{children}</div>
     </section>
   );
 }
 
-/** Строка настройки: слева — что это и почему, справа — чем этим управляют.
- *  В узком окне управление уезжает под подпись, а не сплющивает её.
+/** Строка настройки: слева — что это и почему, справа — чем этим управляют,
+ *  под строкой волосяная линия. В узком окне управление уезжает под подпись,
+ *  а не сплющивает её.
  *
  *  Уезжает — но переносом, а не выездом за край. `shrink-0` на блоке управления
  *  этого не различал: он запрещал сжатие вовсе, поэтому блок брал ширину по
@@ -519,11 +521,11 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
  *  раскладывает поле и переключатель на две строки. Сторож —
  *  `no_setting_is_out_of_reach_in_the_flyout`.
  *
- *  Каждая строка — своя карточка, как в «Параметрах»: общая плита с
- *  линейками между строками читалась таблицей, а не набором настроек. */
+ *  Строки разведены линиями, а не карточками: карточка на каждую настройку
+ *  делала настройки неотличимыми от панелей, а окно — стопкой плиток. */
 function Row({ title, note, children }: { title: string; note: ReactNode; children: ReactNode }) {
   return (
-    <div className="card flex min-h-16 flex-wrap items-center gap-x-4 gap-y-2.5 px-4 py-3">
+    <div className="flex min-h-16 flex-wrap items-center gap-x-4 gap-y-2.5 border-b border-edge py-3">
       <div className="min-w-[200px] flex-1">
         <h4 className="text-sm">{title}</h4>
         <p className="mt-0.5 text-xs text-muted">{note}</p>

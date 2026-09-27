@@ -1,126 +1,130 @@
-/** Карта мира с точкой выхода. Заменила «канал» в шапке: канал говорил «жив
+/** Карта мира со страной выхода. Заменила «канал» в шапке: канал говорил «жив
  *  или перерублен», и это по-прежнему говорит цвет состояния, а карта
  *  добавляет то, чего не показывала ни одна картинка окна, — где именно
  *  трафик выходит в сеть.
  *
- *  Плоская, а не глобус, и точками, а не контурами: по ней читают одно — часть
- *  света, — и растр из точек держит вид от плашки в 380 px до окна во весь
- *  экран. Данные собирает `scripts/worldmap.py`.
+ *  Плоская, а не глобус, и силуэтами, а не точками. Точечная сетка — текстура,
+ *  одна на все VPN-клиенты, и по ней читалась только часть света. Силуэт даёт
+ *  страну как знак: при перелёте окно приближает её так, что очертания
+ *  узнаются глазом, а заливка силуэта — это и есть состояние туннеля:
+ *   - сплошная тоном состояния — канал несёт трафик;
+ *   - штриховая — заперто: картографический знак «закрыто», тот же и у
+ *     подключения, пока туннель не подтверждён;
+ *   - один контур — режим выключен: узел выбран, трафик через него не идёт.
+ *  Что чем заливать, решает `index.css` по `data-state` предка (`.world-exit`);
+ *  здесь только рисунок. Сторож — `the_exit_country_wears_the_state`.
+ *
+ *  Данные собирает `scripts/worldmap.py`: силуэты по коду страны в целых
+ *  единицах карты, у каждой страны — точка метки и полуразмеры материкового
+ *  кольца. По ним и выбирается увеличение: страна занимает долю рамки
+ *  (`fit`), а не фиксированный масштаб, — иначе Россия не влезала бы, а
+ *  Нидерланды были бы точкой.
  *
  *  Своей страны человека на карте нет и не будет: узнать её можно только у
  *  стороннего сервиса, а спрашивать её без туннеля значит выдать настоящий
- *  адрес ровно тогда, когда он не прикрыт. Точка одна — узел.
+ *  адрес ровно тогда, когда он не прикрыт. Отмечен один узел.
  *
  *  Движение двух родов, и разведены они по цене:
  *   - перелёт к стране — покадрово из JS, и только в момент смены страны:
- *     точек под две с половиной тысячи, и каждый кадр перелёта стоит
- *     перерисовки всей карты — платим за это секунду, а не всё время;
+ *     силуэты — десять тысяч вершин, и каждый кадр перелёта стоит их
+ *     перерисовки — платим за это секунду, а не всё время;
  *   - пульс точки выхода — CSS на отдельном HTML-слое поверх карты. Он идёт
  *     всё время, пока туннель поднят, и обязан стоить только композиции: внутри
- *     SVG он перерисовывал бы карту шестьдесят раз в секунду.
+ *     SVG он перерисовывал бы карту шестьдесят раз в секунду. Сторож —
+ *     `the_exit_pulse_never_repaints_the_map`.
  *  При `prefers-reduced-motion` карта встаёт на место сразу, пульса нет. */
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
-import { LAND, NORTH, PLACES, STEP } from "./worldmap";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { COUNTRIES, H, PLACES, W } from "./worldmap";
 
-/** Единиц карты на градус. Сетка в градусах, а рисовать удобнее целыми. */
-const U = 4;
-const W = 360 * U;
-const H = LAND.length * STEP * U;
-/** Точка чуть меньше половины шага: соседние не слипаются и при наезде. */
-const DOT = STEP * U * 0.46;
+/** Вся суша одним путём: страна выхода рисуется поверх своим силуэтом из той
+ *  же таблицы, поэтому кромки у них совпадают до единицы. */
+const LAND = Object.values(COUNTRIES).join("");
 
-/** Долгота и широта → точка карты. Ряды сетки смещены на полшага вниз, чтобы
- *  верхний не лежал на самой кромке. */
-function project(lon: number, lat: number): [number, number] {
-  return [(lon + 180) * U, (NORTH - lat) * U + (STEP * U) / 2];
-}
-
-const DOTS: [number, number][] = LAND.flatMap((row, r) => {
-  const bytes = atob(row);
-  const out: [number, number][] = [];
-  for (let i = 0; i < bytes.length * 8; i++) {
-    if (!((bytes.charCodeAt(i >> 3) >> (7 - (i & 7))) & 1)) continue;
-    const lon = -180 + (i + 0.5) * STEP + (r % 2 ? STEP / 2 : 0);
-    out.push(project(lon > 180 ? lon - 360 : lon, NORTH - r * STEP));
-  }
-  return out;
-});
-
-/** Вся суша одним путём: `h0` с круглым концом — это точка, а тысяча узлов
- *  `<circle>` была бы тысячей узлов дерева. */
-const LAND_PATH = DOTS.map(([x, y]) => `M${x} ${y}h0`).join("");
-
-/** Где стоит «камера»: точка карты в центре внимания и увеличение. */
+/** Где стоит «камера»: точка карты в центре внимания и увеличение против
+ *  карты целиком (`1` — карта накрывает рамку, как `cover` у фона). */
 type Cam = { x: number; y: number; z: number };
 
 /** Карта целиком, чуть выше середины: южнее экватора суши меньше. */
-const WORLD: Cam = { x: W / 2, y: H * 0.46, z: 1 };
+const WORLD: Cam = { x: W / 2, y: H * 0.44, z: 1 };
+
+/** Пределы увеличения. Нижний — чуть ближе карты целиком, чтобы континент
+ *  страны читался; верхний — на Сингапур и Мальту: дальше силуэта нет, и
+ *  приближать нечего. */
+const Z_MIN = 1.15;
+const Z_MAX = 11;
 
 const FLIGHT_MS = 1100;
 
+/** Шаг штриховки на экране, px. Задаётся здесь, а не в CSS: узор лежит в
+ *  единицах карты и на каждом кадре перелёта пересчитывается под масштаб,
+ *  иначе при наезде штрихи росли бы вместе со страной. */
+const HATCH = 7;
+
+/** Идентификатор узора штриховки. Один на документ: карта в окне одна (в
+ *  плашке — своё окно), а `fill: url(#…)` из CSS случайного `useId` не знает. */
+export const HATCH_ID = "pg-hatch";
+
 export function WorldMap({
   code,
-  zoom = 2.4,
+  fit = 0.4,
   focus = [0.5, 0.5],
   className = "",
 }: {
-  /** Код страны выхода (ISO alpha-2). Нет — карта целиком и без точки. */
+  /** Код страны выхода (ISO alpha-2). Нет — карта целиком и без отметки. */
   code: string | null | undefined;
-  /** Во сколько раз приблизить страну против карты целиком. */
-  zoom?: number;
-  /** Где в рамке держать страну, доли ширины и высоты: в шапке окна слева
-   *  лежит текст, и страна стоит правее середины. */
+  /** Какую долю короткой стороны рамки занимает материковое кольцо страны. */
+  fit?: number;
+  /** Где в рамке держать страну, доли ширины и высоты. */
   focus?: [number, number];
   className?: string;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const layer = useRef<SVGGElement>(null);
+  const hatch = useRef<SVGPatternElement>(null);
   const pin = useRef<HTMLSpanElement>(null);
-  const place = code ? PLACES[code.toUpperCase()] : undefined;
-  const target = useMemo<Cam>(() => {
-    if (!place) return WORLD;
-    const [x, y] = project(place[0], place[1]);
-    return { x, y, z: zoom };
-  }, [place, zoom]);
-  const spot = place ? project(place[0], place[1]) : null;
-  // Где камера сейчас — между кадрами перелёта и между сменами страны.
-  const cam = useRef<Cam>(target);
+  const key = code?.toUpperCase() ?? "";
+  const place = PLACES[key];
+  const shape = COUNTRIES[key];
+  // Размер рамки — состояние, а не чтение на лету: от него зависит целевое
+  // увеличение, и на смену размера камера обязана пересчитаться.
+  const [frame, setFrame] = useState<[number, number]>([0, 0]);
   const [fx, fy] = focus;
 
-  // Точки вокруг выхода — в тон состояния: одна точка на карте теряется, а
-  // пятно читается боковым зрением. Два кольца, а не плавный спад: плавный
-  // на сетке из точек выглядит грязью.
-  const near = useMemo(() => {
-    if (!spot) return ["", ""];
-    const r1 = 5 * U;
-    const r2 = 10 * U;
-    let inner = "";
-    let outer = "";
-    for (const [x, y] of DOTS) {
-      const d = Math.hypot(x - spot[0], y - spot[1]);
-      if (d <= r1) inner += `M${x} ${y}h0`;
-      else if (d <= r2) outer += `M${x} ${y}h0`;
-    }
-    return [inner, outer];
-  }, [spot?.[0], spot?.[1]]);
+  const target = useMemo<Cam>(() => {
+    if (!place) return WORLD;
+    const [x, y, rx, ry] = place;
+    const [cw, ch] = frame;
+    if (!cw || !ch || !rx || !ry) return { x, y, z: rx ? Z_MIN : Z_MAX };
+    // Масштаб, при котором кольцо занимает `fit` рамки, против масштаба
+    // «накрыть рамку»: это и есть увеличение.
+    const cover = Math.max(cw / W, ch / H);
+    const s = Math.min((fit * cw) / (2 * rx), (fit * ch) / (2 * ry));
+    return { x, y, z: Math.min(Z_MAX, Math.max(Z_MIN, s / cover)) };
+  }, [place, frame, fit]);
 
-  // Кадр: камера → преобразование слоя и место точки. Прямо в DOM, мимо
-  // React: перерисовывать компонент шестьдесят раз в секунду ради одного
-  // атрибута незачем.
+  // Где камера сейчас — между кадрами перелёта и между сменами страны.
+  const cam = useRef<Cam>(target);
+  // К какой стране уже летали: смена размера рамки меняет цель, но лететь
+  // заново к той же стране — значит анимировать каждое движение угла окна.
+  const flown = useRef(key);
+
+  // Кадр: камера → преобразование слоя, шаг штриховки и место отметки. Прямо в
+  // DOM, мимо React: перерисовывать компонент шестьдесят раз в секунду ради
+  // трёх атрибутов незачем.
   const draw = (c: Cam) => {
     const el = box.current;
     if (!el) return;
     const cw = el.clientWidth;
     const ch = el.clientHeight;
     if (!cw || !ch) return;
-    // «Накрыть» рамку картой при единичном увеличении, как `cover` у фона.
     const s = Math.max(cw / W, ch / H) * c.z;
     // Край карты не отрывается от края рамки: за ним пустота, а не море.
     const tx = Math.min(0, Math.max(cw - W * s, cw * fx - c.x * s));
     const ty = Math.min(0, Math.max(ch - H * s, ch * fy - c.y * s));
     layer.current?.setAttribute("transform", `matrix(${s} 0 0 ${s} ${tx} ${ty})`);
-    if (pin.current && spot) {
-      pin.current.style.transform = `translate(${spot[0] * s + tx}px, ${spot[1] * s + ty}px)`;
+    hatch.current?.setAttribute("patternTransform", `scale(${HATCH / s})`);
+    if (pin.current && place) {
+      pin.current.style.transform = `translate(${place[0] * s + tx}px, ${place[1] * s + ty}px)`;
     }
   };
 
@@ -130,25 +134,30 @@ export function WorldMap({
   useEffect(() => {
     const el = box.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => draw(cam.current));
+    const ro = new ResizeObserver(() => {
+      setFrame([el.clientWidth, el.clientHeight]);
+      draw(cam.current);
+    });
     ro.observe(el);
     return () => ro.disconnect();
     // draw читает свежие значения через замыкание кадра, наблюдатель — один.
-  }, [spot?.[0], spot?.[1], fx, fy]);
+  }, [place, fx, fy]);
 
   useEffect(() => {
     const from = cam.current;
     if (from.x === target.x && from.y === target.y && from.z === target.z) return;
-    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const same = flown.current === key;
+    flown.current = key;
+    if (same || matchMedia("(prefers-reduced-motion: reduce)").matches) {
       cam.current = target;
       draw(target);
       return;
     }
     // Далёкий перелёт идёт через отдаление: камера поднимается, пролетает и
-    // садится. Прямой проезд на большом увеличении — это полсекунды мелькающих
-    // точек, в которых не видно, откуда и куда.
+    // садится. Прямой проезд на большом увеличении — это полсекунды мелькающей
+    // суши, в которой не видно, откуда и куда.
     const far = Math.hypot(target.x - from.x, target.y - from.y) / W;
-    const dip = Math.min(0.6, far * 1.6);
+    const dip = Math.min(0.75, far * 2);
     const start = performance.now();
     let raf = requestAnimationFrame(function step(now) {
       const k = Math.min(1, (now - start) / FLIGHT_MS);
@@ -159,22 +168,24 @@ export function WorldMap({
       if (k < 1) raf = requestAnimationFrame(step);
     });
     return () => cancelAnimationFrame(raf);
-  }, [target]);
+  }, [target, key]);
 
   return (
     <div ref={box} className={`world-map ${className}`} aria-hidden="true">
-      <svg width="100%" height="100%" fill="none" strokeLinecap="round">
+      <svg width="100%" height="100%">
+        <defs>
+          {/* Штриховка — знак «закрыто». Цвет узора — `--tone` предка, шаг —
+              на экране, а не на карте (`patternTransform` ставит `draw`). */}
+          <pattern ref={hatch} id={HATCH_ID} className="world-hatch" patternUnits="userSpaceOnUse" width="1" height="1">
+            <path d="M-0.25 0.75L0.75 -0.25M0 1L1 0M0.25 1.25L1.25 0.25" stroke="currentColor" strokeWidth="0.22" />
+          </pattern>
+        </defs>
         <g ref={layer}>
-          <path d={LAND_PATH} className="world-land" strokeWidth={DOT} />
-          {spot && (
-            <>
-              <path d={near[1]} className="world-near world-near-2" strokeWidth={DOT} />
-              <path d={near[0]} className="world-near" strokeWidth={DOT} />
-            </>
-          )}
+          <path d={LAND} className="world-land" fillRule="evenodd" />
+          {shape && <path d={shape} className="world-exit" fillRule="evenodd" vectorEffect="non-scaling-stroke" />}
         </g>
       </svg>
-      {spot && (
+      {place && (
         <span ref={pin} className="world-pin">
           <span className="world-pulse" />
           <span className="world-dot" />

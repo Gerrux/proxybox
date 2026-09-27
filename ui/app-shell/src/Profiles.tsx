@@ -3,7 +3,7 @@ import qrcode from "qrcode-generator";
 import type { Act, Lang, ProfileInfo, Probe, Quota, Response, Status, Subscription } from "./platform";
 import type { Strings } from "./i18n";
 import { measuredAgo, strings, syncedAgo } from "./i18n";
-import { bytes } from "./StatusBar";
+import { bytes, latencyTone } from "./StatusBar";
 import {
   AddField,
   Button,
@@ -1365,20 +1365,6 @@ function Rows({
                       {item.server}
                     </span>
                   )}
-                  {/* Число, снятое при поднятом туннеле, включает и его RTT:
-                      прогон идёт цепочкой сквозь общий туннель. Сравнивать
-                      такие числа с выключенным режимом нельзя, а выбирают узел
-                      именно сравнением — значит, сказать об этом обязано само
-                      число. */}
-                  <Verdict
-                    probe={probe}
-                    failed={s.probeFailed}
-                    measured={
-                      status?.tunnel === "up"
-                        ? `${measuredAgo(s, probe?.at ?? 0)} · ${s.latencyThroughTunnel}`
-                        : measuredAgo(s, probe?.at ?? 0)
-                    }
-                  />
                 </span>
               </button>
               {/* Пометки — значками, а не словами: слово «без шифрования»
@@ -1406,6 +1392,28 @@ function Rows({
                 <span className="shrink-0 text-accent" title={s.favorite}>
                   <Icon name="star" size={12} />
                   <span className="sr-only">{s.favoriteItem}</span>
+                </span>
+              )}
+              {/* Задержка — правой колонкой, как в ведомости: столбец чисел
+                  сравнивают взглядом сверху вниз, а в хвосте адреса числа
+                  стояли вразнобой и сравнивались по одному. Число, снятое
+                  при поднятом туннеле, включает и его RTT: прогон идёт
+                  цепочкой сквозь общий туннель. Сравнивать такие числа с
+                  выключенным режимом нельзя, а выбирают узел именно
+                  сравнением — значит, сказать об этом обязано само число. */}
+              {probe && (
+                <span
+                  className={`flex w-16 shrink-0 justify-end text-xs ${latencyTone(probe.latency_ms) || "text-muted"}`}
+                >
+                  <Verdict
+                    probe={probe}
+                    failed={s.probeFailed}
+                    measured={
+                      status?.tunnel === "up"
+                        ? `${measuredAgo(s, probe.at)} · ${s.latencyThroughTunnel}`
+                        : measuredAgo(s, probe.at)
+                    }
+                  />
                 </span>
               )}
               <IconButton

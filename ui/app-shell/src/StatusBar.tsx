@@ -255,8 +255,10 @@ export function describe(s: Strings, status: Status | null): { title: string; hi
 }
 
 /** Глиф состояния. Цвет — от `data-state` предка, глиф — от самого состояния:
- *  в оттенках серого и для дальтоника щит, замок и выключатель различимы. */
-const BADGE: Record<State, IconName> = {
+ *  в оттенках серого и для дальтоника щит, замок и выключатель различимы.
+ *  Голый значок перед словом, а не кружок с ним внутри: слово состояния само
+ *  набрано тоном и само является индикатором, кружок лишь повторял бы его. */
+const GLYPH: Record<State, IconName> = {
   up: "shield",
   connecting: "ring",
   down: "lock",
@@ -264,19 +266,22 @@ const BADGE: Record<State, IconName> = {
   fault: "warn",
 };
 
-export function StateBadge({ state, size = 36 }: { state: State; size?: number }) {
+export function StateGlyph({ state, size = 20 }: { state: State; size?: number }) {
   return (
-    <span className="st-badge smooth" style={{ width: size, height: size }}>
-      <Icon name={BADGE[state]} size={Math.round(size * 0.5)} className="st-spin" />
+    <span className="st-glyph smooth inline-flex shrink-0" aria-hidden="true">
+      <Icon name={GLYPH[state]} size={size} className="st-spin" />
     </span>
   );
 }
 
-/** Состояние — главное, что показывает окно, поэтому оно и занимает верх.
+/** Состояние — главное, что показывает окно, поэтому оно и занимает верх:
+ *  плита, подкрашенная тоном состояния, со словом состояния слева и картой
+ *  справа, а под ней приборная линейка.
  *
- *  Картинка шапки — карта с точкой выхода. «Канал», который стоял здесь
+ *  Картинка плиты — карта со страной выхода. «Канал», который стоял здесь
  *  раньше, говорил одно — поднят туннель или перерублен; это теперь говорят
- *  значок и цвет, а карта добавляет, где именно трафик выходит в сеть. */
+ *  слово и цвет, а карта добавляет, где именно трафик выходит в сеть, и
+ *  заливкой страны повторяет состояние (`WorldMap.tsx`). */
 export function StatusBar({
   status,
   busy,
@@ -317,27 +322,36 @@ export function StatusBar({
   const [exitCountry, exitCity] = splitExit(status?.country);
 
   return (
-    <header data-state={state} className="st card smooth relative shrink-0 overflow-hidden">
-      <div className="relative">
-        <WorldMap className="st-map" code={exitCode(status)} focus={[0.55, 0.5]} zoom={1.3} />
-        <div className="relative flex min-w-0 flex-col gap-3 p-4 md:max-w-[58%]">
-          <div className="flex min-w-0 items-center gap-3">
-            <StateBadge state={state} />
-            <div className="min-w-0">
-              {/* key — чтобы React заменил узел: надпись состояния сменяется
-                  вплывом, а не подменой символов на месте. Не обрезаем: в
-                  узком окне «Туннеля нет — доступ закрыт» обрубалось бы до
-                  «Туннел…», а это ровно та надпись, ради которой окно открыли. */}
-              <h1 key={view.title} className="st-title swap text-xl font-semibold">
-                {view.title}
-              </h1>
-              {/* Подсказка целиком остаётся в `title`: в узком окне она
-                  обрезается до одной строки (`index.css`), а обрезается как раз
-                  хвост — отсчёт до следующей попытки. */}
-              <p key={view.hint} title={view.hint} className="st-hint swap text-sm text-muted">
-                {view.hint}
-              </p>
-            </div>
+    <header data-state={state} className="relative shrink-0">
+      <div className="st st-plate smooth">
+        <div className="st-text flex min-w-0 flex-col gap-3 p-4">
+          <div className="min-w-0">
+            {/* key — чтобы React заменил узел: надпись состояния сменяется
+                вплывом, а не подменой символов на месте. Не обрезаем: в
+                узком окне «Туннеля нет — доступ закрыт» обрубалось бы до
+                «Туннел…», а это ровно та надпись, ради которой окно открыли. */}
+            <h1 key={view.title} className="st-word swap flex items-center gap-2.5 text-2xl font-semibold">
+              <StateGlyph state={state} size={22} />
+              <span className="min-w-0">{view.title}</span>
+            </h1>
+            {/* Подсказка целиком остаётся в `title`: в узком окне она
+                обрезается до одной строки (`index.css`), а обрезается как раз
+                хвост — отсчёт до следующей попытки. */}
+            <p key={view.hint} title={view.hint} className="st-hint swap mt-1 text-sm text-muted">
+              {view.hint}
+              {/* Дверь к причине там, где её ищут: «доступ закрыт» читают в
+                  ту секунду, когда пропала сеть. Ссылкой в самой подсказке,
+                  а не кнопкой в ряду: ряд кнопок в 460 px её не вмещал, и
+                  она уезжала на второй ряд одна. */}
+              {status?.tunnel === "down" && (
+                <>
+                  {" · "}
+                  <button type="button" className="text-accent hover:underline" onClick={() => setTrouble(true)}>
+                    {s.whatsWrong}
+                  </button>
+                </>
+              )}
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -361,21 +375,17 @@ export function StatusBar({
               disabled={!status || busy}
               onPick={(v) => onScope(v as Scope)}
             />
-            {/* Дверь к причине там, где её ищут: «доступ закрыт» читают в ту
-                секунду, когда пропала сеть. */}
-            {status?.tunnel === "down" && (
-              <Button variant="quiet" onClick={() => setTrouble(true)}>
-                {s.whatsWrong}
-              </Button>
-            )}
           </div>
+        </div>
+        <div className="st-map-plate smooth">
+          <WorldMap className="st-map" code={exitCode(status)} />
         </div>
       </div>
 
       {/* Пять колонок или ни одной: промежуточные сетки из двух и трёх колонок
           уносили счётчики трафика на второй-третий ряд, а его — за нижний край
           окна. Ниже 768 px линейка целиком уходит в строку (`index.css`). */}
-      <dl className="st-metrics relative grid grid-cols-5 gap-y-3 border-t border-edge bg-surface px-4 py-2.5">
+      <dl className="st-metrics relative grid grid-cols-5 px-4 py-2">
         {/* «Не выбран» — не то же, что «неизвестен»: `App.tsx` включает первый
             по алфавиту, и молчание тут уводит в чужую страну без единого слова.
             Показываем предстоящий профиль приглушённо и с подсказкой. */}
@@ -436,7 +446,7 @@ export function StatusBar({
         />
       </dl>
 
-      {/* Пока служба не ответила, по нижней кромке шапки идёт бегунок. Прогресса
+      {/* Пока служба не ответила, по нижней кромке плиты идёт бегунок. Прогресса
           у нас нет и быть не может — показываем только сам факт ожидания. */}
       {busy && (
         <div className="bar absolute inset-x-0 bottom-0 h-0.5 overflow-hidden text-[color:var(--tone)]" />
@@ -501,7 +511,8 @@ function Trouble({ s, status, onClose }: { s: Strings; status: Status; onClose: 
   );
 }
 
-/** Ячейка приборной линейки: гравированная подпись, под ней значение.
+/** Ячейка приборной линейки: подпись, под ней значение ступенью крупнее —
+ *  линейка читается как прибор, а не как подпись к подписи.
  *  Цифры табличные — статус приходит каждые две секунды, и прыгать по ширине
  *  им нельзя.
  *
@@ -549,7 +560,7 @@ function Metric({
       {/* tabular-nums обязателен именно из-за доезда: цифры разной ширины
           меняются каждый кадр и дёргали бы линейку по всей строке. */}
       <dd
-        className={`m-value smooth mt-0.5 flex items-baseline gap-1.5 overflow-hidden text-sm font-semibold tabular-nums ${tone}`}
+        className={`m-value smooth mt-0.5 flex items-baseline gap-1.5 overflow-hidden text-lg font-semibold tabular-nums ${tone}`}
         title={hint ? `${name}: ${value} — ${hint}` : `${name}: ${value}`}
       >
         {icon && (

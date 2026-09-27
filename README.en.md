@@ -33,10 +33,10 @@ The original spec (Russian) — [proxybox-prompt.md](proxybox-prompt.md).
 
 ![The proxybox window](docs/interface.png)
 
-State is the main thing the window shows, which is why it takes the top: an
-icon, the heading and a world map with a dot where the traffic leaves for the
-network. Switch nodes and the map travels to the new country; while the tunnel
-is up, the dot pulses.
+State is the main thing the window shows, which is why it takes the top: the
+state word and a world map on which the exit country is filled with the state
+colour — solid while traffic flows, hatched while access is closed. Switch
+nodes and the map flies to the new country.
 
 ![No tunnel — access closed](docs/interface-failclosed.png)
 

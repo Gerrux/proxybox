@@ -173,11 +173,11 @@ footer .lockup{margin-top:0}
     <p class="claim" data-i18n="c2">Состояние — главное, что показывает окно, поэтому оно занимает верх.</p>
     <div class="shots">
       <figure>
-        <img src="interface.png" data-i18n-alt="alt1" alt="Окно в состоянии «защищено»: на карте — точка выхода трафика" loading="lazy">
-        <figcaption data-i18n="cap1">Рядом с заголовком — карта мира с точкой, где трафик выходит в сеть. Сменили узел — карта переезжает к его стране.</figcaption>
+        <img src="interface.png" data-i18n-alt="alt1" alt="Окно в состоянии «защищено»: на карте страна выхода залита зелёным" loading="lazy">
+        <figcaption data-i18n="cap1">Рядом со словом состояния — карта мира, на которой страна выхода залита цветом состояния. Сменили узел — карта перелетает к его стране.</figcaption>
       </figure>
       <figure>
-        <img src="interface-failclosed.png" data-i18n-alt="alt2" alt="Окно в состоянии «доступ закрыт»: замок и янтарная точка на карте" loading="lazy">
+        <img src="interface-failclosed.png" data-i18n-alt="alt2" alt="Окно в состоянии «доступ закрыт»: замок, а страна выхода заштрихована янтарным" loading="lazy">
         <figcaption data-i18n="cap2">Туннеля нет — доступ закрыт. Янтарный, а не красный: сработавшая защита не поломка.</figcaption>
       </figure>
     </div>
@@ -260,9 +260,9 @@ const DICT = {
     st4: "broken, a human is needed",
     s2: "The window",
     c2: "State is the main thing the window shows, so it takes the top.",
-    alt1: "The window in the \"protected\" state: the map shows where the traffic exits",
-    cap1: "Next to the heading is a world map with a dot where the traffic leaves for the network. Switch nodes and the map travels to the new country.",
-    alt2: "The window in the \"access closed\" state: a lock and an amber dot on the map",
+    alt1: "The window in the \"protected\" state: the exit country is filled green on the map",
+    cap1: "Next to the state word is a world map on which the exit country is filled with the state colour. Switch nodes and the map flies to the new country.",
+    alt2: "The window in the \"access closed\" state: a lock, and the exit country hatched in amber",
     cap2: "No tunnel — access is closed. Amber, not red: a defence that fired is not a breakage.",
     s3: "Also in the box",
     k4h: "Two scopes",
@@ -299,9 +299,9 @@ const DICT = {
     st4: "خراب است، آدم لازم است",
     s2: "پنجره",
     c2: "وضعیت مهم‌ترین چیزی است که پنجره نشان می‌دهد، پس بالای پنجره را می‌گیرد.",
-    alt1: "پنجره در وضعیت «محافظت‌شده»: نقشه نشان می‌دهد ترافیک از کجا بیرون می‌رود",
-    cap1: "کنار عنوان، نقشهٔ جهان با نقطه‌ای که ترافیک از آنجا به شبکه می‌رود. گره را عوض کنید، نقشه به کشور تازه می‌رود.",
-    alt2: "پنجره در وضعیت «دسترسی بسته»: قفل و نقطهٔ کهربایی روی نقشه",
+    alt1: "پنجره در وضعیت «محافظت‌شده»: کشور خروج روی نقشه سبز پر شده است",
+    cap1: "کنار واژهٔ وضعیت، نقشهٔ جهان که در آن کشور خروج به رنگ وضعیت پر شده است. گره را عوض کنید، نقشه به کشور تازه پرواز می‌کند.",
+    alt2: "پنجره در وضعیت «دسترسی بسته»: قفل، و کشور خروج با هاشور کهربایی",
     cap2: "تونلی نیست — دسترسی بسته است. کهربایی، نه قرمز: دفاعی که کار کرده خرابی نیست.",
     s3: "چیز دیگر در جعبه",
     k4h: "دو دامنه",
@@ -338,9 +338,9 @@ const DICT = {
     st4: "坏了，需要人来处理",
     s2: "窗口",
     c2: "窗口首先要显示的就是状态，所以它占据顶部。",
-    alt1: "处于「已保护」状态的窗口：地图标出流量出口",
-    cap1: "标题旁是一张世界地图，标出流量进入网络的出口点。切换节点时，地图会移到新的国家。",
-    alt2: "处于「访问已关闭」状态的窗口：锁形图标与地图上的琥珀色出口点",
+    alt1: "处于「已保护」状态的窗口：地图上的出口国家填充为绿色",
+    cap1: "状态词旁是一张世界地图，出口国家以状态颜色填充。切换节点时，地图会飞到新的国家。",
+    alt2: "处于「访问已关闭」状态的窗口：锁形图标，出口国家以琥珀色斜线填充",
     cap2: "没有隧道——访问已关闭。琥珀色而不是红色：生效的防护不是故障。",
     s3: "盒子里还有",
     k4h: "两种范围",
@@ -377,9 +377,9 @@ const DICT = {
     st4: "bozuk, insan gerekiyor",
     s2: "Pencere",
     c2: "Pencerenin gösterdiği en önemli şey durumdur, bu yüzden üstü o kaplar.",
-    alt1: "«korumada» durumundaki pencere: harita trafiğin çıktığı yeri gösteriyor",
-    cap1: "Başlığın yanında trafiğin ağa çıktığı noktayı gösteren bir dünya haritası durur. Düğümü değiştirin, harita yeni ülkeye kayar.",
-    alt2: "«erişim kapalı» durumundaki pencere: kilit ve haritada kehribar nokta",
+    alt1: "«korumada» durumundaki pencere: haritada çıkış ülkesi yeşile boyalı",
+    cap1: "Durum sözcüğünün yanında çıkış ülkesinin durum rengiyle boyandığı bir dünya haritası durur. Düğümü değiştirin, harita yeni ülkeye uçar.",
+    alt2: "«erişim kapalı» durumundaki pencere: kilit ve kehribar taralı çıkış ülkesi",
     cap2: "Tünel yok — erişim kapalı. Kırmızı değil kehribar: iş görmüş bir savunma arıza değildir.",
     s3: "Kutuda dahası",
     k4h: "İki kapsam",
@@ -416,9 +416,9 @@ const DICT = {
     st4: "rusak, butuh orang",
     s2: "Jendela",
     c2: "Status adalah hal utama yang ditampilkan jendela, karena itu ia menempati bagian atas.",
-    alt1: "Jendela dalam keadaan «terlindungi»: peta menunjukkan tempat lalu lintas keluar",
-    cap1: "Di samping judul ada peta dunia dengan titik tempat lalu lintas keluar ke jaringan. Ganti node, peta bergeser ke negaranya.",
-    alt2: "Jendela dalam keadaan «akses tertutup»: gembok dan titik kuning ambar di peta",
+    alt1: "Jendela dalam keadaan «terlindungi»: negara keluar di peta diwarnai hijau",
+    cap1: "Di samping kata status ada peta dunia yang negara keluarnya diwarnai dengan warna status. Ganti node, peta terbang ke negaranya.",
+    alt2: "Jendela dalam keadaan «akses tertutup»: gembok, dan negara keluar diarsir kuning ambar",
     cap2: "Tidak ada terowongan — akses tertutup. Kuning ambar, bukan merah: pertahanan yang bekerja bukanlah kerusakan.",
     s3: "Ada lagi dalam kotak",
     k4h: "Dua cakupan",

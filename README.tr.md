@@ -33,9 +33,10 @@ pencere, ne paket, ne de gerçek bir beyaz liste — ayrıntılar
 
 ![proxybox penceresi](docs/interface.png)
 
-Pencerenin gösterdiği en önemli şey durumdur, bu yüzden üstü o kaplar: bir
-simge, başlık ve trafiğin ağa çıktığı noktayı gösteren bir dünya haritası.
-Düğümü değiştirin, harita yeni ülkeye kayar; tünel ayaktayken nokta atar.
+Pencerenin gösterdiği en önemli şey durumdur, bu yüzden üstü o kaplar: durum
+sözcüğü ve çıkış ülkesinin durum rengiyle boyandığı bir dünya haritası —
+trafik akarken dolu, erişim kapalıyken taralı. Düğümü değiştirin, harita yeni
+ülkeye uçar.
 
 ![Tünel yok — erişim kapalı](docs/interface-failclosed.png)
 

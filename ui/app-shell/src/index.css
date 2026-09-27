@@ -26,10 +26,8 @@
   --color-fault-soft: var(--pg-fault-soft);
   /* Шрифты системные — кроме одного: наружу окно не ходит ни за чем, включая
      гарнитуры, но флаги стран взять неоткуда. Segoe UI Variable — шрифт самой
-     Windows 11: в «Параметрах» и «Быстрых настройках» набрано им же, и окно в
-     трее рядом с ними обязано говорить тем же голосом. Разрядка и верхний
-     регистр Bahnschrift, которыми раньше были подписаны панели, в Windows не
-     живут нигде — и делали окно грубее соседей.
+     Windows 11: слово состояния набрано его дисплейным резом, как заголовки
+     «Параметров», всё остальное — текстовым.
 
      Шрифт флагов подмешан первым во все стеки: в нём только флаги
      (см. unicode-range ниже), на остальные знаки он не влияет — зато флаги
@@ -39,11 +37,11 @@
   --font-sans: "Twemoji Country Flags", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --font-mono: "Twemoji Country Flags", "Cascadia Mono", Consolas, ui-monospace, monospace;
 
-  /* Шкала Fluent, ужатая на ступень: окно — плашка из трея и компактное
-     окно, а не «Параметры» во весь экран. Ступеней ровно пять, и других
-     размеров в разметке нет — пока их было одиннадцать (от 9 до 26 px),
-     соседние панели набирались разным кеглем, и окно выглядело собранным из
-     разных приложений. */
+  /* Шкала кегля. Ступеней ровно шесть, и других размеров в разметке нет —
+     пока их было одиннадцать (от 9 до 26 px), соседние панели набирались
+     разным кеглем, и окно выглядело собранным из разных приложений. Верхняя
+     ступень — одна на окно: слово состояния. Сторож —
+     `the_window_speaks_one_type_ramp`. */
   --text-xs: 12px;
   --text-xs--line-height: 16px;
   --text-sm: 13px;
@@ -54,8 +52,10 @@
   --text-lg--line-height: 22px;
   --text-xl: 20px;
   --text-xl--line-height: 26px;
+  --text-2xl: 28px;
+  --text-2xl--line-height: 34px;
 
-  /* Углы Fluent: 4 у управления, 8 у карточек и всплывающих слоёв. */
+  /* Углы Fluent: 4 у управления, 8 у всплывающих слоёв. Карточек нет. */
   --radius-sm: 4px;
   --radius-md: 4px;
   --radius-lg: 8px;
@@ -177,9 +177,9 @@ body {
   box-shadow: 0 0 0 1px var(--pg-bg);
 }
 
-/* Цвет состояния — один на всё окно: шапка, карта и значок состояния берут
-   его отсюда. Состояний ровно столько, сколько строк ниже, и добавить шестое
-   молча не выйдет — оно останется без цвета. */
+/* Цвет состояния — один на всё окно: плита, слово, карта и рельс профиля
+   берут его отсюда. Состояний ровно столько, сколько строк ниже, и добавить
+   шестое молча не выйдет — оно останется без цвета. */
 [data-state="up"] {
   --tone: var(--pg-open);
   --tone-soft: var(--pg-open-soft);
@@ -202,44 +202,87 @@ body {
   --tone-soft: var(--pg-hover);
 }
 
-/* Цветом состояния подкрашено само окно, а не только шапка: цвет тут —
-   единственное, что видно боковым зрением, и в охвате «весь компьютер»
-   запертая машина обязана читаться, не приглядываясь к надписи. Тон приходит с
-   `data-state` на корне — том же атрибуте, с которого его берёт шапка. Слабее,
-   чем раньше: Fluent держит подложку ровной, и сильное пятно выглядело бы
-   чужим окну Windows. */
-.app {
-  background:
-    radial-gradient(90% 60% at 0% 0%, color-mix(in oklch, var(--tone) 7%, transparent), transparent 70%),
-    var(--pg-bg);
-}
-
-/* Карточка — слой над подложкой: светлее её, со штрихом в полтона, без тени.
-   Одна на все панели, шапку и группы настроек. */
-.card {
-  background: var(--pg-surface);
-  border: 1px solid var(--pg-border);
-  border-radius: 8px;
-}
-
-/* Шапка — та же карточка, но подкрашенная тоном состояния: кромка и заливка
-   из левого верхнего угла, где стоит значок состояния. */
+/* Плита состояния — единственное цветное место окна. Тон лежит ровной
+   заливкой, а не свечением из угла: так подкрашен InfoBar в Windows, и так
+   пятно видно боковым зрением — в охвате «весь компьютер» запертая машина
+   обязана читаться, не приглядываясь к надписи. Слово состояния набрано тем
+   же тоном: слово и есть индикатор, кружка со значком ему не нужно. */
 .st {
-  border-color: color-mix(in oklch, var(--tone) 22%, var(--pg-border));
-  background:
-    radial-gradient(120% 140% at 0% 0%, color-mix(in oklch, var(--tone) 9%, transparent), transparent 60%),
-    var(--pg-surface);
+  background: color-mix(in oklch, var(--tone) 9%, var(--pg-bg));
+  border-bottom: 1px solid color-mix(in oklch, var(--tone) 28%, var(--pg-border));
 }
 
-/* Значок состояния: круг в тон с глифом. Цвет в заголовке кричал бы, а круг
-   говорит то же самое и оставляет заголовок читаемым в обеих темах. */
-.st-badge {
-  display: grid;
-  place-items: center;
-  flex: none;
-  border-radius: 9999px;
-  background: color-mix(in oklch, var(--tone) 16%, transparent);
+.st-word {
   color: var(--tone);
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+}
+
+.st-glyph {
+  color: var(--tone);
+}
+
+/* Выключено — слово обычным цветом: серое слово состояния читалось бы как
+   отключённая кнопка. Глиф остаётся приглушённым. */
+[data-state="off"] .st-word {
+  color: var(--pg-text);
+}
+
+/* Шапка: текст слева, карта справа, между ними волосяная линия в тон — а не
+   маска-растворение: жёсткая кромка, как у любой панели Windows. */
+.st-plate {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 46%);
+}
+
+.st-map-plate {
+  position: relative;
+  min-block-size: 152px;
+  border-inline-start: 1px solid color-mix(in oklch, var(--tone) 20%, var(--pg-border));
+}
+
+.st-map {
+  position: absolute;
+  inset: 0;
+}
+
+/* Рейка навигации — NavigationView Windows 11 в компактном виде: значки в
+   столбец у начала окна, выбранный отмечен акцентной полоской у кромки.
+   Заменила ряд вкладок: рейка не спорит с шапкой панели за ту же строку и
+   не съедает у списка 40 px высоты в узком окне. */
+.rail {
+  inline-size: 48px;
+  border-inline-end: 1px solid var(--pg-border);
+}
+
+.rail-item {
+  position: relative;
+  border-radius: 4px;
+}
+
+.rail-item:hover {
+  background: var(--pg-hover);
+}
+
+.rail-item[aria-pressed="true"] {
+  background: var(--pg-press);
+}
+
+.rail-item[aria-pressed="true"]::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: 0;
+  top: 50%;
+  translate: 0 -50%;
+  inline-size: 3px;
+  block-size: 16px;
+  border-radius: 9999px;
+  background: var(--pg-accent);
+}
+
+/* Шапка панели — одна строка в 40 px у всех панелей, под ней волосяная линия. */
+.panel-head {
+  border-bottom: 1px solid var(--pg-border);
 }
 
 /* Кнопка Fluent: заливка управления, штрих, нижняя кромка темнее боковых —
@@ -301,7 +344,7 @@ body {
   color: var(--pg-muted);
 }
 
-/* Поле ввода Fluent: белое на карточке, нижняя кромка темнее, а в фокусе —
+/* Поле ввода Fluent: белое на поверхности, нижняя кромка темнее, а в фокусе —
    акцентная полоса снизу. Рамка целиком акцентом в Windows не красится. */
 .field {
   border: 1px solid var(--pg-border);
@@ -319,29 +362,6 @@ body {
   color: var(--pg-faint);
 }
 
-/* Переключатель вкладок — SelectorBar Windows 11: подписи без рамок, выбранная
-   ярче остальных и подчёркнута акцентной полоской. Коробка с утопленными
-   кнопками, которой она была, спорила с карточками под ней. */
-.nav-item {
-  position: relative;
-}
-
-.nav-item[aria-pressed="true"]::after {
-  content: "";
-  position: absolute;
-  inset-inline: 50%;
-  bottom: 1px;
-  inline-size: 16px;
-  block-size: 3px;
-  translate: -50% 0;
-  border-radius: 9999px;
-  background: var(--pg-accent);
-}
-
-[dir="rtl"] .nav-item[aria-pressed="true"]::after {
-  translate: 50% 0;
-}
-
 /* Выбор из двух-трёх — сегменты Fluent: общая подложка, выбранный лежит на
    ней белой плиткой со штрихом. */
 .segmented {
@@ -354,24 +374,35 @@ body {
   box-shadow: 0 0 0 1px var(--pg-border), 0 1px 0 var(--pg-border-strong);
 }
 
-/* Тумблер Fluent. Ручка ездит сдвигом, а не краем: так дешевле. */
+/* Тумблер Fluent. Ручка ездит сдвигом, а не краем: так дешевле. Размер задан
+   переменными, потому что в плашке тот же тумблер стоит выключателем
+   продукта и обязан быть крупнее: жмут его не глядя. */
 .switch {
+  --sw-w: 40px;
+  --sw-h: 20px;
+  --sw-knob: 12px;
   position: relative;
-  inline-size: 40px;
-  block-size: 20px;
+  inline-size: var(--sw-w);
+  block-size: var(--sw-h);
   flex: none;
   border-radius: 9999px;
   border: 1px solid var(--pg-muted);
   background: transparent;
 }
 
+.switch-lg {
+  --sw-w: 56px;
+  --sw-h: 28px;
+  --sw-knob: 18px;
+}
+
 .switch::after {
   content: "";
   position: absolute;
-  inset-block-start: 3px;
-  inset-inline-start: 3px;
-  inline-size: 12px;
-  block-size: 12px;
+  inset-block-start: calc((var(--sw-h) - var(--sw-knob)) / 2 - 1px);
+  inset-inline-start: calc((var(--sw-h) - var(--sw-knob)) / 2 - 1px);
+  inline-size: var(--sw-knob);
+  block-size: var(--sw-knob);
   border-radius: 9999px;
   background: var(--pg-muted);
   transition: translate 0.15s ease;
@@ -384,11 +415,11 @@ body {
 
 .switch[aria-checked="true"]::after {
   background: var(--pg-on-accent);
-  translate: 20px 0;
+  translate: calc(var(--sw-w) - var(--sw-h)) 0;
 }
 
 [dir="rtl"] .switch[aria-checked="true"]::after {
-  translate: -20px 0;
+  translate: calc(var(--sw-h) - var(--sw-w)) 0;
 }
 
 .switch:disabled {
@@ -420,9 +451,11 @@ body {
   border-radius: 9999px;
 }
 
-/* Карта. Суша бледная, чтобы не спорить с текстом шапки; точки вокруг выхода
-   — в тон состояния. */
-/* Положение рамки задаёт тот, кто карту ставит (`st-map`, `absolute`), —
+/* Карта. Суша — бледный силуэт на плите, страна выхода — знак состояния:
+   сплошная заливка тоном, пока канал несёт трафик; штриховка, пока заперто
+   (и на подключении — там тоже заперто); один контур, пока режим выключен.
+   Сторож — `the_exit_country_wears_the_state`. */
+/* Положение рамки задаёт тот, кто карту ставит (`st-map`, `fly-map`), —
    поэтому его здесь нет: нелоенное правило перебило бы утилиту. */
 .world-map {
   overflow: hidden;
@@ -435,17 +468,27 @@ body {
 }
 
 .world-land {
-  stroke: var(--pg-muted);
-  opacity: 0.4;
+  fill: color-mix(in oklch, var(--pg-text) 13%, transparent);
 }
 
-.world-near {
+.world-hatch {
+  color: var(--tone);
+}
+
+.world-exit {
+  fill: var(--tone);
+  stroke: none;
+}
+
+[data-state="down"] .world-exit,
+[data-state="connecting"] .world-exit {
+  fill: url("#pg-hatch");
+}
+
+[data-state="off"] .world-exit {
+  fill: none;
   stroke: var(--tone);
-  opacity: 0.9;
-}
-
-.world-near-2 {
-  opacity: 0.45;
+  stroke-width: 1.2px;
 }
 
 /* Точка выхода — HTML поверх карты, а не узел SVG: её пульс идёт всё время,
@@ -466,64 +509,50 @@ body {
   translate: -50% -50%;
 }
 
+/* Кольцо, а не диск: диск тоном терялся бы на стране, залитой тем же тоном. */
 .world-dot {
-  inline-size: 12px;
-  block-size: 12px;
-  background: currentColor;
-  box-shadow: 0 0 0 3px var(--pg-surface);
+  inline-size: 10px;
+  block-size: 10px;
+  background: var(--pg-bg);
+  box-shadow: 0 0 0 2px currentColor;
 }
 
 .world-pulse {
-  inline-size: 12px;
-  block-size: 12px;
+  inline-size: 10px;
+  block-size: 10px;
   background: currentColor;
   opacity: 0;
 }
 
-/* Выключено: узел выбран, но трафик через него не идёт — точка полая. */
-[data-state="off"] .world-dot {
-  background: var(--pg-surface);
-  box-shadow: inset 0 0 0 3px currentColor;
-}
-
-/* Шапка: карта лежит справа и растворяется к тексту. Маска, а не
-   полупрозрачный слой поверх: слой красил бы и сами точки. */
-.st-map {
-  position: absolute;
-  inset-block: 0;
-  inset-inline-end: 0;
-  inline-size: 52%;
-  mask-image: linear-gradient(90deg, transparent, #000 45%);
-}
-
-/* Плашка: карта на всю карточку, но растворяется к левому верхнему углу, где
-   стоят значок и надпись состояния. */
+/* Плашка: карта — полоса во всю ширину плиты, между словом состояния и
+   строкой точки выхода. */
 .fly-map {
-  position: absolute;
-  inset: 0;
-  mask-image: linear-gradient(165deg, transparent 22%, #000 62%);
+  position: relative;
+  block-size: 100px;
+  border-block: 1px solid color-mix(in oklch, var(--tone) 20%, var(--pg-border));
 }
 
-[dir="rtl"] .fly-map {
-  mask-image: linear-gradient(195deg, transparent 22%, #000 62%);
+/* Приборная линейка под плитой: подпись сверху, число под ней, ячейки
+   разделены волосяными линиями. История скорости — фоном тех ячеек, которые
+   считают эти байты: график принятого под числом принятого, отданного под
+   отданным. Бледный намеренно: это история, а не показание. */
+.st-metrics {
+  border-bottom: 1px solid var(--pg-border);
+  /* Колонки не поровну: имя профиля и страна — слова, и им нужно больше,
+     чем трём числам; поровну имя резалось до «Amsterdam · R…» уже на
+     1000 px. Пять колонок при этом остаются пятью (`grid-cols-5` на самой
+     линейке, сторож — `the_instrument_row_never_wraps`). */
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.8fr) minmax(0, 0.7fr) minmax(0, 0.9fr) minmax(0, 0.9fr);
 }
 
-[dir="rtl"] .st-map {
-  mask-image: linear-gradient(270deg, transparent, #000 45%);
-}
-
-/* История скорости — фоном тех ячеек линейки, которые считают эти байты:
-   график принятого под числом принятого, отданного — под отданным. Бледный
-   намеренно: это история, а не показание. Число читают, форму замечают краем
-   глаза. */
 .m-cell {
   position: relative;
 }
 
 .spark {
   position: absolute;
-  inset: auto 6px -6px 12px;
-  block-size: 18px;
+  inset: auto 8px 0 12px;
+  block-size: 20px;
   line-height: 0;
   opacity: 0.3;
   pointer-events: none;
@@ -608,7 +637,7 @@ body {
     }
   }
 
-  /* Подключение: значок состояния вращается — это и есть «ждём». */
+  /* Подключение: глиф состояния вращается — это и есть «ждём». */
   [data-state="connecting"] .st-spin {
     animation: spin 1s linear infinite;
   }
@@ -652,7 +681,8 @@ body {
 
    Ниже 1100 px одна панель за раз: список профилей после пары подписок длиннее
    любого окна, и делить с ним высоту журналу, который читают post factum,
-   нечем. Выше — прятать нечего, и все три стоят рядом. */
+   нечем. Выше — прятать нечего, и все три стоят рядом, разделённые волосяными
+   линиями. */
 .panes {
   display: flex;
   min-height: 0;
@@ -669,20 +699,20 @@ body {
   min-width: 0;
 }
 
-/* Узкая полоса табов и широкая «Главная» — одна и та же навигация в двух
-   видах. Браузерные профили остаются вкладкой на любой ширине: в сетку из трёх
-   панелей четвёртый список не влезает, а увести его некуда. */
-.tab-wide {
+/* Рейка в двух видах: три пункта для трёх панелей и один — «Главное», когда
+   все три стоят рядом. Браузерные профили остаются пунктом на любой ширине:
+   в сетку из трёх панелей четвёртый список не влезает, а увести его некуда. */
+.rail-wide {
   display: none;
 }
 
 @media (min-width: 1100px) {
-  .tab-narrow {
+  .rail-narrow {
     display: none;
   }
 
-  .tab-wide {
-    display: inline-flex;
+  .rail-wide {
+    display: flex;
   }
 
   .panes {
@@ -693,6 +723,10 @@ body {
   .pane {
     display: flex;
     min-width: 0;
+  }
+
+  .pane + .pane {
+    border-inline-start: 1px solid var(--pg-border);
   }
 }
 
@@ -756,6 +790,8 @@ body {
 
   .m-value {
     margin-top: 0;
+    font-size: 13px;
+    line-height: 18px;
   }
 
   /* Город уходит первым и раньше названия страны: линейка тут одна строка, а
@@ -771,12 +807,17 @@ body {
     display: none;
   }
 
-  /* Карте в узкой шапке места справа нет — она ложится фоном под текст,
-     бледнее, чем в широкой. */
-  .st-map {
-    inline-size: 100%;
-    opacity: 0.55;
-    mask-image: linear-gradient(90deg, transparent, #000 55%);
+  /* Карте в узкой шапке места справа нет — она встаёт полосой под текстом,
+     как в плашке. */
+  .st-plate {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .st-map-plate {
+    min-block-size: 0;
+    block-size: 88px;
+    border-inline-start: 0;
+    border-top: 1px solid color-mix(in oklch, var(--tone) 20%, var(--pg-border));
   }
 }
 
@@ -784,8 +825,16 @@ body {
    `tauri.conf.json`). Плашка из трея сюда не попадает: у неё своя раскладка
    (`Flyout.tsx`), а здесь ужимается шапка главного окна. */
 @media (max-width: 470px) {
-  .st {
-    padding: 10px 12px;
+  .st-text {
+    padding: 10px 12px 12px;
+    gap: 8px;
+  }
+
+  /* Слово состояния — ступенью ниже: «Туннеля нет — доступ закрыт» на 28 px
+     в 330 px занимает три строки. */
+  .st-word {
+    font-size: 20px;
+    line-height: 26px;
   }
 
   /* Подсказка — одна строка и не больше; целиком она осталась в `title`
@@ -809,14 +858,6 @@ body {
   .tb-version {
     display: none;
   }
-
-  /* Поля вокруг всего окна. 12 px по кругу — размер главного окна, где под
-     ними лежит 620 px высоты; в узком окне те же 12 px сверху и снизу — это
-     половина строки профиля, отданная пустоте по краю. */
-  .shell {
-    padding: 8px;
-    gap: 8px;
-  }
 }
 
 /* Заголовок группы подписки — рубеж списка, а не его строка.
@@ -831,22 +872,22 @@ body {
    Липкий: подписка на сотню узлов длиннее любого окна, и посреди прокрутки
    ответить «чьи это узлы» было нечем — заголовок уезжал вверх первым. Прокрутка
    живёт в `.scroll`, она же и держит липкое, и `top: 0` считается не от её
-   кромки, а от поля за вычетом её собственного отступа. Пока отступ плиты
+   кромки, а от поля за вычетом её собственного отступа. Пока отступ панели
    стоял на самой прокрутке, заголовок липнул на 14 px ниже кромки, и в
    полоске над ним были видны строки, уезжающие под него, — то есть липкое
    не закрывало собой ровно то, ради чего оно и липкое. Поэтому отступа у
-   плиты по умолчанию нет вовсе: просит его каждая панель сама (`pad`), а
+   панели по умолчанию нет вовсе: просит его каждая панель сама (`pad`), а
    список — не просит. Сторож — `the_sticky_head_sits_on_the_scroll_edge`. */
 .sub-head {
   position: sticky;
   top: 0;
   z-index: 1;
   border-bottom: 1px solid var(--pg-border);
-  background: linear-gradient(var(--pg-hover), var(--pg-hover)), var(--pg-surface);
+  background: linear-gradient(var(--pg-hover), var(--pg-hover)), var(--pg-bg);
 }
 
 .sub-head:hover {
-  background: linear-gradient(var(--pg-press), var(--pg-press)), var(--pg-surface);
+  background: linear-gradient(var(--pg-press), var(--pg-press)), var(--pg-bg);
 }
 
 /* Строка списка профилей под прокруткой раскладывается и рисуется, только

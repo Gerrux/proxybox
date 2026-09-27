@@ -2250,6 +2250,50 @@ mod tests {
         }
     }
 
+    /// Страна выхода на карте обязана носить состояние туннеля: сплошная
+    /// заливка тоном — канал несёт трафик, штриховка — заперто (и на
+    /// подключении, там тоже заперто), один контур — режим выключен. Это не
+    /// украшение, а третий способ прочесть состояние после слова и цвета —
+    /// единственный, который читается с карты боковым зрением. Решает это
+    /// `index.css` по `data-state`, а узор штриховки живёт в `WorldMap.tsx`
+    /// под фиксированным идентификатором: `fill: url(#…)` из CSS случайного
+    /// `useId` не знает, и разъехавшийся идентификатор оставил бы запертую
+    /// страну без заливки вовсе. Компилятора у фронтенда нет — сверяем текстом.
+    #[test]
+    fn the_exit_country_wears_the_state() {
+        let map = include_str!("../../../ui/app-shell/src/WorldMap.tsx");
+        let id = map
+            .split("export const HATCH_ID = \"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .expect("узор штриховки назван HATCH_ID");
+        assert!(map.contains("id={HATCH_ID}"), "узор штриховки объявлен не под HATCH_ID");
+        assert!(map.contains("className=\"world-exit\""), "силуэт страны выхода размечен не классом world-exit");
+
+        let css = include_str!("../../../ui/app-shell/src/index.css");
+        let rule = |selector: &str| {
+            css.split(selector)
+                .nth(1)
+                .and_then(|s| s.split('}').next())
+                .unwrap_or_else(|| panic!("в index.css нет правила «{selector}»"))
+                .to_string()
+        };
+        // Порядок правил обязателен: общее «сплошная заливка» идёт первым,
+        // а состояния перебивают его ниже, — иначе заперто рисовалось бы
+        // сплошным, то есть как «несёт трафик».
+        let solid = css.find("\n.world-exit {").expect("у страны выхода есть общая заливка");
+        let hatched = css.find("[data-state=\"down\"] .world-exit").expect("заперто — своим правилом");
+        let hollow = css.find("[data-state=\"off\"] .world-exit").expect("выключено — своим правилом");
+        assert!(solid < hatched && solid < hollow, "общая заливка стоит ниже состояний и перебьёт их");
+
+        assert!(rule("\n.world-exit {").contains("fill: var(--tone)"), "несёт трафик — а страна не залита тоном");
+        let locked = rule("[data-state=\"down\"] .world-exit");
+        assert!(locked.contains("[data-state=\"connecting\"] .world-exit"), "подключение не заперто на карте");
+        assert!(locked.contains(&format!("url(\"#{id}\")")), "заперто — а страна не заштрихована узором {id}");
+        let off = rule("[data-state=\"off\"] .world-exit");
+        assert!(off.contains("fill: none") && off.contains("stroke: var(--tone)"), "выключено — а страна не контуром");
+    }
+
     /// Кегль в окне обязан браться из шкалы (`--text-*` в `index.css`), а не
     /// числом на месте. Пока размеры писались на месте, их набралось
     /// одиннадцать — от 9 до 26 px, — и соседние панели набирались разным

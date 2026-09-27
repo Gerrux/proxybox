@@ -68,7 +68,7 @@ export function Welcome({ status, className = "" }: { status: Status; className?
     <Panel
       pad="p-3"
       title={s.welcomeTitle}
-      className={`shrink-0 ${className}`}
+      className={`shrink-0 border-b border-edge ${className}`}
       action={
         <Button
           variant="quiet"

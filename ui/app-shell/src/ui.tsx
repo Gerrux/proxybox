@@ -2,10 +2,11 @@
  *  отдельный пакет ui-kit ради одного — лишний слой. */
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
-/** Панель — карточка Fluent с заголовком: подпись обычным регистром и
- *  полужирным, как у разделов «Параметров». Раньше это была плита с
- *  гравированной подписью в разрядку — в Windows так не подписано ничего, и
- *  окно из-за неё выглядело грубее соседей. */
+/** Панель — область одной плоской поверхности окна, а не карточка: шапка в
+ *  40 px с подписью полужирным, под ней волосяная линия, дальше прокрутка.
+ *  Карточек со штрихом, которыми панели были, в плоском окне нет: стопка
+ *  одинаковых скруглённых плиток — то, чем выглядит любой веб-дашборд, а не
+ *  окно Windows. */
 export function Panel({
   title,
   note,
@@ -27,12 +28,11 @@ export function Panel({
   children: ReactNode;
 }) {
   return (
-    <section className={`card smooth flex min-h-0 flex-col overflow-hidden ${className}`}>
+    <section className={`flex min-h-0 flex-col overflow-hidden ${className}`}>
       {/* Подпись обрезаться не имеет права — по ней и находят панель.
           Ужимается сначала счётчик, потом действия. Высота полосы одна у всех
-          панелей (40 px), и кнопки в ней одного размера — ровно этого и не
-          хватало: у каждой панели шапка была своей высоты. */}
-      <header className="flex min-h-10 shrink-0 items-center justify-between gap-2 border-b border-edge py-1 ps-3 pe-1.5">
+          панелей (40 px), и кнопки в ней одного размера. */}
+      <header className="panel-head flex h-10 shrink-0 items-center justify-between gap-2 ps-4 pe-2">
         <h2 className="flex min-w-0 flex-1 items-baseline gap-2 text-sm font-semibold text-ink">
           <span className="shrink-0">{title}</span>
           {note != null && <span className="min-w-0 truncate text-xs font-normal text-muted">{note}</span>}
@@ -125,17 +125,21 @@ export function IconButton({
 }
 
 /** Тумблер Fluent — «вкл/выкл» одной настройки. Полоска из двух надписей,
- *  которой он был, в Windows означает выбор из вариантов, а не выключатель. */
+ *  которой он был, в Windows означает выбор из вариантов, а не выключатель.
+ *  Крупный (`lg`) стоит выключателем продукта в плашке из трея: жмут его не
+ *  глядя, и попасть в него обязано быть легко. */
 export function Switch({
   checked,
   onChange,
   label,
   disabled,
+  size = "md",
 }: {
   checked: boolean;
   onChange: (value: boolean) => void;
   label: string;
   disabled?: boolean;
+  size?: "md" | "lg";
 }) {
   return (
     <button
@@ -143,9 +147,10 @@ export function Switch({
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      title={label}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className="switch smooth"
+      className={`switch smooth ${size === "lg" ? "switch-lg" : ""}`}
     />
   );
 }
