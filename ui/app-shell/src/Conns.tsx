@@ -305,12 +305,12 @@ export function Conns({
                   >
                     {name || s.connsNoProcess}
                   </span>
-                  <span className="selectable min-w-0 flex-1 truncate text-sm text-muted">
+                  <span className="selectable min-w-0 flex-1 truncate font-mono text-xs text-muted">
                     {c.host}
                   </span>
                   {/* Числа моноширинные и в одном порядке с шапкой: ↓ принято,
                       ↑ отправлено. */}
-                  <span className="shrink-0 text-xs tabular-nums text-muted">
+                  <span className="shrink-0 font-mono text-xs tabular-nums text-muted">
                     ↓{bytes(c.rx)} ↑{bytes(c.tx)}
                   </span>
                 </li>

@@ -258,7 +258,7 @@ export function Apps({
                   <span className={`block truncate text-sm ${app.enabled ? "font-semibold" : ""}`}>
                     {app.name}
                   </span>
-                  <span className="selectable block truncate text-xs text-muted" title={app.path}>
+                  <span className="selectable block truncate font-mono text-xs text-muted" title={app.path}>
                     {app.path}
                   </span>
                 </label>

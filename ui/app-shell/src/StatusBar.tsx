@@ -425,12 +425,14 @@ export function StatusBar({
           name={s.latency}
           value={latency != null ? `${Math.round(latency)} ms` : "—"}
           tone={latencyTone(status?.latency_ms)}
+          mono
         />
         <Metric
           name={s.received}
           value={rx != null ? bytes(rx) : "—"}
           hint={s.trafficHint}
           icon="down"
+          mono
           rate={last ? `${bytes(last.rx)}${s.perSecond}` : undefined}
           rateHint={scaleHint}
           spark={<CellSpark values={rates.map((r) => r.rx)} peak={peak} id="pg-spark-down" tone="text-open" />}
@@ -440,6 +442,7 @@ export function StatusBar({
           value={tx != null ? bytes(tx) : "—"}
           hint={s.trafficHint}
           icon="up"
+          mono
           rate={last ? `${bytes(last.tx)}${s.perSecond}` : undefined}
           rateHint={scaleHint}
           spark={<CellSpark values={rates.map((r) => r.tx)} peak={peak} id="pg-spark-up" tone="text-accent" />}
@@ -530,9 +533,13 @@ function Metric({
   spark,
   rate,
   rateHint,
+  mono,
 }: {
   name: string;
   value: string;
+  /** Число, а не слово: набирается моноширинным — цифры прибора стоят
+   *  столбиком и не дёргаются, когда меняются. */
+  mono?: boolean;
   tone?: string;
   /** Что именно измерено, если из подписи это не следует: счётчики трафика
    *  считают с запуска туннеля, а не с установки приложения. */
@@ -560,7 +567,7 @@ function Metric({
       {/* tabular-nums обязателен именно из-за доезда: цифры разной ширины
           меняются каждый кадр и дёргали бы линейку по всей строке. */}
       <dd
-        className={`m-value smooth mt-0.5 flex items-baseline gap-1.5 overflow-hidden text-lg font-semibold tabular-nums ${tone}`}
+        className={`m-value smooth mt-0.5 flex items-baseline gap-1.5 overflow-hidden text-lg font-semibold tabular-nums ${mono ? "font-mono" : ""} ${tone}`}
         title={hint ? `${name}: ${value} — ${hint}` : `${name}: ${value}`}
       >
         {icon && (
@@ -571,7 +578,7 @@ function Metric({
         {children ?? <span className="truncate">{value}</span>}
       </dd>
       {rate && (
-        <dd className="rates truncate" title={rateHint}>
+        <dd className="rates truncate font-mono" title={rateHint}>
           {rate}
         </dd>
       )}

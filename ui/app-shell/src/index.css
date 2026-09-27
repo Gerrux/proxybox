@@ -24,18 +24,23 @@
   --color-closed-soft: var(--pg-closed-soft);
   --color-wait-soft: var(--pg-wait-soft);
   --color-fault-soft: var(--pg-fault-soft);
-  /* Шрифты системные — кроме одного: наружу окно не ходит ни за чем, включая
-     гарнитуры, но флаги стран взять неоткуда. Segoe UI Variable — шрифт самой
-     Windows 11: слово состояния набрано его дисплейным резом, как заголовки
-     «Параметров», всё остальное — текстовым.
+  /* Гарнитура окна — Geist, числа и адреса — Geist Mono (см. @font-face
+     ниже). Системный Segoe UI, которым окно было набрано, делал его
+     неотличимым от любого окна Windows — а окну нужен свой голос; Geist
+     даёт его, оставаясь нейтральным гротеском, который рядом с «Параметрами»
+     не спорит. Кириллица у него родная, а не дорисованная.
+
+     Всё, чего в Geist нет — фарси, китайский, — уходит в системный стек:
+     Segoe UI держит арабское письмо, Microsoft YaHei — китайское, и
+     `unicode-range` у наших файлов не даёт им подставиться на чужой знак.
 
      Шрифт флагов подмешан первым во все стеки: в нём только флаги
      (см. unicode-range ниже), на остальные знаки он не влияет — зато флаги
      работают всюду, включая имена профилей из подписок: их принято начинать
      флагом, и в Windows они до сих пор показывались квадратиками. */
-  --font-display: "Twemoji Country Flags", "Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  --font-sans: "Twemoji Country Flags", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "Twemoji Country Flags", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --font-display: "Twemoji Country Flags", "Geist", "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-sans: "Twemoji Country Flags", "Geist", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "Twemoji Country Flags", "Geist Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
 
   /* Шкала кегля. Ступеней ровно шесть, и других размеров в разметке нет —
      пока их было одиннадцать (от 9 до 26 px), соседние панели набирались
@@ -61,8 +66,7 @@
   --radius-lg: 8px;
 }
 
-/* Единственная гарнитура, которая едет вместе с приложением, — и та по нужде:
-   глифов флагов в Windows нет и не было, Segoe UI Emoji их не содержит, и «🇳🇱»
+/* Шрифт флагов — по нужде, а не по вкусу: глифов флагов в Windows нет и не было, Segoe UI Emoji их не содержит, и «🇳🇱»
    система рисует двумя буквами в квадратиках. Файл лежит в сборке, за ним никуда
    не ходят. 78 КБ — это подмножество Twemoji Mozilla (1,5 МБ) ровно по флагам;
    `unicode-range` держит слово: на любой другой знак шрифт не подставляется и
@@ -74,6 +78,67 @@
   src: url("./assets/TwemojiCountryFlags.woff2") format("woff2");
   unicode-range: U+1F1E6-1F1FF;
   font-display: swap;
+}
+
+/* Гарнитуры окна — Geist и Geist Mono (Vercel, OFL 1.1; текст лицензии —
+   `assets/fonts/LICENSE-Geist.txt`). Файлы лежат в сборке, за ними никуда не
+   ходят: CSP окна пускает шрифты только с `'self'`. Взяты подмножества
+   Fontsource по трём диапазонам — латиница, расширенная латиница (турецкие
+   ğ ş ı İ, индонезийский) и кириллица; `unicode-range` держит слово: на знак
+   вне диапазона файл не грузится и не подставляется, так что фарси и
+   китайский уходят в системный стек без единого пустого квадрата. Переменные
+   по весу, 100…900, в одном файле на диапазон: 61 КБ на семейство текста и
+   51 на моноширинное.
+
+   Почему пара, а не одна гарнитура: в каждой строке окна рядом стоят имя и
+   адрес, число и подпись, и моноширинный рез той же руки — единственный
+   способ, чтобы адрес читался как адрес, не выглядя гостем из терминала. */
+@font-face {
+  font-family: "Geist";
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./assets/fonts/geist-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+@font-face {
+  font-family: "Geist";
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./assets/fonts/geist-latin-ext-wght-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "Geist";
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./assets/fonts/geist-cyrillic-wght-normal.woff2") format("woff2");
+  unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./assets/fonts/geist-mono-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./assets/fonts/geist-mono-latin-ext-wght-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./assets/fonts/geist-mono-cyrillic-wght-normal.woff2") format("woff2");
+  unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
 }
 
 html,
@@ -215,7 +280,8 @@ body {
 .st-word {
   color: var(--tone);
   font-family: var(--font-display);
-  letter-spacing: -0.01em;
+  font-weight: 600;
+  letter-spacing: -0.025em;
 }
 
 .st-glyph {

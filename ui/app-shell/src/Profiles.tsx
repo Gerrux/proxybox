@@ -1355,7 +1355,7 @@ function Rows({
                   {label}
                   {live && <span className="sr-only"> — {s.active}</span>}
                 </span>
-                <span className="flex items-center gap-2 overflow-hidden text-xs text-muted">
+                <span className="flex items-center gap-2 overflow-hidden font-mono text-xs text-muted">
                   {/* Куда ведёт узел. Обрезается первым: имя профиля пишет
                       чужая панель, и два одинаково названных узла различаются
                       только этим. Пароля и ключа тут нет — их в окно не
@@ -1403,7 +1403,7 @@ function Rows({
                   сравнением — значит, сказать об этом обязано само число. */}
               {probe && (
                 <span
-                  className={`flex w-16 shrink-0 justify-end text-xs ${latencyTone(probe.latency_ms) || "text-muted"}`}
+                  className={`flex w-16 shrink-0 justify-end font-mono text-xs ${latencyTone(probe.latency_ms) || "text-muted"}`}
                 >
                   <Verdict
                     probe={probe}

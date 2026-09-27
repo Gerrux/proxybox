@@ -88,7 +88,7 @@ export function Flyout({
             </p>
           )}
           {status?.tunnel === "up" && (
-            <p className="flex gap-3 text-xs tabular-nums text-muted">
+            <p className="flex gap-3 font-mono text-xs tabular-nums text-muted">
               {status.latency_ms != null && (
                 <span className={latencyTone(status.latency_ms)}>{status.latency_ms} ms</span>
               )}
@@ -171,7 +171,7 @@ export function Flyout({
                   {/* Число — правой колонкой, как в ведомости: столбец задержек
                       сравнивают взглядом сверху вниз. */}
                   {probe?.latency_ms != null ? (
-                    <span className={`w-14 shrink-0 text-end text-xs tabular-nums ${latencyTone(probe.latency_ms) || "text-muted"}`}>
+                    <span className={`w-14 shrink-0 text-end font-mono text-xs tabular-nums ${latencyTone(probe.latency_ms) || "text-muted"}`}>
                       {probe.latency_ms} ms
                     </span>
                   ) : (
