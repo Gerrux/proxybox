@@ -2230,7 +2230,7 @@ mod tests {
     /// нет — сверяем текстом.
     #[test]
     fn the_exit_pulse_never_repaints_the_map() {
-        let map = include_str!("../../../ui/app-shell/src/WorldMap.tsx");
+        let map = include_str!("../../../ui/app-shell/src/WorldMapView.tsx");
         let svg_end = map.find("</svg>").expect("карта рисуется в <svg>");
         let pulse = map.find("\"world-pulse\"").expect("пульс выхода размечен классом world-pulse");
         assert!(pulse > svg_end, "пульс выхода живёт внутри <svg>: каждый его кадр перерисует всю карту");
@@ -2258,13 +2258,13 @@ mod tests {
     /// подключении, там тоже заперто), один контур — режим выключен. Это не
     /// украшение, а третий способ прочесть состояние после слова и цвета —
     /// единственный, который читается с карты боковым зрением. Решает это
-    /// `index.css` по `data-state`, а узор штриховки живёт в `WorldMap.tsx`
+    /// `index.css` по `data-state`, а узор штриховки живёт в `WorldMapView.tsx`
     /// под фиксированным идентификатором: `fill: url(#…)` из CSS случайного
     /// `useId` не знает, и разъехавшийся идентификатор оставил бы запертую
     /// страну без заливки вовсе. Компилятора у фронтенда нет — сверяем текстом.
     #[test]
     fn the_exit_country_wears_the_state() {
-        let map = include_str!("../../../ui/app-shell/src/WorldMap.tsx");
+        let map = include_str!("../../../ui/app-shell/src/WorldMapView.tsx");
         let id = map
             .split("export const HATCH_ID = \"")
             .nth(1)
