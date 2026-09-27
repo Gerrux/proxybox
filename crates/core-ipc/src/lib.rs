@@ -2235,7 +2235,10 @@ mod tests {
         let pulse = map.find("\"world-pulse\"").expect("пульс выхода размечен классом world-pulse");
         assert!(pulse > svg_end, "пульс выхода живёт внутри <svg>: каждый его кадр перерисует всю карту");
 
-        let css = include_str!("../../../ui/app-shell/src/index.css");
+        // Концы строк сводим к `\n`: на Windows checkout отдаёт CRLF, разделитель
+        // блока не находится, и отрезок доезжает до чужого `animation:` в конце
+        // файла — сторож краснел на релизной сборке, оставаясь зелёным в CI.
+        let css = include_str!("../../../ui/app-shell/src/index.css").replace("\r\n", "\n");
         let frames = css
             .split("@keyframes pulse {")
             .nth(1)
