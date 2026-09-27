@@ -2048,35 +2048,6 @@ mod tests {
         assert!(!row.contains(":grid-cols"), "промежуточная сетка складывает линейку в два-три ряда");
     }
 
-    /// Строка канала обязана стоять одной строкой в плашке из трея. Перенос там
-    /// стоит целого ряда — примерно четверть того, что вообще видно из списка, —
-    /// и берётся он ровно за одно слово: подпись приёмника. Слово в 380 px
-    /// убрано (`.conduit-to`), и вместе с ним обязан уйти `flex-wrap`: оставь
-    /// его — и следующая правка охвата тихо вернёт второй ряд, а заметят это по
-    /// пропавшим строкам профилей, а не по каналу.
-    ///
-    /// Смысл подписи при этом обязан где-то остаться: приёмник — конец
-    /// картинки, и слово живёт на нём подсказкой. Компилятора у фронтенда нет —
-    /// сверяем текстом.
-    #[test]
-    fn the_conduit_row_never_wraps() {
-        let css = include_str!("../../../ui/app-shell/src/index.css");
-        let flyout = css
-            .split("@media (max-width: 470px) {")
-            .nth(1)
-            .and_then(|s| s.split("\n}\n").next())
-            .expect("сжатие плашки живёт под своим порогом");
-        assert!(flyout.contains(".conduit-to"), "подпись приёмника осталась в 380 px и переносит канал");
-        assert!(
-            !flyout.contains("flex-wrap: wrap"),
-            "в плашке остался перенос: строка шапки развернётся во второй ряд"
-        );
-
-        let bar = include_str!("../../../ui/app-shell/src/StatusBar.tsx");
-        let end = bar.lines().find(|l| l.contains("conduit-end")).expect("приёмник размечен классом conduit-end");
-        assert!(end.contains("s.conduitTo"), "подпись приёмника пропала вместе с самим словом");
-    }
-
     /// Значки титульной полосы обязаны быть одной семьёй: одна сетка, одна
     /// заливка, одна коробка. Ряд из четырёх кнопок читается как один ряд, и
     /// одна фигура, нарисованная иначе прочих, перевешивает его целиком —
@@ -2250,42 +2221,129 @@ mod tests {
         );
     }
 
-    /// Блик обязан пересекать канал целиком: стоять за кадром в покое и
-    /// уезжать за правый край. Связаны три числа — отступ, ширина и проезд, —
-    /// и проценты у `translate` считаются от самого блика, а не от канала,
-    /// поэтому проезд глазом не читается и разъезжается с шириной на первой же
-    /// правке. Итог у обеих ошибок тихий: блик либо торчит у лампы неподвижным
-    /// пятном, либо встаёт посреди канала, не дойдя до приёмника, — то есть
-    /// картинка говорит «не дошло» при подтверждённом туннеле. Компилятора у
+    /// Пульс точки выхода обязан жить вне карты. Он идёт всё время, пока
+    /// туннель поднят, а карта — две с половиной тысячи точек одним путём:
+    /// внутри `<svg>` каждый кадр пульса перерисовывал бы её целиком, то есть
+    /// продукт, который висит в трее сутками, жёг бы ЦП ради украшения. Вне
+    /// её, на своём HTML-слое, и только прозрачностью с масштабом — это одна
+    /// композиция без раскладки и без перерисовки. Компилятора у фронтенда
+    /// нет — сверяем текстом.
+    #[test]
+    fn the_exit_pulse_never_repaints_the_map() {
+        let map = include_str!("../../../ui/app-shell/src/WorldMap.tsx");
+        let svg_end = map.find("</svg>").expect("карта рисуется в <svg>");
+        let pulse = map.find("\"world-pulse\"").expect("пульс выхода размечен классом world-pulse");
+        assert!(pulse > svg_end, "пульс выхода живёт внутри <svg>: каждый его кадр перерисует всю карту");
+
+        let css = include_str!("../../../ui/app-shell/src/index.css");
+        let frames = css
+            .split("@keyframes pulse {")
+            .nth(1)
+            .and_then(|s| s.split("\n  }\n").next())
+            .expect("пульс выхода — это @keyframes pulse");
+        for line in frames.lines().map(str::trim).filter(|l| l.ends_with(';')) {
+            let prop = line.split(':').next().unwrap_or_default();
+            assert!(
+                ["opacity", "scale"].contains(&prop),
+                "пульс двигает {prop}: это уже не композиция, а перерисовка каждый кадр"
+            );
+        }
+    }
+
+    /// Страна выхода на карте обязана носить состояние туннеля: сплошная
+    /// заливка тоном — канал несёт трафик, штриховка — заперто (и на
+    /// подключении, там тоже заперто), один контур — режим выключен. Это не
+    /// украшение, а третий способ прочесть состояние после слова и цвета —
+    /// единственный, который читается с карты боковым зрением. Решает это
+    /// `index.css` по `data-state`, а узор штриховки живёт в `WorldMap.tsx`
+    /// под фиксированным идентификатором: `fill: url(#…)` из CSS случайного
+    /// `useId` не знает, и разъехавшийся идентификатор оставил бы запертую
+    /// страну без заливки вовсе. Компилятора у фронтенда нет — сверяем текстом.
+    #[test]
+    fn the_exit_country_wears_the_state() {
+        let map = include_str!("../../../ui/app-shell/src/WorldMap.tsx");
+        let id = map
+            .split("export const HATCH_ID = \"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .expect("узор штриховки назван HATCH_ID");
+        assert!(map.contains("id={HATCH_ID}"), "узор штриховки объявлен не под HATCH_ID");
+        assert!(map.contains("className=\"world-exit\""), "силуэт страны выхода размечен не классом world-exit");
+
+        let css = include_str!("../../../ui/app-shell/src/index.css");
+        let rule = |selector: &str| {
+            css.split(selector)
+                .nth(1)
+                .and_then(|s| s.split('}').next())
+                .unwrap_or_else(|| panic!("в index.css нет правила «{selector}»"))
+                .to_string()
+        };
+        // Порядок правил обязателен: общее «сплошная заливка» идёт первым,
+        // а состояния перебивают его ниже, — иначе заперто рисовалось бы
+        // сплошным, то есть как «несёт трафик».
+        let solid = css.find("\n.world-exit {").expect("у страны выхода есть общая заливка");
+        let hatched = css.find("[data-state=\"down\"] .world-exit").expect("заперто — своим правилом");
+        let hollow = css.find("[data-state=\"off\"] .world-exit").expect("выключено — своим правилом");
+        assert!(solid < hatched && solid < hollow, "общая заливка стоит ниже состояний и перебьёт их");
+
+        assert!(rule("\n.world-exit {").contains("fill: var(--tone)"), "несёт трафик — а страна не залита тоном");
+        let locked = rule("[data-state=\"down\"] .world-exit");
+        assert!(locked.contains("[data-state=\"connecting\"] .world-exit"), "подключение не заперто на карте");
+        assert!(locked.contains(&format!("url(\"#{id}\")")), "заперто — а страна не заштрихована узором {id}");
+        let off = rule("[data-state=\"off\"] .world-exit");
+        assert!(off.contains("fill: none") && off.contains("stroke: var(--tone)"), "выключено — а страна не контуром");
+    }
+
+    /// Кегль в окне обязан браться из шкалы (`--text-*` в `index.css`), а не
+    /// числом на месте. Пока размеры писались на месте, их набралось
+    /// одиннадцать — от 9 до 26 px, — и соседние панели набирались разным
+    /// кеглем: окно выглядело собранным из разных приложений. Компилятора у
     /// фронтенда нет — сверяем текстом.
     #[test]
-    fn the_glow_crosses_the_whole_conduit() {
-        let css = include_str!("../../../ui/app-shell/src/index.css");
-        let pct = |block: &str, prop: &str| -> f64 {
-            block
-                .split(&format!("{prop}:"))
-                .nth(1)
-                .and_then(|s| s.split('%').next())
-                .and_then(|s| s.trim().parse::<f64>().ok())
-                .unwrap_or_else(|| panic!("у блика нет свойства {prop} в процентах"))
-        };
-        let glow = css
-            .split(".conduit-glow {")
-            .nth(1)
-            .and_then(|s| s.split('}').next())
-            .expect("блик размечен классом conduit-glow");
-        let (left, width) = (pct(glow, "left"), pct(glow, "width"));
-        let run = css
-            .split("@keyframes pg-run {")
-            .nth(1)
-            .and_then(|s| s.split("100% {").nth(1))
-            .and_then(|s| s.split('}').next())
-            .expect("проезд блика живёт в pg-run");
-        let travel = pct(run, "translate");
+    fn the_window_speaks_one_type_ramp() {
+        for (name, text) in [
+            ("App.tsx", include_str!("../../../ui/app-shell/src/App.tsx")),
+            ("Apps.tsx", include_str!("../../../ui/app-shell/src/Apps.tsx")),
+            ("Browsers.tsx", include_str!("../../../ui/app-shell/src/Browsers.tsx")),
+            ("Conns.tsx", include_str!("../../../ui/app-shell/src/Conns.tsx")),
+            ("Flyout.tsx", include_str!("../../../ui/app-shell/src/Flyout.tsx")),
+            ("Journal.tsx", include_str!("../../../ui/app-shell/src/Journal.tsx")),
+            ("Profiles.tsx", include_str!("../../../ui/app-shell/src/Profiles.tsx")),
+            ("Settings.tsx", include_str!("../../../ui/app-shell/src/Settings.tsx")),
+            ("StatusBar.tsx", include_str!("../../../ui/app-shell/src/StatusBar.tsx")),
+            ("TitleBar.tsx", include_str!("../../../ui/app-shell/src/TitleBar.tsx")),
+            ("Welcome.tsx", include_str!("../../../ui/app-shell/src/Welcome.tsx")),
+            ("ui.tsx", include_str!("../../../ui/app-shell/src/ui.tsx")),
+        ] {
+            for (at, _) in text.match_indices("text-[") {
+                let tail = &text[at + "text-[".len()..];
+                assert!(
+                    !tail.starts_with(|c: char| c.is_ascii_digit()),
+                    "{name}: кегль числом на месте ({}) — возьмите ступень шкалы",
+                    &text[at..at + 14.min(text.len() - at)]
+                );
+            }
+        }
+    }
 
-        assert!(left + width <= 0.0, "блик виден в покое: {left}% + {width}% правее края канала");
-        let end = left + travel * width / 100.0;
-        assert!(end >= 100.0, "блик встаёт на {end}% канала, не доехав до приёмника");
+    /// Плашка из трея обязана называть состояние теми же словами, что шапка
+    /// окна: заголовок и подсказку для обеих считает `describe`. Своя развилка
+    /// в плашке разошлась бы с шапкой на первой же правке подсказки — и одно и
+    /// то же состояние называлось бы в двух окнах по-разному, причём разницу
+    /// видно, только открыв оба. Компилятора у фронтенда нет — сверяем текстом.
+    #[test]
+    fn the_flyout_names_the_state_like_the_window() {
+        let flyout = include_str!("../../../ui/app-shell/src/Flyout.tsx");
+        let bar = include_str!("../../../ui/app-shell/src/StatusBar.tsx");
+        assert!(bar.contains("export function describe("), "заголовок состояния считает не одна функция");
+        assert!(bar.contains("describe(s, status)"), "шапка окна называет состояние мимо describe");
+        assert!(flyout.contains("describe(s, status)"), "плашка называет состояние мимо describe");
+        for own in ["s.up", "s.down", "s.off", "s.connecting", "s.serviceDown"] {
+            let used = flyout.match_indices(own).any(|(i, _)| {
+                !flyout[i + own.len()..].starts_with(|c: char| c.is_alphanumeric())
+            });
+            assert!(!used, "плашка называет состояние сама ({own}): разойдётся с шапкой");
+        }
     }
 
     /// Оболочка — такой же клиент канала, но живёт вне воркспейса: компилятор

@@ -2,8 +2,11 @@
  *  отдельный пакет ui-kit ради одного — лишний слой. */
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
-/** Панель — плита с гравированной подписью. Содержимое утоплено в неё
- *  (`surface-2` темнее `surface`), а не лежит карточкой сверху. */
+/** Панель — область одной плоской поверхности окна, а не карточка: шапка в
+ *  40 px с подписью полужирным, под ней волосяная линия, дальше прокрутка.
+ *  Карточек со штрихом, которыми панели были, в плоском окне нет: стопка
+ *  одинаковых скруглённых плиток — то, чем выглядит любой веб-дашборд, а не
+ *  окно Windows. */
 export function Panel({
   title,
   note,
@@ -20,27 +23,21 @@ export function Panel({
    *  (`.sub-head` в списке профилей) липнет не к её кромке, а к полю за
    *  вычетом её же отступа, и в полоске между ними видны строки, уезжающие
    *  под заголовок. Список поэтому просит пустой отступ, а панели с обычным
-   *  содержимым — `p-3.5`; сторож — `the_sticky_head_sits_on_the_scroll_edge`. */
+   *  содержимым — `p-3`; сторож — `the_sticky_head_sits_on_the_scroll_edge`. */
   pad?: string;
   children: ReactNode;
 }) {
   return (
-    <section
-      className={`plate smooth flex min-h-0 flex-col overflow-hidden rounded-lg border border-edge ${className}`}
-    >
-      {/* Подпись плиты обрезаться не имеет права — по ней и находят панель.
-          Ужимается сначала счётчик, потом действия уезжают на вторую строку;
-          shrink-0 держит саму полосу, когда панели тесно по высоте. */}
-      <header className="plate-head flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-edge px-4 py-2">
-        <h2 className="engraved flex min-w-0 flex-1 items-baseline gap-2 text-muted">
+    <section className={`flex min-h-0 flex-col overflow-hidden ${className}`}>
+      {/* Подпись обрезаться не имеет права — по ней и находят панель.
+          Ужимается сначала счётчик, потом действия. Высота полосы одна у всех
+          панелей (40 px), и кнопки в ней одного размера. */}
+      <header className="panel-head flex h-10 shrink-0 items-center justify-between gap-2 ps-4 pe-2">
+        <h2 className="flex min-w-0 flex-1 items-baseline gap-2 text-sm font-semibold text-ink">
           <span className="shrink-0">{title}</span>
-          {note != null && (
-            <span className="min-w-0 truncate font-sans text-[11px] font-normal normal-case tracking-normal">
-              {note}
-            </span>
-          )}
+          {note != null && <span className="min-w-0 truncate text-xs font-normal text-muted">{note}</span>}
         </h2>
-        {action}
+        {action && <div className="flex shrink-0 items-center gap-0.5">{action}</div>}
       </header>
       <div className={`scroll min-h-0 flex-1 overflow-y-auto ${pad}`}>{children}</div>
     </section>
@@ -75,11 +72,18 @@ export function useNarrow(): boolean {
   return narrow;
 }
 
+/** Кнопки Fluent. Размер у всех один — 32 px высоты, 13 px текста: пока у
+ *  каждой панели были свои (28, 32, 36), соседние ряды не вставали в линию. */
 const VARIANTS = {
-  primary: "border-transparent bg-accent text-bg hover:opacity-90",
-  ghost: "border-edge bg-surface-2 hover:border-accent",
-  quiet: "border-transparent text-muted hover:text-ink",
-  danger: "border-transparent text-muted hover:text-fault",
+  /** Главное действие места: «Включить», «Импорт» в пустом списке. */
+  primary: "btn-accent",
+  /** Обычная кнопка — заливка управления и штрих. */
+  ghost: "btn",
+  /** Тихая: без заливки, проявляется под указателем. Для действий в
+   *  заголовках и строках, где кнопок несколько. */
+  quiet: "btn-subtle",
+  /** Тихая, но разрушающая: краснеет под указателем. */
+  danger: "btn-subtle hover:text-fault",
 } as const;
 
 export function Button({
@@ -87,17 +91,66 @@ export function Button({
   className = "",
   ...props
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: keyof typeof VARIANTS }) {
-  // active:scale-95 — команда уходит в службу и может там задержаться на
-  // секунды, но само нажатие обязано подтвердиться в тот же кадр.
   return (
     <button
       type="button"
       {...props}
-      // Кнопки-символы (✕, ⟳, ⧉) подписаны только для чтения с экрана, а мышь
-      // о них не узнаёт ничего: ту же строку отдаём и всплывающей подсказке.
-      // После расстановки props — иначе своя `title` затёрлась бы пустой.
+      // Кнопки-значки подписаны только для чтения с экрана, а мышь о них не
+      // узнаёт ничего: ту же строку отдаём и всплывающей подсказке. После
+      // расстановки props — иначе своя `title` затёрлась бы пустой.
       title={props.title ?? props["aria-label"]}
-      className={`inline-flex h-8 shrink-0 items-center justify-center whitespace-nowrap rounded-md border px-3 text-[13px] font-medium transition duration-200 active:scale-95 disabled:opacity-40 ${VARIANTS[variant]} ${className}`}
+      className={`smooth inline-flex h-8 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-3 text-sm disabled:opacity-40 ${VARIANTS[variant]} ${className}`}
+    />
+  );
+}
+
+/** Кнопка-значок: квадрат 32 px, тихая. Подпись обязательна — она и
+ *  подсказка, и имя для чтения с экрана. */
+export function IconButton({
+  icon,
+  label,
+  variant = "quiet",
+  className = "",
+  ...props
+}: Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "children"> & {
+  icon: IconName;
+  label: string;
+  variant?: keyof typeof VARIANTS;
+}) {
+  return (
+    <Button variant={variant} aria-label={label} className={`w-8 px-0 ${className}`} {...props}>
+      <Icon name={icon} />
+    </Button>
+  );
+}
+
+/** Тумблер Fluent — «вкл/выкл» одной настройки. Полоска из двух надписей,
+ *  которой он был, в Windows означает выбор из вариантов, а не выключатель.
+ *  Крупный (`lg`) стоит выключателем продукта в плашке из трея: жмут его не
+ *  глядя, и попасть в него обязано быть легко. */
+export function Switch({
+  checked,
+  onChange,
+  label,
+  disabled,
+  size = "md",
+}: {
+  checked: boolean;
+  onChange: (value: boolean) => void;
+  label: string;
+  disabled?: boolean;
+  size?: "md" | "lg";
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`switch smooth ${size === "lg" ? "switch-lg" : ""}`}
     />
   );
 }
@@ -157,7 +210,7 @@ export function Segmented({
     <div
       role="group"
       aria-label={label}
-      className={`flex shrink-0 gap-0.5 rounded-md border border-edge bg-surface-2 p-0.5 ${className}`}
+      className={`segmented flex shrink-0 gap-0.5 rounded-md p-0.5 ${className}`}
     >
       {options.map(([id, text, hint]) => (
         <button
@@ -167,8 +220,8 @@ export function Segmented({
           title={hint}
           disabled={disabled}
           onClick={() => onPick(id)}
-          className={`seg-btn smooth engraved rounded-[3px] px-3.5 py-1.5 disabled:opacity-40 ${
-            value === id ? "bg-surface text-ink" : "text-muted hover:text-ink"
+          className={`smooth h-[26px] min-w-0 flex-auto truncate rounded-[3px] px-3 text-sm disabled:opacity-40 ${
+            value === id ? "text-ink" : "text-muted hover:text-ink"
           }`}
         >
           {text}
@@ -178,39 +231,70 @@ export function Segmented({
   );
 }
 
-/** Значки полей. Свои `<svg>`, а не глифы шрифта, по той же причине, что и у
- *  кнопок окна: `Segoe MDL2 Assets` есть не на всякой системе, а отсутствующий
- *  глиф — пустой квадрат вместо смысла. Эмодзи не годятся тем же: их рисует
- *  система, и в тёмной панели они цветные и чужие, а эти наследуют `currentColor`.
+/** Значки — Lucide (https://lucide.dev, ISC; вписаны путями, пакета в
+ *  зависимостях нет). Свои `<svg>`, а не глифы шрифта: `Segoe Fluent Icons`
+ *  есть не на всякой системе, а отсутствующий глиф — пустой квадрат вместо
+ *  смысла. Эмодзи не годятся тем же: их рисует система, и в тёмной панели они
+ *  цветные и чужие, а эти наследуют `currentColor`.
  *
- *  Сетка 12×12 и толщина 1.3 — те же, что у стрелок приборной линейки: два
- *  разных штриха в одном окне видно сразу. */
+ *  Сетка 24×24 и штрих 1.75 — на 16 px это волосок в 1.17, того же веса, что
+ *  у текста рядом. Один набор на всё окно; самодельные значки, которые здесь
+ *  стояли, были того же рода, что и самодельная карта: почти как у всех и
+ *  чуть хуже каждого. Символы шрифтом (✕ ⋯ + ? ★) вместо значков не ставят.
+ *
+ *  Глобуса здесь нет и быть не должно: профили — это узлы, а не «интернет»,
+ *  и узлом их и рисуем — стойкой сервера. `FILLED` — значки, которые читаются
+ *  только залитыми: звезда. */
 const ICONS = {
-  tag: "M6.5 1.5H1.5V6.5L6.5 11.5 11.5 6.5ZM3.8 3.8h.01",
-  node: "M6 1a5 5 0 100 10A5 5 0 006 1ZM1 6h10M6 1c2.4 2.7 2.4 7.3 0 10M6 1C3.6 3.7 3.6 8.3 6 11",
-  screen: "M1.5 2.5h9v6h-9zM4.5 10.5h3M6 8.5v2",
-  chip: "M3.5 3.5h5v5h-5zM5 1.5v2M7 1.5v2M5 8.5v2M7 8.5v2M1.5 5h2M1.5 7h2M8.5 5h2M8.5 7h2",
-  speech: "M1.5 2.5h9v5.5h-5L2.5 10.5V8H1.5z",
-  clock: "M6 1a5 5 0 100 10A5 5 0 006 1ZM6 3.5V6l1.8 1.2",
-  dice: "M2 2h8v8H2zM4.2 4.2h.01M7.8 7.8h.01M6 6h.01",
-  warn: "M6 1.5 11 10.5H1zM6 4.5v2.5M6 9h.01",
-  lines: "M1.5 2.5h9M1.5 5h9M1.5 7.5h6",
-  browser: "M1.5 2.5h9v7h-9zM1.5 4.5h9M3.2 3.5h.01M4.9 3.5h.01",
-  swap: "M1.5 3.5h7L6.5 1.5M10.5 8.5h-7L5.5 10.5",
-  repeat: "M6 1.5A4.5 4.5 0 111.5 6M.8 6.9 1.5 6 2.2 6.9",
+  server: "M4 2h16a2 2 0 0 1 2 2v4a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2v-4a2 2 0 0 1 2 -2zM4 14h16a2 2 0 0 1 2 2v4a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2v-4a2 2 0 0 1 2 -2zM6 6L6.01 6M6 18L6.01 18",
+  screen: "M4 3h16a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2v-10a2 2 0 0 1 2 -2zM8 21L16 21M12 17L12 21",
+  lines: "M3 5h1M3 12h1M3 19h1M8 5h1M8 12h1M8 19h1M13 5h8M13 12h8M13 19h8",
+  browser: "M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2zM10 4v4M2 8h20M6 4v4",
+  swap: "M8 3 4 7l4 4M4 7h16M16 21l4-4-4-4M20 17H4",
+  tag: "M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42zM7 7.5a0.5 0.5 0 1 0 1 0a0.5 0.5 0 1 0 -1 0",
+  chip: "M12 20v2M12 2v2M17 20v2M17 2v2M2 12h2M2 17h2M2 7h2M20 12h2M20 17h2M20 7h2M7 20v2M7 2v2M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2zM9 8h6a1 1 0 0 1 1 1v6a1 1 0 0 1 -1 1h-6a1 1 0 0 1 -1 -1v-6a1 1 0 0 1 1 -1z",
+  speech: "M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z",
+  clock: "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0M12 6v6l4 2",
+  dice: "M4 10h8a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2zM17.92 14l3.5-3.5a2.24 2.24 0 0 0 0-3l-5-4.92a2.24 2.24 0 0 0-3 0L10 6M6 18h.01M10 14h.01M15 6h.01M18 9h.01",
+  warn: "M21.73 18l-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3M12 9v4M12 17h.01",
+  repeat: "M17 2l4 4-4 4M3 11v-1a4 4 0 0 1 4-4h14M7 22l-4-4 4-4M21 13v1a4 4 0 0 1-4 4H3",
+  plus: "M5 12h14M12 5v14",
+  close: "M18 6 6 18M6 6l12 12",
+  more: "M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0M18 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0M4 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0",
+  help: "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01",
+  search: "M21 21l-4.34-4.34M3 11a8 8 0 1 0 16 0a8 8 0 1 0 -16 0",
+  star: "M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z",
+  lockOpen: "M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-7a2 2 0 0 1 2 -2zM7 11V7a5 5 0 0 1 9.9-1",
+  lock: "M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-7a2 2 0 0 1 2 -2zM7 11V7a5 5 0 0 1 10 0v4",
+  power: "M12 2v10M18.4 6.6a9 9 0 1 1-12.77.04",
+  shield: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1zM9 12l2 2 4-4",
+  ring: "M21 12a9 9 0 1 1-6.219-8.56",
+  sliders: "M10 5H3M12 19H3M14 3v4M16 17v4M21 12h-9M21 19h-5M21 5h-7M8 10v4M8 12H3",
+  launch: "M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6",
+  chevron: "M9 18l6-6-6-6",
+  check: "M20 6 9 17l-5-5",
+  down: "M12 5v14M19 12l-7 7-7-7",
+  up: "M5 12l7-7 7 7M12 19V5",
+  refresh: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16M8 16H3v5",
+  gauge: "M12 14l4-4M3.34 19a10 10 0 1 1 17.32 0",
+  bolt: "M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z",
+  copy: "M10 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-10a2 2 0 0 1 2 -2zM4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2",
 } as const;
+
+const FILLED: IconName[] = ["star"];
 
 export type IconName = keyof typeof ICONS;
 
-export function Icon({ name, className = "" }: { name: IconName; className?: string }) {
+export function Icon({ name, className = "", size = 16 }: { name: IconName; className?: string; size?: number }) {
+  const filled = FILLED.includes(name);
   return (
     <svg
-      width="12"
-      height="12"
-      viewBox="0 0 12 12"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.3"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill={filled ? "currentColor" : "none"}
+      stroke={filled ? "none" : "currentColor"}
+      strokeWidth="1.75"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
@@ -225,14 +309,13 @@ export function Icon({ name, className = "" }: { name: IconName; className?: str
  *  отдельно стоящее поле держит `w-full`. Поле утоплено в плиту: тот же приём,
  *  что и у списков, — вводить в паз, а не поверх. */
 export const FIELD =
-  "selectable h-8 w-full min-w-0 flex-1 rounded-md border border-edge bg-surface-2 px-3 text-[13px] outline-none transition-colors placeholder:text-muted focus:border-accent";
+  "field selectable h-8 w-full min-w-0 flex-1 rounded-md px-3 text-sm outline-none";
 
 /** То же поле, но многострочное: высоту задаёт `rows`, а не `h-8`. */
 const FIELD_MULTI = `${FIELD.replace("h-8", "h-auto")} resize-none py-[5px] leading-[22px]`;
 
-/** Поиск — основное действие над длинным списком, поэтому у него удобная для
- *  мыши высота, не раздувающая компактные поля форм. */
-const FIELD_SEARCH = FIELD.replace("h-8", "h-10");
+/** Поиск — того же размера, что и прочие поля: высота одна на всё окно. */
+const FIELD_SEARCH = FIELD;
 
 /** Чем кончилась отправка: приняли ли и что сказали. Служба отвечает не только
  *  «да» и «нет» — из импорта приезжает счёт («заведено 12, пропущено 38»), и
@@ -358,7 +441,7 @@ export function AddField({
           {fileLabel && (
             // Диалог открывает сам `<input>`, поэтому кнопка — это `<label>`:
             // programmatic click по скрытому полю вебвью не всегда пускает.
-            <label className={`${VARIANTS.ghost} inline-flex h-8 cursor-pointer items-center justify-center whitespace-nowrap rounded-md border px-3 text-[13px] font-medium transition duration-200`}>
+            <label className={`${VARIANTS.ghost} smooth inline-flex h-8 cursor-pointer items-center justify-center whitespace-nowrap rounded-md px-3 text-sm`}>
               {fileLabel}
               <input
                 type="file"
@@ -376,7 +459,7 @@ export function AddField({
       </form>
       {said?.note && (
         <div className="flex items-start gap-2">
-          <span className={`min-w-0 flex-1 whitespace-pre-line text-[11px] ${said.bad ? "text-fault" : "text-muted"}`}>
+          <span className={`min-w-0 flex-1 whitespace-pre-line text-xs ${said.bad ? "text-fault" : "text-muted"}`}>
             {said.note}
           </span>
           {said.confirm && (
@@ -395,7 +478,7 @@ export function AddField({
           )}
         </div>
       )}
-      {!said && sniffed && <span className="text-[11px] text-muted">{sniffed}</span>}
+      {!said && sniffed && <span className="text-xs text-muted">{sniffed}</span>}
     </div>
   );
 }
@@ -422,9 +505,7 @@ export function ConfirmButton({
   const [armed, setArmed] = useState(false);
   if (!armed) {
     return (
-      <Button variant="danger" aria-label={label} onClick={() => setArmed(true)}>
-        ✕
-      </Button>
+      <IconButton icon="close" variant="danger" label={label} onClick={() => setArmed(true)} />
     );
   }
   return (
@@ -523,7 +604,7 @@ export function Menu({
       ref={ref}
       role="menu"
       style={{ left: box?.left ?? at[0], top: box?.top ?? at[1], visibility: box ? undefined : "hidden" }}
-      className="enter fixed z-20 min-w-40 rounded-md border border-edge bg-surface p-1 shadow-lg"
+      className="enter fixed z-20 min-w-44 rounded-lg border border-edge bg-surface p-1 shadow-[var(--pg-flyout-shadow)]"
     >
       {items.map((item) => (
         <button
@@ -537,11 +618,13 @@ export function Menu({
             onClose();
             item.onPick();
           }}
-          className={`smooth flex w-full items-center gap-2 rounded-[3px] px-2.5 py-1.5 text-start text-[13px] disabled:opacity-40 hover:bg-surface-2 ${
-            item.danger ? "text-muted hover:text-fault" : ""
+          className={`smooth flex h-8 w-full items-center gap-2 rounded-md px-2 text-start text-sm disabled:opacity-40 hover:bg-hover ${
+            item.danger ? "hover:text-fault" : ""
           } ${armed === item.label ? "text-fault" : ""}`}
         >
-          <span className="w-3 shrink-0 text-center text-accent">{item.mark ? "★" : ""}</span>
+          <span className="grid w-4 shrink-0 place-items-center text-accent">
+            {item.mark && <Icon name="check" size={14} />}
+          </span>
           <span className="min-w-0 flex-1 truncate">{armed === item.label ? item.ask : item.label}</span>
         </button>
       ))}
@@ -566,10 +649,13 @@ export function Modal({
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  // Закрывать в уборке эффекта нельзя: `close()` шлёт событие `close`, а оно
+  // зовёт `onClose` — и StrictMode при разработке, прогоняя эффект дважды,
+  // закрывал каждое окно сразу после открытия. Снятый из DOM `<dialog>`
+  // перестаёт быть модальным сам, закрывать его руками незачем.
   useEffect(() => {
     const dialog = ref.current;
-    dialog?.showModal();
-    return () => dialog?.close();
+    if (dialog && !dialog.open) dialog.showModal();
   }, []);
   return (
     <dialog
@@ -578,14 +664,12 @@ export function Modal({
       // Клик мимо содержимого — это клик по самому <dialog>: его поле целиком
       // занимает вложенный блок.
       onClick={(e) => e.target === ref.current && onClose()}
-      className="m-auto w-[min(34rem,calc(100vw-2rem))] rounded-lg border border-edge bg-surface p-0 text-ink shadow-lg backdrop:bg-bg/70"
+      className="m-auto w-[min(34rem,calc(100vw-2rem))] rounded-lg border border-edge bg-surface p-0 text-ink shadow-[var(--pg-flyout-shadow)] backdrop:bg-black/30"
     >
-      <div className="flex max-h-[85vh] flex-col gap-3 overflow-y-auto p-5">
-        <header className="flex items-center gap-3">
-          <h2 className="engraved min-w-0 flex-1 truncate text-muted">{title}</h2>
-          <Button variant="quiet" aria-label={title} onClick={onClose}>
-            ✕
-          </Button>
+      <div className="flex max-h-[85vh] flex-col gap-3 overflow-y-auto p-5 pt-4">
+        <header className="-me-2 flex items-center gap-3">
+          <h2 className="min-w-0 flex-1 truncate text-xl font-semibold">{title}</h2>
+          <IconButton icon="close" label={title} onClick={onClose} />
         </header>
         {children}
       </div>
@@ -628,6 +712,25 @@ export function SearchField({
 export function flag(code: string | null | undefined): string | null {
   if (!code || !/^[A-Za-z]{2}$/.test(code)) return null;
   return String.fromCodePoint(...[...code.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
+}
+
+/** Флаг в начале имени: панели подписок так и называют узлы — «🇳🇱 Amsterdam».
+ *  Отдаём флаг и остаток порознь, чтобы флаг встал в свою колонку, а не
+ *  повторился рядом с флагом страны выхода. */
+export function leadingFlag(name: string): [string | null, string] {
+  const m = /^([\u{1F1E6}-\u{1F1FF}]{2})\s*/u.exec(name);
+  return m ? [m[1], name.slice(m[0].length)] : [null, name];
+}
+
+/** Флаг узла для колонки списка и имя без него. Флаг страны выхода по замеру
+ *  сильнее флага из имени: имя пишет чужая панель, а замер — правда. Когда они
+ *  расходятся, имя остаётся целым: «🇳🇱 Amsterdam» под флагом Германии — это
+ *  ровно то, что человеку стоит увидеть. */
+export function nodeFlag(name: string, code: string | null | undefined): [string | null, string] {
+  const [own, rest] = leadingFlag(name);
+  const measured = flag(code);
+  if (measured && own && own !== measured) return [measured, name];
+  return [measured ?? own, own ? rest : name];
 }
 
 /** Аватарка браузерного профиля: три цветных пятна и первая буква имени.
@@ -708,11 +811,12 @@ function hex(rgb: Rgb): string {
  *  моноширинный видны как разные с первого взгляда. Текстовый Segoe поэтому и
  *  выпал из тройки: он тут самый безликий, а место у нас всего три.
  *
- *  Антиква названа прямо, а не токеном темы: своего серифного стека у окна нет,
- *  и заводить его ради одной буквы незачем. Georgia стоит на Windows со времён
+ *  Антиква и DIN названы прямо, а не токеном темы: своего серифного стека у окна
+ *  нет, а заголовочный стек окна ушёл с Bahnschrift на Segoe UI Variable, и
+ *  аватарка, взявшая бы его, сменила бы картинку у всех заведённых профилей. Georgia стоит на Windows со времён
  *  2000, Times New Roman — подстраховка на случай, если кириллицы в ней не
  *  окажется: пустой квадрат вместо буквы хуже скучной антиквы. */
-const FONTS = ['Georgia, "Times New Roman", serif', "var(--font-display)", "var(--font-mono)"];
+const FONTS = ['Georgia, "Times New Roman", serif', 'Bahnschrift, "Segoe UI Variable Display", "Segoe UI Semibold", "Segoe UI", system-ui, sans-serif', "var(--font-mono)"];
 
 /** Начертание — тоже по зерну, и ровно два: обычное и жирное. Промежуточных
  *  нет не из лени — у Georgia всего два реза, и запрошенное 600 браузер отдаст
@@ -837,7 +941,7 @@ export function Avatar({
 }
 
 export function Empty({ children }: { children: ReactNode }) {
-  return <p className="py-6 text-center text-[13px] text-muted">{children}</p>;
+  return <p className="px-3 py-6 text-center text-sm text-muted">{children}</p>;
 }
 
 /** Знак: корпус со сквозным лазом, смещённым влево и вниз. Смещение и есть

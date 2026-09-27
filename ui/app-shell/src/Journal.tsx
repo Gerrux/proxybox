@@ -8,8 +8,8 @@ import { CopyButton, Empty, Panel } from "./ui";
  *  объявила бы «правила не поставлены» неважным, потому что нужного слова в
  *  строке не нашлось.
  *
- *  Лента — бумажная лента самописца: слева время, вдоль него сплошной рельс,
- *  сверху насечка на свежей записи. Новость в журнале всегда одна — верхняя.
+ *  Лента: слева время, вдоль него сплошной рельс, на свежей записи — точка
+ *  акцентом. Новость в журнале всегда одна — верхняя.
  *
  *  Время вынесено из подсказки в саму ленту: журнал читают, когда уже что-то
  *  сломалось, и «когда именно» там половина ответа. Час и минуты повторно не
@@ -35,7 +35,7 @@ export function Journal({ lines, lang, className }: { lines: LogLine[]; lang?: L
       .join("\n");
   return (
     <Panel
-      pad="p-3.5"
+      pad="p-3"
       className={className}
       title={s.journal}
       action={
@@ -45,7 +45,7 @@ export function Journal({ lines, lang, className }: { lines: LogLine[]; lang?: L
       {lines.length === 0 ? (
         <Empty>{s.emptyJournal}</Empty>
       ) : (
-        <ol className="flex flex-col font-mono text-[11.5px] leading-snug">
+        <ol className="flex flex-col text-sm">
           {lines.map((line, i) => {
             const prev = lines[i - 1];
             // Группа — не «сутки», а «другие сутки, чем у строки выше»: список
@@ -59,7 +59,7 @@ export function Journal({ lines, lang, className }: { lines: LogLine[]; lang?: L
               <li key={`${i}-${line.text}`} title={loggedAgo(s, line.at)} className={i === 0 ? "enter" : ""}>
                 {day && (
                   <div className={`mb-1.5 flex items-center gap-2 ${i ? "mt-3.5" : ""}`}>
-                    <span className="engraved shrink-0 text-muted">{day}</span>
+                    <span className="shrink-0 text-xs font-semibold text-muted">{day}</span>
                     <span className="h-px flex-1 bg-edge" />
                   </div>
                 )}
@@ -72,21 +72,21 @@ export function Journal({ lines, lang, className }: { lines: LogLine[]; lang?: L
                   <time
                     dateTime={at(line).toISOString()}
                     aria-label={clock(line)}
-                    className="w-11 shrink-0 py-1 pe-2 text-end text-[10.5px] tabular-nums text-muted"
+                    className="w-12 shrink-0 py-1 pe-2.5 text-end text-xs tabular-nums text-muted"
                   >
                     {opens || clock(prev) !== clock(line) ? clock(line) : <span className="opacity-40">·</span>}
                   </time>
                   {/* Рельс — левая граница текста, а не отдельная линия: строки
                       стоят вплотную, и границы смыкаются в одну сплошную. */}
-                  <span className="selectable border-s border-edge py-1 ps-3">{line.text}</span>
-                  {/* Насечка на голове ленты. Единственное яркое пятно в панели:
-                      всё остальное здесь — приглушённая запись прибора.
+                  <span className="selectable border-s border-edge py-1 ps-3 leading-[18px]">{line.text}</span>
+                  {/* Точка на голове ленты. Единственное яркое пятно в панели:
+                      всё остальное здесь — приглушённая запись.
 
-                      Сдвиг на полразмера логическим не бывает: `start-11`
-                      зеркалится сам, а `-translate-x` — нет, и в фарси насечка
+                      Сдвиг на полразмера логическим не бывает: `start-12`
+                      зеркалится сам, а `-translate-x` — нет, и в фарси точка
                       уезжала бы с рельса на свою же ширину. */}
                   {i === 0 && (
-                    <span className="absolute top-[9px] start-11 size-[5px] -translate-x-1/2 rotate-45 bg-ink rtl:translate-x-1/2" />
+                    <span className="absolute top-[11px] start-12 size-[7px] -translate-x-1/2 rounded-full bg-accent rtl:translate-x-1/2" />
                   )}
                 </div>
               </li>

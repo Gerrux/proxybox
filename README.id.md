@@ -36,9 +36,9 @@ Spesifikasi asli (bahasa Rusia) — [proxybox-prompt.md](proxybox-prompt.md).
 ![Jendela proxybox](docs/interface.png)
 
 Status adalah hal utama yang ditampilkan jendela, karena itu ia menempati bagian
-atas. Di bawah judul tergambar jalurnya sendiri: dari aplikasi terpilih menuju
-jaringan. Selama terowongan hidup, garis-garis berjalan di sepanjangnya; ketika
-tidak ada terowongan, saluran terputus dan diam.
+atas: kata status dan peta dunia yang negara keluarnya diwarnai dengan warna
+status — penuh selama lalu lintas berjalan, diarsir selama akses tertutup. Ganti
+node, peta terbang ke negaranya.
 
 ![Tidak ada terowongan — akses tertutup](docs/interface-failclosed.png)
 
@@ -61,7 +61,7 @@ Mode privat menyala + terowongan belum terkonfirmasi = aplikasi terpilih tanpa
 jaringan. Keadaan antara dengan akses langsung tidak ada, aturan bypass juga
 tidak ada. Semua hal lain dalam arsitektur adalah akibat dari ini.
 
-Cakupannya ada dua: dipilih di kepala jendela, di ujung kiri saluran (Windows),
+Cakupannya ada dua: dipilih di kepala jendela, di samping tombol Nyalakan (Windows),
 atau dengan perintah `proxybox scope` (Linux). **Daftar putih** — jaringan
 hanya untuk aplikasi terpilih dan hanya lewat terowongan; di Linux batas ini
 belum digambar, lihat [docs/limitations.md](docs/limitations.md). **Seluruh

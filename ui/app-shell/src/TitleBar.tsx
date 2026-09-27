@@ -31,8 +31,10 @@ import { Mark } from "./ui";
  *
  * Значки — свои `<svg>`, а не глифы шрифта: `Segoe MDL2 Assets` есть не на
  * всякой системе, а отсутствующий глиф — это пустой квадрат вместо «закрыть».
- * «Закрыть» красится в `fault`, а не в `closed`: янтарь запертого канала —
- * штатное состояние продукта, а не разрушительное действие.
+ * «Закрыть» краснеет системным красным Windows (#c42b1c), а не токеном
+ * `fault`: так под курсором выглядит крестик любого окна, и в тёмной теме
+ * розовый `fault` читался бы чужим. Не `closed` тем более: янтарь запертого
+ * канала — штатное состояние продукта, а не разрушительное действие.
  *
  * В браузере (разработка без Tauri) полоса остаётся, но без трёх кнопок и без
  * перетаскивания: рамку там рисует сам браузер, а настройки и обновления нужны
@@ -120,7 +122,7 @@ export function TitleBar({
         void systemMenu(true);
       }}
       data-tauri-drag-region
-      className="flex h-8 shrink-0 items-center gap-2 overflow-hidden border-b border-edge bg-surface ps-3"
+      className="flex h-8 shrink-0 items-center gap-2 overflow-hidden ps-3"
     >
       {/* Знак остаётся, когда имя и версия уже ушли (`.tb-name` на узкой
           ширине): 16 px не мешают кнопкам, а без него полоса перестаёт
@@ -129,12 +131,11 @@ export function TitleBar({
       <span data-tauri-drag-region className="flex shrink-0 items-center text-accent">
         <Mark className="pointer-events-none" />
       </span>
-      <span data-tauri-drag-region className="tb-name engraved min-w-0 truncate text-muted">
+      <span data-tauri-drag-region className="tb-name min-w-0 truncate text-xs">
         {title}
       </span>
-      {/* Версия — такое же показание прибора, как задержка и байты: число
-          моноширинное, подпись ушла в подсказку. */}
-      <span className="tb-version shrink-0 font-mono text-[11px] tabular-nums text-muted" title={s.version}>
+      {/* Версия — приглушённо следом за именем, подпись ушла в подсказку. */}
+      <span className="tb-version shrink-0 text-xs tabular-nums text-muted" title={s.version}>
         {VERSION}
       </span>
       <span data-tauri-drag-region className="min-w-0 flex-1" />
@@ -142,7 +143,7 @@ export function TitleBar({
       {update != null && (
         <button
           type="button"
-          className={`${TB_BUTTON} flex items-center gap-1.5 px-2.5 text-accent hover:bg-surface-2`}
+          className={`${TB_BUTTON} flex items-center gap-1.5 px-2.5 text-accent hover:bg-hover`}
           title={s.updateTo(update)}
           onClick={onUpdate}
         >
@@ -223,8 +224,8 @@ export function TitleBar({
  *  детали. Подсветка сюда не входит намеренно, у «закрыть» она своя.
  *  Кнопка обновления берёт отсюда только контейнер: цвет у неё свой,
  *  акцентный, и под курсором он остаётся — им она и говорит, зачем она тут. */
-const TB_BUTTON = "h-8 shrink-0 transition-colors";
-const TB_HOVER = "hover:bg-surface-2 hover:text-ink";
+const TB_BUTTON = "h-8 shrink-0 text-xs transition-colors";
+const TB_HOVER = "hover:bg-hover";
 
 function WindowButton({
   label,
@@ -249,8 +250,8 @@ function WindowButton({
       title={title ?? label}
       onClick={onClick}
       className={`${TB_BUTTON} grid w-11 place-items-center ${
-        pressed ? "bg-surface-2 text-ink" : "text-muted"
-      } ${danger ? "hover:bg-fault hover:text-bg" : TB_HOVER}`}
+        pressed ? "bg-press text-ink" : "text-ink"
+      } ${danger ? "hover:bg-[#c42b1c] hover:text-white" : TB_HOVER}`}
     >
       {/* Рисуем заливкой, а не штрихом: на 12 пикселях волосок в 1.1 съедает
           сам себя — просвет внутри фигуры схлопывается, и отверстие шестерни

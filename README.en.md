@@ -33,10 +33,10 @@ The original spec (Russian) — [proxybox-prompt.md](proxybox-prompt.md).
 
 ![The proxybox window](docs/interface.png)
 
-State is the main thing the window shows, which is why it takes the top. Below
-the heading the path itself is drawn: from the selected applications to the
-network. While the tunnel is up, dashes travel along it; when there is no
-tunnel, the conduit is cut and still.
+State is the main thing the window shows, which is why it takes the top: the
+state word and a world map on which the exit country is filled with the state
+colour — solid while traffic flows, hatched while access is closed. Switch
+nodes and the map flies to the new country.
 
 ![No tunnel — access closed](docs/interface-failclosed.png)
 
@@ -60,8 +60,8 @@ Private mode on + tunnel not confirmed = the selected applications have no
 network. Intermediate states with direct access do not exist, and there are no
 bypass rules. Everything else in the architecture follows from this.
 
-There are two scopes, chosen on the window header at the left end of the
-conduit (Windows), or with the `proxybox scope` command (Linux). **Whitelist**
+There are two scopes, chosen on the window header next to the Turn on
+button (Windows), or with the `proxybox scope` command (Linux). **Whitelist**
 — only the selected applications have network, and only through the tunnel;
 on Linux that line has not been drawn yet, see
 [docs/limitations.md](docs/limitations.md). **Whole machine** — no selection

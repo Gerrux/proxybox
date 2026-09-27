@@ -7,8 +7,9 @@ import {
   ConfirmButton,
   Empty,
   FIELD,
-  flag,
+  nodeFlag,
   Icon,
+  IconButton,
   Menu,
   type MenuItem,
   Panel,
@@ -244,14 +245,14 @@ function Field({
 }) {
   return (
     <label className={`flex min-w-0 flex-col gap-1 ${className}`}>
-      <span className="engraved flex items-center gap-1.5 text-muted">
-        <Icon name={icon} />
+      <span className="flex items-center gap-1.5 text-xs font-semibold text-muted">
+        <Icon name={icon} size={14} />
         {label}
       </span>
       {/* Строка вокруг поля обязательна: в `FIELD` живёт `flex-1`, и в
           колоночной раскладке он растянул бы поле по высоте вместо ширины. */}
       <div className="flex min-w-0 gap-2">{children}</div>
-      {hint != null && <span className="text-[11px] text-muted">{hint}</span>}
+      {hint != null && <span className="text-xs text-muted">{hint}</span>}
     </label>
   );
 }
@@ -321,7 +322,7 @@ function Editor({
       className="enter fixed inset-0 z-10 flex flex-col bg-bg p-3"
     >
       <Panel
-        pad="p-3.5"
+        pad="p-3"
         className="min-h-0 flex-1"
         title={title}
         action={
@@ -394,7 +395,7 @@ function Editor({
               />
             </Field>
           </div>
-          <Field icon="node" label={s.browserNode} hint={s.browserNodeHint}>
+          <Field icon="server" label={s.browserNode} hint={s.browserNodeHint}>
             {/* Родной select, а не свой список: узлов бывает под сотню, и
                 системный уже умеет и поиск с клавиатуры, и прокрутку. */}
             <select
@@ -431,7 +432,7 @@ function Editor({
               <option value="firefox">{draft.compatibility ? "Firefox" : s.browserFirefox}</option>
             </select>
           </Field>
-          <label className="flex items-start gap-2 text-[13px]">
+          <label className="flex items-start gap-2 text-sm">
             <input
               type="checkbox"
               checked={draft.compatibility}
@@ -440,7 +441,7 @@ function Editor({
             />
             <span className="flex flex-col gap-0.5">
               {s.browserCompatibility}
-              <span className="text-[11px] text-muted">{s.browserCompatibilityHint}</span>
+              <span className="text-xs text-muted">{s.browserCompatibilityHint}</span>
             </span>
           </label>
           {draft.engine === "chromium" && !draft.compatibility && (
@@ -448,7 +449,7 @@ function Editor({
               строку user-agent, а строка остаётся редактируемой — вписанную
               руками конструктор не переписывает, он её разбирает. */
           <fieldset className="flex flex-col gap-2.5 rounded-md border border-edge p-2.5">
-            <legend className="engraved px-1 text-[11px] text-muted">{s.browserIdentity}</legend>
+            <legend className="px-1 text-xs font-semibold text-muted">{s.browserIdentity}</legend>
             <div className="flex flex-wrap gap-2">
               <Field icon="screen" label={s.browserPlatform} className="min-w-[9rem] flex-1">
                 <select
@@ -507,23 +508,23 @@ function Editor({
               onChange={(e) => setDraft({ ...draft, ua: e.target.value })}
               placeholder={s.browserUa}
               spellCheck={false}
-              className={`${FIELD} font-mono text-[11px]`}
+              className={`${FIELD} font-mono text-xs`}
             />
             {/* Что подставится на самом деле, видно тут же: «настоящая»
                 оставляет строку браузера, и знать, какая она, человеку надо
                 не меньше, чем видеть выдуманную. */}
-            <p className="text-[11px] text-muted">
+            <p className="text-xs text-muted">
               {ua.platform === "" ? s.browserUaRealNow(realName(), realMajor()) : s.browserUaSet}
             </p>
             {/* Предупреждение стоит там, где его игнорировать труднее всего, —
                 под самим выбором. Тултипом это было бы косметикой. */}
             {ua.platform !== "" && ua.platform !== "custom" && ua.platform !== realPlatform() && (
-              <p className="flex items-start gap-1.5 text-[11px] text-wait">
+              <p className="flex items-start gap-1.5 text-xs text-wait">
                 <Icon name="warn" className="mt-0.5" />
                 {s.browserMismatch(realName())}
               </p>
             )}
-            <p className="text-[11px] text-muted">{s.browserUaHint}</p>
+            <p className="text-xs text-muted">{s.browserUaHint}</p>
           </fieldset>
           )}
           <Field icon="speech" label={s.browserLang} hint={s.browserLangHint}>
@@ -545,7 +546,7 @@ function Editor({
                 value={draft.lang}
                 onChange={(e) => setDraft({ ...draft, lang: e.target.value })}
                 spellCheck={false}
-                className={`${FIELD} font-mono text-[11px]`}
+                className={`${FIELD} font-mono text-xs`}
               />
             )}
           </Field>
@@ -553,7 +554,7 @@ function Editor({
               строки «по стране узла» — обещание, которое нечем проверить, а
               страна берётся из прогона профилей и до него неизвестна. */}
           {draft.lang === AUTO && (
-            <p className="text-[11px] text-muted">
+            <p className="text-xs text-muted">
               {country
                 ? s.browserLangAutoNow(country, acceptLanguage(AUTO, code))
                 : s.browserLangAutoUnknown(acceptLanguage(AUTO, code))}
@@ -580,7 +581,7 @@ function Editor({
                   onChange={(e) => setDraft({ ...draft, timezone: e.target.value })}
                   placeholder="Europe/Amsterdam"
                   spellCheck={false}
-                  className={`${FIELD} font-mono text-[11px]`}
+                  className={`${FIELD} font-mono text-xs`}
                 />
               )}
             </Field>
@@ -599,7 +600,7 @@ function Editor({
           </Field>
           {/* Одноразовость — флажок, а не отдельный вид профиля: личность у
               одноразового та же, забываются только входы. */}
-          <label className="flex items-start gap-2 text-[13px]">
+          <label className="flex items-start gap-2 text-sm">
             <input
               type="checkbox"
               checked={draft.ephemeral}
@@ -608,7 +609,7 @@ function Editor({
             />
             <span className="flex flex-col gap-0.5">
               {s.browserOnce}
-              <span className="text-[11px] text-muted">{s.browserOnceHint}</span>
+              <span className="text-xs text-muted">{s.browserOnceHint}</span>
             </span>
           </label>
           <div className="flex flex-wrap justify-end gap-2">
@@ -683,7 +684,7 @@ export function Browsers({
 
   return (
     <Panel
-      pad="p-3.5"
+      pad="p-3"
       className={className}
       title={s.browsers}
       note={items.length > 0 && <span className="text-muted">{items.length}</span>}
@@ -713,8 +714,8 @@ export function Browsers({
                 type="button"
                 aria-pressed={activeTag === t}
                 onClick={() => setTag(t)}
-                className={`smooth rounded-full border px-2.5 py-0.5 text-[11px] ${
-                  activeTag === t ? "border-accent text-accent" : "border-edge text-muted hover:text-ink"
+                className={`smooth h-7 rounded-full border px-3 text-xs ${
+                  activeTag === t ? "border-accent bg-accent text-on-accent" : "border-edge text-muted hover:bg-hover hover:text-ink"
                 }`}
               >
                 {t ?? s.browserTagsAll}
@@ -727,7 +728,7 @@ export function Browsers({
         ) : shown.length === 0 ? (
           <Empty>{s.browserNoMatch}</Empty>
         ) : (
-          <ul className="flex flex-col gap-1">
+          <ul className="-mx-1.5 flex flex-col">
             {shown.map((item) => {
               const live = status?.browsers.includes(item.name) ?? false;
               // Узел могли удалить или он мог пропасть из подписки: профиль это
@@ -761,42 +762,41 @@ export function Browsers({
                     e.preventDefault();
                     setMenu({ at: spot(e), items: rowMenu() });
                   }}
-                  className="enter smooth flex items-center gap-2 rounded-md py-1.5 ps-3 pe-1 hover:bg-surface-2"
+                  data-selected={live}
+                  className="row enter smooth flex min-h-12 items-center gap-2.5 ps-2.5 pe-1"
                 >
                   {/* Та же картинка, что человек выбрал в форме: по ней профиль
                       и находят в списке, а её цвет — цвет значка окна в панели
                       задач, по которому окна сопоставляют между собой. */}
-                  <Avatar seed={seed(item)} name={item.name} size={26} />
-                  <div className="min-w-0 flex-1 leading-tight">
+                  {live && <span className="row-pill bg-open" />}
+                  <Avatar seed={seed(item)} name={item.name} size={28} />
+                  <div className="min-w-0 flex-1">
                     {/* Метки обрезаются раньше имени: имя — единственное, чем
                         строки различаются, а метки видны ещё и в отборе сверху. */}
                     <span className="flex items-baseline gap-2">
-                      <span className="max-w-[70%] shrink-0 truncate text-[13px]" title={item.name}>
+                      <span className={`max-w-[70%] shrink-0 truncate text-sm ${live ? "font-semibold" : ""}`} title={item.name}>
                         {item.name}
                       </span>
                       <span className="flex min-w-0 gap-1 overflow-hidden" title={item.tags.join(", ")}>
                         {item.tags.map((t) => (
-                          <span key={t} className="shrink-0 rounded-full border border-edge px-1.5 text-[10px] text-muted">
+                          <span key={t} className="shrink-0 rounded-full bg-hover px-2 text-xs text-muted">
                             {t}
                           </span>
                         ))}
                       </span>
                     </span>
-                    <span className="flex items-baseline gap-2 overflow-hidden text-[11px] text-muted">
-                      {live && <span className="engraved shrink-0 text-open">{s.browserOpenState}</span>}
+                    <span className="flex items-baseline gap-2 overflow-hidden text-xs text-muted">
+                      {live && <span className="shrink-0 font-semibold text-open">{s.browserOpenState}</span>}
                       {item.ephemeral && (
-                        <span className="engraved shrink-0" title={s.browserOnceHint}>
+                        <span className="shrink-0" title={s.browserOnceHint}>
                           {s.browserOnceMark}
                         </span>
                       )}
+                      {/* Флаг — впереди узла и один: имя узла из подписки уже
+                          начинается флагом, и второй рядом с ним был бы шумом. */}
                       <span className={`shrink-0 ${gone ? "text-fault" : ""}`} title={gone ? s.browserNodeGone : item.node}>
-                        {item.node}
+                        {nodeFlag(item.node, code).filter(Boolean).join(" ")}
                       </span>
-                      {flag(code) && (
-                        <span className="shrink-0 text-[13px] leading-none" aria-hidden>
-                          {flag(code)}
-                        </span>
-                      )}
                       {/* Личность целиком в строку не влезает никогда, а знать
                           про неё надо ровно одно: подменена она или настоящая. */}
                       {item.compatibility ? (
@@ -808,14 +808,14 @@ export function Browsers({
                           {s.browserFirefox}
                         </span>
                       ) : (
-                        <span className="min-w-0 truncate font-mono" title={item.ua || s.browserUaReal}>
+                        <span className="min-w-0 truncate" title={item.ua || s.browserUaReal}>
                           {item.ua ? item.ua.replace(/^.*Chrome\//, "Chrome/").replace(/ Safari.*$/, "") : s.browserUaReal}
                         </span>
                       )}
                     </span>
                   </div>
                   <Button
-                    variant="quiet"
+                    variant="ghost"
                     disabled={gone}
                     title={gone ? s.browserNodeGone : s.browserOpenHint(item.node)}
                     onClick={() =>
@@ -827,14 +827,12 @@ export function Browsers({
                   >
                     {s.browserOpen}
                   </Button>
-                  <Button
-                    variant="quiet"
-                    aria-label={s.actions}
+                  <IconButton
+                    icon="more"
+                    label={s.actions}
                     aria-haspopup="menu"
                     onClick={(e) => setMenu({ at: spot(e), items: rowMenu() })}
-                  >
-                    ⋯
-                  </Button>
+                  />
                 </li>
               );
             })}
@@ -849,20 +847,24 @@ export function Browsers({
               aria-expanded={trashOpen}
               onClick={() => setTrashOpen(!trashOpen)}
               title={s.browserTrashHint}
-              className="engraved flex items-center gap-2 text-start text-muted hover:text-ink"
+              className="smooth flex h-8 items-center gap-2 rounded-md px-2 text-start text-sm font-semibold hover:bg-hover"
             >
-              <span className="w-3">{trashOpen ? "▾" : "▸"}</span>
+              <Icon
+                name="chevron"
+                size={12}
+                className={`text-muted motion-safe:transition rtl:-scale-x-100 ${trashOpen ? "rotate-90" : ""}`}
+              />
               {s.browserTrash}
-              <span>{trash.length}</span>
+              <span className="font-normal text-muted">{trash.length}</span>
             </button>
             {trashOpen && (
               <ul className="flex flex-col gap-1">
                 {trash.map(({ profile, at }) => (
-                  <li key={profile.name} className="flex items-center gap-2 rounded-md py-1 ps-3 pe-1 opacity-80">
-                    <Avatar seed={seed(profile)} name={profile.name} size={22} />
-                    <div className="min-w-0 flex-1 leading-tight">
-                      <span className="block truncate text-[13px]">{profile.name}</span>
-                      <span className="text-[11px] text-muted">
+                  <li key={profile.name} className="row flex min-h-11 items-center gap-2.5 ps-2.5 pe-1">
+                    <Avatar seed={seed(profile)} name={profile.name} size={28} className="opacity-70" />
+                    <div className="min-w-0 flex-1">
+                      <span className="block truncate text-sm">{profile.name}</span>
+                      <span className="text-xs text-muted">
                         {s.browserTrashedAt(new Date(at * 1000).toLocaleDateString(status?.lang))}
                       </span>
                     </div>

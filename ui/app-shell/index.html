@@ -7,16 +7,10 @@
   </head>
   <body>
     <!-- Пока грузится бандл, окно белое, а это первое, что видит человек.
-         Показываем то же, что оно покажет через миг, — канал в ожидании;
-         React стирает эту разметку первым же рендером. Ни строк, ни скрипта:
-         текст пришлось бы переводить, а стили доезжают отдельным файлом. -->
-    <div id="root">
-      <div class="boot" data-state="connecting">
-        <span class="conduit-lamp"></span>
-        <span class="conduit-line"><span class="conduit-glow"></span></span>
-        <span class="conduit-end"></span>
-      </div>
-    </div>
+         Показываем индикатор ожидания Fluent; React стирает эту разметку первым
+         же рендером. Ни строк, ни скрипта: текст пришлось бы переводить, а
+         стили доезжают отдельным файлом. -->
+    <div id="root"><div class="boot"></div></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

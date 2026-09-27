@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { call, type Act, type Conn, type Status } from "./platform";
 import { strings } from "./i18n";
 import { bytes } from "./StatusBar";
-import { Button, Empty, Menu, type MenuItem, Panel, SearchField, spot } from "./ui";
+import { Button, Empty, Icon, Menu, type MenuItem, Panel, SearchField, spot } from "./ui";
 
 /** Соединения живут секундами, и опрос у них свой: в статусе им не место —
  *  тот ходит по кругу всегда, а список нужен, только пока панель открыта.
@@ -177,7 +177,7 @@ export function Conns({
 
   return (
     <Panel
-      pad="p-3.5"
+      pad="p-3"
       className={className}
       title={s.conns}
       note={
@@ -208,9 +208,14 @@ export function Conns({
               title={s.connsFencedHint}
               aria-expanded={shown}
               onClick={() => setShown(!shown)}
-              className="smooth flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-start text-[12px] text-muted hover:bg-surface-2"
+              className="smooth flex h-9 w-full items-center gap-2 rounded-md px-2.5 text-start text-sm hover:bg-hover"
             >
-              <span className="shrink-0 font-mono text-[10px]">{shown ? "▾" : "▸"}</span>
+              <Icon
+                name="chevron"
+                size={12}
+                className={`text-muted motion-safe:transition rtl:-scale-x-100 ${shown ? "rotate-90" : ""}`}
+              />
+              <Icon name="lock" size={14} className="text-closed" />
               <span className="min-w-0 flex-1 truncate">{s.connsFenced(locked.length)}</span>
             </button>
             {shown && (
@@ -218,9 +223,9 @@ export function Conns({
                 {locked.map((path) => (
                   <li
                     key={path}
-                    className="smooth flex items-center gap-2 rounded-md py-1 ps-2 pe-1 hover:bg-surface-2"
+                    className="row smooth flex items-center gap-2 py-0.5 ps-2.5 pe-1"
                   >
-                    <span className="min-w-0 flex-1 truncate text-[12.5px]" title={path}>
+                    <span className="min-w-0 flex-1 truncate text-sm" title={path}>
                       {base(path)}
                     </span>
                     <Button variant="quiet" onClick={() => edit("add-app", path)}>
@@ -248,7 +253,7 @@ export function Conns({
           </Empty>
         ) : (
           <ul
-            className="flex flex-col"
+            className="-mx-1.5 flex flex-col"
             onMouseEnter={() => (hold.current = true)}
             onMouseLeave={() => (hold.current = false)}
           >
@@ -280,13 +285,9 @@ export function Conns({
                           setMenu({ at: spot(e), items: rowMenu(c) });
                         }
                   }
-                  className="smooth relative flex items-baseline gap-3 rounded-md py-1.5 ps-3 pe-1 hover:bg-surface-2"
+                  className="row smooth flex min-h-9 items-center gap-3 ps-3 pe-2"
                 >
-                  <span
-                    className={`absolute inset-y-1 start-0 w-[3px] rounded-full ${
-                      c.tunneled ? "bg-open" : leak ? "bg-fault" : "bg-muted"
-                    }`}
-                  />
+                  <span className={`row-pill ${c.tunneled ? "bg-open" : leak ? "bg-fault" : "bg-muted"}`} />
                   {/* Слово пишется только у исключения. Под `final: proxy` в
                       туннель идёт всё, что sing-box вообще видит, — столбец с
                       неизменным «туннель» приучал глаз его не читать ровно к
@@ -294,22 +295,22 @@ export function Conns({
                       полтора сантиметра у имени хоста, которое режется. Рельс
                       слева остаётся: он и был тем, что различает строки. */}
                   {!c.tunneled && (
-                    <span className={`shrink-0 text-[11px] ${leak ? "text-fault" : "text-muted"}`}>
+                    <span className={`shrink-0 text-xs ${leak ? "text-fault" : "text-muted"}`}>
                       {s.connsDirect}
                     </span>
                   )}
                   <span
-                    className={`w-32 shrink-0 truncate text-[12.5px] ${name ? "" : "text-muted"}`}
+                    className={`w-32 shrink-0 truncate text-sm ${name ? "" : "text-muted"}`}
                     title={name ? c.process : s.connsNoProcessHint}
                   >
                     {name || s.connsNoProcess}
                   </span>
-                  <span className="selectable min-w-0 flex-1 truncate font-mono text-[11.5px] text-muted">
+                  <span className="selectable min-w-0 flex-1 truncate font-mono text-xs text-muted">
                     {c.host}
                   </span>
                   {/* Числа моноширинные и в одном порядке с шапкой: ↓ принято,
                       ↑ отправлено. */}
-                  <span className="shrink-0 font-mono text-[11px] text-muted">
+                  <span className="shrink-0 font-mono text-xs tabular-nums text-muted">
                     ↓{bytes(c.rx)} ↑{bytes(c.tx)}
                   </span>
                 </li>

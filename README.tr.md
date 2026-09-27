@@ -33,9 +33,10 @@ pencere, ne paket, ne de gerçek bir beyaz liste — ayrıntılar
 
 ![proxybox penceresi](docs/interface.png)
 
-Pencerenin gösterdiği en önemli şey durumdur, bu yüzden üstü o kaplar. Başlığın
-altında yolun kendisi çizilidir: seçili uygulamalardan ağa. Tünel ayaktayken
-üzerinde çizgiler ilerler; tünel yokken kanal kesilmiş ve hareketsizdir.
+Pencerenin gösterdiği en önemli şey durumdur, bu yüzden üstü o kaplar: durum
+sözcüğü ve çıkış ülkesinin durum rengiyle boyandığı bir dünya haritası —
+trafik akarken dolu, erişim kapalıyken taralı. Düğümü değiştirin, harita yeni
+ülkeye uçar.
 
 ![Tünel yok — erişim kapalı](docs/interface-failclosed.png)
 
@@ -58,7 +59,7 @@ Gizli kip açık + tünel doğrulanmamış = seçili uygulamaların ağı yok. D
 erişimli ara durumlar yoktur, bypass kuralı da yoktur. Mimarideki diğer her şey
 bunun sonucudur.
 
-Kapsam iki tanedir: pencere başlığında, kanalın sol ucunda seçilir (Windows) ya
+Kapsam iki tanedir: pencere başlığında, Aç düğmesinin yanında seçilir (Windows) ya
 da `proxybox scope` komutuyla (Linux). **Beyaz liste** — ağ yalnızca seçili
 uygulamalarda ve yalnızca tünel üzerinden; Linux'ta bu ayrım henüz çizilmedi,
 bkz. [docs/limitations.md](docs/limitations.md). **Tüm bilgisayar** — hiç
