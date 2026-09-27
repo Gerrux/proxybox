@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { call, type Scope, type Status } from "./platform";
 import { strings, type Strings } from "./i18n";
 import { Button, CopyButton, Icon, type IconName, Modal, Segmented, flag } from "./ui";
-import { WorldMap } from "./WorldMap";
+import { WorldMap } from "./WorldMapView";
 
 /** Длина доезда числа. Заметно меньше периода опроса (2 с), иначе счётчик не
  *  успевал бы доехать до следующего значения и полз бы вечно. */

@@ -19,7 +19,7 @@ import { openMain } from "./platform";
 import { strings } from "./i18n";
 import { bytes, describe, exitCode, latencyTone, splitExit, StateGlyph, tunnelState } from "./StatusBar";
 import { Button, Icon, IconButton, Segmented, Switch, flag, nodeFlag } from "./ui";
-import { WorldMap } from "./WorldMap";
+import { WorldMap } from "./WorldMapView";
 
 export function Flyout({
   status,
