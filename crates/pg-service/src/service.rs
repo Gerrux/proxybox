@@ -171,14 +171,54 @@ pub fn install(exe: PathBuf) -> windows_service::Result<()> {
     }
 }
 
-pub fn uninstall() -> windows_service::Result<()> {
+/// Остановить службу перед удалением. Ошибка остановки не мешает идти дальше,
+/// поэтому служба отдаётся вместе с её итогом.
+fn stop_for_uninstall() -> windows_service::Result<(Service, windows_service::Result<()>)> {
     let access = ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE;
     let service = manager(ServiceManagerAccess::CONNECT)?.open_service(NAME, access)?;
-    if service.query_status()?.current_state != ServiceState::Stopped {
-        service.stop()?;
-        // Дать службе снять правила брандмауэра до удаления: иначе выбранные
-        // приложения останутся заблокированными, а снимать блокировку нечем.
-        wait_stopped(&service)?;
+    let stopped = (|| {
+        if service.query_status()?.current_state != ServiceState::Stopped {
+            service.stop()?;
+            // Дать службе снять замок сама: её обработчик остановки делает это
+            // чище, а `forget()` в `uninstall` — запасной путь.
+            wait_stopped(&service)?;
+        }
+        Ok(())
+    })();
+    Ok((service, stopped))
+}
+
+pub fn uninstall() -> windows_service::Result<()> {
+    // Остановка и удаление в SCM могут отказать как угодно (службы нет, нет
+    // прав, она зависла), но постоянные фильтры WFP от этого не уходят: машина
+    // без службы осталась бы запертой навсегда. Поэтому `forget()` стоит после
+    // попытки остановки при любом её исходе, а ошибка SCM не теряется — она
+    // возвращается после него.
+    let scm = stop_for_uninstall();
+    // Удалённая служба снять фильтры уже не сможет, поэтому убираем всё наше —
+    // фильтры, подслой, провайдера — здесь. Отказ не фатален для удаления
+    // службы, но человеку нужно сказать, что замок мог остаться.
+    if let Err(e) = core_filter::forget() {
+        eprintln!("{}", core_ipc::tf!("правила WFP не сняты — {}", e));
     }
-    service.delete()
+    let (service, stopped) = scm?;
+    let deleted = service.delete();
+    stopped.and(deleted)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Деинсталляция снимает стену при любом исходе SCM: `forget()` стоит раньше
+    /// первого `?` над результатом остановки и от него не зависит.
+    #[test]
+    fn uninstall_always_takes_the_wall_down() {
+        let src = include_str!("service.rs");
+        let body = src.split_once("pub fn uninstall()").expect("uninstall").1;
+        // Не по `\n}\n`: файл может лежать с CRLF.
+        let body = body.split_once("#[cfg(test)]").expect("конец uninstall").0;
+        let forget = body.find("core_filter::forget()").expect("forget() в uninstall");
+        let first_try = body.find('?').expect("ошибка SCM возвращается");
+        assert!(forget < first_try, "forget() обязан идти раньше любого `?`");
+        assert!(body.contains("let scm = stop_for_uninstall();"), "ошибка SCM откладывается, а не возвращается сразу");
+    }
 }

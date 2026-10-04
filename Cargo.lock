@@ -98,6 +98,9 @@ dependencies = [
 [[package]]
 name = "core-filter"
 version = "0.1.0"
+dependencies = [
+ "windows",
+]
 
 [[package]]
 name = "core-foundation"
