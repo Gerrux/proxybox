@@ -83,8 +83,39 @@ const SINGBOX_DIAL_TIMEOUT: Duration = Duration::from_secs(5);
 /// туннеля в конфиге не осталось, а смерть самого процесса ловит не проба, а
 /// `DEATH_EVERY`.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
-/// Столько ждём, прежде чем поверить, что sing-box действительно поднялся.
-const STARTUP_GRACE: Duration = Duration::from_millis(400);
+/// Как часто `Tunnel::start` спрашивает, жив ли процесс и готов ли он.
+const STARTUP_STEP: Duration = Duration::from_millis(25);
+/// Раньше этого срока готовность не засчитывается. Порт может держать и чужой
+/// процесс: `connect` к нему удаётся, хотя наш sing-box на `bind` уже упал, но
+/// ещё не успел выйти, — без пола занятый порт читался бы готовым туннелем, а
+/// `port_was_taken` не получал бы ошибки для повтора. Отказ на `bind` приходит
+/// за десятки миллисекунд, нормальный запуск — за ~80, так что пол почти ничего
+/// не стоит рядом с прежними фиксированными 400.
+const STARTUP_FLOOR: Duration = Duration::from_millis(200);
+/// Потолок ожидания готовности. Вышли, оставшись живыми, — это тот же исход, что
+/// давали прежние 400 мс паузы: процесс не умер, дальше решает проба.
+const STARTUP_LIMIT: Duration = Duration::from_secs(3);
+/// Сколько ждём соединения с портом при одном опросе готовности.
+const READY_CONNECT: Duration = Duration::from_millis(50);
+
+/// Нужен ли конфигу поднятый TUN: готовность туннеля тогда включает и адаптер.
+fn needs_tun(config: &Value) -> bool {
+    config["inbounds"].as_array().is_some_and(|v| v.iter().any(|i| i["type"] == "tun"))
+}
+
+/// sing-box готов: mixed-порт принимает соединения и, если в конфиге есть TUN,
+/// наш адрес уже висит на живом интерфейсе. Привязка UDP-сокета к адресу не
+/// требует разрешения сети, но удаётся только когда адрес назначен, — то есть
+/// ровно когда адаптер поднят. Порт 0 (не знаем) порт не проверяется.
+fn ready(socks_port: u16, tun: bool) -> bool {
+    if socks_port != 0 {
+        let addr = SocketAddr::from(([127, 0, 0, 1], socks_port));
+        if TcpStream::connect_timeout(&addr, READY_CONNECT).is_err() {
+            return false;
+        }
+    }
+    !tun || std::net::UdpSocket::bind((TUN_ADDR, 0)).is_ok()
+}
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -498,10 +529,21 @@ impl Tunnel {
             .map_err(|e| io::Error::new(e.kind(), tf!("не запускается sing-box ({}): {}", binary().display(), e)))?;
 
         // Занятый порт, битый конфиг, нет прав на TUN — всё это видно сразу.
-        // Без этой паузы служба бесконечно докладывала бы «подключение».
-        std::thread::sleep(STARTUP_GRACE);
-        if !matches!(child.try_wait(), Ok(None)) {
-            return Err(io::Error::other(tf!("sing-box завершился сразу: {}", last_line(&log_path))));
+        // Без этого ожидания служба бесконечно докладывала бы «подключение».
+        // Ждём не часы, а готовность (`ready`): первая проба сразу после старта
+        // иначе попадала в ещё не слушающий порт и стоила целого круга, а
+        // сто миллисекунд лишнего платили и прогоны профилей, и сеансы браузера.
+        let tun = needs_tun(config);
+        let began = Instant::now();
+        loop {
+            if !matches!(child.try_wait(), Ok(None)) {
+                return Err(io::Error::other(tf!("sing-box завершился сразу: {}", last_line(&log_path))));
+            }
+            let waited = began.elapsed();
+            if waited >= STARTUP_LIMIT || (waited >= STARTUP_FLOOR && ready(socks_port, tun)) {
+                break;
+            }
+            std::thread::sleep(STARTUP_STEP);
         }
         let _ = std::fs::write(dir.join("singbox.pid"), child.id().to_string());
         Ok(Self { child, dir: dir.to_path_buf(), socks_port, api_port })
@@ -1380,7 +1422,7 @@ mod tests {
     #[test]
     fn the_linux_lock_knows_the_tun_name() {
         let filter = include_str!("../../core-filter/src/lib.rs");
-        let needle = format!("linux::table(on, \"{TUN_NAME}\",");
+        let needle = format!("linux::table(lock, \"{TUN_NAME}\",");
         assert!(filter.contains(&needle), "core-filter пропускает не тот TUN: ждали «{needle}»");
     }
 
@@ -1637,6 +1679,31 @@ mod tests {
     fn ansi_stripped() {
         assert_eq!(strip_ansi("\u{1b}[31mFATAL\u{1b}[0m[0000] порт занят"), "FATAL[0000] порт занят");
         assert_eq!(strip_ansi("  обычная строка "), "обычная строка");
+    }
+
+    /// Старт ждёт готовности, а не часов: TUN в конфиге делает адаптер частью
+    /// готовности, порт без слушателя готовым не считается, а фиксированной
+    /// паузы в `start` не осталось.
+    #[test]
+    fn start_waits_for_readiness_not_a_clock() {
+        let with_tun = json!({ "inbounds": [{ "type": "mixed" }, { "type": "tun" }] });
+        let without = json!({ "inbounds": [{ "type": "mixed", "listen_port": 1 }] });
+        assert!(needs_tun(&with_tun));
+        assert!(!needs_tun(&without));
+        assert!(!needs_tun(&json!({})));
+
+        // Без TUN готовность — это слушающий порт и ничего больше.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(ready(port, false), "слушающий порт обязан читаться готовым");
+        drop(listener);
+        assert!(!ready(port, false), "порт без слушателя готовым быть не может");
+
+        // Текстом: пауза фиксированной длины в `start` вернулась бы незаметно.
+        let src = include_str!("lib.rs");
+        let body = src.split("pub fn start(config").nth(1).and_then(|s| s.split("pub fn alive").next()).unwrap();
+        assert!(!body.contains("STARTUP_GRACE"), "start обязан ждать готовности, а не часов");
+        assert!(body.contains("ready(socks_port, tun)"));
     }
 
     /// Упавший на старте sing-box — это ошибка запуска, а не «подключение».

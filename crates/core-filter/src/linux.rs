@@ -81,17 +81,6 @@ pub fn apply(script: &str) -> io::Result<()> {
     }
 }
 
-/// Стоит ли сейчас наш замок. Спрашивается на старте службы: она могла упасть,
-/// не сняв его.
-pub fn locked() -> bool {
-    Command::new("nft")
-        .args(["list", "table", "inet", TABLE])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
 /// Поднятые интерфейсы, похожие на чужой туннель. Два TUN в системе спорят за
 /// маршрут по умолчанию, и человеку об этом надо сказать.
 ///

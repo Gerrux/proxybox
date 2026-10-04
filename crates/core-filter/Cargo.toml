@@ -3,3 +3,27 @@ name = "core-filter"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+
+# Крейт был без зависимостей намеренно, и это место, где цена платится. Пока
+# стену ставил netsh, она стоила дорого и ещё и протекала (замеры на живой
+# машине): метла `Get-NetFirewallRule | Remove-NetFirewallRule` — ~1.6 с на
+# одно лишь чтение правил, каждый пропуск — отдельный процесс netsh по ~90 мс,
+# и всё это под общим замком службы, а между метлой и перестановкой выбранные
+# приложения сидят без сети. Хуже того, замок был политикой по умолчанию
+# `blockoutbound`, а её перекрывает ЛЮБОЕ включённое исходящее разрешение: на
+# этой машине их 232, включая MSIX-приложения и AppContainer, — то есть
+# невыбранные приложения получали сеть, а при мёртвом туннеле уходили
+# напрямую. Выключенный профиль брандмауэра или чужой брандмауэр снимали замок
+# целиком. Пользовательский WFP (`fwpuclnt`, без драйвера и подписи) даёт свой
+# подслой, где наш запрет сильнее разрешений Windows Firewall, и перестановку
+# за одну транзакцию в миллисекунды. Цена — unsafe-FFI, и он заперт в одном
+# модуле (`wfp.rs`). Фичи — ровно те, что требуют сигнатуры Fwpm*.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    # FWP_VALUE0 / FWPM_FILTER0 несут PSECURITY_DESCRIPTOR.
+    "Win32_Security",
+    "Win32_NetworkManagement_WindowsFilteringPlatform",
+    # FwpmEngineOpen0 принимает SEC_WINNT_AUTH_IDENTITY_W и RPC_C_AUTHN_*.
+    "Win32_System_Rpc",
+] }
