@@ -31,14 +31,14 @@ languages. On Linux there is, for now, only the service and the console
 
 The original spec (Russian) — [proxybox-prompt.md](proxybox-prompt.md).
 
-![The proxybox window](docs/interface.png)
+![The proxybox window](docs/interface-en.png)
 
 State is the main thing the window shows, which is why it takes the top: the
 state word and a world map on which the exit country is filled with the state
 colour — solid while traffic flows, hatched while access is closed. Switch
 nodes and the map flies to the new country.
 
-![No tunnel — access closed](docs/interface-failclosed.png)
+![No tunnel — access closed](docs/interface-failclosed-en.png)
 
 Closed access is amber, not red, and that is not a matter of taste: this is how
 fail-closed is supposed to look **when it is working** — in red it would read as
@@ -52,7 +52,7 @@ Indonesian. The switch lives in the settings, behind the title-bar button; the
 language is kept by the service, so the journal switches together with the
 window.
 
-![English interface](docs/interface-en.png)
+![Settings: the language switch](docs/settings-en.png)
 
 ## The invariant
 

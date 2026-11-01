@@ -89,4 +89,6 @@ favicon. Больше нигде.
 Сайт — статическая страница в `docs/`, откуда её отдаёт GitHub Pages. Снимки
 окна там же, поэтому второй копии для сайта не заводится.
 
-Пересобрать картинки: `python3 scripts/icons.py` (нужен Pillow).
+Пересобрать картинки: `python3 scripts/icons.py` (нужен Pillow). Скриншоты окна
+и превью ссылок (`og.png`, 1280×640) снимает не он, а `node docs/mock/shoot.mjs`
+— см. [mock/README.md](mock/README.md).

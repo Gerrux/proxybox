@@ -33,14 +33,14 @@ rinciannya di [docs/install.md](docs/install.md) dan
 
 Spesifikasi asli (bahasa Rusia) — [proxybox-prompt.md](proxybox-prompt.md).
 
-![Jendela proxybox](docs/interface.png)
+![Jendela proxybox](docs/interface-en.png)
 
 Status adalah hal utama yang ditampilkan jendela, karena itu ia menempati bagian
 atas: kata status dan peta dunia yang negara keluarnya diwarnai dengan warna
 status — penuh selama lalu lintas berjalan, diarsir selama akses tertutup. Ganti
 node, peta terbang ke negaranya.
 
-![Tidak ada terowongan — akses tertutup](docs/interface-failclosed.png)
+![Tidak ada terowongan — akses tertutup](docs/interface-failclosed-en.png)
 
 Akses yang tertutup berwarna kuning ambar, bukan merah, dan itu bukan soal
 selera: begitulah fail-closed **seharusnya terlihat ketika ia bekerja** — dengan
@@ -53,7 +53,7 @@ Bahasanya ada enam: Rusia, Inggris, Persia, Tionghoa, Turki, dan Indonesia.
 Pengalihnya ada di pengaturan, di balik tombol pada bilah judul; bahasa disimpan
 oleh layanan, jadi jurnal ikut beralih bersama jendela.
 
-![Antarmuka bahasa Inggris](docs/interface-en.png)
+![Pengaturan: pilihan bahasa](docs/settings-en.png)
 
 ## Invarian
 

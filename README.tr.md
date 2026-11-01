@@ -31,14 +31,14 @@ pencere, ne paket, ne de gerçek bir beyaz liste — ayrıntılar
 
 Özgün teknik şartname (Rusça) — [proxybox-prompt.md](proxybox-prompt.md).
 
-![proxybox penceresi](docs/interface.png)
+![proxybox penceresi](docs/interface-en.png)
 
 Pencerenin gösterdiği en önemli şey durumdur, bu yüzden üstü o kaplar: durum
 sözcüğü ve çıkış ülkesinin durum rengiyle boyandığı bir dünya haritası —
 trafik akarken dolu, erişim kapalıyken taralı. Düğümü değiştirin, harita yeni
 ülkeye uçar.
 
-![Tünel yok — erişim kapalı](docs/interface-failclosed.png)
+![Tünel yok — erişim kapalı](docs/interface-failclosed-en.png)
 
 Kapalı erişim kırmızı değil kehribar rengidir ve bu bir zevk meselesi değil:
 fail-closed **çalışırken** tam olarak böyle görünmelidir — kırmızı olsaydı
@@ -51,7 +51,7 @@ Diller altı tane: Rusça, İngilizce, Farsça, Çince, Türkçe ve Endonezce. A
 ayarlarda, başlık çubuğundaki düğmenin ardında; dili hizmet saklar, bu yüzden
 günlük de pencereyle birlikte değişir.
 
-![İngilizce arayüz](docs/interface-en.png)
+![Ayarlar: dil seçimi](docs/settings-en.png)
 
 ## Değişmez
 

@@ -29,12 +29,12 @@ Tauri 2.x 桌面外壳和 Vite + React + TS + Tailwind 前端——界面、服�
 
 原始技术说明（俄文）——[proxybox-prompt.md](proxybox-prompt.md)。
 
-![proxybox 窗口](docs/interface.png)
+![proxybox 窗口](docs/interface-en.png)
 
 窗口首先要显示的就是状态，所以它占据顶部：状态词，以及一张世界地图——出口国家以状态颜色
 填充：流量通行时为实色，访问关闭时为斜线。切换节点时，地图会飞到新的国家。
 
-![没有隧道 — 访问已关闭](docs/interface-failclosed.png)
+![没有隧道 — 访问已关闭](docs/interface-failclosed-en.png)
 
 关闭的访问是琥珀色而不是红色，这不是审美偏好：fail-closed **正常工作**时就该是这个
 样子——用红色会被读成应用出错。红色只留给一件事：服务没有响应，或者规则没有生效，也
@@ -44,7 +44,7 @@ Tauri 2.x 桌面外壳和 Vite + React + TS + Tailwind 前端——界面、服�
 共有六种语言：俄语、英语、波斯语、中文、土耳其语和印尼语。切换开关在设置里，位于标
 题栏按钮之后；语言由服务保存，因此日志会随窗口一起切换。
 
-![英文界面](docs/interface-en.png)
+![设置：切换语言](docs/settings-en.png)
 
 ## 不变式
 

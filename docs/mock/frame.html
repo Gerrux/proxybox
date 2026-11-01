@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- Рамка для узких сцен. Headless Chrome не делает окно уже 500 px, а плашка
+     из трея — 380: в окне шире она раскладывается не так, как в настоящей.
+     Поэтому окно снимается внутри iframe точного размера, увеличенного до
+     масштаба снимка. Адрес: frame.html?w=380&h=520&k=1.5&src=/?flyout… -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; overflow: hidden; background: #1c1c1c; }
+      iframe { display: block; border: 0; }
+    </style>
+  </head>
+  <body>
+    <iframe id="f"></iframe>
+    <script>
+      const q = new URLSearchParams(location.search);
+      const f = document.getElementById("f");
+      f.width = q.get("w");
+      f.height = q.get("h");
+      // zoom, а не transform: увеличенный transform-ом iframe headless
+      // дорисовывает не целиком, а zoom окно внутри рисует сразу в масштабе.
+      f.style.zoom = q.get("k");
+      f.src = q.get("src");
+    </script>
+  </body>
+</html>
