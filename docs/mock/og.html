@@ -1,0 +1,110 @@
+<!doctype html>
+<!-- Превью ссылок (og:image, social preview GitHub, обложки статей): 1280×640.
+     Слева питч, справа само окно — то же, что на скриншотах, через iframe с
+     демо-данными (`stage.js`). Знак — диагональ бренда, как велит
+     docs/brand.md для сайта и обложек; свечения вокруг знака нет. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      @font-face {
+        font-family: "Geist";
+        font-weight: 100 900;
+        src: url("/src/assets/fonts/geist-latin-wght-normal.woff2") format("woff2");
+      }
+      @font-face {
+        font-family: "Geist Mono";
+        font-weight: 100 900;
+        src: url("/src/assets/fonts/geist-mono-latin-wght-normal.woff2") format("woff2");
+      }
+      html, body { margin: 0; width: 1280px; height: 640px; overflow: hidden; }
+      body {
+        position: relative;
+        background:
+          radial-gradient(900px 620px at 92% 18%, rgba(116, 74, 240, 0.34), transparent 62%),
+          radial-gradient(700px 500px at 70% 110%, rgba(193, 59, 224, 0.16), transparent 60%),
+          #0e1016;
+        color: #f2f2f4;
+        font-family: "Geist", "Segoe UI", sans-serif;
+      }
+      .pitch { position: absolute; left: 64px; top: 64px; width: 416px; }
+      .logo { display: flex; align-items: center; gap: 16px; }
+      .logo svg { width: 64px; height: 64px; flex: none; }
+      .name { font-size: 64px; font-weight: 600; letter-spacing: -0.03em; line-height: 1; }
+      .ver {
+        display: inline-block;
+        margin-top: 28px;
+        font: 500 17px/1 "Geist Mono", monospace;
+        color: #c9c2ff;
+        border: 1px solid rgba(169, 155, 255, 0.45);
+        border-radius: 999px;
+        padding: 6px 12px;
+      }
+      h1 {
+        margin: 18px 0 0;
+        font-size: 31px;
+        font-weight: 500;
+        line-height: 1.25;
+        letter-spacing: -0.015em;
+      }
+      h1 b { font-weight: 600; color: #ffc861; }
+      .chips { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+      .chip {
+        font-size: 17px;
+        padding: 8px 14px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: #dcdce2;
+      }
+      .foot { position: absolute; left: 64px; bottom: 56px; }
+      .repo { font: 500 21px/1.2 "Geist Mono", monospace; color: #a99bff; }
+      .meta { margin-top: 8px; font-size: 17px; color: #9a9aa6; }
+      /* zoom масштабирует и left/top: 722 × 0.72 = 520 px, 100 × 0.72 = 72 px. */
+      .window {
+        position: absolute;
+        left: 722px;
+        top: 100px;
+        width: 1000px;
+        height: 700px;
+        zoom: 0.72;
+        border-radius: 11px;
+        overflow: hidden;
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 40px 90px rgba(0, 0, 0, 0.55);
+      }
+      .window iframe { display: block; width: 1000px; height: 700px; border: 0; }
+    </style>
+  </head>
+  <body>
+    <div class="pitch">
+      <div class="logo">
+        <svg viewBox="0 0 100 100" aria-hidden="true">
+          <defs>
+            <linearGradient id="d" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#5b4bff" />
+              <stop offset="1" stop-color="#c13be0" />
+            </linearGradient>
+          </defs>
+          <path
+            fill="url(#d)"
+            fill-rule="evenodd"
+            d="M22 0H78A22 22 0 0 1 100 22V78A22 22 0 0 1 78 100H22A22 22 0 0 1 0 78V22A22 22 0 0 1 22 0Z M16 64A20 20 0 1 0 56 64A20 20 0 1 0 16 64Z"
+          />
+        </svg>
+        <span class="name">proxybox</span>
+      </div>
+      <div class="ver">v0.8.0</div>
+      <h1>Picked apps reach the network only through your tunnel. <b>No tunnel — no network.</b></h1>
+      <div class="chips">
+        <span class="chip">Fail-closed whitelist</span>
+        <span class="chip">No telemetry</span>
+        <span class="chip">VLESS · Trojan · Hysteria2 · WireGuard</span>
+      </div>
+    </div>
+    <div class="foot">
+      <div class="repo">github.com/Gerrux/proxybox</div>
+      <div class="meta">Windows 10/11 · Linux headless · GPL-3.0</div>
+    </div>
+    <div class="window"><iframe src="/?scene=up&amp;lang=en"></iframe></div>
+  </body>
+</html>

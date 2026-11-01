@@ -165,7 +165,6 @@ SITE = Path(__file__).resolve().parent.parent / "docs"
 # бывает и белым, и почти чёрным.
 PLATE_LIGHT = (0xF4, 0xF6, 0xFF)
 PLATE_DARK = (0x14, 0x16, 0x1A)
-PLATE_INK = (0x0E, 0x10, 0x16)
 
 
 def tile(size, fill=None, plate=PLATE_LIGHT, paint=None):
@@ -235,9 +234,8 @@ def docs():
     strip(row, 12, 10, (0, 0, 0, 0)).save(DOCS / "palette.png")
     print(f"картинки стиля пересобраны: {DOCS}")
 
-    # Сайту по стилю положена диагональ бренда, а не свечение: свечение
-    # принадлежит значку операционной системы и в макеты не переносится.
-    tile(512, plate=PLATE_INK, paint="brand").save(SITE / "og.png")
+    # Превью ссылок (og.png) отсюда больше не собирается: это 1280×640 с окном
+    # внутри, и снимает его `docs/mock/shoot.mjs` вместе со скриншотами.
     mark(32).save(SITE / "favicon.png")
     print(f"картинки сайта пересобраны: {SITE}")
 
