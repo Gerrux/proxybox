@@ -512,7 +512,14 @@ pub fn bypass_entry(raw: &str) -> Result<String, String> {
         return Err(t("пустое исключение"));
     }
     if entry.contains(':') {
-        return Err(tf!("«{}» — IPv6: у туннеля адреса v6 нет, исключать нечего", raw.trim()));
+        // IPv6 называется IPv6, только если это он: `158.160.144.110:22` —
+        // ровно тот вид, в каком адрес показывает вкладка соединений, и
+        // скопированный оттуда, он отказом «это IPv6» сбивал бы с толку.
+        let bare = entry.split('/').next().unwrap_or(&entry).trim_matches(['[', ']']);
+        if bare.parse::<std::net::Ipv6Addr>().is_ok() {
+            return Err(tf!("«{}» — IPv6: у туннеля адреса v6 нет, исключать нечего", raw.trim()));
+        }
+        return Err(tf!("«{}» — не адрес и не имя", raw.trim()));
     }
     let looks_like_ip = entry.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '/');
     if looks_like_ip {
@@ -542,6 +549,13 @@ pub fn bypass_entry(raw: &str) -> Result<String, String> {
     };
     if name.is_empty() || name.len() > 253 || !name.split('.').all(label_ok) {
         return Err(tf!("«{}» — не адрес и не имя", raw.trim()));
+    }
+    // Имя без точки — это зона целиком (`ru`, `com`): суффикс увёл бы мимо
+    // туннеля полстраны, и это та же ширина, что `/8` у адреса, только без
+    // предела. Публичных имён без точки не бывает, а локальные и так идут
+    // роутеру (`lan` в DNS).
+    if !name.contains('.') {
+        return Err(tf!("«{}» — слишком широко: это уже не исключение, а туннель, выключенный целиком", raw.trim()));
     }
     Ok(name.to_string())
 }
@@ -747,7 +761,11 @@ const LOG_TAIL: u64 = 16 * 1024;
 /// исходящего, поэтому `outbound/` их и разводит. Сторож —
 /// `the_reason_skips_the_noise_from_the_tun_side`.
 pub fn last_failure(dir: &Path) -> Option<String> {
-    log_tail(dir).into_iter().rev().find(|line| line.contains("outbound/"))
+    // Дозвон мимо туннеля по исключению — не отказ туннеля: мёртвый адрес
+    // исключения назвался бы причиной мёртвого узла и отправил бы искать не
+    // там. Его называет `bypass_failures`, и по той же скобке с тегом.
+    let bypass = format!("[{TAG_BYPASS}]");
+    log_tail(dir).into_iter().rev().find(|line| line.contains("outbound/") && !line.contains(&bypass))
 }
 
 /// Тот же хвост, но целиком и строками: его показывает окно, когда одной
@@ -2231,7 +2249,8 @@ mod tests {
         assert_eq!(bypass_entry("158.160.0.0/16").unwrap(), "158.160.0.0/16");
         assert_eq!(bypass_entry("10.1.2.3/8").unwrap(), "10.0.0.0/8", "хвост маски обнуляется — повтор схлопнется");
         assert_eq!(bypass_entry("*.Yandex.Cloud").unwrap(), "yandex.cloud", "суффикс и так ловит поддомены");
-        assert_eq!(bypass_entry(".ru").unwrap(), "ru");
+        assert!(bypass_entry(".ru").is_err(), "зона целиком — то же, что шире /8");
+        assert!(bypass_entry("com").is_err());
         // Шире /8 — это выключенный туннель, а не исключение.
         assert!(bypass_entry("0.0.0.0/0").is_err());
         assert!(bypass_entry("128.0.0.0/1").is_err());
@@ -2264,6 +2283,28 @@ mod tests {
         .to_vec();
         assert_eq!(bypass_failures(&lines), ["158.160.144.110:22", "arboritm.ru:443"], "новые первыми, без повторов, только мимо туннеля");
         assert!(bypass_failures(&[]).is_empty());
+    }
+
+    /// Причина отказа туннеля — не дозвон мимо него. Строка исключения тоже
+    /// несёт `outbound/` (`outbound/direct[bypass]`), и при мёртвом узле лента
+    /// назвала бы причиной таймаут до адреса, который к узлу отношения не
+    /// имеет, — ровно тот случай с живой машины, ради которого исключение и
+    /// заводили.
+    #[test]
+    fn the_reason_is_never_a_bypass_dial() {
+        let dir = std::env::temp_dir().join("pg-last-failure-bypass");
+        std::fs::create_dir_all(&dir).expect("каталог");
+        let path = dir.join("singbox.log");
+        let tunnel = "ERROR[0086] [1 5.0s] connection: open connection to api.github.com:443 using outbound/vless[proxy]: dial tcp 138.124.69.172:8443: i/o timeout";
+        let bypass = "ERROR[0090] [2 5.0s] connection: open connection to 158.160.144.110:22 using outbound/direct[bypass]: dial tcp 158.160.144.110:22: i/o timeout";
+        std::fs::write(&path, format!("{tunnel}\n{bypass}\n")).expect("лог");
+        let why = last_failure(&dir).expect("причина");
+        assert!(why.contains("138.124.69.172:8443"), "причиной названо исключение: {why}");
+        assert!(!why.contains(TAG_BYPASS), "{why}");
+
+        // Про туннель не сказано ничего — и в ленту добавить нечего.
+        std::fs::write(&path, format!("{bypass}\n")).expect("лог");
+        assert!(last_failure(&dir).is_none(), "{:?}", last_failure(&dir));
     }
 
     /// Молчит соединение, ушедшее в туннель и не получившее ни байта за

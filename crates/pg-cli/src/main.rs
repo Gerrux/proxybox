@@ -346,24 +346,39 @@ fn patch_settings(args: &[String]) -> Result<Request, String> {
 
 /// `bypass add|rm <адрес или имя>…` — правка поверх нынешнего списка. Команда у
 /// службы одна и берёт список целиком (`Request::SetBypass`), поэтому список
-/// спрашивается заранее, как у `settings`. Приводит и сверяет строки служба:
-/// у консоли своей сверки нет, иначе две разошлись бы на первой правке.
+/// спрашивается заранее, как у `settings`. Приводит и сверяет строки служба;
+/// консоль для `rm` зовёт ту же `core_tunnel::bypass_entry`, а не свою — две
+/// сверки разошлись бы на первой правке.
 fn patch_bypass(args: &[String]) -> Result<Request, String> {
     let Ok(Response::Status(status)) = call(&Request::Status) else {
         return Err(t("служба недоступна: исключения хранит она"));
     };
+    edit_bypass(status.bypass, args)
+}
+
+/// Сама правка списка — без похода в службу, чтобы её можно было проверить.
+fn edit_bypass(mut rules: Vec<String>, args: &[String]) -> Result<Request, String> {
     let entries: Vec<String> = args.iter().skip(2).cloned().collect();
     if entries.is_empty() {
         return Err(t("нужен адрес, сеть или имя: bypass add 158.160.0.0/16"));
     }
-    let mut rules = status.bypass;
     match args.get(1).map(String::as_str) {
         Some("add") => rules.extend(entries),
         // Убирается по записанному виду: голый адрес служба хранит сетью /32,
         // и `rm 1.2.3.4` обязан найти `1.2.3.4/32`.
-        Some("rm") => rules.retain(|r| {
-            !entries.iter().any(|e| e == r || format!("{e}/32") == *r || e.trim_start_matches("*.") == r)
-        }),
+        // Аргумент приводится той же функцией, что и в службе: `rm Yandex.Cloud`
+        // и `rm 10.1.2.3/8` обязаны найти то, во что служба их превратила.
+        // Не нашлось ничего — отказ: молчаливое «готово» оставило бы человека
+        // уверенным, что трафик больше не идёт мимо туннеля.
+        Some("rm") => {
+            for e in &entries {
+                let entry = core_tunnel::bypass_entry(e)?;
+                if !rules.contains(&entry) {
+                    return Err(tf!("исключения «{}» нет", e.trim()));
+                }
+                rules.retain(|r| *r != entry);
+            }
+        }
         _ => return Err(t("нужно: bypass, bypass add <…> или bypass rm <…>")),
     }
     Ok(Request::SetBypass { rules })
@@ -735,6 +750,29 @@ mod tests {
         let script = include_str!("../../../scripts/cpu.ps1");
         let want = format!("$CLI_NAME = \"{}\"", env!("CARGO_BIN_NAME"));
         assert!(script.contains(&want), "в scripts/cpu.ps1 нет строки «{want}»");
+    }
+
+    /// `bypass rm` обязан найти исключение в любом виде, который служба
+    /// приводит к записанному, а не найдя — сказать об этом. Иначе `rm
+    /// Yandex.Cloud` уходит неизменённым списком, служба отвечает `Done`, и
+    /// человек уверен, что трафик больше не идёт мимо туннеля.
+    #[test]
+    fn bypass_rm_finds_the_stored_form() {
+        let stored: Vec<String> = ["158.160.144.110/32", "10.0.0.0/8", "yandex.cloud"].map(String::from).to_vec();
+        let args = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let after = |form: &str| match edit_bypass(stored.clone(), &args(&["bypass", "rm", form])) {
+            Ok(Request::SetBypass { rules }) => rules,
+            other => panic!("rm {form}: {other:?}"),
+        };
+        for form in ["yandex.cloud", "Yandex.Cloud", ".yandex.cloud", "*.YANDEX.cloud", " yandex.cloud "] {
+            assert!(!after(form).contains(&"yandex.cloud".to_string()), "rm «{form}» не нашёл yandex.cloud");
+        }
+        for form in ["158.160.144.110", "158.160.144.110/32"] {
+            assert!(!after(form).contains(&"158.160.144.110/32".to_string()), "rm «{form}»");
+        }
+        assert!(!after("10.1.2.3/8").contains(&"10.0.0.0/8".to_string()), "хвост маски служба обнуляет");
+        // Не нашлось ничего — это отказ, а не молчаливое «готово».
+        assert!(edit_bypass(stored.clone(), &args(&["bypass", "rm", "8.8.8.8"])).is_err(), "промах rm прошёл молча");
     }
 
     /// Справка не должна выглядеть отказом, а разбор — молча съедать команду.

@@ -624,7 +624,17 @@ impl Service {
                 // Сверяются заново и при чтении: `state.json` правят руками, а
                 // строка, которой `SetBypass` не принял бы, не должна попасть в
                 // конфиг через дверь, мимо которой её никто не проверял.
-                bypass: saved.bypass.iter().filter_map(|e| core_tunnel::bypass_entry(e).ok()).collect(),
+                // И схлопываются так же, как в `set_bypass`: `1.2.3.4` и
+                // `1.2.3.4/32`, вписанные руками, — одно исключение.
+                bypass: saved.bypass.iter().filter_map(|e| core_tunnel::bypass_entry(e).ok()).fold(
+                    Vec::new(),
+                    |mut list, e| {
+                        if !list.contains(&e) {
+                            list.push(e);
+                        }
+                        list
+                    },
+                ),
                 log,
                 ..Default::default()
             },

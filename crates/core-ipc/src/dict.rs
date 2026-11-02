@@ -228,6 +228,7 @@ pub static EN: &[(&str, &str)] = &[
     ("нужен адрес, сеть или имя: bypass add 158.160.0.0/16", "an address, network or name is needed: bypass add 158.160.0.0/16"),
     ("нужно: bypass, bypass add <…> или bypass rm <…>", "expected: bypass, bypass add <…> or bypass rm <…>"),
     ("исключений нет: мимо туннеля не уходит ничего", "no exceptions: nothing bypasses the tunnel"),
+    ("исключения «{}» нет", "there is no exception \"{}\""),
 ];
 
 /// Персидские строки.
@@ -442,6 +443,7 @@ pub static FA: &[(&str, &str)] = &[
     ("нужен адрес, сеть или имя: bypass add 158.160.0.0/16", "نشانی، شبکه یا نام لازم است: bypass add 158.160.0.0/16"),
     ("нужно: bypass, bypass add <…> или bypass rm <…>", "لازم است: bypass، bypass add <…> یا bypass rm <…>"),
     ("исключений нет: мимо туннеля не уходит ничего", "استثنایی نیست: هیچ چیز از کنار تونل نمی‌رود"),
+    ("исключения «{}» нет", "استثنای «{}» وجود ندارد"),
 ];
 
 /// Китайские строки (упрощённое письмо).
@@ -656,6 +658,7 @@ pub static ZH: &[(&str, &str)] = &[
     ("нужен адрес, сеть или имя: bypass add 158.160.0.0/16", "需要地址、网段或域名：bypass add 158.160.0.0/16"),
     ("нужно: bypass, bypass add <…> или bypass rm <…>", "用法：bypass、bypass add <…> 或 bypass rm <…>"),
     ("исключений нет: мимо туннеля не уходит ничего", "没有例外：没有任何流量绕过隧道"),
+    ("исключения «{}» нет", "没有例外“{}”"),
 ];
 
 /// Турецкие строки.
@@ -870,6 +873,7 @@ pub static TR: &[(&str, &str)] = &[
     ("нужен адрес, сеть или имя: bypass add 158.160.0.0/16", "adres, ağ ya da ad gerekli: bypass add 158.160.0.0/16"),
     ("нужно: bypass, bypass add <…> или bypass rm <…>", "beklenen: bypass, bypass add <…> ya da bypass rm <…>"),
     ("исключений нет: мимо туннеля не уходит ничего", "istisna yok: tüneli atlayan hiçbir şey yok"),
+    ("исключения «{}» нет", "\"{}\" diye bir istisna yok"),
 ];
 
 /// Индонезийские строки.
@@ -1084,6 +1088,7 @@ pub static ID: &[(&str, &str)] = &[
     ("нужен адрес, сеть или имя: bypass add 158.160.0.0/16", "perlu alamat, jaringan, atau nama: bypass add 158.160.0.0/16"),
     ("нужно: bypass, bypass add <…> или bypass rm <…>", "yang diharapkan: bypass, bypass add <…> atau bypass rm <…>"),
     ("исключений нет: мимо туннеля не уходит ничего", "tidak ada pengecualian: tidak ada yang melewati terowongan"),
+    ("исключения «{}» нет", "tidak ada pengecualian \"{}\""),
 ];
 
 /// Все таблицы разом — для сторожа полноты. Русской тут нет: она и есть
