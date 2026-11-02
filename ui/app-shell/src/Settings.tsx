@@ -44,7 +44,7 @@ import {
   type Status,
 } from "./platform";
 import { strings, type Strings } from "./i18n";
-import { Button, CopyButton, FIELD, Modal, Panel, Segmented, Switch } from "./ui";
+import { Button, CopyButton, FIELD, Icon, Modal, Panel, Segmented, Switch } from "./ui";
 
 const REPO = "Gerrux/proxybox";
 
@@ -319,6 +319,8 @@ export function Settings({
               onPick={(failover) => patch({ failover })}
             />
           </Row>
+
+          <Bypass lang={lang} rules={status?.bypass ?? []} act={act} />
 
           <Row title={s.singboxTitle} note={s.singboxHint}>
             <TextSetting
@@ -602,6 +604,97 @@ function TextSetting({
         {s.apply}
       </Button>
     </form>
+  );
+}
+
+/** Исключения: адреса и домены, которые идут мимо туннеля под настоящим
+ *  адресом человека. Это единственное место продукта, где трафик выходит в
+ *  открытую сеть осознанно, поэтому исключение — всегда явный и видимый выбор:
+ *  заводит его только человек, а список лежит на виду целиком.
+ *
+ *  Список уходит службе целиком, а не по одному: она проверяет набор разом и
+ *  при единственной плохой строке отказывает всему. Её отказ уже переведён и
+ *  показывается здесь же, под полем, — баннер сверху про неё скажет тоже, но
+ *  глаз человека в этот момент у поля, в которое он только что печатал.
+ *
+ *  Нормализует службу, а не окно: к `a.b.c.d/32` одиночный адрес приводит она,
+ *  и список ниже показывает то, что она запомнила, а не то, что напечатано. */
+function Bypass({
+  lang,
+  rules,
+  act,
+}: {
+  lang: Lang | undefined;
+  rules: string[];
+  act: Act;
+}) {
+  const s = strings(lang);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const send = (next: string[], then?: () => void) => {
+    setBusy(true);
+    setError(null);
+    void act({ cmd: "set-bypass", arg: { rules: next } })
+      .then((r) => {
+        if (r?.reply === "error") setError(r.data.message);
+        else then?.();
+      })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  // Несколько записей разом — через пробел, запятую или перенос строки: так их
+  // и вставляют из заметок.
+  const entries = draft.split(/[\s,;]+/).filter(Boolean);
+
+  return (
+    <div>
+      <Row title={s.bypassTitle} note={s.bypassHint}>
+        <form
+          className="flex min-w-[240px] flex-1 gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (entries.length === 0 || busy) return;
+            send([...rules, ...entries.filter((x) => !rules.includes(x))], () => setDraft(""));
+          }}
+        >
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={s.bypassPlaceholder}
+            aria-label={s.bypassTitle}
+            spellCheck={false}
+            className={`${FIELD} font-mono text-xs`}
+          />
+          <Button type="submit" variant="primary" disabled={busy || entries.length === 0}>
+            {s.bypassAdd}
+          </Button>
+        </form>
+      </Row>
+      {error != null && <p className="selectable border-b border-edge py-2 ps-2 text-xs text-fault">{error}</p>}
+      {rules.length === 0 ? (
+        <p className="border-b border-edge py-2 ps-2 text-xs text-muted">{s.bypassEmpty}</p>
+      ) : (
+        <ul className="flex flex-col border-b border-edge py-1">
+          {rules.map((rule) => (
+            <li key={rule} className="row flex items-center gap-2 ps-2">
+              <span className="selectable min-w-0 flex-1 truncate font-mono text-xs">{rule}</span>
+              <Button
+                variant="danger"
+                disabled={busy}
+                aria-label={s.bypassRemove(rule)}
+                className="w-8 px-0"
+                onClick={() => send(rules.filter((x) => x !== rule))}
+              >
+                <Icon name="close" />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
