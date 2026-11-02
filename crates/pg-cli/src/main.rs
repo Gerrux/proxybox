@@ -28,6 +28,10 @@ const USAGE_RU: &str = "proxybox <команда>
                          Без --profile — все, а это секунды на каждый
   conns                  живые соединения туннеля: кто, куда, каким маршрутом.
                          Ничего не сохраняется — список собирается на запрос
+  bypass                 исключения: адреса и имена, которые идут мимо туннеля
+  bypass add|rm <адрес|сеть|имя>…
+                         завести или убрать исключение; правка перезапускает
+                         туннель, а мимо него трафик идёт под вашим адресом
   browsers               список браузерных профилей
   add-browser --name <имя> --node <профиль> [--ua <строка>] [--lang <языки>]
                          завести браузерный профиль либо переписать такой же:
@@ -66,6 +70,10 @@ const USAGE_EN: &str = "proxybox <command>
                          Without --profile — all of them, seconds each
   conns                  live tunnel connections: who, where, which route.
                          Nothing is stored — the list is built per request
+  bypass                 exceptions: addresses and names that skip the tunnel
+  bypass add|rm <ip|cidr|name>…
+                         add or remove an exception; editing restarts the
+                         tunnel, and bypassed traffic goes out under your address
   browsers               list browser profiles
   add-browser --name <name> --node <profile> [--ua <string>] [--lang <langs>]
                          create or overwrite a browser profile: the node gives
@@ -104,6 +112,10 @@ const USAGE_FA: &str = "proxybox <فرمان>
                          بدون --profile — همه، و هر کدام چند ثانیه
   conns                  اتصال‌های زندهٔ تونل: که، به کجا، از کدام مسیر.
                          چیزی ذخیره نمی‌شود — فهرست برای هر درخواست ساخته می‌شود
+  bypass                 استثناها: نشانی‌ها و نام‌هایی که از کنار تونل می‌روند
+  bypass add|rm <نشانی|شبکه|نام>…
+                         افزودن یا برداشتن استثنا؛ ویرایش تونل را دوباره راه
+                         می‌اندازد، و ترافیک بیرون از تونل با نشانی خود شما می‌رود
   browsers               فهرست پروفایل‌های مرورگر
   add-browser --name <نام> --node <پروفایل> [--ua <رشته>] [--lang <زبان‌ها>]
                          ساختن پروفایل مرورگر یا بازنویسی همان: گره نشانی را
@@ -142,6 +154,10 @@ const USAGE_ZH: &str = "proxybox <命令>
                          不带 --profile 即全部，每个都要几秒
   conns                  隧道的活动连接：谁、去哪、走哪条路。
                          不做保存 — 列表按请求现场生成
+  bypass                 例外：绕过隧道的地址和域名
+  bypass add|rm <地址|网段|域名>…
+                         添加或移除例外；修改会重启隧道，
+                         绕过隧道的流量使用您自己的地址
   browsers               浏览器配置列表
   add-browser --name <名称> --node <配置> [--ua <字符串>] [--lang <语言>]
                          新建或覆盖浏览器配置：节点给出地址，
@@ -180,6 +196,10 @@ const USAGE_TR: &str = "proxybox <komut>
                          --profile olmadan hepsi, her biri saniyeler sürer
   conns                  tünelin canlı bağlantıları: kim, nereye, hangi rotayla.
                          Hiçbir şey saklanmaz — liste istek başına toplanır
+  bypass                 istisnalar: tüneli atlayan adresler ve adlar
+  bypass add|rm <adres|ağ|ad>…
+                         istisna ekle ya da kaldır; düzenleme tüneli yeniden
+                         başlatır, tünel dışı trafik sizin adresinizle gider
   browsers               tarayıcı profilleri listesi
   add-browser --name <ad> --node <profil> [--ua <metin>] [--lang <diller>]
                          tarayıcı profili oluştur ya da aynısını üzerine yaz:
@@ -218,6 +238,10 @@ const USAGE_ID: &str = "proxybox <perintah>
                          Tanpa --profile berarti semua, tiap satu makan detik
   conns                  koneksi hidup terowongan: siapa, ke mana, lewat rute apa.
                          Tidak ada yang disimpan — daftar dirakit per permintaan
+  bypass                 pengecualian: alamat dan nama yang melewati terowongan
+  bypass add|rm <alamat|jaringan|nama>…
+                         tambah atau hapus pengecualian; perubahan memulai ulang
+                         terowongan, dan lalu lintas di luarnya memakai alamat Anda
   browsers               daftar profil peramban
   add-browser --name <nama> --node <profil> [--ua <teks>] [--lang <bahasa>]
                          buat profil peramban atau timpa yang sama: node memberi
@@ -320,6 +344,31 @@ fn patch_settings(args: &[String]) -> Result<Request, String> {
     Ok(Request::SetSettings { settings })
 }
 
+/// `bypass add|rm <адрес или имя>…` — правка поверх нынешнего списка. Команда у
+/// службы одна и берёт список целиком (`Request::SetBypass`), поэтому список
+/// спрашивается заранее, как у `settings`. Приводит и сверяет строки служба:
+/// у консоли своей сверки нет, иначе две разошлись бы на первой правке.
+fn patch_bypass(args: &[String]) -> Result<Request, String> {
+    let Ok(Response::Status(status)) = call(&Request::Status) else {
+        return Err(t("служба недоступна: исключения хранит она"));
+    };
+    let entries: Vec<String> = args.iter().skip(2).cloned().collect();
+    if entries.is_empty() {
+        return Err(t("нужен адрес, сеть или имя: bypass add 158.160.0.0/16"));
+    }
+    let mut rules = status.bypass;
+    match args.get(1).map(String::as_str) {
+        Some("add") => rules.extend(entries),
+        // Убирается по записанному виду: голый адрес служба хранит сетью /32,
+        // и `rm 1.2.3.4` обязан найти `1.2.3.4/32`.
+        Some("rm") => rules.retain(|r| {
+            !entries.iter().any(|e| e == r || format!("{e}/32") == *r || e.trim_start_matches("*.") == r)
+        }),
+        _ => return Err(t("нужно: bypass, bypass add <…> или bypass rm <…>")),
+    }
+    Ok(Request::SetBypass { rules })
+}
+
 fn parse(args: &[String]) -> Result<Request, String> {
     match args.first().map(String::as_str) {
         Some("status") => Ok(Request::Status),
@@ -350,6 +399,7 @@ fn parse(args: &[String]) -> Result<Request, String> {
         },
         Some("profiles") => Ok(Request::Status),
         Some("settings") => Ok(Request::Status),
+        Some("bypass") => Ok(Request::Status),
         Some("test") => Ok(Request::TestProfiles { only: flag(args, "--profile") }),
         // Отбор уходит в службу, а не режется здесь: список приезжает обрезанным
         // по громкости, и `grep` по выводу нашёл бы только среди показанных.
@@ -448,6 +498,7 @@ fn main() -> std::process::ExitCode {
         // предварительный запрос; без флагов это обычный `status`, который их и
         // печатает.
         Some("settings") if args.len() > 1 => patch_settings(&args),
+        Some("bypass") if args.len() > 1 => patch_bypass(&args),
         _ => parse(&args),
     };
     let req = match parsed {
@@ -502,14 +553,24 @@ fn main() -> std::process::ExitCode {
             println!("socks5://127.0.0.1:{port}");
             std::process::ExitCode::SUCCESS
         }
-        Ok(Response::Connections { conns, total, matched }) => {
+        Ok(Response::Connections { conns, total, matched, unreached }) => {
             for c in &conns {
                 // Маршрут первой колонкой: ради него список и спрашивают.
                 // Процесс — именем файла: путь целиком гонит строку за край, а
                 // отличать один chrome.exe от другого тут всё равно нечем.
-                let route = if c.tunneled { t("туннель") } else { t("напрямую") };
+                let route = match (c.tunneled, c.bypass) {
+                    (true, _) => t("туннель"),
+                    (false, true) => t("исключение"),
+                    (false, false) => t("напрямую"),
+                };
                 let name = c.process.rsplit(['\\', '/']).next().unwrap_or("—");
-                println!("{route:<10} {:<24} {:<40} ↓{} ↑{}", if name.is_empty() { "—" } else { name }, c.host, bytes(c.rx), bytes(c.tx));
+                // Молчащее — пометкой в хвосте: колонки она не заслуживает, а
+                // ради неё человек как раз и смотрит этот список.
+                let silent = if c.silent { format!("  {}", t("молчит: узел, похоже, до адреса не дотягивается")) } else { String::new() };
+                println!("{route:<10} {:<24} {:<40} ↓{} ↑{}{silent}", if name.is_empty() { "—" } else { name }, c.host, bytes(c.rx), bytes(c.tx));
+            }
+            for host in &unreached {
+                println!("{}", tf!("{} не отвечает и напрямую — дело не в туннеле, исключение тут не поможет", host));
             }
             // Обрезано считается от совпавших, а не от всех: с непустым
             // отбором «всего» — это вся машина, а не то, что искали.
@@ -539,6 +600,16 @@ fn main() -> std::process::ExitCode {
             println!("{:<10} {}", "failover", onoff(s.settings.failover));
             println!("{:<10} {}", "probe", or(&s.settings.probe, t("сервер узла")));
             println!("{:<10} {}", "singbox", or(&s.settings.singbox, t("рядом со службой либо PATH")));
+            std::process::ExitCode::SUCCESS
+        }
+        Ok(Response::Status(s)) if args[0] == "bypass" => {
+            adopt(s.lang);
+            if s.bypass.is_empty() {
+                println!("{}", t("исключений нет: мимо туннеля не уходит ничего"));
+            }
+            for rule in &s.bypass {
+                println!("{rule}");
+            }
             std::process::ExitCode::SUCCESS
         }
         Ok(Response::Status(s)) if args[0] == "test" => {

@@ -417,6 +417,11 @@ struct Saved {
     /// То же про подписки: адреса в порядке групп.
     #[serde(default)]
     sub_order: Vec<String>,
+    /// Исключения мимо туннеля — уже приведённые, как они стоят в конфиге.
+    /// Отсутствующее поле читается пустым, то есть прежним «мимо туннеля не
+    /// уходит ничего»: обновление не заводит исключений само.
+    #[serde(default)]
+    bypass: Vec<String>,
 }
 
 /// Секунды с эпохи. Часы могли прыгнуть назад — тогда измерение выглядит
@@ -616,6 +621,10 @@ impl Service {
                 browser_profiles: saved.browser_profiles,
                 browser_trash: saved.browser_trash,
                 refreshed_at: saved.refreshed_at,
+                // Сверяются заново и при чтении: `state.json` правят руками, а
+                // строка, которой `SetBypass` не принял бы, не должна попасть в
+                // конфиг через дверь, мимо которой её никто не проверял.
+                bypass: saved.bypass.iter().filter_map(|e| core_tunnel::bypass_entry(e).ok()).collect(),
                 log,
                 ..Default::default()
             },
@@ -726,6 +735,7 @@ impl Service {
             favorites: self.favorites.clone(),
             order: self.order.clone(),
             sub_order: self.sub_order.clone(),
+            bypass: self.status.bypass.clone(),
             policy: self.legacy_policy.clone(),
             // Обратно тем же именем, каким читаем: перечисление знает своё имя
             // само, и дублировать его строкой значило бы разъехаться на первом
@@ -948,7 +958,9 @@ impl Service {
 
         // Ни списка, ни охвата: конфиг у обоих охватов один и тот же, и
         // держит их брандмауэр. Отсюда и то, что галочка туннель не трогает.
-        let opts = Options { tun: tun_enabled(), ..Default::default() };
+        // Исключения в конфиг входят — они решают не «кто», а «куда», — и
+        // потому их правка, в отличие от галочки, туннель перезапускает.
+        let opts = Options { tun: tun_enabled(), bypass: self.status.bypass.clone(), ..Default::default() };
         let config = build_config(&node, &opts);
         self.probe_target = probe_target(&self.status.settings.probe, &node);
         match Process::start(&config, &dir()) {
@@ -972,6 +984,13 @@ impl Service {
                     Scope::All => t("весь трафик компьютера"),
                     Scope::Whitelist => tf!("приложений с сетью: {}, у остальных её нет", count),
                     Scope::None => t("никто: туннель поднят, но пропусков нет ни у кого"),
+                };
+                // Исключения называются в той же строке, что и охват: это тоже
+                // ответ на «что сейчас уходит мимо туннеля», и прочитать его
+                // обязаны там же, где читают охват. Без TUN их в конфиге нет.
+                let scope = match opts.tun && !opts.bypass.is_empty() {
+                    true => tf!("{}; мимо туннеля по исключениям: {}", scope, opts.bypass.join(", ")),
+                    false => scope,
                 };
                 // Открытый узел называется в той же строке, а не своей: `start`
                 // зовётся и на каждом круге перезапуска, и отдельная строка
@@ -2086,9 +2105,14 @@ fn leaks_first(conns: &mut [Conn], picked: &BTreeSet<String>) {
         // Путь из sing-box и путь из списка — одна строка с точностью до
         // регистра: на Windows их не различает и сама файловая система.
         c.picked = picked.contains(&c.process.to_lowercase());
-        c.leak = !c.tunneled && c.picked;
+        // Исключение — не утечка: мимо туннеля его отправил сам человек, и
+        // ведёт туда отдельный тег, а не промах. Сторож —
+        // `a_bypass_is_not_a_leak`.
+        c.leak = !c.tunneled && !c.bypass && c.picked;
     }
-    conns.sort_by_key(|c| !c.leak);
+    // За утечкой — молчащие: они тоже тихие по определению (принято ноль), и
+    // без подъёма подсказка «узел не дотягивается» тонула бы под громкими.
+    conns.sort_by_key(|c| (!c.leak, !c.silent));
 }
 
 /// Отбор по подстроке: путь процесса или адрес назначения. Регистр не важен, а
@@ -2340,6 +2364,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             },
         },
         Request::EditProfile { name, rename, node } => edit_profile(&mut s, &name, &rename, &node),
+        Request::SetBypass { rules } => set_bypass(&mut s, &rules),
         Request::SetOrder { profiles, subscriptions } => {
             // Приезжает список целиком, и служба его не сверяет с текущим:
             // имена, которых больше нет, всё равно отсеет `save()`, а новые
@@ -2516,11 +2541,12 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             // файл, и на фоне похода в clash-api рядом её не видно.
             let picked: BTreeSet<String> =
                 Service::selected(&s.status).iter().map(|p| p.to_lowercase()).collect();
+            let bypassing = !s.status.bypass.is_empty();
             drop(s);
             let Some(port) = port else {
                 // Туннеля нет — и соединений нет. Это не ошибка: ровно так
                 // выглядит выключенный приватный режим и fail-closed.
-                return Response::Connections { conns: Vec::new(), total: 0, matched: 0 };
+                return Response::Connections { conns: Vec::new(), total: 0, matched: 0, unreached: Vec::new() };
             };
             // Кто держит порт — снимок машины, а не туннеля, и снимается он
             // без замка по той же причине, что и сам список: обход таблицы
@@ -2554,7 +2580,12 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                     // список читался бы как полный.
                     leaks_first(&mut conns, &picked);
                     conns.truncate(MAX_CONNS);
-                    Response::Connections { conns, total, matched }
+                    // Хвост журнала — только когда исключения есть: без них
+                    // искать там нечего, а это поход на диск на каждый опрос
+                    // панели. Замок к этому времени уже отпущен.
+                    let unreached =
+                        if bypassing { core_tunnel::bypass_failures(&core_tunnel::log_tail(&dir())) } else { Vec::new() };
+                    Response::Connections { conns, total, matched, unreached }
                 }
                 Err(e) => Response::Error { message: e.to_string() },
             }
@@ -3231,6 +3262,8 @@ mod tests {
             tunneled,
             picked: false,
             leak: false,
+            bypass: false,
+            silent: false,
             rx: bytes,
             tx: 0,
         }
@@ -3427,6 +3460,71 @@ mod tests {
         assert!(conns[0].leak, "и помечена утечкой — окно красит по этому полю, а не по своей сверке");
         assert!(!conns[1].leak, "чужой трафик в туннеле утечкой не зовётся");
         assert_eq!(conns[1].rx, 1_000_000, "внутри групп порядок по громкости не тронут");
+    }
+
+    /// Исключение — не утечка, а молчащее соединение не тонет под громкими.
+    ///
+    /// Выбранное приложение, ушедшее мимо туннеля по исключению, которое
+    /// человек завёл сам, — это выбор, а не промах: покрась его окно утечкой, и
+    /// каждое исключение пугало бы, а настоящую утечку перестали бы замечать.
+    /// Молчащее (принято ноль) тихое по определению, и без подъёма подсказка
+    /// «узел не дотягивается» срезалась бы сотней громких.
+    #[test]
+    fn a_bypass_is_not_a_leak() {
+        let picked: BTreeSet<String> = ["c:\\windows\\system32\\openssh\\ssh.exe".into()].into_iter().collect();
+        let mut conns: Vec<Conn> =
+            (0..MAX_CONNS as u64).map(|i| conn("c:\\apps\\torrent.exe", true, 1_000_000 - i)).collect();
+        let mut bypassed = conn("C:\\Windows\\System32\\OpenSSH\\ssh.exe", false, 4_096);
+        bypassed.bypass = true;
+        conns.push(bypassed);
+        let mut quiet = conn("C:\\Windows\\System32\\OpenSSH\\ssh.exe", true, 0);
+        quiet.silent = true;
+        conns.push(quiet);
+
+        leaks_first(&mut conns, &picked);
+        conns.truncate(MAX_CONNS);
+
+        assert!(conns.iter().all(|c| !c.leak), "исключение утечкой не зовётся: {:?}", conns.iter().find(|c| c.leak));
+        assert!(conns[0].silent, "молчащее поднято над громкими");
+        assert!(conns[0].picked);
+    }
+
+    /// Исключения правятся набором целиком и всё-или-ничего, хранятся
+    /// приведёнными и переживают перезапуск службы; поднятый туннель правка
+    /// перезапускает через `start()` — то есть через `guard(true)` впереди
+    /// всего, — а не снимает замок сама.
+    #[test]
+    fn a_bypass_edit_restarts_through_the_lock() {
+        let _state = scratch("pg-bypass-test");
+        let svc = Mutex::new(Service::load());
+        assert!(lock(&svc).status.bypass.is_empty(), "свежая установка исключений не заводит");
+
+        let rules = vec!["158.160.144.110".into(), "158.160.144.110/32".into(), "*.Yandex.Cloud".into()];
+        assert!(matches!(handle(&svc, Request::SetBypass { rules }), Response::Done));
+        assert_eq!(lock(&svc).status.bypass, ["158.160.144.110/32", "yandex.cloud"], "приведены и без повторов");
+
+        // Одна непринятая строка отклоняет весь набор.
+        let rules = vec!["51.250.0.0/16".into(), "0.0.0.0/0".into()];
+        assert!(matches!(handle(&svc, Request::SetBypass { rules }), Response::Error { .. }));
+        assert_eq!(lock(&svc).status.bypass, ["158.160.144.110/32", "yandex.cloud"], "половина набора встала");
+
+        // Переживают перезапуск, а руками вписанный мусор в конфиг не попадает.
+        drop(svc);
+        let raw = std::fs::read_to_string(dir().join("state.json")).unwrap();
+        let mut saved: Value = serde_json::from_str(&raw).unwrap();
+        saved["bypass"].as_array_mut().unwrap().push(json!("0.0.0.0/0"));
+        std::fs::write(dir().join("state.json"), saved.to_string()).unwrap();
+        assert_eq!(Service::load().status.bypass, ["158.160.144.110/32", "yandex.cloud"]);
+
+        // Перезапуск — тем же `start()`, и стену правка не трогает сама.
+        let body = include_str!("main.rs")
+            .split("\nfn set_bypass(")
+            .nth(1)
+            .and_then(|s| s.split("\n}").next())
+            .expect("set_bypass");
+        assert!(body.contains("s.start(&profile)"), "поднятый туннель обязан перезапуститься: {body}");
+        assert!(!body.contains("guard("), "замок переставляет `start()`, а не правка: {body}");
+        assert!(changes_the_machine(&Request::SetBypass { rules: vec![] }), "исключение уводит мимо туннеля — это след");
     }
 
     /// Отбор обязан считаться до обрезки.
@@ -4567,6 +4665,51 @@ mod tests {
     }
 }
 
+/// Исключения мимо туннеля целиком (`Request::SetBypass`).
+///
+/// Всё или ничего: одна непринятая строка отклоняет весь набор, иначе в конфиг
+/// встала бы половина того, что человек считает заведённым. Повторы схлопнуты
+/// по приведённому виду — `10.1.2.3/8` и `10.0.0.0/8` одно исключение.
+///
+/// Это правка конфига, а не стены, и поэтому единственная команда, кроме `On`,
+/// которая перезапускает туннель: живые соединения она обрывает, и ради
+/// неизменившегося набора этого не делает. Перезапуск идёт тем же `start()`,
+/// то есть через `guard(true)` впереди всего: между старым и новым sing-box
+/// выбранные приложения заперты, а не в обход. Сторож —
+/// `a_bypass_edit_restarts_through_the_lock`.
+fn set_bypass(s: &mut Service, rules: &[String]) -> Response {
+    let mut list: Vec<String> = Vec::new();
+    for raw in rules {
+        match core_tunnel::bypass_entry(raw) {
+            Ok(entry) if !list.contains(&entry) => list.push(entry),
+            Ok(_) => {}
+            Err(message) => return Response::Error { message },
+        }
+    }
+    if list == s.status.bypass {
+        return Response::Done;
+    }
+    s.status.bypass = list;
+    s.save();
+    match s.status.bypass.is_empty() {
+        true => s.log(t("исключений больше нет: мимо туннеля не уходит ничего")),
+        false => {
+            let list = s.status.bypass.join(", ");
+            s.log(tf!("исключения мимо туннеля: {}", list));
+        }
+    }
+    // Выключенный режим конфиг не держит вовсе: исключения встанут со
+    // следующего `On`, как и всё остальное.
+    let active = s.status.profile.clone().filter(|_| s.private);
+    match active {
+        Some(profile) => match s.start(&profile) {
+            Ok(()) => Response::Done,
+            Err(message) => Response::Error { message },
+        },
+        None => Response::Done,
+    }
+}
+
 /// Меняет ли команда то, что делает машина. Разрушающие называют в журнале
 /// своего отправителя, остальные — нет: статус спрашивают каждые две секунды, и
 /// след от него был бы не следом, а шумом, в котором тонет всё остальное.
@@ -4590,6 +4733,9 @@ fn changes_the_machine(req: &Request) -> bool {
         | Request::RemoveProfile { .. }
         | Request::RemoveSubscription { .. }
         | Request::SetSettings { .. }
+        // Исключение уводит трафик мимо туннеля — это ровно то, что продукт
+        // обязан назвать в журнале, если прислал не свой.
+        | Request::SetBypass { .. }
         | Request::Browse { .. }
         | Request::BrowseStop { .. }
         | Request::SetBrowserProfile { .. }
