@@ -213,8 +213,14 @@ export function Conns({
     const listed = status.apps.find((a) => samePath(a.path, path))?.path ?? path;
     const rest = (status.settings.direct_apps ?? []).filter((p) => !samePath(p, path));
     const direct_apps = direct ? [...rest, listed] : rest;
-    void (direct ? act({ cmd: "add-app", arg: { path: listed } }) : Promise.resolve(null))
-      .then(() => act({ cmd: "set-settings", arg: { settings: { ...status.settings, direct_apps } } }));
+    // Отказ первой команды обрывает цепочку: приложение, не попавшее в общий
+    // список, получило бы строку «напрямую» без галочки в панели приложений —
+    // ровно то, ради чего заводим его первым. Ответа нет вовсе (`null`) —
+    // служба молчит, и вторая команда ушла бы туда же.
+    void (direct ? act({ cmd: "add-app", arg: { path: listed } }) : Promise.resolve(undefined)).then((r) => {
+      if (r === null || r?.reply === "error") return;
+      void act({ cmd: "set-settings", arg: { settings: { ...status.settings, direct_apps } } });
+    });
   };
 
   // Что предложить строке, решает поле `picked`, а не своя сверка со списком:

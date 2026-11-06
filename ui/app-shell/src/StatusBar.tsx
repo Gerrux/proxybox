@@ -78,8 +78,21 @@ const SPARK = 40;
 const SPARK_W = 118;
 const SPARK_H = 30;
 
-/** Байты в секунду за один такт. */
-type Rate = { rx: number; tx: number };
+/** Байты в секунду за один такт и отметка службы (`traffic_at`, мс), на которой
+ *  такт закончился: по первой и последней отметке на экране считается, сколько
+ *  времени график держит на самом деле (`spanSeconds`). */
+type Rate = { rx: number; tx: number; at: number };
+
+/** Сколько секунд охватывают отсчёты на экране — от первой отметки до
+ *  последней, а не обещанное число: такт задаёт служба
+ *  (`PROBE_EVERY × TRAFFIC_EVERY`, ~15 с), и сорок отсчётов — это минуты, а
+ *  подпись «90 с» врала бы вдесятеро. Меньше двух отсчётов — промежутка нет,
+ *  и подписи нет (`null`). Сторож —
+ *  `the_speed_history_spans_what_its_label_says`. */
+export function spanSeconds(rates: Rate[]): number | null {
+  if (rates.length < 2) return null;
+  return Math.round((rates[rates.length - 1].at - rates[0].at) / 1000);
+}
 
 /** Скорость канала из тех же счётчиков, что стоят в приборной линейке. Они
  *  идут с запуска sing-box, поэтому разница между двумя снятиями и есть байты
@@ -123,7 +136,7 @@ export function useRates(status: Status | null): Rate[] {
     setRates((r) =>
       [
         ...r,
-        { rx: Math.max(0, status.rx - was.rx) / dt, tx: Math.max(0, status.tx - was.tx) / dt },
+        { rx: Math.max(0, status.rx - was.rx) / dt, tx: Math.max(0, status.tx - was.tx) / dt, at },
       ].slice(-SPARK),
     );
     // Зависимость — сам статус, а не его поля: при молчащем канале счётчики не
@@ -370,6 +383,7 @@ export function StatusBar({
   // нагрузка при десятикратной разнице. Пик по обоим рядам, не по своему.
   const peak = Math.max(1, ...rates.map((r) => Math.max(r.rx, r.tx)));
   const last = rates.at(-1) ?? null;
+  const span = spanSeconds(rates);
   const scaleHint = s.rateHint(bytes(peak) + s.perSecond);
   const view = describe(s, status);
   const state = tunnelState(status);
@@ -469,10 +483,12 @@ export function StatusBar({
             title={s.scope}
             disabled={!status || busy}
             onClick={(e) => {
+              // Начальный край кнопки, а не физический левый: в раскладке
+              // справа налево меню растёт от правого (`fromStart` у `Menu`).
               const at = e.currentTarget.getBoundingClientRect();
-              setMenu([at.left, at.bottom + 4]);
+              setMenu([document.documentElement.dir === "rtl" ? at.right : at.left, at.bottom + 4]);
             }}
-            className="st-scope smooth inline-flex h-7 max-w-full shrink-0 items-center gap-1.5 self-start rounded-md px-2 text-sm font-medium disabled:opacity-40"
+            className="st-scope smooth inline-flex h-7 max-w-full shrink-0 items-center gap-1.5 self-start px-2 text-sm font-medium disabled:opacity-40"
           >
             <span className="st-scope-dot" aria-hidden="true" />
             <span className="min-w-0 truncate">{scopeName}</span>
@@ -522,7 +538,7 @@ export function StatusBar({
                   </span>
                 )}
                 {nodeKind && (
-                  <span className="shrink-0 rounded-md border border-edge px-1.5 font-mono text-xs">{nodeKind}</span>
+                  <span className="shrink-0 rounded-sm border border-edge px-1.5 font-mono text-xs">{nodeKind}</span>
                 )}
               </p>
             ) : null}
@@ -540,7 +556,7 @@ export function StatusBar({
           <section className="m-block" role="group" aria-label={s.speed} title={scaleHint}>
             <div className="m-legend">
               <span className="m-label text-xs">{s.speed}</span>
-              <span className="m-aside text-xs">{s.histSpan}</span>
+              {span != null && <span className="m-aside text-xs">{s.histSpan(span)}</span>}
             </div>
             <div className="m-rates flex items-baseline gap-x-4 font-mono tabular-nums">
               <span className="flex items-baseline gap-1 text-open" title={s.received}>
@@ -624,6 +640,7 @@ export function StatusBar({
         <Menu
           at={menu}
           onClose={() => setMenu(null)}
+          fromStart
           items={scopes.map(([value, label, hint]) => ({
             label,
             sub: hint,

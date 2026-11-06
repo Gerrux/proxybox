@@ -293,21 +293,51 @@ body {
   color: var(--pg-text);
 }
 
-/* Верх окна — один ряд из трёх блоков на одной поверхности: состояние (с
-   заливкой тоном), скорость, задержка, 1.75 : 1 : 0.72. Разделяют их волосяные
-   линии, а не зазоры и скруглённые плитки: плоское окно Windows, не дашборд.
-   Колонки не поровну, и это не вкус: слову состояния с выключателем нужно
-   вдвое больше места, чем числу задержки. Ниже 768 px сетки нет вовсе (см.
-   ниже): блок состояния встаёт во всю ширину, а измерители — строкой под ним. */
+/* Верх окна — один ряд из трёх карточек: состояние (с заливкой тоном и рамкой
+   тона), скорость, задержка, 1.75 : 1 : 0.72. Карточка — рамка в волосок,
+   скругление 12 px, зазор между ними 8 (решение владельца, заменившее
+   прежние блоки на одной поверхности через волосяные линии). Колонки не
+   поровну, и это не вкус: слову состояния с выключателем нужно вдвое больше
+   места, чем числу задержки. Поля — 4 сверху (под титульной полосой) и 12 по
+   бокам и снизу. Ниже 768 px сетки нет вовсе (см. ниже): карточка состояния
+   встаёт во всю ширину, а измерители — строкой-карточкой под ней. */
 .st-hero {
   grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr) minmax(0, 0.72fr);
-  border-bottom: 1px solid color-mix(in oklch, var(--tone) 28%, var(--pg-border));
+  gap: 8px;
+  padding: 4px 12px 12px;
+  border-bottom: 1px solid var(--pg-border);
 }
 
+/* Карточка состояния. Она же — контейнер для слова состояния: ширину слову
+   задаёт не окно, а сама карточка (1.75 из 3.47 доли ряда, минус поля), и
+   ступень кегля выбирает запрос по ней (`@container` ниже). Контейнер по
+   ширине, а не по размеру: высоту карточки по-прежнему задаёт текст. */
 .st-state {
   position: relative;
   overflow: hidden;
-  border-inline-end: 1px solid color-mix(in oklch, var(--tone) 22%, var(--pg-border));
+  container-type: inline-size;
+  border: 1px solid color-mix(in oklch, var(--tone) 22%, var(--pg-border));
+  border-radius: var(--pg-r-card);
+}
+
+/* Слово состояния не обрезается и не переносится, а ужимается ступенями
+   шкалы: 28 px, пока карточка шире 531 px (самое длинное слово окна, «Туннеля
+   нет — доступ закрыт», — 396 px при 28; прочее в карточке — 132 px: поля,
+   зазор, тумблер, глиф), затем 20 px, пока шире 417 px, иначе 16. Пороги —
+   в пикселях содержимого карточки, как их и меряет запрос. Сторож —
+   `the_state_word_stays_on_one_line_in_the_row_of_three`. */
+@container (max-width: 531px) {
+  .st-word {
+    font-size: var(--text-xl);
+    line-height: var(--text-xl--line-height);
+  }
+}
+
+@container (max-width: 417px) {
+  .st-word {
+    font-size: var(--text-lg);
+    line-height: var(--text-lg--line-height);
+  }
 }
 
 /* Карта — фон конца блока состояния: с 38% его ширины и до края, а к тексту
@@ -340,7 +370,17 @@ body {
    (светлее поверхности) читалась бы на ней отдельной плиткой. */
 .st-scope {
   border: 1px solid color-mix(in oklch, var(--tone) 18%, var(--pg-border));
+  border-radius: var(--pg-r-chip);
   background: var(--pg-sunken);
+}
+
+/* Блок состояния плашки из трея — такая же карточка, как в главном окне, но
+   вложенная: поле 8 px со всех сторон кроме низа, скругление 10, рамка тона. */
+.st-fly {
+  margin: 8px 8px 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklch, var(--tone) 22%, var(--pg-border));
+  border-radius: var(--pg-r-cell);
 }
 
 .st-scope:hover:not(:disabled) {
@@ -464,6 +504,21 @@ body {
 
 .rail-badge[data-dot="fault"] {
   background: var(--pg-fault);
+}
+
+/* Правка «Раздельно», ещё не применённая, — акцентная точка у нижнего угла
+   значка (бляшка с числом стоит у верхнего). Цвет — действие оператора, не
+   состояние: тот же акцент, что у точки в строке приложения. Кольцо цвета
+   рейки вырезает угол значка, как у бляшки. */
+.rail-pending {
+  position: absolute;
+  inset-block-end: -2px;
+  inset-inline-end: -4px;
+  inline-size: 10px;
+  block-size: 10px;
+  border-radius: 9999px;
+  background: var(--pg-accent);
+  box-shadow: 0 0 0 2px var(--pg-bg);
 }
 
 .rail-item[aria-pressed="true"]::before {
@@ -793,10 +848,9 @@ body {
   min-inline-size: 0;
   flex-direction: column;
   padding: 10px 12px;
-}
-
-.m-block + .m-block {
-  border-inline-start: 1px solid var(--pg-border);
+  border: 1px solid var(--pg-border);
+  border-radius: var(--pg-r-card);
+  background: var(--pg-tile);
 }
 
 .m-legend {
@@ -831,13 +885,13 @@ body {
   gap: 8px;
   margin-block-start: 6px;
   color: var(--pg-faint);
-  font-size: 12px;
-  line-height: 16px;
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
 }
 
-/* Колодец: врезан в поверхность (тёмнее неё), с тремя бледными линиями шкалы.
-   Высота — остаток ряда (`flex: 1`), минимум — чтобы график оставался
-   графиком при самом низком окне. */
+/* Колодец: врезан в карточку (темнее неё, `--pg-well`), скругление 8, с тремя
+   бледными линиями шкалы. Высота — остаток ряда (`flex: 1`), минимум — чтобы
+   график оставался графиком при самом низком окне. */
 .chart {
   position: relative;
   flex: 1 1 0;
@@ -845,8 +899,8 @@ body {
   margin-block-start: 6px;
   overflow: hidden;
   border: 1px solid var(--pg-border);
-  border-radius: 4px;
-  background-color: var(--pg-sunken);
+  border-radius: var(--pg-r-well);
+  background-color: var(--pg-well);
   background-image: linear-gradient(to top, color-mix(in oklch, var(--pg-border) 70%, transparent) 1px, transparent 1px);
   background-size: 100% 33.34%;
 }
@@ -1051,26 +1105,27 @@ body {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .st-state {
-    border-inline-end: 0;
-  }
-
+  /* Измерители — одна карточка-строка под карточкой состояния: две карточки
+     по одному числу в ней были бы двумя пустыми плитками. */
   .st-metrics {
     display: flex;
     flex-wrap: nowrap;
     align-items: baseline;
     column-gap: 12px;
-    padding: 4px 16px;
-    border-top: 1px solid var(--pg-border);
+    padding: 4px 12px;
+    border: 1px solid var(--pg-border);
+    border-radius: var(--pg-r-card);
+    background: var(--pg-tile);
   }
 
-  .m-block,
-  .m-block + .m-block {
+  .m-block {
     flex: none;
     flex-direction: row;
     align-items: baseline;
     gap: 5px;
     border: 0;
+    border-radius: 0;
+    background: none;
     padding: 0;
   }
 
@@ -1135,11 +1190,12 @@ body {
     gap: 4px;
   }
 
-  /* Слово состояния — ступенью ниже: «Туннеля нет — доступ закрыт» на 28 px
-     в 330 px занимает три строки. */
-  .st-word {
-    font-size: 20px;
-    line-height: 26px;
+  /* Поля верха уже: в 380 px каждый пиксель ширины идёт числам строки
+     измерителей. Слово состояния ужимается само — запросом по карточке
+     (`@container` выше), а не по окну. */
+  .st-hero {
+    gap: 6px;
+    padding: 2px 8px 8px;
   }
 
   /* Подсказка в одну строку — не только здесь (`.st-hint` выше), и именно
@@ -1152,10 +1208,11 @@ body {
     overflow: hidden;
   }
 
-  /* Строка измерителей в 380 px: числа в 356 px встают только с полями поуже
-     и справкой помельче — иначе обрезается хвост итога сеанса. */
+  /* Строка измерителей в 380 px: числа в 346 px (поля верха 8, рамка и поле
+     карточки 8 + 1) встают только с полями поуже и справкой помельче — иначе
+     обрезается хвост итога сеанса. */
   .st-metrics {
-    padding-inline: 12px;
+    padding-inline: 8px;
     column-gap: 10px;
   }
 
@@ -1164,8 +1221,8 @@ body {
   }
 
   .m-session {
-    font-size: 12px;
-    line-height: 16px;
+    font-size: var(--text-xs);
+    line-height: var(--text-xs--line-height);
   }
 
   /* Город уходит: строка страны одна и не переносится, а страна — то, что
@@ -1234,17 +1291,6 @@ body {
 
   .st-text {
     padding-block: 8px;
-  }
-}
-
-/* Блок состояния — слово в 28 px и выключатель, рядом с которым в 768–900 px
-   не помещается и «Туннель с исключениями»: колонка у блока 1.75 из 3.47 доли
-   окна. Слово ступенью ниже, пока блок не расширится, — а не перенос на вторую
-   строку, растящий весь ряд. */
-@media (max-width: 899px) {
-  .st-word {
-    font-size: 20px;
-    line-height: 26px;
   }
 }
 
@@ -1323,53 +1369,49 @@ h3.sub-head:hover {
   }
 }
 
-/* Полоса подписок под панелью инструментов списка профилей: одна плоская
-   строка, ячейки разделены волосяными линиями, как у приборной линейки.
-   Выбранная ячейка — заливкой и акцентной чертой по нижней кромке: полоска у
-   начала, как у строк списка, тут легла бы поперёк разделителя соседней
-   ячейки. Прокручивается вбок, когда подписок больше, чем помещается. */
+/* Полоса подписок под панелью инструментов списка профилей: ряд маленьких
+   карточек-ячеек (скругление 10, зазор 8; ~64 px вместе с полями — выше
+   ряд стоил бы списку строку). Прокручивается вбок, когда подписок больше,
+   чем помещается, и полоса прокрутки при этом видна всегда: в 380 px ячейки за
+   краем иначе были бы недостижимы, а обрезанной крайней ячейки мало, чтобы
+   догадаться, что ряд едет. Тонкая — высоту ряда она растит только там, где
+   переполнение есть. */
 .sub-strip {
-  border-bottom: 1px solid var(--pg-border);
-  /* Полосы прокрутки нет: её десять пикселей (`.scroll`) лежали бы лишней
-     строкой под ячейками. Что подписок больше, чем влезает,
-     видно по обрезанной крайней ячейке; прокручивается колесом и жестом. */
-  scrollbar-width: none;
+  gap: 8px;
+  padding: 2px 12px 6px;
+  scrollbar-color: color-mix(in oklch, var(--pg-muted) 45%, transparent) transparent;
 }
 
-.sub-strip::-webkit-scrollbar {
-  display: none;
+.sub-strip::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--pg-muted) 42%, transparent);
+  background-clip: content-box;
 }
 
 /* Ячейка — до трёх строк: имя с делениями живых узлов, остаток с полоской,
-   срок. Ячейки разделены волосяными линиями, а не рамками плиток. */
+   срок. Карточка с рамкой в волосок; выбранная — акцентная рамка и еле
+   заметная акцентная заливка, а не полоска по кромке: у карточки есть
+   контур, и им же отмечается выбор. */
 .sub-cell {
   position: relative;
-  border-inline-end: 1px solid var(--pg-border);
+  border: 1px solid var(--pg-border);
+  border-radius: var(--pg-r-cell);
+  background: var(--pg-tile);
   text-align: start;
 }
 
 .sub-cell:hover {
-  background: var(--pg-hover);
+  background: linear-gradient(var(--pg-hover), var(--pg-hover)), var(--pg-tile);
 }
 
 .sub-cell[aria-pressed="true"] {
-  background: var(--pg-press);
-}
-
-.sub-cell[aria-pressed="true"]::after {
-  content: "";
-  position: absolute;
-  inset-inline: 0;
-  inset-block-end: 0;
-  block-size: 2px;
-  background: var(--pg-accent);
+  border-color: color-mix(in oklch, var(--pg-accent) 55%, var(--pg-border));
+  background: color-mix(in oklch, var(--pg-accent) 6%, var(--pg-tile));
 }
 
 /* Оглавление настроек. Пункт — как пункт рейки: заливка под указателем и у
    текущего, акцентная полоска у начала. В узком виде оглавление — полоса
    сверху, липнущая к кромке прокрутки (она же и держит липкое, отступа у
-   панели нет — см. `.sub-head`), и полоска у пункта ложится снизу, как у
-   `.sub-cell`. Разделам в таком виде нужен запас под полосу, иначе заголовок
+   панели нет — см. `.sub-head`), и полоска у пункта ложится снизу. Разделам в таком виде нужен запас под полосу, иначе заголовок
    после нажатия остался бы под ней. */
 .set-item {
   position: relative;

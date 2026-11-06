@@ -616,10 +616,16 @@ export function Menu({
   at,
   items,
   onClose,
+  fromStart = false,
 }: {
   at: [number, number];
   items: MenuItem[];
   onClose: () => void;
+  /** `at[0]` — не место курсора, а начальный край кнопки, под которой открыто
+   *  меню (физически правый в раскладке справа налево): меню растёт от него
+   *  внутрь окна. Без этого меню под кнопкой у правого края в фарси вставало
+   *  бы от её правого края вправо — за пределы окна — и упиралось в край. */
+  fromStart?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [armed, setArmed] = useState<string | null>(null);
@@ -627,8 +633,9 @@ export function Menu({
   useLayoutEffect(() => {
     const rect = ref.current?.getBoundingClientRect();
     if (!rect) return;
+    const from = fromStart && document.documentElement.dir === "rtl" ? at[0] - rect.width : at[0];
     setBox({
-      left: Math.max(8, Math.min(at[0], window.innerWidth - rect.width - 8)),
+      left: Math.max(8, Math.min(from, window.innerWidth - rect.width - 8)),
       top: Math.max(8, Math.min(at[1], window.innerHeight - rect.height - 8)),
     });
   }, [at]);

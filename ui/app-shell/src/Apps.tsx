@@ -80,11 +80,37 @@ function useIcons(apps: App[]): Record<string, string> {
   return icons;
 }
 
+/** Накопленные галочки «Раздельно»: ключ — путь, значение — чего хочет человек.
+ *  Живут в `App.tsx`, а не в панели: панель приложений размонтируется при
+ *  переходе на браузеры, соединения и в настройки, и десять отмеченных, но не
+ *  применённых галочек пропадали бы вместе с полосой «Применить» (сторож —
+ *  `split_edits_outlive_a_tab_switch`). */
+export type SplitPending = Record<string, boolean>;
+
+/** Список приложений глазами охвата: в «Раздельно» галочка — это
+ *  `direct_apps`, а не `enabled` белого списка. */
+export function appsOf(status: Status | null): App[] {
+  const split = status?.scope === "split";
+  return (status?.apps ?? []).map((app) =>
+    split ? { ...app, enabled: status?.settings.direct_apps?.includes(app.path) ?? false } : app,
+  );
+}
+
+/** Правки, которые ещё не уехали службе. Запись, совпавшая с сохранённым, не
+ *  считается, как и запись про приложение, которого уже нет в списке. Вне
+ *  «Раздельно» накопленного нет по определению. */
+export function splitEdits(status: Status | null, pending: SplitPending): App[] {
+  if (status?.scope !== "split") return [];
+  return appsOf(status).filter((a) => pending[a.path] != null && pending[a.path] !== a.enabled);
+}
+
 export function Apps({
   status,
   act,
   busy,
   className,
+  pending,
+  setPending,
 }: {
   status: Status | null;
   act: Act;
@@ -92,24 +118,22 @@ export function Apps({
    *  а полоска ожидания рисуется на шапке — далеко от нажатой кнопки. */
   busy?: boolean;
   className?: string;
+  /** Накопленные галочки «Раздельно» — состояние `App.tsx` (см. `SplitPending`). */
+  pending: SplitPending;
+  setPending: (next: SplitPending | ((prev: SplitPending) => SplitPending)) => void;
 }) {
   const s = strings(status?.lang);
   const all = status?.scope === "all";
   const split = status?.scope === "split";
-  const apps = (status?.apps ?? []).map((app) => split
-    ? { ...app, enabled: status?.settings.direct_apps?.includes(app.path) ?? false }
-    : app);
+  const apps = appsOf(status);
   const on = apps.filter((a) => a.enabled).length;
   // «Раздельно»: каждая правка списка напрямую перезапускает туннель, и пока он
   // не подтверждён, машина заперта. Десять галочек подряд — десять запертых
-  // машин, поэтому здесь они копятся в окне и уходят одной правкой по
-  // «Применить». Белый список так не делает: он туннель не трогает вовсе
+  // машин, поэтому они копятся в окне и уходят одной правкой по «Применить».
+  // Белый список так не делает: он туннель не трогает вовсе
   // (`editing_the_list_never_restarts_the_tunnel`), и его галочки сбываются
-  // сразу. Ключ — путь, значение — чего хочет человек; запись, совпавшая с
-  // сохранённым, не хранится вовсе, а запись про приложение, которого уже нет в
-  // списке, не считается и не уезжает.
-  const [pending, setPending] = useState<Record<string, boolean>>({});
-  const edits = split ? apps.filter((a) => pending[a.path] != null && pending[a.path] !== a.enabled) : [];
+  // сразу. Сбрасывает накопленное смена охвата — в `App.tsx`: там оно и живёт.
+  const edits = splitEdits(status, pending);
   const wants = (app: App) => (split && pending[app.path] != null ? pending[app.path] : app.enabled);
   const toggle = (app: App, value: boolean) =>
     setPending((prev) => {
@@ -118,10 +142,6 @@ export function Apps({
       else next[app.path] = value;
       return next;
     });
-  // Охват сменился — накопленное относилось к другому охвату и к другому
-  // смыслу галочки; применить его после переключения значило бы тихо
-  // перезапустить туннель из-за правки, которой человек уже не видит.
-  useEffect(() => setPending({}), [status?.scope]);
   const apply = () => {
     if (!status) return;
     const changed = new Map(edits.map((a) => [a.path, wants(a)]));
@@ -375,7 +395,11 @@ export function Apps({
                   </span>
                   {/* Правка ещё не применена: точка вместо цвета строки —
                       цвета состояний галочке не положены. */}
-                  {edits.includes(app) && <span aria-hidden className="size-1.5 shrink-0 self-center rounded-full bg-accent" />}
+                  {edits.some((e) => e.path === app.path) && (
+                    <span className="size-1.5 shrink-0 self-center rounded-full bg-accent" title={s.unapplied}>
+                      <span className="sr-only">{s.unapplied}</span>
+                    </span>
+                  )}
                   <span className="selectable hidden min-w-0 shrink-[8] truncate font-mono text-xs text-faint group-hover/row:inline group-focus-within/row:inline">
                     {app.path}
                   </span>

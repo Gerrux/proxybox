@@ -233,7 +233,7 @@ function SubStrip({
           aria-pressed={filter === url}
           title={tip}
           onClick={() => onPick(filter === url ? null : url)}
-          className="sub-cell smooth flex w-full min-w-0 flex-col items-stretch justify-start gap-0.5 px-3 py-1"
+          className="sub-cell smooth flex w-full min-w-0 flex-col items-stretch justify-start px-3 py-0.5"
         >
           <span className="flex min-w-0 items-center gap-2">
             <span className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</span>
@@ -705,7 +705,7 @@ export function Profiles({
               под ней. Высота — 41 px: поле в 32 и по 4 сверху и снизу. */}
           <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1">
             {searchable && (
-              <div className={compact ? "min-w-0 flex-1" : "min-w-32 flex-[0_1_18rem]"}>
+              <div className={compact ? "min-w-0 flex-[1_0_8rem]" : "min-w-32 flex-[0_1_18rem]"}>
                 <SearchField inputRef={searchRef} value={query} onChange={setQuery} placeholder={s.searchProfiles} />
               </div>
             )}
@@ -725,9 +725,14 @@ export function Profiles({
               />
             )}
             {/* Распорка несёт счёт, когда шапки нет, а полосы подписок (где он
-                стоит в ячейке «Все») тоже нет; места ему нет — обрезается. */}
-            {(!compact || !searchable) && (
-              <span className="min-w-0 flex-1 truncate text-xs">
+                стоит в ячейке «Все») тоже нет; места ему нет — обрезается.
+                В тесной раскладке с полем поиска распорка раньше пропадала
+                вовсе, и счёт с «сверено» исчезали вместе с ней: теперь она
+                остаётся мелким бледным текстом справа от поля, а поле держит
+                своё минимальное место (`flex-[1_0_8rem]` выше) и обрезает не
+                себя, а подпись. */}
+            {(!compact || !searchable || !stripped) && (
+              <span className={`min-w-0 truncate text-xs ${compact && searchable ? "shrink" : "flex-1"}`}>
                 {!stripped && <span className="fold-only">{note}</span>}
               </span>
             )}
@@ -1631,7 +1636,7 @@ function Rows({
                   wireguard, и это единственное, что в одной строке не
                   повторяет имя. В тесной панели её нет — остаётся в подсказке. */}
               {!tight && item.kind && (
-                <span className="shrink-0 rounded-[3px] bg-hover px-1.5 font-mono text-xs text-muted">{item.kind}</span>
+                <span className="shrink-0 rounded-sm bg-hover px-1.5 font-mono text-xs text-muted">{item.kind}</span>
               )}
               {/* Пометки — значками, а не словами: слово «без шифрования»
                   заглавными в каждой строке кричало громче имени узла. Смысл

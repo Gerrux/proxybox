@@ -15,7 +15,7 @@ import {
   type Status,
 } from "./platform";
 import { dir, strings } from "./i18n";
-import { Apps } from "./Apps";
+import { Apps, splitEdits, type SplitPending } from "./Apps";
 import { Browsers } from "./Browsers";
 import { Conns } from "./Conns";
 import { Journal } from "./Journal";
@@ -23,7 +23,7 @@ import { Profiles } from "./Profiles";
 import { Settings, useReleases, useTheme } from "./Settings";
 import { StatusBar, tunnelState } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
-import { Welcome } from "./Welcome";
+import { Welcome, useWelcomeDone } from "./Welcome";
 import { Flyout } from "./Flyout";
 import { Button, Icon, IconButton, type IconName } from "./ui";
 
@@ -82,7 +82,27 @@ export function App() {
   // сжата шириной, а вот титульная полоса и вопрос при закрытии ей ни к чему.
   const flyout = isFlyout();
 
-  const send = useCallback(async (req: Request): Promise<Response | null> => {
+  // Накопленные галочки «Раздельно» живут здесь, а не в панели приложений:
+  // `Apps` размонтируется при переходе на браузеры, соединения и в настройки, и
+  // отмеченное, но не применённое пропадало бы молча вместе с полосой
+  // «Применить». Сбрасывает их только настоящая смена охвата — между двумя
+  // известными охватами. Мигнувшая служба обнуляет `status` (и охват вместе с
+  // ним), но это не смена: запомненный охват при этом не трогаем.
+  const [pending, setPending] = useState<SplitPending>({});
+  const scopeWas = useRef<Scope | null>(null);
+  const scopeNow = status?.scope;
+  useEffect(() => {
+    if (!scopeNow) return;
+    if (scopeWas.current && scopeWas.current !== scopeNow) setPending({});
+    scopeWas.current = scopeNow;
+  }, [scopeNow]);
+
+  // Карточка первого запуска уходит навсегда, как только сбылись все три шага, —
+  // и считать это обязано окно целиком, а не сама карточка: она не рисуется в
+  // настройках, и шаги, сбывшиеся там, иначе не запомнились бы.
+  useWelcomeDone(flyout ? null : status);
+
+  const send =useCallback(async (req: Request): Promise<Response | null> => {
     try {
       const r = await call(req);
       // Ошибку баннер только показывает, но никогда не снимает по своей воле:
@@ -261,6 +281,7 @@ export function App() {
   const selectedApps = status?.scope === "split"
     ? status.settings.direct_apps?.length ?? 0
     : status?.apps.filter((a) => a.enabled).length ?? 0;
+  const unapplied = splitEdits(status, pending).length;
   const setScope = (scope: Scope) => void act({ cmd: "set-scope", arg: { scope } });
 
   // Плашка из трея — своя раскладка (`Flyout.tsx`): её открывают глянуть и
@@ -324,7 +345,7 @@ export function App() {
             видах, кто из них показан, решает `index.css` по ширине окна. */}
         <nav className="rail flex shrink-0 flex-col items-center gap-0.5 py-1.5" aria-label={s.tabMain}>
           <RailItem className="rail-narrow" icon="server" active={!settings && tab === "profiles"} onClick={() => pick("profiles")}
-            label={s.profiles} count={status?.profiles.length ?? 0} />
+            label={s.profiles} count={status?.profiles.length || undefined} />
           {/* Бляшка — это внимание или число, которое что-то значит. «Весь
               компьютер» список не применяет, и число там врало бы; пустой
               белый список — запертая машина, и это не «0», а предупреждение.
@@ -336,7 +357,8 @@ export function App() {
             count={status?.scope === "all" || selectedApps === 0 ? undefined : selectedApps}
             full={s.railOf(selectedApps, status?.apps.length ?? 0)}
             dot={status?.scope === "whitelist" && selectedApps === 0 ? "closed" : undefined}
-            note={s.noAppsAhead} />
+            note={s.noAppsAhead}
+            pending={unapplied > 0 ? s.unapplied : undefined} />
           <RailItem className="rail-narrow" icon="lines" active={!settings && tab === "journal"} onClick={() => pick("journal")}
             label={s.journal} dot={status?.log[0]?.bad ? "fault" : undefined} note={s.journalBad} />
           {/* Шире 1100 px первые три стоят рядом, и выбирать между ними
@@ -382,7 +404,13 @@ export function App() {
                     busy={busy > 0}
                     onError={setError}
                   />
-                  <Apps className={pane(tab, "apps")} status={status} act={act} busy={busy > 0} />
+                  <Apps className={pane(tab, "apps")}
+                    status={status}
+                    act={act}
+                    busy={busy > 0}
+                    pending={pending}
+                    setPending={setPending}
+                  />
                   <Journal className={pane(tab, "journal")} lines={status?.log ?? []} lang={status?.lang} />
                 </div>
               )}
@@ -490,6 +518,7 @@ function RailItem({
   full,
   dot,
   note,
+  pending,
   active,
   onClick,
   className = "",
@@ -503,12 +532,17 @@ function RailItem({
   dot?: "closed" | "fault";
   /** Что сказать вместо точки — её причина. */
   note?: string;
+  /** Правка, ещё не уехавшая службе («не применено»): акцентная точка у нижнего
+   *  угла значка и та же фраза в имени пункта. Не заменяет ни число, ни точку
+   *  внимания — стоит рядом с ними. */
+  pending?: string;
   active: boolean;
   onClick: () => void;
   className?: string;
 }) {
-  const name =
+  const base =
     count != null ? `${label} · ${full ?? count}` : dot && note ? `${label} · ${note}` : label;
+  const name = pending ? `${base} · ${pending}` : base;
   return (
     <button
       type="button"
@@ -529,6 +563,7 @@ function RailItem({
         ) : (
           dot && <span className="rail-badge" data-dot={dot} aria-hidden="true" />
         )}
+        {pending && <span className="rail-pending" aria-hidden="true" />}
       </span>
       <span className="rail-label max-w-full truncate px-0.5 text-xs leading-none" aria-hidden="true">
         {label}
