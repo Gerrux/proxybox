@@ -692,8 +692,19 @@ body {
   inset: 0;
 }
 
+/* Суша — один путь из силуэтов всех стран, и без обводки соседи сливались в
+   одно пятно: граница между Нидерландами и Германией не читалась вовсе, а по
+   ней страну выхода и узнают. Граница — тёмный зазор цвета поверхности, а не
+   светлая линия: у соседних стран общая кромка рисуется дважды, и
+   полупрозрачная светлая линия на ней вышла бы вдвое ярче побережья. Толщина
+   не тянется с увеличением (`non-scaling-stroke`): при перелёте к Мальте
+   линия в единицах карты стала бы толще самой страны. */
 .world-land {
-  fill: color-mix(in oklch, var(--pg-text) 13%, transparent);
+  fill: color-mix(in oklch, var(--pg-text) 17%, transparent);
+  stroke: color-mix(in oklch, var(--pg-bg) 85%, transparent);
+  stroke-width: 0.9px;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
 }
 
 .world-hatch {

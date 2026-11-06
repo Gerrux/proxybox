@@ -749,7 +749,10 @@ export function Profiles({
                 )}
                 {turnFastest && (
                   <Button disabled={turnFastest.disabled} title={turnFastest.hint} onClick={turnFastest.onPick}>
-                    <Icon name="bolt" size={14} />
+                    {/* Молния — акцентом, как у той же строки в плашке: это
+                        единственное действие ряда, которое сразу включает узел,
+                        и его ищут взглядом, а не читают подпись. */}
+                    <Icon name="bolt" size={14} className="text-accent" />
                     {s.fastestShort}
                   </Button>
                 )}
