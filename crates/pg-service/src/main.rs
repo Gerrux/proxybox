@@ -2084,6 +2084,19 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Result<Tally, 
     let (body, userinfo) = fetch(url, via_tunnel)?;
     let batch = core_config::parse_many(&body);
     let mut s = lock(svc);
+    apply_subscription(&mut s, url, batch, userinfo.as_deref(), scheduled)
+}
+
+/// Вторая половина `subscribe`: уже скачанный набор заменяет узлы подписки.
+/// Вынесена, чтобы правка подписки (`edit_subscription`) шла ровно тем же
+/// путём — с тем же решением о судьбе активного узла, — а не второй копией.
+fn apply_subscription(
+    s: &mut Service,
+    url: &str,
+    batch: core_config::Batch,
+    userinfo: Option<&str>,
+    scheduled: bool,
+) -> Result<Tally, String> {
     // Открытый канал называется в журнале на нажатие, а не на каждую сверку:
     // сверка идёт в фоне и через поднятый туннель, если он есть, а строка раз в
     // несколько часов читалась бы как новое событие. Событие же одно — человек
@@ -2142,7 +2155,7 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Result<Tally, 
     // Остаток кладём рядом с узлами и тем же ключом: пришли они одним ответом.
     // Панель заголовка не прислала — прежнее число убираем, а не оставляем: оно
     // тем более не свежее, чем список, который только что заменили целиком.
-    match parse_userinfo(userinfo.as_deref()) {
+    match parse_userinfo(userinfo) {
         Some(quota) => {
             s.quotas.insert(url.to_string(), quota);
         }
@@ -2185,6 +2198,125 @@ fn subscribe(svc: &Mutex<Service>, url: &str, scheduled: bool) -> Result<Tally, 
         }
     }
     Ok(tally)
+}
+
+/// Правка подписки: подпись, адрес или то и другое.
+///
+/// Новый адрес качается первым и без общего замка. Не скачалось, в ответе нет
+/// узлов, адрес занят другой подпиской — ответ ошибкой, и в состоянии не
+/// изменилось ничего: ни адрес, ни подпись, ни порядок. Только удачный ответ
+/// переезжает на место старой записи (тот же номер в порядке групп, та же
+/// подпись, если её не меняли), а узлы заменяет тот же путь, что и у сверки —
+/// `apply_subscription`, с тем же решением о судьбе активного узла.
+///
+/// Меняется только подпись — сети не нужно, и качать нечего. Сторож —
+/// `editing_a_subscription_replaces_it_in_place`.
+fn edit_subscription(svc: &Mutex<Service>, url: &str, new_url: &str, name: &str) -> Response {
+    let new_url = match new_url.trim() {
+        "" => url,
+        want => want,
+    };
+    let name = name.trim();
+    let moving = new_url != url;
+    {
+        let s = lock(svc);
+        if !s.subscriptions.contains_key(url) {
+            return Response::Error { message: tf!("нет подписки {}", url) };
+        }
+        if moving && s.subscriptions.contains_key(new_url) {
+            return Response::Error { message: t("подписка с таким адресом уже есть") };
+        }
+        if !moving && s.sub_names.get(url).map_or("", String::as_str) == name {
+            return Response::Error { message: t("ничего не изменилось") };
+        }
+    }
+    if !moving {
+        let mut s = lock(svc);
+        set_sub_name(&mut s, url, name);
+        s.save();
+        return Response::Done;
+    }
+    // Узлом-прокси адрес не бывает подпиской, а без схемы качать нечего.
+    if !(new_url.starts_with("http://") || new_url.starts_with("https://")) || core_config::is_proxy_url(new_url) {
+        return Response::Error { message: t("адрес подписки должен начинаться с http:// или https://") };
+    }
+    let via_tunnel = lock(svc).status.tunnel == TunnelState::Up;
+    let (body, userinfo) = match fetch(new_url, via_tunnel) {
+        Ok(got) => got,
+        Err(message) => return Response::Error { message },
+    };
+    let batch = core_config::parse_many(&body);
+    if batch.found.is_empty() {
+        return Response::Error { message: t("в ответе подписки нет ни одного узла — проверьте адрес") };
+    }
+    let mut s = lock(svc);
+    // Пока качалось, подписку могли убрать или завести другую на этот адрес.
+    if !s.subscriptions.contains_key(url) {
+        return Response::Error { message: tf!("нет подписки {}", url) };
+    }
+    if s.subscriptions.contains_key(new_url) {
+        return Response::Error { message: t("подписка с таким адресом уже есть") };
+    }
+    // Запись переезжает на новый ключ на том же месте: адрес — ключ всего, и
+    // подпись, порядок групп и остаток трафика должны поехать за ним.
+    if let Some(nodes) = s.subscriptions.remove(url) {
+        s.subscriptions.insert(new_url.to_string(), nodes);
+    }
+    if let Some(label) = s.sub_names.remove(url) {
+        s.sub_names.insert(new_url.to_string(), label);
+    }
+    if let Some(quota) = s.quotas.remove(url) {
+        s.quotas.insert(new_url.to_string(), quota);
+    }
+    for slot in s.sub_order.iter_mut().filter(|u| u.as_str() == url) {
+        *slot = new_url.to_string();
+    }
+    set_sub_name(&mut s, new_url, name);
+    match apply_subscription(&mut s, new_url, batch, userinfo.as_deref(), false) {
+        Ok(tally) => tally.into_response_or_error(),
+        Err(message) => Response::Error { message },
+    }
+}
+
+/// Подпись подписки: пустая возвращает показ адреса, а не подпись из пробелов.
+fn set_sub_name(s: &mut Service, url: &str, name: &str) {
+    match name {
+        "" => s.sub_names.remove(url),
+        want => s.sub_names.insert(url.to_string(), want.to_string()),
+    };
+}
+
+/// Удаление пачки профилей: одна запись на диск и одна строка в журнале. Судьба
+/// активного узла и сеансов браузера — у `forget_profile`, той же, что и у
+/// одиночного удаления. Сторож — `bulk_removal_is_one_save_and_one_journal_line`.
+fn remove_profiles(s: &mut Service, names: &[String]) -> Response {
+    let mut gone = 0usize;
+    for name in names {
+        if s.profiles.contains_key(name) {
+            s.forget_profile(name);
+            gone += 1;
+        }
+    }
+    if gone > 0 {
+        s.log(tf!("профилей удалено — {}", gone));
+        s.save();
+    }
+    Response::Done
+}
+
+/// Ссылки профилей для экспорта. Только сверенные (`core_config::share_link`
+/// разбирает собранную ссылку обратно и сверяет с узлом): узел, который в
+/// ссылку без потерь не перекладывается, в экспорт не попадает, а считается.
+fn export_links(nodes: &[(String, Option<Value>)]) -> Response {
+    let mut links = Vec::new();
+    let mut skipped = 0;
+    for (name, node) in nodes {
+        match node.as_ref().and_then(|node| core_config::share_link(name, node)) {
+            Some(link) if !link.is_empty() => links.push(link),
+            _ => skipped += 1,
+        }
+    }
+    Response::Links { links, skipped }
 }
 
 /// Судьба активного профиля после того, как подписка заменила набор. Вынесено
@@ -2558,6 +2690,12 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
         let (urls, rest) = split_paste(link);
         return preview(svc, &urls, &rest);
     }
+    // Правка подписки качает новый адрес — то же, что подписка при импорте, и
+    // до замка по той же причине. Записывается результат уже под замком, и
+    // только удачный.
+    if let Request::EditSubscription { url, new_url, name } = &req {
+        return edit_subscription(svc, url, new_url, name);
+    }
     // Иконку служба не хранит и не спрашивает у состояния вовсе: путь пришёл в
     // запросе, ответ достаётся из самого файла. Под общим замком этот поход по
     // диску стоял зря и стоил дорого — иконок спрашивают не одну, а по одной на
@@ -2618,6 +2756,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
         | Request::Discover { .. }
         | Request::AddProfile { .. }
         | Request::Preview { .. }
+        | Request::EditSubscription { .. }
         | Request::SingboxLog => {
             unreachable!("разбирается до замка")
         }
@@ -2726,6 +2865,16 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 message: tf!("нет профиля «{}»", name),
             },
         },
+        Request::ExportLinks { names } => {
+            // Узлы снимаются под замком, ссылки собираются без него: сборка с
+            // обратным разбором на сотню узлов — работа, под которой стоять
+            // окну и надзору незачем.
+            let nodes: Vec<(String, Option<Value>)> =
+                names.into_iter().map(|n| { let node = s.profiles.get(&n).cloned(); (n, node) }).collect();
+            drop(s);
+            export_links(&nodes)
+        }
+        Request::RemoveProfiles { names } => remove_profiles(&mut s, &names),
         Request::EditProfile { name, rename, node } => edit_profile(&mut s, &name, &rename, &node),
         Request::SetBypass { rules } => set_bypass(&mut s, &rules),
         Request::SetOrder { profiles, subscriptions } => {
@@ -3031,13 +3180,16 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             let profiles: Vec<(String, Value)> = s
                 .profiles
                 .iter()
-                .filter(|(name, _)| only.as_ref().is_none_or(|want| want == *name))
+                .filter(|(name, _)| only.as_ref().is_none_or(|want| want.contains(*name)))
                 .map(|(name, node)| (name.clone(), node.clone()))
                 .collect();
             if profiles.is_empty() {
-                return match only {
-                    Some(name) => Response::Error {
-                        message: tf!("нет профиля «{}»", name),
+                return match only.as_deref() {
+                    Some([one]) => Response::Error {
+                        message: tf!("нет профиля «{}»", one),
+                    },
+                    Some(_) => Response::Error {
+                        message: t("ни одного из названных профилей больше нет"),
                     },
                     None => Response::Status(s.status.clone()),
                 };
@@ -4337,7 +4489,7 @@ mod tests {
     fn the_lock_is_never_held_through_a_walk_of_the_disk() {
         let handle = include_str!("main.rs").split_once("\nfn handle(").expect("handle()").1;
         let before = handle.split_once("let mut s = lock(svc);").expect("замок в handle()").0;
-        for command in ["Request::Icon", "Request::Discover", "Request::SingboxLog"] {
+        for command in ["Request::Icon", "Request::Discover", "Request::SingboxLog", "Request::EditSubscription"] {
             assert!(before.contains(command), "{command} разбирается под общим замком");
         }
     }
@@ -4761,6 +4913,149 @@ mod tests {
         assert!(matches!(out, Response::Error { .. }), "битый узел отклоняется с причиной: {out:?}");
     }
 
+    /// Сервер на петле, отвечающий телом `body` на каждое из `times` подключений.
+    fn serve_body(body: &'static str, times: usize) -> (u16, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("порт на петле");
+        let port = listener.local_addr().unwrap().port();
+        let served = std::thread::spawn(move || {
+            for _ in 0..times {
+                let (mut conn, _) = listener.accept().expect("подключение");
+                let mut request = Vec::new();
+                let mut byte = [0u8; 1];
+                while !request.ends_with(b"\r\n\r\n")
+                    && std::io::Read::read(&mut conn, &mut byte).unwrap_or(0) == 1
+                {
+                    request.push(byte[0]);
+                }
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                std::io::Write::write_all(&mut conn, reply.as_bytes()).expect("ответ");
+            }
+        });
+        (port, served)
+    }
+
+    /// Правка адреса подписки заменяет запись на месте: тот же номер в порядке
+    /// групп, та же подпись, узлы — новые, чужая подписка не тронута. Скачивается
+    /// новый адрес первым, и не скачался — в состоянии не изменилось ничего.
+    #[test]
+    fn editing_a_subscription_replaces_it_in_place() {
+        let _state = scratch("pg-edit-sub-test");
+        let mut s = Service::load();
+        let (old, other) = ("https://old.panel/sub".to_string(), "https://other.panel/sub".to_string());
+        s.profiles.insert("старый".into(), json!({"type": "vless", "server": "old.com"}));
+        s.profiles.insert("чужой".into(), json!({"type": "vless", "server": "other.com"}));
+        s.subscriptions.insert(old.clone(), vec!["старый".into()]);
+        s.subscriptions.insert(other.clone(), vec!["чужой".into()]);
+        s.sub_order = vec![old.clone(), other.clone()];
+        s.sub_names.insert(old.clone(), "работа".into());
+        s.save();
+        let svc = Mutex::new(s);
+
+        // Отказ: адрес не отвечает. Ничего не должно сдвинуться — ни адрес, ни
+        // подпись, ни порядок, ни узлы.
+        let dead = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            format!("http://127.0.0.1:{}/sub", l.local_addr().unwrap().port())
+        };
+        let snapshot = |svc: &Mutex<Service>| {
+            let s = lock(svc);
+            (s.subscriptions.clone(), s.sub_order.clone(), s.sub_names.clone(), s.profiles.clone())
+        };
+        let before = snapshot(&svc);
+        let out = edit_subscription(&svc, &old, &dead, "работа");
+        assert!(matches!(out, Response::Error { .. }), "не скачалось — ошибка: {out:?}");
+        assert_eq!(snapshot(&svc), before, "не скачалось — состояние то же");
+
+        // Адрес занят другой подпиской — тоже отказ, и сети не нужно.
+        let out = edit_subscription(&svc, &old, &other, "работа");
+        assert!(matches!(out, Response::Error { .. }), "занятый адрес: {out:?}");
+        assert_eq!(snapshot(&svc), before);
+
+        // Ни адреса, ни подписи не меняли — это отказ, а не пустой успех.
+        let out = edit_subscription(&svc, &old, "", "работа");
+        assert!(matches!(out, Response::Error { .. }), "ничего не изменилось: {out:?}");
+
+        // Удача: новый адрес отвечает двумя узлами.
+        let (port, served) = serve_body(
+            "vless://11111111-1111-1111-1111-111111111111@a.com:443?security=tls#дом\n\
+             vless://22222222-2222-2222-2222-222222222222@b.com:443?security=tls#офис\n",
+            1,
+        );
+        let fresh = format!("http://127.0.0.1:{port}/sub");
+        let out = edit_subscription(&svc, &old, &fresh, "работа");
+        assert!(matches!(out, Response::Imported { added: 2, gone: 1, .. }), "{out:?}");
+        served.join().expect("сервер отработал");
+        let (subs, order, names, profiles) = snapshot(&svc);
+        assert!(!subs.contains_key(&old), "старый адрес ушёл");
+        assert_eq!(order, vec![fresh.clone(), other.clone()], "место в порядке групп то же");
+        assert_eq!(names.get(&fresh).map(String::as_str), Some("работа"), "подпись поехала за адресом");
+        assert!(!names.contains_key(&old));
+        assert!(!profiles.contains_key("старый"), "узлы старой подписки заменены");
+        assert_eq!(subs[&fresh].len(), 2);
+        assert!(profiles.contains_key("дом") && profiles.contains_key("офис"));
+        assert_eq!(subs[&other], vec!["чужой".to_string()], "чужая подписка не тронута");
+
+        // Только подпись: сети не нужно, адрес и узлы те же.
+        let out = edit_subscription(&svc, &fresh, "", "");
+        assert!(matches!(out, Response::Done), "{out:?}");
+        assert!(!lock(&svc).sub_names.contains_key(&fresh), "пустая подпись возвращает показ адреса");
+    }
+
+    /// Удаление пачки — одна запись и одна строка в журнале; активный узел
+    /// уходит так же, как при одиночном удалении, а звёздочка и место в
+    /// порядке уходят с профилем.
+    #[test]
+    fn bulk_removal_is_one_save_and_one_journal_line() {
+        let _state = scratch("pg-bulk-remove-test");
+        let mut s = Service::load();
+        for name in ["a", "b", "c", "d"] {
+            s.profiles.insert(name.into(), json!({"type": "vless", "server": format!("{name}.com")}));
+        }
+        s.favorites.insert("a".into());
+        s.order = vec!["a".into(), "b".into(), "c".into(), "d".into()];
+        s.status.profile = Some("b".into());
+        s.save();
+        let before = s.status.log.len();
+
+        let names: Vec<String> = ["a", "b", "c", "нет-такого"].iter().map(|n| n.to_string()).collect();
+        assert!(matches!(remove_profiles(&mut s, &names), Response::Done));
+
+        assert_eq!(s.profiles.keys().cloned().collect::<Vec<_>>(), vec!["d".to_string()]);
+        assert_eq!(s.status.profile, None, "активный профиль убран так же, как одиночным удалением");
+        assert!(s.favorites.is_empty(), "звёздочка ушла с профилем");
+        assert_eq!(s.order, vec!["d".to_string()], "место в порядке тоже");
+        let lines: Vec<_> = s.status.log.iter().filter(|l| l.text.contains("— 3")).collect();
+        assert_eq!(lines.len(), 1, "одна строка с числом: {:?}", s.status.log);
+        // Остальное в журнале — след остановки активного узла (`stop()`), он
+        // один на пачку; по строке на каждый профиль пачки не пишется.
+        assert!(!s.status.log.iter().any(|l| l.text.contains("«a»") || l.text.contains("«c»")), "{:?}", s.status.log);
+        assert!(s.status.log.len() > before);
+    }
+
+    /// Экспорт отдаёт только сверенные ссылки и считает остальные.
+    #[test]
+    fn export_gives_verified_links_and_counts_the_rest() {
+        let node = core_config::parse("vless://11111111-1111-1111-1111-111111111111@a.com:443?security=tls#дом")
+            .expect("ссылка разбирается")
+            .node;
+        let out = export_links(&[
+            ("дом".into(), Some(node)),
+            ("нет-такого".into(), None),
+            ("пустой".into(), Some(json!({"type": "direct"}))),
+        ]);
+        match out {
+            Response::Links { links, skipped } => {
+                assert_eq!(links.len(), 1, "{links:?}");
+                assert!(links[0].starts_with("vless://"));
+                assert_eq!(skipped, 2);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
     /// Звёздочка — про выбор человека, а не про узел, и держится она на имени.
     ///
     /// Отсюда три вещи, каждая из которых ломается молча. Переименование
@@ -4910,6 +5205,8 @@ mod tests {
             Request::SetScope { scope: Scope::Whitelist },
             Request::SetApp { path: r"C:\app.exe".into(), enabled: true },
             Request::RemoveProfile { name: "myvpn".into() },
+            Request::RemoveProfiles { names: vec!["myvpn".into()] },
+            Request::EditSubscription { url: "https://a/sub".into(), new_url: "https://b/sub".into(), name: String::new() },
             Request::Browse { profile: "работа".into() },
         ] {
             assert!(changes_the_machine(&req), "{req:?} меняет машину, а следа не оставит");
@@ -5328,7 +5625,9 @@ fn changes_the_machine(req: &Request) -> bool {
         | Request::AddProfile { .. }
         | Request::EditProfile { .. }
         | Request::RemoveProfile { .. }
+        | Request::RemoveProfiles { .. }
         | Request::RemoveSubscription { .. }
+        | Request::EditSubscription { .. }
         | Request::SetSettings { .. }
         // Исключение уводит трафик мимо туннеля — это ровно то, что продукт
         // обязан назвать в журнале, если прислал не свой.
@@ -5347,6 +5646,7 @@ fn changes_the_machine(req: &Request) -> bool {
         | Request::Discover { .. }
         | Request::Icon { .. }
         | Request::ProfileNode { .. }
+        | Request::ExportLinks { .. }
         | Request::SingboxLog
         | Request::RenameSubscription { .. }
         | Request::SetFavorite { .. }

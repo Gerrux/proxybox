@@ -721,6 +721,12 @@ body {
   background: var(--pg-press);
 }
 
+/* Выделенная для пакетных действий строка — заливка в тон акцента, отличная
+   от «выбран узел» выше: это два разных смысла, и путать их нельзя. */
+.row[data-picked="true"] {
+  background: color-mix(in srgb, var(--pg-accent) 16%, transparent);
+}
+
 .row-pill {
   position: absolute;
   inset-inline-start: 0;
