@@ -2818,6 +2818,40 @@ mod tests {
         }
     }
 
+    /// Отклик тумблера — ответ на нажатие, а не украшение: он обязан сыграть
+    /// один раз и затихнуть. Вечная анимация в продукте, который сутками висит
+    /// в трее, — это расход без события, ровно то, от чего пульс точки выхода
+    /// вынесен из SVG. Слои отклика лежат над картой и обязаны не трогать её
+    /// отрисовку, а при `prefers-reduced-motion` — не двигаться вовсе.
+    #[test]
+    fn the_switch_feedback_is_one_shot() {
+        let css = include_str!("../../../ui/app-shell/src/switch.css").replace("\r\n", "\n");
+        assert!(!css.contains("infinite"), "отклик тумблера не должен быть вечным");
+        // Каждая анимация слоёв играет ровно один раз.
+        for rule in ["animation: sw-ring", "animation: sw-sweep"] {
+            let at = css.find(rule).unwrap_or_else(|| panic!("нет правила {rule}"));
+            let line = css[at..].lines().next().unwrap();
+            assert!(line.contains(" 1 both"), "{line}");
+        }
+        // Слои над картой не перерисовывают её и не ловят мышь.
+        assert!(css.matches("contain: paint").count() >= 2);
+        assert!(css.matches("pointer-events: none").count() >= 2);
+        // При prefers-reduced-motion: reduce слои скрыты, переходы сняты.
+        let reduce = css
+            .split("@media (prefers-reduced-motion: reduce)")
+            .nth(1)
+            .expect("нет блока reduced-motion");
+        assert!(reduce.contains(".sw-ring") && reduce.contains(".sw-sweep"));
+        assert!(reduce.contains("display: none"));
+        assert!(reduce.contains("transition: none"));
+        // Всё движущееся объявлено только для тех, кто движения не отключал.
+        let motion = css
+            .split("@media (prefers-reduced-motion: no-preference)")
+            .nth(1)
+            .expect("нет блока no-preference");
+        assert!(motion.contains("@keyframes sw-ring") && motion.contains("@keyframes sw-sweep"));
+    }
+
     /// Карточки в окне — ровно в трёх местах (верхний ряд, полоса подписок,
     /// блок состояния плашки), у них скругления из одной лестницы и нет тени:
     /// тень в окне только у всплывающих слоёв (меню и диалога). Решение
