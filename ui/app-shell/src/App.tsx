@@ -258,7 +258,9 @@ export function App() {
   };
 
   const s = strings(status?.lang);
-  const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
+  const selectedApps = status?.scope === "split"
+    ? status.settings.direct_apps?.length ?? 0
+    : status?.apps.filter((a) => a.enabled).length ?? 0;
   const setScope = (scope: Scope) => void act({ cmd: "set-scope", arg: { scope } });
 
   // Плашка из трея — своя раскладка (`Flyout.tsx`): её открывают глянуть и
@@ -326,7 +328,7 @@ export function App() {
           <RailItem className="rail-narrow" icon="server" active={!settings && tab === "profiles"} onClick={() => pick("profiles")}
             label={s.profiles} count={status?.profiles.length ?? 0} />
           <RailItem className="rail-narrow" icon="screen" active={!settings && tab === "apps"} onClick={() => pick("apps")}
-            label={s.apps} count={`${inTunnel}/${status?.apps.length ?? 0}`} />
+            label={s.apps} count={`${selectedApps}/${status?.apps.length ?? 0}`} />
           <RailItem className="rail-narrow" icon="lines" active={!settings && tab === "journal"} onClick={() => pick("journal")}
             label={s.journal} count={status?.log.length ?? 0} />
           {/* Шире 1100 px первые три стоят рядом, и выбирать между ними

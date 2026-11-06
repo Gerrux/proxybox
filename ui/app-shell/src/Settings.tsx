@@ -44,7 +44,8 @@ import {
   type Status,
 } from "./platform";
 import { strings, type Strings } from "./i18n";
-import { Button, CopyButton, FIELD, Modal, Panel, Segmented, Switch } from "./ui";
+import { Button, CopyButton, FIELD, Modal, Panel, SearchField, Segmented, Switch } from "./ui";
+import { ruleSets } from "./ruleSets";
 
 const REPO = "Gerrux/proxybox";
 
@@ -225,6 +226,33 @@ export function Settings({
       }
     >
       <div className="mx-auto flex max-w-3xl flex-col gap-6 px-1 pb-4">
+        {settings && (
+          <Group title={s.splitTitle}>
+            <p className="text-sm text-muted">{s.sitesDefault}</p>
+            <div className="border-b border-edge py-3">
+              <DirectSites lang={lang} value={settings.direct_domains ?? []} split={status?.scope === "split"} onSubmit={async (direct_domains) => {
+                const saved = await act({ cmd: "set-settings", arg: { settings: { ...settings, direct_domains } } });
+                if (saved == null || saved.reply === "error") return;
+                if (status?.scope !== "split") await act({ cmd: "set-scope", arg: { scope: "split" } });
+              }} />
+              {((settings.direct_apps?.length ?? 0) > 0 || (settings.direct_rule_sets?.length ?? 0) > 0) && (
+                <div className="mt-3 flex flex-col items-start gap-2">
+                  <p className="text-sm text-muted">{s.sitesOtherWarning}</p>
+                  <Button variant="quiet" onClick={() => patch({ direct_apps: [], direct_rule_sets: [] })}>{s.sitesOnly}</Button>
+                </div>
+              )}
+            </div>
+            <details className="border-b border-edge py-3">
+              <summary className="cursor-pointer text-sm">{s.rulesReady} · {s.rulesSelected(settings.direct_rule_sets?.length ?? 0)}</summary>
+              <div className="pt-3">
+                <h4 className="text-sm">{s.splitRuleSets}</h4>
+                <p className="mb-3 mt-0.5 text-xs text-muted">{s.splitRulesNote}</p>
+                <RuleSets lang={lang} value={settings.direct_rule_sets ?? []} onSubmit={(direct_rule_sets) => patch({ direct_rule_sets })} />
+              </div>
+            </details>
+          </Group>
+        )}
+
         <Group title={s.groupLook}>
           <Row title={s.language} note={s.languageHint}>
             {/* Выпадающий список, а не полоска: шесть двухбуквенных кодов в ряд
@@ -299,6 +327,7 @@ export function Settings({
             <OnOff lang={lang} value={settings?.geo ?? true} disabled={!settings} onPick={(geo) => patch({ geo })} />
           </Row>
         </Group>
+
 
         <Group title={s.groupTunnel}>
           <Row title={s.probeTitle} note={s.probeHint}>
@@ -565,6 +594,86 @@ function OnOff({
  *  Черновик перечитывается, когда снаружи пришло другое значение: статус ходит
  *  по кругу каждые две секунды, и без этого поле стирало бы себя на каждом
  *  круге, — но и правку из-под рук уносить оно не должно. */
+function DirectSites({ lang, value, split, onSubmit }: {
+  lang: Lang | undefined; value: string[]; split: boolean; onSubmit: (value: string[]) => Promise<void>;
+}) {
+  const s = strings(lang);
+  const saved = value.join("\n");
+  const [draft, setDraft] = useState(saved);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => setDraft(saved), [saved]);
+  const domains = [...new Set(draft.split(/\r?\n/).map((line) => line.trim()).filter(Boolean))];
+  return (
+    <form className="flex w-full flex-col gap-2" onSubmit={async (e) => {
+      e.preventDefault();
+      setSaving(true);
+      try { await onSubmit(domains); } finally { setSaving(false); }
+    }}>
+      <label htmlFor="direct-sites" className="text-sm font-semibold">{s.sitesTitle}</label>
+      <p id="direct-sites-hint" className="text-xs text-muted">{s.sitesHint}</p>
+      <textarea id="direct-sites" aria-describedby="direct-sites-hint" value={draft} onChange={(e) => setDraft(e.target.value)}
+        placeholder={"example.com\nhttps://site.ru/page"} spellCheck={false} autoCapitalize="none" rows={4}
+        disabled={saving} className={`${FIELD} min-w-0 resize-y font-mono text-xs`} />
+      <p className="text-xs text-muted">{s.sitesApplyHint}</p>
+      <Button type="submit" variant="primary" className="self-end" disabled={saving || (split && domains.join("\n") === saved)}>
+        {split ? s.apply : s.sitesEnable}
+      </Button>
+    </form>
+  );
+}
+
+function RuleSets({ lang, value, onSubmit }: { lang: Lang | undefined; value: string[]; onSubmit: (value: string[]) => void }) {
+  const s = strings(lang);
+  const saved = value.join("\n");
+  const [draft, setDraft] = useState(saved);
+  const [query, setQuery] = useState("");
+  useEffect(() => setDraft(saved), [saved]);
+  const urls = [...new Set(draft.split(/\r?\n/).map((line) => line.trim()).filter(Boolean))];
+  const valid = urls.every((raw) => {
+    try {
+      const url = new URL(raw);
+      return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.hash
+        && /\.(json|srs)$/.test(url.pathname);
+    } catch { return false; }
+  }) && urls.length <= 64;
+  const catalog = ruleSets(s);
+  const shown = catalog.filter((set) => `${set.name} ${set.source}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  const pick = (url: string, checked: boolean) => {
+    setDraft((checked ? [...urls, url] : urls.filter((item) => item !== url)).join("\n"));
+  };
+  return (
+    <form className="flex w-full min-w-0 flex-col items-end gap-2" onSubmit={(e) => { e.preventDefault(); if (valid) onSubmit(urls); }}>
+      <div className="w-full">
+        <h5 className="mb-2 text-sm font-semibold">{s.rulesReady}</h5>
+        <SearchField value={query} onChange={setQuery} placeholder={s.rulesSearch} />
+        <ul aria-label={s.rulesReady} className="scroll mt-2 max-h-64 overflow-y-auto">
+          {shown.map((set) => (
+            <li key={set.url} className="row flex items-center gap-3 py-2">
+              <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3" title={set.url}>
+                <input type="checkbox" checked={urls.includes(set.url)} onChange={(e) => pick(set.url, e.target.checked)} className="size-4 shrink-0 accent-[var(--pg-accent)]" />
+                <span className="min-w-0">
+                  <span className="block truncate text-sm">{set.name}</span>
+                  <span className="block truncate text-xs text-muted">{set.source}</span>
+                </span>
+              </label>
+              <Button variant="quiet" onClick={() => void openUrl(`https://github.com/${set.source}`)}>{s.rulesSource}</Button>
+            </li>
+          ))}
+        </ul>
+        {shown.length === 0 && <p className="py-2 text-sm text-muted">{s.noMatches}</p>}
+        <details className="mt-3" open={urls.some((url) => !catalog.some((set) => set.url === url)) || undefined}>
+          <summary className="cursor-pointer text-sm">{s.rulesCustom}</summary>
+          <textarea aria-label={s.splitRuleSets} aria-invalid={!valid} value={draft} onChange={(e) => setDraft(e.target.value)}
+            placeholder="https://example.com/rules.srs" spellCheck={false} rows={4} className={`${FIELD} mt-2 min-w-0 resize-y font-mono text-xs`} />
+        </details>
+      </div>
+      {!valid && <p role="alert" className="text-xs text-fault">{s.splitRulesInvalid}</p>}
+      <span className="text-xs text-muted">{s.rulesSelected(urls.length)}</span>
+      <Button type="submit" variant="primary" disabled={!valid || urls.join("\n") === saved}>{s.apply}</Button>
+    </form>
+  );
+}
+
 function TextSetting({
   lang,
   value,

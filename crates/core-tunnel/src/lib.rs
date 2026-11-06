@@ -4,22 +4,9 @@
 //! занимается sing-box, как в NekoBox, — мы генерируем ему конфиг и следим за
 //! процессом.
 //!
-//! Конфиг один на оба охвата, и это его главное свойство: `final: proxy`, ни
-//! одного правила по `process_path`, тега `direct` нет вовсе. Ни список
-//! приложений, ни охват в конфиг не входят — их держит брандмауэр
-//! (`core-filter`). Отсюда два следствия, ради которых так и сделано.
-//! Переключение охвата и правка списка конфига не меняют, значит не требуют
-//! перезапуска: живые соединения их переживают. И «уйти напрямую» перестаёт
-//! быть тем, что мы запрещаем правилом, — маршрута с таким тегом просто нет, а
-//! вместе с матчером по процессу исчезает и его тихий промах, из-за которого
-//! приложение уходило мимо туннеля, не переставая считаться защищённым.
-//!
-//! Дорог был именно `direct`. Замер (`docs/wfp.md`, «Замер: причина оказалась
-//! не та») показал сеть 0 Мбит/с при 85% ЦП в охвате, где в `direct` уходило
-//! всё: на `proxy` sing-box держит одно соединение к серверу и мультиплексирует
-//! в него, а на `direct` открывает соединение к каждому адресу, с которым
-//! говорит машина. Конфиг без `direct` дешевле конфига с ним. Сторож —
-//! `nothing_can_go_direct`.
+//! В All и Whitelist нет прямого маршрута; отбор держит core-filter.
+//! В Split добавляются явные исключения по приложению и ruleset'у, а final
+//! остаётся proxy. Вход local (проба и сеансы) исключения никогда не затрагивают.
 
 use core_ipc::{t, tf, Conn};
 use serde_json::{json, Value};
@@ -152,6 +139,10 @@ pub struct Options {
     /// продублирована намеренно: включённый по недосмотру профилировщик — это
     /// открытый порт в службе, которая ходит от LocalSystem.
     pub pprof: Option<String>,
+    /// Исключения задаёт только основной туннель в режиме Split, не проба/сеансы.
+    pub direct_apps: Vec<String>,
+    pub direct_rule_sets: Vec<String>,
+    pub direct_domains: Vec<String>,
 }
 
 impl Default for Options {
@@ -162,6 +153,9 @@ impl Default for Options {
             tun: true,
             stack: std::env::var("PG_STACK").unwrap_or_else(|_| "mixed".into()),
             pprof: pprof_value(&std::env::var("PG_PPROF").unwrap_or_default()),
+            direct_apps: Vec::new(),
+            direct_rule_sets: Vec::new(),
+            direct_domains: Vec::new(),
         }
     }
 }
@@ -358,7 +352,8 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
         // он туда из страны сервера — через полмира и обратно на каждый запрос.
         "dns": {
             "servers": [
-                { "type": "udp", "tag": "remote", "server": "1.1.1.1", "detour": TAG_PROXY },
+                // DNS нужен и узлам без UDP (HTTP, VMess с TCP-only сервером).
+                { "type": "https", "tag": "remote", "server": "1.1.1.1", "detour": TAG_PROXY },
                 // Второй резолвер нужен ровно для одного: разрешить адрес самого
                 // сервера. Через `remote` это была бы курица с яйцом.
                 //
@@ -429,6 +424,33 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
     }
     if let Some(listen) = &opts.pprof {
         cfg["experimental"]["debug"] = json!({ "listen": listen });
+    }
+    if opts.tun && (!opts.direct_apps.is_empty() || !opts.direct_rule_sets.is_empty() || !opts.direct_domains.is_empty()) {
+        cfg["outbounds"].as_array_mut().expect("outbounds").push(json!({ "type": "direct", "tag": "direct" }));
+        let rules = cfg["route"]["rules"].as_array_mut().expect("правила");
+        // После перехвата DNS, отбоя шлюза, sniff и принудительного proxy для
+        // local: исключения никогда не подтверждают пробу напрямую.
+        if !opts.direct_apps.is_empty() {
+            rules.push(json!({ "inbound": ["tun-in"], "process_path": opts.direct_apps, "action": "route", "outbound": "direct" }));
+        }
+        if !opts.direct_domains.is_empty() {
+            rules.push(json!({ "inbound": ["tun-in"], "domain_suffix": opts.direct_domains, "action": "route", "outbound": "direct" }));
+        }
+        if !opts.direct_rule_sets.is_empty() {
+            let tags: Vec<String> = (0..opts.direct_rule_sets.len()).map(|i| format!("direct-{i}")).collect();
+            let direct = json!({ "inbound": ["tun-in"], "rule_set": tags, "action": "route", "outbound": "direct" });
+            // Доменные наборы проверяем до DNS: им достаточно имени из FakeIP.
+            rules.push(direct.clone());
+            // GeoIP-наборам нужен настоящий адрес. Разрешаем через TCP/HTTPS,
+            // чтобы выбор набора не требовал поддержки UDP от узла.
+            rules.push(json!({ "inbound": ["tun-in"], "action": "resolve", "server": "remote", "strategy": "ipv4_only" }));
+            rules.push(direct);
+            cfg["route"]["rule_set"] = json!(opts.direct_rule_sets.iter().zip(tags).map(|(url, tag)| {
+                let path = url.split(['?', '#']).next().unwrap_or(url);
+                json!({ "type": "remote", "tag": tag, "format": if path.ends_with(".srs") { "binary" } else { "source" },
+                    "url": url, "download_detour": TAG_PROXY, "update_interval": "1d" })
+            }).collect::<Vec<_>>());
+        }
     }
     cfg
 }
@@ -983,6 +1005,7 @@ fn parse_conn(c: &Value, owner_of: &dyn Fn(&'static str, u16, &str) -> Option<St
             .and_then(|port| owner_of(proto, port, &str_of(&meta["sourceIP"])))
             .unwrap_or_default(),
         host: if port.is_empty() { host } else { format!("{host}:{port}") },
+        direct: c["chains"].as_array().is_some_and(|tags| tags.iter().any(|tag| tag == "direct")),
         tunneled: c["chains"]
             .as_array()
             .map(Vec::as_slice)
@@ -1212,6 +1235,10 @@ mod tests {
         );
         assert_eq!(direct.host, "1.1.1.1:53", "домена нет — остаётся адрес");
         assert!(!direct.tunneled);
+        assert!(direct.direct);
+        let internal = parse_conn(&json!({ "chains": [] }), &|_, _, _| None);
+        assert!(!internal.direct);
+        assert!(!tunneled.direct);
     }
 
     /// Имя процесса берётся по локальному порту, а не из ответа sing-box.
@@ -1335,6 +1362,135 @@ mod tests {
         json!({ "type": "trojan", "server": "a.com", "server_port": 443, "password": "p" })
     }
 
+    #[test]
+    fn split_exceptions_are_explicit_and_never_affect_the_probe() {
+        for node in [node(), wg_node()] {
+            for (apps, sets, sites) in [(true, false, false), (false, true, false), (true, true, false), (false, false, true), (true, false, true), (false, true, true), (true, true, true)] {
+                let opts = Options {
+                    direct_apps: if apps { vec![r"C:\apps\browser.exe".into()] } else { vec![] },
+                    direct_rule_sets: if sets { vec!["https://example.com/geo.srs?version=1".into(), "https://example.com/site.json".into()] } else { vec![] },
+                    direct_domains: if sites { vec!["example.org".into()] } else { vec![] },
+                    ..Default::default()
+                };
+                let cfg = build_config(&node, &opts);
+                assert_eq!(cfg["route"]["final"], TAG_PROXY);
+                assert!(cfg["outbounds"].as_array().unwrap().iter().any(|o| o["tag"] == "direct"));
+                let rules = cfg["route"]["rules"].as_array().unwrap();
+                let local = rules.iter().position(|r| r["inbound"][0] == "local").unwrap();
+                for (i, rule) in rules.iter().enumerate().filter(|(_, r)| r["outbound"] == "direct") {
+                    assert_eq!(rule["inbound"], json!(["tun-in"]));
+                    assert!(i > local, "проба всегда через proxy");
+                    assert!(i > rules.iter().position(|r| r["action"] == "hijack-dns").unwrap());
+                }
+                if apps {
+                    assert!(rules.iter().any(|r| r["process_path"] == json!(opts.direct_apps)));
+                }
+                if sites {
+                    let site = rules.iter().position(|r| r["domain_suffix"] == json!(opts.direct_domains)).unwrap();
+                    assert_eq!(rules[site]["outbound"], "direct");
+                    if sets {
+                        assert!(site < rules.iter().position(|r| r["action"] == "resolve").unwrap());
+                    }
+                }
+                if sets {
+                    assert_eq!(cfg["route"]["rule_set"][0]["format"], "binary");
+                    assert_eq!(cfg["route"]["rule_set"][1]["format"], "source");
+                    assert_eq!(cfg["route"]["rule_set"][0]["download_detour"], TAG_PROXY);
+                    let resolve = rules.iter().position(|r| r["action"] == "resolve").unwrap();
+                    let first = rules.iter().position(|r| !r["rule_set"].is_null()).unwrap();
+                    let last = rules.iter().rposition(|r| !r["rule_set"].is_null()).unwrap();
+                    assert!(first < resolve, "доменные наборы не должны ждать разрешения адреса");
+                    assert!(resolve < last, "IP-наборы получают настоящий адрес вместо FakeIP");
+                    if apps {
+                        assert!(rules.iter().position(|r| !r["process_path"].is_null()).unwrap() < resolve);
+                    }
+                }
+                let bare = build_config(&node, &Options { tun: false, ..opts });
+                assert!(bare["route"]["rule_set"].is_null());
+                assert!(!bare["outbounds"].as_array().unwrap().iter().any(|o| o["tag"] == "direct"));
+            }
+        }
+    }
+
+    #[test]
+    fn split_config_passes_singbox_check() {
+        let dir = std::env::temp_dir().join("pg-split-check");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        for node in [node(), wg_node()] {
+            let cfg = build_config(&node, &Options {
+                direct_apps: vec![r"C:\apps\browser.exe".into()],
+                direct_rule_sets: vec!["https://example.com/rules.srs".into(), "https://example.com/rules.json".into()],
+                direct_domains: vec!["example.org".into()],
+                ..Default::default()
+            });
+            std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+            let out = match Command::new(binary()).arg("check").arg("-c").arg(&path).output() {
+                Ok(out) => out,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+                Err(e) => panic!("sing-box check: {e}"),
+            };
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        }
+    }
+
+    /// Доменный набор должен передавать байты даже при недоступном DNS/UDP узла.
+    #[test]
+    fn domain_rule_sets_pass_traffic_without_resolving_through_the_proxy() {
+        if Command::new(binary()).arg("version").output().is_err() {
+            return;
+        }
+        let web = TcpListener::bind("127.0.0.1:0").unwrap();
+        let web_port = web.local_addr().unwrap().port();
+        web.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline {
+                if let Ok((mut conn, _)) = web.accept() {
+                    conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                    let mut request = [0; 1024];
+                    let n = conn.read(&mut request).unwrap();
+                    assert!(request[..n].starts_with(b"GET /"));
+                    conn.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nroute-ok").unwrap();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("доменный ruleset не довёл запрос до сервера");
+        });
+        let local = free_port().unwrap();
+        let test_port = free_port().unwrap();
+        let mut cfg = build_config(&json!({ "type": "http", "server": "127.0.0.1", "server_port": 1 }), &Options {
+            socks_port: local,
+            api_port: free_port().unwrap(),
+            direct_rule_sets: vec!["https://example.com/rules.srs".into()],
+            ..Default::default()
+        });
+        assert_eq!(cfg["dns"]["servers"][0]["type"], "https", "TCP-узел не обязан поддерживать UDP DNS");
+        // Вместо TUN — тот же вход по тегу, но на loopback, без прав администратора.
+        cfg["inbounds"][1] = json!({ "type": "mixed", "tag": "tun-in", "listen": "127.0.0.1", "listen_port": test_port });
+        cfg["route"]["rule_set"] = json!([{ "type": "inline", "tag": "direct-0", "rules": [{ "domain_suffix": ["direct.test"] }] }]);
+        for rule in cfg["route"]["rules"].as_array_mut().unwrap() {
+            if !rule["rule_set"].is_null() {
+                // Цель теста локальная: DNS не требуется и самому direct-outbound.
+                rule["override_address"] = json!("127.0.0.1");
+            }
+        }
+        cfg["dns"]["servers"][0]["server"] = json!("127.0.0.1");
+        cfg["dns"]["servers"][0]["server_port"] = json!(1);
+        let dir = std::env::temp_dir().join("pg-domain-routing-test");
+        let mut tunnel = Tunnel::start(&cfg, &dir).unwrap();
+        let mut stream = socks5_connect(test_port, ("direct.test", web_port)).unwrap();
+        stream.write_all(b"GET / HTTP/1.1\r\nHost: direct.test\r\nConnection: close\r\n\r\n").unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.ends_with("route-ok"), "SOCKS-ответа мало: должны пройти байты ответа");
+        // Проба на local не имеет права подтвердить мёртвый узел через исключение.
+        assert!(socks5_connect(local, ("direct.test", web_port)).is_err());
+        tunnel.stop();
+        server.join().unwrap();
+    }
+
     fn wg_node() -> Value {
         core_config::parse(
             "wg://QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNk@a.com:51820\
@@ -1344,36 +1500,12 @@ mod tests {
         .node
     }
 
-    /// Уйти напрямую нельзя, потому что некуда: тега `direct` в конфиге нет
-    /// вовсе, `final` — сам туннель, а правил по `process_path` не осталось ни
-    /// одного.
-    ///
-    /// Одно свойство закрывает три разные вещи. Приватность: тихий промах
-    /// матчера по пути — приложение мимо туннеля под надписью «Защищено» — не
-    /// починен, а перестал существовать как класс, вместе с самим матчером.
-    /// Расход: замер из `docs/wfp.md` показал, что платится за путь `direct`
-    /// через TUN, а не за матчер, и конфиг без `direct` дешевле любого с ним.
-    /// Живучесть соединений: раз конфиг не знает ни охвата, ни списка, ни то ни
-    /// другое его не меняет — значит переключение охвата и правка галочек не
-    /// перезапускают туннель, и открытая SSH-сессия их переживает.
-    ///
-    /// Заменил собой `selected_apps_have_no_fallback`,
-    /// `only_the_whitelist_rejects_anyone`, `all_traffic_takes_the_default_route`
-    /// и `the_whitelist_never_rejects_the_probe`: охвата, о котором говорили
-    /// первые три, в продукте больше нет, а догоняющий отказ, которого боялся
-    /// четвёртый, из конфига ушёл — отсекает брандмауэр, до всякого TUN.
+    /// Без явных исключений конфиг All/Whitelist и сеансы не имеют direct.
     #[test]
     fn nothing_can_go_direct() {
-        // Ни списка, ни охвата на входе — отсюда и равенство конфигов у двух
-        // охватов: их нечем различить. Сверяем текстом, потому что «поля нет»
-        // компилятор проверить не может.
-        let fields = include_str!("lib.rs")
-            .split("pub struct Options {")
-            .nth(1)
-            .and_then(|s| s.split("\n}").next())
-            .expect("настройки конфига");
-        assert!(!fields.contains("apps"), "список приложений в конфиг не входит: {fields}");
-        assert!(!fields.contains("scope"), "охват в конфиг не входит: {fields}");
+        assert!(Options::default().direct_apps.is_empty());
+        assert!(Options::default().direct_rule_sets.is_empty());
+        assert!(Options::default().direct_domains.is_empty());
 
         for node in [node(), wg_node()] {
             for tun in [true, false] {
@@ -1544,6 +1676,7 @@ mod tests {
         assert_eq!(cfg["dns"]["final"], "remote");
         let remote = &cfg["dns"]["servers"][0];
         assert_eq!(remote["tag"], "remote");
+        assert_eq!(remote["type"], "https", "DNS должен работать через узлы без UDP");
         assert_eq!(remote["detour"], TAG_PROXY, "иначе имена утекают мимо туннеля");
         assert_eq!(cfg["route"]["default_domain_resolver"]["server"], "local");
 

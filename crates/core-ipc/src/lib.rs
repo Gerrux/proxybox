@@ -401,6 +401,9 @@ pub struct Conn {
     /// Идёт ли соединение в туннель. Считается по цепочке маршрутов, а не по
     /// списку приложений: список — это намерение, а цепочка — то, что вышло.
     pub tunneled: bool,
+    /// Соединение попало в direct, а не было обработано внутри sing-box.
+    #[serde(default)]
+    pub direct: bool,
     /// Выбранное приложение: оно есть в белом списке и получило пропуск.
     ///
     /// Считает это служба по той же причине, по какой считает утечку: путь у
@@ -425,22 +428,14 @@ pub struct Conn {
     pub tx: u64,
 }
 
-/// Кого касается приватный режим. Два состояния взаимоисключающие, поэтому
-/// перечисление, а не флаг: «весь компьютер и одновременно белый список» — это
-/// состояние, которого не бывает, и в типе его быть не должно.
-///
-/// Их было три: первым стоял split-tunnel, где невыбранные ходили напрямую. Он
-/// удалён целиком — он же был и единственной дырой в приватности (промах
-/// матчера по пути = приложение мимо туннеля под надписью «Защищено»), и, по
-/// замеру из `docs/wfp.md`, самым дорогим по процессору режимом продукта.
-/// Читается сохранённое имя того охвата в `pg-service::migrate_scope`.
-///
-/// Конфиг sing-box у обоих оставшихся охватов **один и тот же**: разница живёт
-/// только в брандмауэре. Отсюда то, что переключение между ними не
-/// перезапускает туннель.
+/// Охват приватного режима. All и Whitelist используют один конфиг без direct.
+/// Split добавляет только явные прямые исключения и требует перезапуска туннеля.
+/// Старый охват apps мигрирует отдельно: его галочки не становятся исключениями.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Scope {
+    /// Весь трафик через туннель, кроме явно выбранных приложений и ruleset'ов.
+    Split,
     /// Выбранные приложения ходят только через туннель, у всех остальных сети
     /// нет вовсе. Держит это брандмауэр: политика запрещает весь исходящий, а
     /// выбранным по подтверждённой пробе выдаётся пропуск с адреса туннеля.
@@ -832,6 +827,15 @@ pub struct Settings {
     /// поля нет: это выбор человека, а не диагностика.
     #[serde(default)]
     pub failover: bool,
+    /// Независимый от белого списка набор исключений режима Split.
+    #[serde(default)]
+    pub direct_apps: Vec<String>,
+    /// URL наборов sing-box (.json или .srs), направляемых напрямую в Split.
+    #[serde(default)]
+    pub direct_rule_sets: Vec<String>,
+    /// Сайты напрямую в Split: домен и его поддомены.
+    #[serde(default)]
+    pub direct_domains: Vec<String>,
 }
 
 /// Умолчание срока сверки. Функцией, а не константой: `serde(default = …)`
@@ -846,7 +850,7 @@ fn six_hours() -> u32 {
 /// страна спрашивается.
 impl Default for Settings {
     fn default() -> Self {
-        Self { refresh: true, refresh_hours: six_hours(), probe: String::new(), singbox: String::new(), geo: true, failover: false }
+        Self { refresh: true, refresh_hours: six_hours(), probe: String::new(), singbox: String::new(), geo: true, failover: false, direct_apps: Vec::new(), direct_rule_sets: Vec::new(), direct_domains: Vec::new() }
     }
 }
 
@@ -1375,6 +1379,9 @@ mod tests {
                     singbox: r"C:\Program Files\sing-box\sing-box.exe".into(),
                     geo: false,
                     failover: true,
+                    direct_apps: vec![r"C:\app.exe".into()],
+                    direct_rule_sets: vec!["https://example.com/rules.srs".into()],
+                    direct_domains: vec!["example.org".into()],
                 },
             },
             Request::Pulse,
@@ -1433,6 +1440,7 @@ mod tests {
                     process: r"C:\Program Files\Google\Chrome\chrome.exe".into(),
                     host: "example.com:443".into(),
                     tunneled: true,
+                    direct: false,
                     picked: true,
                     leak: false,
                     rx: 1024,
@@ -1769,19 +1777,19 @@ mod tests {
     fn the_frontend_knows_the_same_scopes() {
         let ts = include_str!("../../../ui/app-shell/src/platform.ts");
         let line = ts.lines().find(|l| l.starts_with("export type Scope")).expect("тип охвата в platform.ts");
-        for scope in [Scope::Whitelist, Scope::All, Scope::None] {
+        for scope in [Scope::Whitelist, Scope::All, Scope::Split, Scope::None] {
             let name = serde_json::to_string(&scope).unwrap();
             assert!(line.contains(&name), "охвата {name} нет в platform.ts: {line}");
         }
-        assert_eq!(line.matches('"').count() / 2, 3, "охватов ровно три, и все обязаны быть живыми: {line}");
+        assert_eq!(line.matches('"').count() / 2, 4, "охватов ровно четыре: {line}");
 
-        // Знать окно обязано все три, а предлагать — только два: `none`
+        // Знать окно обязано все четыре, а предлагать — три: `none`
         // диагностический, выбирать в нём человеку нечего, и третья кнопка
         // вернула бы ровно ту путаницу, ради которой третий охват убирали.
         // Показывать состояние это не мешает: невыбранный переключатель и
         // «доступ закрыт» у каждого приложения — правда про эту машину.
         let bar = include_str!("../../../ui/app-shell/src/StatusBar.tsx");
-        for offered in ["[\"whitelist\",", "[\"all\","] {
+        for offered in ["[\"whitelist\",", "[\"all\",", "[\"split\","] {
             assert!(bar.contains(offered), "переключатель охвата растерял варианты: нет {offered}");
         }
         assert!(!bar.contains("[\"none\","), "диагностическому охвату не место в переключателе окна");

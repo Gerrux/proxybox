@@ -80,7 +80,7 @@ export function Conns({
   // разница тут не формальная: смотрят сюда как раз тогда, когда туннель лежит
   // и сети нет ни у кого. В охвате «весь компьютер» запертых не бывает — делить
   // там некого, и служба отвечает пустым списком.
-  const fencing = status != null && status.tunnel !== "off" && status.scope !== "all";
+  const fencing = status != null && status.tunnel !== "off" && (status.scope === "whitelist" || status.scope === "none");
   // Пока курсор внутри списка, обновление придержано. Служба сортирует по
   // громкости на каждый запрос, и раз в две секунды строки меняются местами —
   // строку не дочитать, а хост не выделить: он уезжает из-под курсора ровно
@@ -273,12 +273,12 @@ export function Conns({
                   // Объяснение есть у обеих не-туннельных строк, а не только у
                   // поломки: серую («sing-box разобрал сам») раньше не объяснял
                   // никто, и читалась она ровно как красная.
-                  title={leak ? s.connsDirectHint : c.tunneled ? undefined : s.connsAsideHint}
+                  title={leak ? s.connsDirectHint : c.direct ? s.splitDirectHint : c.tunneled ? undefined : s.connsAsideHint}
                   // Меню только там, где есть кого добавлять: пусто в колонке
                   // процесса значит «владельца не нашли» или «порт спорный», и
                   // серый пункт вместо отсутствующего обещал бы действие.
                   onContextMenu={
-                    c.process === ""
+                    c.process === "" || status?.scope === "split"
                       ? undefined
                       : (e) => {
                           e.preventDefault();

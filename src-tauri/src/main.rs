@@ -867,6 +867,7 @@ fn words(status: Option<&Status>) -> (String, String) {
     let title = match s.tunnel {
         core_ipc::Tunnel::Off => t("Приватный режим выключен"),
         core_ipc::Tunnel::Connecting => t("Подключение…"),
+        core_ipc::Tunnel::Up if s.scope == core_ipc::Scope::Split => t("Туннель с исключениями"),
         core_ipc::Tunnel::Up => t("Защищено"),
         core_ipc::Tunnel::Down => {
             t("Туннеля нет — доступ закрыт")
@@ -890,6 +891,7 @@ fn words(status: Option<&Status>) -> (String, String) {
     // Охват называем всегда: «весь компьютер» меняет не состояние, а того, о
     // ком оно, и молчать об этом в трее нельзя — окна может не быть вовсе.
     match s.scope {
+        core_ipc::Scope::Split => detail.push(t("раздельно: выбранные сайты, приложения и наборы правил напрямую, остальное через туннель")),
         core_ipc::Scope::All => detail.push(t("весь компьютер")),
         core_ipc::Scope::Whitelist => {
             detail.push(t("остальным сеть закрыта"))
@@ -940,7 +942,7 @@ fn build_menu(app: &tauri::AppHandle, status: Option<&Status>) -> tauri::Result<
         }
         let on = s.tunnel != core_ipc::Tunnel::Off;
         let label = match (on, s.scope) {
-            (true, core_ipc::Scope::All) => t("Выключить — компьютер пойдёт в сеть напрямую"),
+            (true, core_ipc::Scope::All | core_ipc::Scope::Split) => t("Выключить — компьютер пойдёт в сеть напрямую"),
             // В белом списке выключение не только выпускает выбранных мимо
             // туннеля, но и открывает сеть всем остальным. Пункт обязан
             // говорить, что случится, — иначе цена клика тут вдвое больше

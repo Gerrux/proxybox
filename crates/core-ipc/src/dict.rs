@@ -18,6 +18,12 @@
 
 /// Английские строки.
 pub static EN: &[(&str, &str)] = &[
+    ("укажите не больше 256 доменов или HTTP(S)-ссылок на сайты, без IP-адресов и паролей", "enter up to 256 domains or HTTP(S) website URLs, without IP addresses or credentials"),
+    ("Туннель с исключениями", "Tunnel with exceptions"),
+    ("раздельно: выбранные сайты, приложения и наборы правил напрямую, остальное через туннель", "split: selected websites, apps and rule sets go directly, everything else through the tunnel"),
+    ("слишком много исключений: максимум 256 приложений и 64 ruleset'а", "too many exceptions: at most 256 apps and 64 rule sets"),
+    ("для прямого подключения нужен абсолютный путь приложения", "direct connections require an absolute application path"),
+    ("ruleset должен быть HTTP(S)-ссылкой на файл .json или .srs", "a rule set must be an HTTP(S) URL pointing to a .json or .srs file"),
     ("служба уже запущена: второй её экземпляр не нужен", "the service is already running: a second instance is not needed"),
     ("да", "yes"),
     ("не запускается sing-box ({}): {}", "cannot start sing-box ({}): {}"),
@@ -216,6 +222,12 @@ pub static EN: &[(&str, &str)] = &[
 
 /// Персидские строки.
 pub static FA: &[(&str, &str)] = &[
+    ("укажите не больше 256 доменов или HTTP(S)-ссылок на сайты, без IP-адресов и паролей", "enter up to 256 domains or HTTP(S) website URLs, without IP addresses or credentials"),
+    ("Туннель с исключениями", "تونل با استثناها"),
+    ("раздельно: выбранные сайты, приложения и наборы правил напрямую, остальное через туннель", "split: selected websites, apps and rule sets go directly, everything else through the tunnel"),
+    ("слишком много исключений: максимум 256 приложений и 64 ruleset'а", "too many exceptions: at most 256 apps and 64 rule sets"),
+    ("для прямого подключения нужен абсолютный путь приложения", "direct connections require an absolute application path"),
+    ("ruleset должен быть HTTP(S)-ссылкой на файл .json или .srs", "a rule set must be an HTTP(S) URL pointing to a .json or .srs file"),
     ("служба уже запущена: второй её экземпляр не нужен", "سرویس از پیش در حال اجراست: نمونهٔ دوم لازم نیست"),
     ("да", "بله"),
     ("не запускается sing-box ({}): {}", "sing-box اجرا نمی‌شود ({}): {}"),
@@ -414,6 +426,12 @@ pub static FA: &[(&str, &str)] = &[
 
 /// Китайские строки (упрощённое письмо).
 pub static ZH: &[(&str, &str)] = &[
+    ("укажите не больше 256 доменов или HTTP(S)-ссылок на сайты, без IP-адресов и паролей", "enter up to 256 domains or HTTP(S) website URLs, without IP addresses or credentials"),
+    ("Туннель с исключениями", "隧道已连接（含例外）"),
+    ("раздельно: выбранные сайты, приложения и наборы правил напрямую, остальное через туннель", "split: selected websites, apps and rule sets go directly, everything else through the tunnel"),
+    ("слишком много исключений: максимум 256 приложений и 64 ruleset'а", "too many exceptions: at most 256 apps and 64 rule sets"),
+    ("для прямого подключения нужен абсолютный путь приложения", "direct connections require an absolute application path"),
+    ("ruleset должен быть HTTP(S)-ссылкой на файл .json или .srs", "a rule set must be an HTTP(S) URL pointing to a .json or .srs file"),
     ("служба уже запущена: второй её экземпляр не нужен", "服务已在运行：不需要第二个实例"),
     ("да", "是"),
     ("не запускается sing-box ({}): {}", "sing-box 无法启动（{}）：{}"),
@@ -612,6 +630,12 @@ pub static ZH: &[(&str, &str)] = &[
 
 /// Турецкие строки.
 pub static TR: &[(&str, &str)] = &[
+    ("укажите не больше 256 доменов или HTTP(S)-ссылок на сайты, без IP-адресов и паролей", "enter up to 256 domains or HTTP(S) website URLs, without IP addresses or credentials"),
+    ("Туннель с исключениями", "İstisnalı tünel"),
+    ("раздельно: выбранные сайты, приложения и наборы правил напрямую, остальное через туннель", "split: selected websites, apps and rule sets go directly, everything else through the tunnel"),
+    ("слишком много исключений: максимум 256 приложений и 64 ruleset'а", "too many exceptions: at most 256 apps and 64 rule sets"),
+    ("для прямого подключения нужен абсолютный путь приложения", "direct connections require an absolute application path"),
+    ("ruleset должен быть HTTP(S)-ссылкой на файл .json или .srs", "a rule set must be an HTTP(S) URL pointing to a .json or .srs file"),
     ("служба уже запущена: второй её экземпляр не нужен", "hizmet zaten çalışıyor: ikinci bir örneğe gerek yok"),
     ("да", "evet"),
     ("не запускается sing-box ({}): {}", "sing-box başlatılamıyor ({}): {}"),
@@ -810,6 +834,12 @@ pub static TR: &[(&str, &str)] = &[
 
 /// Индонезийские строки.
 pub static ID: &[(&str, &str)] = &[
+    ("укажите не больше 256 доменов или HTTP(S)-ссылок на сайты, без IP-адресов и паролей", "enter up to 256 domains or HTTP(S) website URLs, without IP addresses or credentials"),
+    ("Туннель с исключениями", "Terowongan dengan pengecualian"),
+    ("раздельно: выбранные сайты, приложения и наборы правил напрямую, остальное через туннель", "split: selected websites, apps and rule sets go directly, everything else through the tunnel"),
+    ("слишком много исключений: максимум 256 приложений и 64 ruleset'а", "too many exceptions: at most 256 apps and 64 rule sets"),
+    ("для прямого подключения нужен абсолютный путь приложения", "direct connections require an absolute application path"),
+    ("ruleset должен быть HTTP(S)-ссылкой на файл .json или .srs", "a rule set must be an HTTP(S) URL pointing to a .json or .srs file"),
     ("служба уже запущена: второй её экземпляр не нужен", "layanan sudah berjalan: instansi kedua tidak diperlukan"),
     ("да", "ya"),
     ("не запускается sing-box ({}): {}", "sing-box tidak bisa dijalankan ({}): {}"),

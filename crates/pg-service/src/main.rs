@@ -807,7 +807,7 @@ impl Service {
         // не терял, они просто никого не выпускают. Пусто отвечаем здесь, а не
         // в `guard`, чтобы решение о том, кто получает пропуск, осталось в
         // одном месте с решением о том, что такое «выбранное приложение».
-        if status.scope == Scope::None {
+        if matches!(status.scope, Scope::None | Scope::Split) {
             return out;
         }
         for app in status.apps.iter().filter(|a| a.enabled) {
@@ -850,6 +850,17 @@ impl Service {
     fn edit(&mut self, change: impl FnOnce(&mut Self)) {
         change(self);
         self.refence();
+    }
+
+    /// Исключения входят в конфиг sing-box и применяются перезапуском.
+    fn restart_routing(&mut self) -> Result<(), String> {
+        if self.private {
+            if let Some(profile) = self.status.profile.clone() {
+                return self.start(&profile);
+            }
+        }
+        self.refence();
+        Ok(())
     }
 
     /// Всё, что стоит в стене: замок и пропуска сквозь него — одним вызовом
@@ -929,6 +940,10 @@ impl Service {
 
     fn start(&mut self, profile: &str) -> Result<(), String> {
         let node = self.profiles.get(profile).cloned().ok_or_else(|| tf!("нет профиля «{}»", profile))?;
+        let direct_domains = if self.status.scope == Scope::Split {
+            validate_direct(&self.settings)?;
+            normalize_direct_domains(&self.settings.direct_domains)?
+        } else { Vec::new() };
         self.private = true;
         self.status.profile = Some(profile.to_string());
         self.save();
@@ -946,9 +961,20 @@ impl Service {
         self.tunnel = None; // старый процесс убивается Drop'ом до запуска нового
         self.generation += 1; // всё, что проба знала о прошлом процессе, устарело
 
-        // Ни списка, ни охвата: конфиг у обоих охватов один и тот же, и
-        // держит их брандмауэр. Отсюда и то, что галочка туннель не трогает.
-        let opts = Options { tun: tun_enabled(), ..Default::default() };
+        // В строгих охватах отбор держит брандмауэр; только Split добавляет
+        // явные исключения в конфиг маршрутизации.
+        let mut opts = Options { tun: tun_enabled(), ..Default::default() };
+        if self.status.scope == Scope::Split {
+            for path in &self.settings.direct_apps {
+                opts.direct_apps.push(path.clone());
+                let canonical = core_apps::canonical(path);
+                if canonical != *path {
+                    opts.direct_apps.push(canonical);
+                }
+            }
+            opts.direct_rule_sets = self.settings.direct_rule_sets.clone();
+            opts.direct_domains = direct_domains;
+        }
         let config = build_config(&node, &opts);
         self.probe_target = probe_target(&self.status.settings.probe, &node);
         match Process::start(&config, &dir()) {
@@ -969,6 +995,7 @@ impl Service {
                 // пути, и `opts.apps.len()` показывал бы человеку удвоенное число.
                 let count = self.status.apps.iter().filter(|a| a.enabled).count();
                 let scope = match self.status.scope {
+                    Scope::Split => t("раздельно: выбранные сайты, приложения и наборы правил напрямую, остальное через туннель"),
                     Scope::All => t("весь трафик компьютера"),
                     Scope::Whitelist => tf!("приложений с сетью: {}, у остальных её нет", count),
                     Scope::None => t("никто: туннель поднят, но пропусков нет ни у кого"),
@@ -1144,6 +1171,11 @@ impl Service {
         let mut moved = Vec::new();
         for app in &mut self.status.apps {
             if let Some(path) = core_apps::rebind(&app.path) {
+                for direct in &mut self.settings.direct_apps {
+                    if *direct == app.path {
+                        *direct = path.clone();
+                    }
+                }
                 app.path = path;
                 moved.push(app.name.clone());
             }
@@ -1155,6 +1187,7 @@ impl Service {
             // обновления читаются одной строкой — и список получал точный
             // дубль, которого больше завести неоткуда.
             self.status.apps = Self::dedup_apps(std::mem::take(&mut self.status.apps));
+            self.apply_settings();
             let names = moved.join(", ");
             self.log(tf!("приложения обновились, пути в списке освежены: {}", names));
             self.save();
@@ -1931,10 +1964,63 @@ fn after_refresh(before: Option<&Value>, after: Option<&Value>, private: bool, s
     }
 }
 
-/// Срок сверки из настроек. Ноль часов сюда не доходит — его отбивает
-/// `SetSettings`, — но `max(1)` стоит и здесь: `state.json` правят руками, а
-/// нулевой срок означал бы поход по всем подпискам каждый круг потока, то есть
-/// раз в пять минут. Сторож — `the_refresh_period_is_never_zero`.
+/// Только явные пути и URL наборов: произвольный конфиг через IPC не принимаем.
+fn validate_direct(settings: &Settings) -> Result<(), String> {
+    normalize_direct_domains(&settings.direct_domains)?;
+    if settings.direct_apps.len() > 256 || settings.direct_rule_sets.len() > 64 {
+        return Err(t("слишком много исключений: максимум 256 приложений и 64 ruleset'а"));
+    }
+    for path in &settings.direct_apps {
+        if path.len() > 32768 || path.contains(['\0', '\r', '\n']) || !Path::new(path).is_absolute() {
+            return Err(t("для прямого подключения нужен абсолютный путь приложения"));
+        }
+    }
+    for raw in &settings.direct_rule_sets {
+        let valid = url::Url::parse(raw).is_ok_and(|u| {
+            matches!(u.scheme(), "http" | "https") && u.host_str().is_some()
+                && u.username().is_empty() && u.password().is_none() && u.fragment().is_none()
+                && (u.path().ends_with(".srs") || u.path().ends_with(".json"))
+        });
+        if raw.len() > 8192 || raw.trim() != raw || raw.chars().any(char::is_control) || !valid {
+            return Err(t("ruleset должен быть HTTP(S)-ссылкой на файл .json или .srs"));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_direct_domains(values: &[String]) -> Result<Vec<String>, String> {
+    let invalid = || t("укажите не больше 256 доменов или HTTP(S)-ссылок на сайты, без IP-адресов и паролей");
+    if values.len() > 256 {
+        return Err(invalid());
+    }
+    let mut domains = Vec::new();
+    for raw in values {
+        let raw = raw.trim();
+        if raw.is_empty() || raw.len() > 8192 || raw.chars().any(char::is_control) {
+            return Err(invalid());
+        }
+        let raw = raw.strip_prefix("*.").unwrap_or(raw);
+        let address = if raw.contains("://") { raw.to_string() } else { format!("https://{raw}") };
+        let url = url::Url::parse(&address).map_err(|_| invalid())?;
+        if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some() {
+            return Err(invalid());
+        }
+        let Some(url::Host::Domain(host)) = url.host() else { return Err(invalid()) };
+        let domain = host.trim_end_matches('.');
+        if domain.is_empty() || domain.len() > 253 || domain.split('.').any(|label| {
+            label.is_empty() || label.len() > 63 || label.starts_with('-') || label.ends_with('-')
+                || !label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        }) {
+            return Err(invalid());
+        }
+        if !domains.iter().any(|d| d == domain) {
+            domains.push(domain.to_string());
+        }
+    }
+    Ok(domains)
+}
+
+/// Ноль из вручную исправленного state.json не должен запускать сверку постоянно.
 fn refresh_every(settings: &Settings) -> Duration {
     Duration::from_secs(u64::from(settings.refresh_hours.max(1)) * 60 * 60)
 }
@@ -2052,7 +2138,7 @@ fn fencing(scope: Scope, blocked: bool, private: bool) -> (core_filter::Fence, b
         // только на окно, пока туннель не подтверждён. `private &&` тут не
         // лишнее: без него `guard(true)` при выключенном приватном режиме
         // запер бы машину целиком.
-        Scope::All => (Fence::Off, private && blocked),
+        Scope::All | Scope::Split => (Fence::Off, private && blocked),
         // Белый список: замок стоит всё время, пока включён приватный режим, а
         // пропуск выдаётся только при подтверждённом туннеле. Выдай мы его
         // раньше — выбранное приложение вышло бы в открытую сеть ровно в то
@@ -2266,7 +2352,8 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                     .trim_end_matches(".exe")
                     .to_string();
                 s.edit(|s| {
-                    s.status.apps.push(App { path, name, enabled: true });
+                    let enabled = s.status.scope != Scope::Split;
+                    s.status.apps.push(App { path, name, enabled });
                     s.save();
                 });
             }
@@ -2290,18 +2377,32 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 };
             }
             if s.status.scope != scope {
-                // Туннель не трогаем вовсе: конфиг у обоих охватов один, и
-                // перезапуск ради переключения оборвал бы живые соединения на
-                // ровном месте. Меняются только правила брандмауэра.
-                s.edit(|s| {
-                    s.status.scope = scope;
-                    s.log(match scope {
-                        Scope::All => t("охват: весь трафик компьютера"),
-                        Scope::Whitelist => t("охват: только выбранные приложения, остальным сеть закрыта"),
-                        Scope::None => t("никто: туннель поднят, но пропусков нет ни у кого"),
-                    });
-                    s.save();
+                if scope == Scope::Split {
+                    if let Err(message) = validate_direct(&s.settings) {
+                        return Response::Error { message };
+                    }
+                }
+                let restart = scope == Scope::Split || s.status.scope == Scope::Split;
+                if restart {
+                    // Не снимать старую стену до остановки старого туннеля.
+                    s.guard(true);
+                }
+                s.status.scope = scope;
+                s.log(match scope {
+                    Scope::Split => t("раздельно: выбранные сайты, приложения и наборы правил напрямую, остальное через туннель"),
+                    Scope::All => t("охват: весь трафик компьютера"),
+                    Scope::Whitelist => t("охват: только выбранные приложения, остальным сеть закрыта"),
+                    Scope::None => t("никто: туннель поднят, но пропусков нет ни у кого"),
                 });
+                s.save();
+                if restart {
+                    if let Err(message) = s.restart_routing() {
+                        return Response::Error { message };
+                    }
+                } else {
+                    // Строгие охваты используют один конфиг: меняется только стена.
+                    s.refence();
+                }
             }
             Response::Done
         }
@@ -2320,10 +2421,18 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             },
         },
         Request::RemoveApp { path } => {
+            let direct = s.settings.direct_apps.contains(&path);
             s.edit(|s| {
                 s.status.apps.retain(|a| a.path != path);
+                s.settings.direct_apps.retain(|p| p != &path);
+                s.apply_settings();
                 s.save();
             });
+            if direct && s.status.scope == Scope::Split {
+                if let Err(message) = s.restart_routing() {
+                    return Response::Error { message };
+                }
+            }
             Response::Done
         }
         Request::ProfileNode { name } => match s.profiles.get(&name) {
@@ -2479,14 +2588,25 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             // сроком. Верхняя граница — про то же с другой стороны: срок в
             // тысячу лет неотличим от выключенной сверки, только молча.
             next.refresh_hours = next.refresh_hours.clamp(1, 24 * 30);
+            match normalize_direct_domains(&next.direct_domains) {
+                Ok(domains) => next.direct_domains = domains,
+                Err(message) => return Response::Error { message },
+            }
+            if let Err(message) = validate_direct(&next) {
+                return Response::Error { message };
+            }
+            let routing_changed = s.status.scope == Scope::Split
+                && (next.direct_apps != s.settings.direct_apps || next.direct_rule_sets != s.settings.direct_rule_sets
+                    || next.direct_domains != s.settings.direct_domains);
             s.settings = next;
-            // Туннель не трогаем намеренно: ни одно поле не меняет судьбу уже
-            // поднятого sing-box. Путь к бинарнику действует со следующего
-            // запуска, проба и страна — со следующего измерения, сверка
-            // подписок — со следующего круга. Перезапуск ради настройки означал
-            // бы окно без сети у выбранных приложений на ровном месте.
+            // Перезапуска требуют только изменённые исключения активного Split.
             s.apply_settings();
             s.save();
+            if routing_changed {
+                if let Err(message) = s.restart_routing() {
+                    return Response::Error { message };
+                }
+            }
             Response::Status(s.status.clone())
         }
         Request::RemoveBrowserProfile { name } => {
@@ -2564,7 +2684,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             // сразу: приватный режим включён и охват отбирает. В «весь
             // компьютер» пропусков нет, потому что делить некого, — и список
             // там пуст не от незнания, а по устройству.
-            let fencing = s.private && s.status.scope != Scope::All;
+            let fencing = s.private && matches!(s.status.scope, Scope::Whitelist | Scope::None);
             // Тот же список, что уходит в пропуска, и по той же причине, что у
             // соединений: путь у выбранного приложения бывает в двух формах, а
             // сверять здесь что-то другое значило бы звать запертым то, что
@@ -2881,8 +3001,12 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             // отказала»: такую попытку повторяем, иначе повторить её было бы
             // негде.
             // Сторож — `a_settled_list_is_not_refenced_every_round`.
+            let previous_direct = s.settings.direct_apps.clone();
             if s.rebind_packages() || s.applied.is_none() {
                 s.refence();
+            }
+            if s.status.scope == Scope::Split && previous_direct != s.settings.direct_apps {
+                let _ = s.restart_routing();
             }
             let alive = s.tunnel.as_mut().map(Process::alive).unwrap_or(false);
             match (alive, s.tunnel.as_ref()) {
@@ -3229,11 +3353,56 @@ mod tests {
             process: process.into(),
             host: "example.org:443".into(),
             tunneled,
+            direct: false,
             picked: false,
             leak: false,
             rx: bytes,
             tx: 0,
         }
+    }
+
+    #[test]
+    fn split_keeps_the_lock_until_the_tunnel_is_confirmed() {
+        use core_filter::Fence;
+        assert_eq!(fencing(Scope::Split, true, true), (Fence::Off, true));
+        assert_eq!(fencing(Scope::Split, false, true), (Fence::Off, false));
+        assert_eq!(fencing(Scope::Split, true, false), (Fence::Off, false));
+        let mut st = Status { scope: Scope::Split, ..Default::default() };
+        st.apps.push(App { path: "/bin/browser".into(), name: "Browser".into(), enabled: true });
+        assert!(Service::selected(&st).is_empty(), "прямые исключения не считаются утечкой белого списка");
+        assert!(scope_offered(Scope::Split, true));
+    }
+
+    #[test]
+    fn direct_exceptions_are_validated_before_saving() {
+        let mut settings = Settings {
+            direct_apps: vec![if cfg!(windows) { r"C:\apps\browser.exe".into() } else { "/usr/bin/browser".into() }],
+            direct_rule_sets: vec!["https://example.com/rules.srs?version=2".into(), "http://localhost/rules.json".into()],
+            ..Default::default()
+        };
+        assert!(validate_direct(&settings).is_ok());
+        for bad in ["file:///tmp/rules.json", "https://example.com/rules.txt", "https://u:p@example.com/rules.srs", "https://example.com/rules.srs#fragment", "garbage"] {
+            settings.direct_rule_sets = vec![bad.into()];
+            assert!(validate_direct(&settings).is_err(), "{bad}");
+        }
+        settings.direct_rule_sets.clear();
+        settings.direct_apps = vec!["browser.exe".into()];
+        assert!(validate_direct(&settings).is_err());
+        settings.direct_apps.clear();
+        settings.direct_rule_sets = vec!["https://example.com/rules.srs".into(); 65];
+        assert!(validate_direct(&settings).is_err());
+    }
+
+    #[test]
+    fn websites_accept_links_and_store_only_normalized_domains() {
+        let input = [" EXAMPLE.com ", "https://example.com/path?q=1#section", "*.sub.example.com", "пример.рф", "https://site.ru:8443/page"];
+        let domains = normalize_direct_domains(&input.map(String::from)).unwrap();
+        assert_eq!(domains, ["example.com", "sub.example.com", "xn--e1afmkfd.xn--p1ai", "site.ru"]);
+        assert!(normalize_direct_domains(&[]).unwrap().is_empty());
+        for bad in ["", "https://", "ftp://example.com", "https://u:p@example.com", "127.0.0.1", "https://[::1]", "https://*.example.com", "example..com", "-example.com", "exam_ple.com", "example.com\nother.com"] {
+            assert!(normalize_direct_domains(&[bad.into()]).is_err(), "{bad}");
+        }
+        assert!(normalize_direct_domains(&vec!["example.com".into(); 257]).is_err());
     }
 
     /// Белый список запирает дверь и раздаёт пропуска, а не наоборот.
@@ -4342,6 +4511,9 @@ mod tests {
         s.status.profile = Some("p".into());
         s.private = true;
         s.status.scope = Scope::Whitelist;
+        s.settings.direct_apps = vec!["/bin/direct".into()];
+        s.settings.direct_rule_sets = vec!["https://example.com/rules.srs".into()];
+        s.settings.direct_domains = vec!["example.com".into()];
         s.save();
 
         let restored = Service::load();
@@ -4353,6 +4525,9 @@ mod tests {
         );
         assert_eq!(restored.status.profile.as_deref(), Some("p"));
         assert_eq!(restored.status.apps.len(), 1);
+        assert_eq!(restored.settings.direct_apps, ["/bin/direct"]);
+        assert_eq!(restored.settings.direct_rule_sets, ["https://example.com/rules.srs"]);
+        assert_eq!(restored.settings.direct_domains, ["example.com"]);
         assert_eq!(restored.status.tunnel, TunnelState::Off, "туннель после старта ещё не поднят");
         assert_eq!(restored.status.rx, 0, "счётчики трафика не переносятся");
 

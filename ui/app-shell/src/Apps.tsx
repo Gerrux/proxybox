@@ -52,6 +52,7 @@ function fateHint(
   // Строка обязана говорить это прямо — иначе окно обещает сеть тому, у кого её
   // нет, а это ровно та ложь, ради которой у продукта и заведена эта колонка.
   if (scope === "none") return s.fateClosed;
+  if (scope === "split") return tunnel === "up" ? (enabled ? s.fateDirect : s.splitDefault) : s.fateClosed;
   // «Весь компьютер» — это отсутствие отбора: судьба у всех строк одна.
   if (scope === "all" || enabled) return tunnel === "up" ? s.fateUp : s.fateClosed;
   return s.fateFenced;
@@ -93,7 +94,10 @@ export function Apps({
 }) {
   const s = strings(status?.lang);
   const all = status?.scope === "all";
-  const apps = status?.apps ?? [];
+  const split = status?.scope === "split";
+  const apps = (status?.apps ?? []).map((app) => split
+    ? { ...app, enabled: status?.settings.direct_apps?.includes(app.path) ?? false }
+    : app);
   const on = apps.filter((a) => a.enabled).length;
   const icons = useIcons(apps);
   const [query, setQuery] = useState("");
@@ -118,7 +122,7 @@ export function Apps({
   // Охват сменился — решение о прошлом абзаце к новому не относится: там другой
   // текст и другая срочность. Закрытая заметка «весь компьютер» не имеет права
   // унести с собой предупреждение пустого белого списка.
-  useEffect(() => setNoteOpen(false), [all]);
+  useEffect(() => setNoteOpen(split), [all, split]);
   const shown = matching(ordered(apps), query);
   // Поле не прячем, пока в нём что-то есть: иначе фильтр остался бы включённым
   // и невидимым, а строки просто пропали бы.
@@ -140,7 +144,7 @@ export function Apps({
       note={
         apps.length > 0 && (
           <span className="text-muted">
-            {s.appsCount(on, apps.length)}
+            {split ? s.splitAppsCount(on, apps.length) : s.appsCount(on, apps.length)}
             {query !== "" && ` · ${s.appsShown(shown.length)}`}
           </span>
         )
@@ -202,7 +206,7 @@ export function Apps({
             (`fateHint`). */}
         {noteShown && (
           <p className="enter rounded-md bg-hover px-3 py-2 text-sm text-muted">
-            {all ? s.scopeAllNote : s.whitelistNote}
+            {split ? s.splitAppsNote : all ? s.scopeAllNote : s.whitelistNote}
           </p>
         )}
         {adding && (
@@ -240,7 +244,17 @@ export function Apps({
                   id={fieldId(app.path)}
                   type="checkbox"
                   checked={app.enabled}
-                  onChange={(e) => void act({ cmd: "set-app", arg: { path: app.path, enabled: e.target.checked } })}
+                  disabled={busy}
+                  onChange={(e) => {
+                    if (split && status) {
+                      const direct_apps = e.target.checked
+                        ? [...status.settings.direct_apps, app.path]
+                        : status.settings.direct_apps.filter((path) => path !== app.path);
+                      void act({ cmd: "set-settings", arg: { settings: { ...status.settings, direct_apps } } });
+                    } else {
+                      void act({ cmd: "set-app", arg: { path: app.path, enabled: e.target.checked } });
+                    }
+                  }}
                   // Галочка — действие оператора, а не состояние канала:
                   // цвета состояний ей не положены. Состояние читается на
                   // шапке, и красить им ещё и галочку — обещать состояние
