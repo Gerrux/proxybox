@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { call, type Act, type Conn, type Status } from "./platform";
 import { strings } from "./i18n";
 import { bytes } from "./StatusBar";
-import { Button, Empty, Icon, Menu, type MenuItem, Panel, SearchField, spot } from "./ui";
+import { Button, Empty, Icon, Menu, type MenuItem, Modal, Panel, SearchField, spot } from "./ui";
 
 /** Соединения живут секундами, и опрос у них свой: в статусе им не место —
  *  тот ходит по кругу всегда, а список нужен, только пока панель открыта.
@@ -24,6 +24,18 @@ const TYPING_MS = 300;
  *  chrome.exe от другого тут всё равно нечем — путь висит подсказкой. */
 function base(path: string): string {
   return path.split(/[\\/]/).pop() ?? "";
+}
+
+/** Что из адреса соединения можно предложить в исключения: IPv4 или домен.
+ *  `host` приходит как `хост:порт`; IPv6 исключениями не бывает вовсе (служба
+ *  его отвергнет), поэтому и предлагать его незачем. Одиночный адрес служба
+ *  сама приводит к `a.b.c.d/32`, а домен — к нижнему регистру, и для сверки с
+ *  уже заведённым списком окно приводит так же. */
+function exceptionFor(host: string): { entry: string; stored: string } | null {
+  const name = host.replace(/:\d+$/, "").toLowerCase();
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(name)) return { entry: name, stored: `${name}/32` };
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(name) && /[a-z]/.test(name)) return { entry: name, stored: name };
+  return null;
 }
 
 /** Что идёт через туннель прямо сейчас — и кто заперт, пока оно идёт.
@@ -63,6 +75,11 @@ export function Conns({
   const [total, setTotal] = useState(0);
   const [matched, setMatched] = useState(0);
   const [fenced, setFenced] = useState<string[]>([]);
+  // Адреса, до которых не дозвонилось и прямое соединение: исключение тут не
+  // поможет, и сказать это нужно прямо над списком, а не в строке.
+  const [unreached, setUnreached] = useState<string[]>([]);
+  // Что человек собирается пустить мимо туннеля — до подтверждения.
+  const [asking, setAsking] = useState<string | null>(null);
   const [shown, setShown] = useState(false);
   const [menu, setMenu] = useState<{ at: [number, number]; items: MenuItem[] } | null>(null);
   // Набранное и отправленное — разные вещи: пока букву дописывают, отбор
@@ -99,6 +116,7 @@ export function Conns({
       setConns([]);
       setTotal(0);
       setMatched(0);
+      setUnreached([]);
       return;
     }
     let gone = false;
@@ -114,6 +132,7 @@ export function Conns({
           setConns(r.data.conns);
           setTotal(r.data.total);
           setMatched(r.data.matched);
+          setUnreached(r.data.unreached);
         })
         // Служба замолчала — про это говорит шапка. Гасить список нечем:
         // последний известный честнее пустого.
@@ -151,6 +170,14 @@ export function Conns({
 
   const edit = (cmd: "add-app" | "remove-app", path: string) => {
     void act({ cmd, arg: { path } }).then(() => setDone((n) => n + 1));
+  };
+
+  // Исключение добавляется только явным нажатием и после вопроса: правка
+  // перезапускает туннель, а трафик на этот адрес уходит мимо него. Список
+  // уезжает службе целиком — так устроена команда.
+  const addException = (entry: string) => {
+    setAsking(null);
+    void act({ cmd: "set-bypass", arg: { rules: [...(status?.bypass ?? []), entry] } });
   };
 
   // Что предложить строке, решает поле `picked`, а не своя сверка со списком:
@@ -237,6 +264,13 @@ export function Conns({
             )}
           </div>
         )}
+        {live && unreached.length > 0 && (
+          // Не поломка окна и не цвет отказа: это сведение, которое снимает
+          // с туннеля подозрение, — потому тихая рамка, а не красная.
+          <p className="rounded-md border border-edge px-2.5 py-1.5 text-xs text-muted">
+            {s.connsUnreached(unreached.join(", "))}
+          </p>
+        )}
         {!live ? (
           <Empty>{s.connsOff}</Empty>
         ) : conns.length === 0 && filter !== "" ? (
@@ -263,8 +297,15 @@ export function Conns({
               // правил. Всё остальное прямое — чужой трафик, его мы не трогаем.
               // Считает это служба: путей у приложения бывает две формы, и здесь
               // известна одна.
-              const leak = c.leak;
+              //
+              // Исключение — выбор человека, а не промах: ушло мимо туннеля, но
+              // по его же правилу, и поломочным цветом его не красят.
+              const leak = c.leak && !c.bypass;
               const name = base(c.process);
+              const route = c.bypass ? "bypass" : c.tunneled ? "tunnel" : leak ? "leak" : "aside";
+              // Предлагать нечего, если адрес уже в списке исключений.
+              const except = c.silent ? exceptionFor(c.host) : null;
+              const offer = except != null && !(status?.bypass ?? []).includes(except.stored);
               return (
                 <li
                   // Соединения живут секундами и своего имени не имеют: ключ по
@@ -273,7 +314,15 @@ export function Conns({
                   // Объяснение есть у обеих не-туннельных строк, а не только у
                   // поломки: серую («sing-box разобрал сам») раньше не объяснял
                   // никто, и читалась она ровно как красная.
-                  title={leak ? s.connsDirectHint : c.direct ? s.splitDirectHint : c.tunneled ? undefined : s.connsAsideHint}
+                  title={
+                    route === "bypass"
+                      ? s.connsBypassHint
+                      : route === "leak"
+                        ? s.connsDirectHint
+                        : route === "aside"
+                          ? s.connsAsideHint
+                          : undefined
+                  }
                   // Меню только там, где есть кого добавлять: пусто в колонке
                   // процесса значит «владельца не нашли» или «порт спорный», и
                   // серый пункт вместо отсутствующего обещал бы действие.
@@ -287,14 +336,27 @@ export function Conns({
                   }
                   className="row smooth flex min-h-9 items-center gap-3 ps-3 pe-2"
                 >
-                  <span className={`row-pill ${c.tunneled ? "bg-open" : leak ? "bg-fault" : "bg-muted"}`} />
-                  {/* Слово пишется только у исключения. Под `final: proxy` в
+                  <span
+                    className={`row-pill ${
+                      route === "tunnel"
+                        ? "bg-open"
+                        : route === "bypass"
+                          ? "bg-accent"
+                          : route === "leak"
+                            ? "bg-fault"
+                            : "bg-muted"
+                    }`}
+                  />
+                  {/* Слово пишется только у не-туннеля. Под `final: proxy` в
                       туннель идёт всё, что sing-box вообще видит, — столбец с
                       неизменным «туннель» приучал глаз его не читать ровно к
                       тому дню, когда там появится другое слово, и отнимал
                       полтора сантиметра у имени хоста, которое режется. Рельс
                       слева остаётся: он и был тем, что различает строки. */}
-                  {!c.tunneled && (
+                  {route === "bypass" && (
+                    <span className="shrink-0 text-xs text-accent">{s.connsBypass}</span>
+                  )}
+                  {(route === "leak" || route === "aside") && (
                     <span className={`shrink-0 text-xs ${leak ? "text-fault" : "text-muted"}`}>
                       {s.connsDirect}
                     </span>
@@ -308,6 +370,20 @@ export function Conns({
                   <span className="selectable min-w-0 flex-1 truncate font-mono text-xs text-muted">
                     {c.host}
                   </span>
+                  {/* Подсказка, а не диагноз: ушло и не вернулось ни байта —
+                      узел, вероятно, не достаёт до адреса. Исключение — только
+                      по явному нажатию: оно перезапускает туннель и выпускает
+                      трафик мимо него. */}
+                  {c.silent && (
+                    <span className="shrink-0 text-xs text-wait" title={s.connsSilentHint}>
+                      {s.connsSilent}
+                    </span>
+                  )}
+                  {c.silent && offer && except && (
+                    <Button variant="quiet" title={s.connsExceptHint} onClick={() => setAsking(except.entry)}>
+                      {s.connsExcept}
+                    </Button>
+                  )}
                   {/* Числа моноширинные и в одном порядке с шапкой: ↓ принято,
                       ↑ отправлено. */}
                   <span className="shrink-0 font-mono text-xs tabular-nums text-muted">
@@ -320,6 +396,19 @@ export function Conns({
         )}
       </div>
       {menu && <Menu at={menu.at} items={menu.items} onClose={() => setMenu(null)} />}
+      {asking != null && (
+        <Modal title={s.connsExceptTitle} onClose={() => setAsking(null)}>
+          <p className="text-sm">{s.connsExceptAsk(asking)}</p>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setAsking(null)}>
+              {s.cancel}
+            </Button>
+            <Button variant="primary" onClick={() => addException(asking)}>
+              {s.connsExceptYes}
+            </Button>
+          </div>
+        </Modal>
+      )}
     </Panel>
   );
 }

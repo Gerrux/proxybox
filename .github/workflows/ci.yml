@@ -98,8 +98,8 @@ jobs:
       # Оболочка вне воркспейса, и под Linux её до сих пор не собирал никто —
       # строка в `validate` про Windows проверяет только совпадение
       # поверхностей (`--target` без линковки), а эта собирает по-настоящему.
-      # Обязана идти до шага e2e ниже: тот зовёт `cargo build` через `sudo -E`
-      # (сохранённый HOME), и root-овый `~/.cargo/registry` после него стал бы
+      # Обязана идти до шага e2e ниже: тот зовёт `cargo build` из-под sudo с
+      # HOME раннера, и root-овый `~/.cargo/registry` после него стал бы
       # нечитаемым для этой же сборки от имени runner.
       - run: sudo apt-get update -qq && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
       # Пустышки вместо вложенных бинарников — то же, что в `validate`, но с
@@ -119,11 +119,14 @@ jobs:
       # Под root — то есть с настоящим замком и настоящим TUN. e2e.sh сам
       # решает, что ему доступно (`FULL`), а PG_E2E_FULL=1 требует, чтобы
       # здесь оно оказалось включённым: молчаливый откат на путь до узла
-      # (отвалившийся `apt-get`, смена образа раннера, потерянный `sudo -E`)
-      # иначе зеленил бы job, не проверив инвариант вовсе.
+      # (отвалившийся `apt-get`, смена образа раннера) иначе зеленил бы job,
+      # не проверив инвариант вовсе.
       #
-      # `env "PATH=$PATH"` обязателен: sudo сбрасывает PATH по `secure_path` из
-      # sudoers, а cargo лежит в `~/.cargo/bin`, которого там нет, — скрипт
-      # падал на `cargo: command not found` первой же строкой сборки. `-E`
-      # сохраняет переменные, но PATH к ним не относится.
-      - run: sudo -E env "PATH=$PATH" PG_SINGBOX=/usr/local/bin/sing-box PG_E2E_FULL=1 scripts/e2e.sh
+      # Окружение передаётся через `env` поимённо, а не `sudo -E`. Новый образ
+      # раннера ставит sudo-rs, и тот `-E` молча отбрасывает («preserving the
+      # entire environment is not supported»): HOME становится `/root`, rustup
+      # ищет там toolchain и падает с «no default is configured». PATH sudo
+      # сбрасывает по `secure_path` при любом `-E` — без него cargo из
+      # `~/.cargo/bin` не находился вовсе. HOME и CARGO_HOME раннера держат
+      # и toolchain, и кэш реестра там же, где их положил шаг выше.
+      - run: sudo env "PATH=$PATH" "HOME=$HOME" "CARGO_HOME=$CARGO_HOME" PG_SINGBOX=/usr/local/bin/sing-box PG_E2E_FULL=1 scripts/e2e.sh

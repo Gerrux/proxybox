@@ -4,9 +4,39 @@
 //! занимается sing-box, как в NekoBox, — мы генерируем ему конфиг и следим за
 //! процессом.
 //!
-//! В All и Whitelist нет прямого маршрута; отбор держит core-filter.
-//! В Split добавляются явные исключения по приложению и ruleset'у, а final
-//! остаётся proxy. Вход local (проба и сеансы) исключения никогда не затрагивают.
+//! Конфиг один на «белый список» и «весь компьютер», и это его главное
+//! свойство: `final: proxy`, ни одного правила по `process_path`, тега `direct`
+//! нет вовсе. Ни список приложений, ни охват в конфиг не входят — их держит
+//! брандмауэр (`core-filter`). Отсюда два следствия, ради которых так и
+//! сделано.
+//! Переключение охвата и правка списка конфига не меняют, значит не требуют
+//! перезапуска: живые соединения их переживают. И «уйти напрямую» перестаёт
+//! быть тем, что мы запрещаем правилом, — маршрута с таким тегом просто нет, а
+//! вместе с матчером по процессу исчезает и его тихий промах, из-за которого
+//! приложение уходило мимо туннеля, не переставая считаться защищённым.
+//!
+//! Дорог был именно `direct`. Замер (`docs/wfp.md`, «Замер: причина оказалась
+//! не та») показал сеть 0 Мбит/с при 85% ЦП в охвате, где в `direct` уходило
+//! всё: на `proxy` sing-box держит одно соединение к серверу и мультиплексирует
+//! в него, а на `direct` открывает соединение к каждому адресу, с которым
+//! говорит машина. Конфиг без `direct` дешевле конфига с ним. Сторож —
+//! `nothing_can_go_direct`.
+//!
+//! Единственный маршрут мимо узла — исключения (`Options::bypass`), и заводит
+//! их только человек. Это не возвращение `direct`: тег у них свой (`bypass`),
+//! ведут на него только названные адреса и имена и только с `tun-in`, а
+//! пустой список даёт тот же конфиг до байта. Нужны они для адресов, до
+//! которых выходной узел не дотягивается: облака и сервисы, закрывающие себя
+//! от чужих стран. Сторож — `a_bypass_never_catches_the_probe`.
+//!
+//! Третий охват, «раздельно» (`Scope::Split`), добавляет к тем же исключениям
+//! ещё два рода правил — по приложению (`Options::direct_apps`, это и есть
+//! `process_path`) и по готовым наборам правил (`Options::direct_rule_sets`).
+//! Маршрут у них тот же самый, `bypass`: второго тега и второго outbound'а нет,
+//! `direct` по-прежнему не возвращается, а `final` остаётся туннелем. Вход
+//! `local` (проба и сеансы) не затрагивается ни одним из них. Цена матчера по
+//! процессу названа в CLAUDE.md: он заставляет sing-box выяснять процесс каждому
+//! соединению, а его промах тих. Сторож — `split_rules_share_the_bypass_outbound`.
 
 use core_ipc::{t, tf, Conn};
 use serde_json::{json, Value};
@@ -143,6 +173,15 @@ pub struct Options {
     pub direct_apps: Vec<String>,
     pub direct_rule_sets: Vec<String>,
     pub direct_domains: Vec<String>,
+    /// Исключения: адреса (`a.b.c.d/n`) и имена, которые идут мимо туннеля, —
+    /// уже приведённые `bypass_entry`. Пусто — конфиг тот же, что и без поля,
+    /// до байта: ни тега `bypass`, ни правила на него (сторож —
+    /// `nothing_can_go_direct`).
+    ///
+    /// Это не охват и не список приложений, и в конфиг он входит по другой
+    /// причине: исключение решает не «кто ходит», а «куда ходит мимо узла».
+    /// Кто вообще получает сеть, по-прежнему решает стена.
+    pub bypass: Vec<String>,
 }
 
 impl Default for Options {
@@ -156,6 +195,7 @@ impl Default for Options {
             direct_apps: Vec::new(),
             direct_rule_sets: Vec::new(),
             direct_domains: Vec::new(),
+            bypass: Vec::new(),
         }
     }
 }
@@ -422,6 +462,9 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
     if wireguard {
         cfg["endpoints"] = json!([node]);
     }
+    if opts.tun && !opts.bypass.is_empty() {
+        add_bypass(&mut cfg, &opts.bypass);
+    }
     if let Some(listen) = &opts.pprof {
         cfg["experimental"]["debug"] = json!({ "listen": listen });
     }
@@ -453,6 +496,147 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
         }
     }
     cfg
+}
+
+/// Тег маршрута мимо туннеля. Не `direct`, и это не вкусовщина: тег `direct`
+/// из продукта удалён вместе с матчером по процессу, и его возвращение сторожит
+/// `nothing_can_go_direct`. Здесь другое — маршрут, на который ведут только
+/// названные человеком адреса и имена, — и имя у него своё, чтобы список
+/// соединений отличал исключение от утечки (`Conn::bypass`).
+pub const TAG_BYPASS: &str = "bypass";
+
+/// Исключения в конфиг: свой outbound и правила на него, по одному на род.
+///
+/// Только на `tun-in`, и это главное в этой функции. Вход `local` — путь пробы:
+/// попади её цель под исключение (по умолчанию цель — сам сервер узла, и
+/// исключение «вся подсеть хостера» её накрыло бы), проба ушла бы напрямую,
+/// получила бы ответ при мёртвом туннеле, и `guard(false)` выдал бы пропуска
+/// выбранным приложениям. Стоят правила последними — за перехватом DNS, отбоем
+/// шлюза, сниффингом и маршрутом пробы, — а `final` остаётся туннелем. Сторож —
+/// `a_bypass_never_catches_the_probe`.
+///
+/// Без TUN исключений нет вовсе: прогон профилей и сеансы браузера живут без
+/// него, и окно браузера, ушедшее мимо узла, показало бы сайту настоящий адрес
+/// — ровно то, ради чего браузерный профиль и заводят.
+fn add_bypass(cfg: &mut Value, bypass: &[String]) {
+    let (cidrs, names): (Vec<&String>, Vec<&String>) = bypass.iter().partition(|e| e.contains('/'));
+    let rules = cfg["route"]["rules"].as_array_mut().expect("правила маршрута");
+    if !cidrs.is_empty() {
+        rules.push(json!({ "inbound": ["tun-in"], "ip_cidr": cidrs, "action": "route", "outbound": TAG_BYPASS }));
+    }
+    // Имя ловится по имени: под FakeIP приложение получает фальшивый адрес, а
+    // sing-box, приняв соединение на него, возвращает ему имя до разбора
+    // правил. Разрешает имя потом `default_domain_resolver` (DoH на 8.8.8.8
+    // мимо туннеля), а не сервер узла: соединение и так идёт мимо него.
+    if !names.is_empty() {
+        rules.push(json!({ "inbound": ["tun-in"], "domain_suffix": names, "action": "route", "outbound": TAG_BYPASS }));
+    }
+    let outbounds = cfg["outbounds"].as_array_mut().expect("список outbounds");
+    outbounds.push(json!({ "type": "direct", "tag": TAG_BYPASS }));
+}
+
+/// Самое узкое исключение по адресу, какое принимаем, — /8. Шире это уже не
+/// исключение, а выключенный туннель под надписью «Защищено»: `0.0.0.0/0` —
+/// удалённый split-tunnel, только надетый на другой список.
+const BYPASS_WIDEST: u8 = 8;
+
+/// Привести строку исключения к тому виду, в каком она едет в конфиг, — или
+/// объяснить человеку, почему её нет. Адрес становится сетью `a.b.c.d/n` (голый
+/// адрес — `/32`, хвост маски обнуляется: `10.1.2.3/8` и `10.0.0.0/8` — одно и
+/// то же исключение), имя — нижним регистром без `*.` и точки впереди: суффикс
+/// и так ловит поддомены.
+///
+/// Отказы — ровно те случаи, где исключение сделало бы не то, что написано:
+/// шире `/8` (выключенный туннель), IPv6 (у TUN адреса v6 нет, и такое
+/// соединение до нас не доходит), пул FakeIP и подсеть самого TUN (под
+/// исключение ушли бы все имена машины или её же шлюз). Сторож —
+/// `a_bypass_entry_is_normalised_or_refused`.
+pub fn bypass_entry(raw: &str) -> Result<String, String> {
+    let entry = raw.trim().to_ascii_lowercase();
+    if entry.is_empty() {
+        return Err(t("пустое исключение"));
+    }
+    if entry.contains(':') {
+        // IPv6 называется IPv6, только если это он: `158.160.144.110:22` —
+        // ровно тот вид, в каком адрес показывает вкладка соединений, и
+        // скопированный оттуда, он отказом «это IPv6» сбивал бы с толку.
+        let bare = entry.split('/').next().unwrap_or(&entry).trim_matches(['[', ']']);
+        if bare.parse::<std::net::Ipv6Addr>().is_ok() {
+            return Err(tf!("«{}» — IPv6: у туннеля адреса v6 нет, исключать нечего", raw.trim()));
+        }
+        return Err(tf!("«{}» — не адрес и не имя", raw.trim()));
+    }
+    let looks_like_ip = entry.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '/');
+    if looks_like_ip {
+        let (addr, prefix) = entry.split_once('/').unwrap_or((&entry, "32"));
+        let bad = || tf!("«{}» — не адрес и не сеть", raw.trim());
+        let addr: std::net::Ipv4Addr = addr.parse().map_err(|_| bad())?;
+        let prefix: u8 = prefix.parse().ok().filter(|p| *p <= 32).ok_or_else(bad)?;
+        if prefix < BYPASS_WIDEST {
+            return Err(tf!("«{}» — слишком широко: это уже не исключение, а туннель, выключенный целиком", raw.trim()));
+        }
+        let net = std::net::Ipv4Addr::from(u32::from(addr) & mask(prefix));
+        for (reserved, len) in [("198.18.0.0", 15u8), (TUN_ADDR, 30)] {
+            let reserved: std::net::Ipv4Addr = reserved.parse().expect("свой адрес");
+            if overlaps((net, prefix), (reserved, len)) {
+                return Err(tf!("«{}» задевает служебную сеть туннеля {}/{}", raw.trim(), std::net::Ipv4Addr::from(u32::from(reserved) & mask(len)), len));
+            }
+        }
+        return Ok(format!("{net}/{prefix}"));
+    }
+    let name = entry.trim_start_matches("*.").trim_start_matches('.').trim_end_matches('.');
+    let label_ok = |l: &str| {
+        !l.is_empty()
+            && l.len() <= 63
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    };
+    if name.is_empty() || name.len() > 253 || !name.split('.').all(label_ok) {
+        return Err(tf!("«{}» — не адрес и не имя", raw.trim()));
+    }
+    // Имя без точки — это зона целиком (`ru`, `com`): суффикс увёл бы мимо
+    // туннеля полстраны, и это та же ширина, что `/8` у адреса, только без
+    // предела. Публичных имён без точки не бывает, а локальные и так идут
+    // роутеру (`lan` в DNS).
+    if !name.contains('.') {
+        return Err(tf!("«{}» — слишком широко: это уже не исключение, а туннель, выключенный целиком", raw.trim()));
+    }
+    Ok(name.to_string())
+}
+
+fn mask(prefix: u8) -> u32 {
+    if prefix == 0 { 0 } else { u32::MAX << (32 - prefix) }
+}
+
+/// Пересекаются ли две сети: у префиксов одна из них всегда содержит другую.
+fn overlaps((a, la): (std::net::Ipv4Addr, u8), (b, lb): (std::net::Ipv4Addr, u8)) -> bool {
+    let m = mask(la.min(lb));
+    u32::from(a) & m == u32::from(b) & m
+}
+
+/// Куда исключение не дошло: адреса, до которых sing-box не дозвонился мимо
+/// туннеля. Это ответ на вопрос, который исключение и задаёт, — «туннель тут
+/// ни при чём?»: если и напрямую тишина, дело не в узле, а в самом адресе
+/// (группа безопасности, фильтр провайдера, выключенная машина), и человек
+/// ищет не там. Ровно так и было на живой машине: исключение уже стояло, а
+/// `dial tcp 158.160.144.110:22: i/o timeout` шёл через `outbound/direct`.
+///
+/// Читает хвост журнала sing-box (`log_tail`), то есть только последние
+/// килобайты, и ничего не хранит: строка уходит из ответа вместе с хвостом.
+/// Новые первыми, без повторов. Сторож — `a_dead_bypass_is_named`.
+pub fn bypass_failures(lines: &[String]) -> Vec<String> {
+    let needle = format!("using outbound/direct[{TAG_BYPASS}]:");
+    let mut out: Vec<String> = Vec::new();
+    for line in lines.iter().rev() {
+        let Some((head, _)) = line.split_once(&needle) else { continue };
+        let Some(host) = head.rsplit_once("open connection to ").map(|(_, h)| h.trim()) else { continue };
+        if !host.is_empty() && !out.iter().any(|h| h == host) {
+            out.push(host.to_string());
+        }
+    }
+    out.truncate(10);
+    out
 }
 
 /// Разбор отдельно от переменной: тесты идут в одном процессе, и `set_var`
@@ -622,7 +806,11 @@ const LOG_TAIL: u64 = 16 * 1024;
 /// исходящего, поэтому `outbound/` их и разводит. Сторож —
 /// `the_reason_skips_the_noise_from_the_tun_side`.
 pub fn last_failure(dir: &Path) -> Option<String> {
-    log_tail(dir).into_iter().rev().find(|line| line.contains("outbound/"))
+    // Дозвон мимо туннеля по исключению — не отказ туннеля: мёртвый адрес
+    // исключения назвался бы причиной мёртвого узла и отправил бы искать не
+    // там. Его называет `bypass_failures`, и по той же скобке с тегом.
+    let bypass = format!("[{TAG_BYPASS}]");
+    log_tail(dir).into_iter().rev().find(|line| line.contains("outbound/") && !line.contains(&bypass))
 }
 
 /// Тот же хвост, но целиком и строками: его показывает окно, когда одной
@@ -960,17 +1148,70 @@ pub fn connections(
     owner_of: &dyn Fn(&'static str, u16, &str) -> Option<String>,
 ) -> io::Result<Vec<Conn>> {
     let v = clash(api_port)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let mut conns: Vec<Conn> = v["connections"]
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or_default()
         .iter()
-        .map(|c| parse_conn(c, owner_of))
+        .map(|c| {
+            let mut conn = parse_conn(c, owner_of);
+            conn.silent = silent(&conn, c["start"].as_str().and_then(unix_of), now);
+            conn
+        })
         .collect();
     // Самые говорливые первыми: список живёт секунды, и первые строки — это
     // единственное, что человек успевает прочитать.
     conns.sort_by_key(|c| std::cmp::Reverse(c.rx + c.tx));
     Ok(conns)
+}
+
+/// Сколько соединение может ждать первого байта ответа, прежде чем панель
+/// назовёт его молчащим. Вдвое больше `SINGBOX_DIAL_TIMEOUT`: к этому времени
+/// узел, у которого вообще получается дозвониться, уже дозвонился бы, а
+/// свежее соединение, у которого ответ просто в пути, молчащим не зовётся.
+const SILENT_AFTER: u64 = 2 * SINGBOX_DIAL_TIMEOUT.as_secs();
+
+/// Молчит ли соединение (`Conn::silent`): туннель, отдано больше нуля, принято
+/// ноль, и так уже `SILENT_AFTER`. Без возраста не молчит никто — свежее
+/// соединение без ответа выглядит так же, а подсказка, мигающая на каждом
+/// новом запросе, приучила бы её не читать. Сторож — `a_silent_conn_is_named`.
+fn silent(conn: &Conn, started: Option<u64>, now: u64) -> bool {
+    conn.tunneled && conn.rx == 0 && conn.tx > 0 && started.is_some_and(|at| now.saturating_sub(at) >= SILENT_AFTER)
+}
+
+/// Время RFC 3339 из Clash API (`2026-11-02T13:17:08.123+03:00`) в unix-секунды.
+/// Своё, а не крейт: нужно ровно одно — сколько секунд прошло, — и зависимость
+/// времени в службу ради этой разницы обошлась бы дороже тридцати строк.
+fn unix_of(raw: &str) -> Option<u64> {
+    let num = |s: &str| s.parse::<i64>().ok();
+    let (date, rest) = raw.split_once('T')?;
+    let mut d = date.split('-');
+    let (y, m, day) = (num(d.next()?)?, num(d.next()?)?, num(d.next()?)?);
+    let clock_end = rest.find(|c: char| c == 'Z' || c == '+' || c == '-').unwrap_or(rest.len());
+    let (clock, zone) = rest.split_at(clock_end);
+    let mut c = clock.split(':');
+    let (hh, mm) = (num(c.next()?)?, num(c.next()?)?);
+    let ss = num(c.next()?.split('.').next()?)?;
+    let offset = match zone.chars().next() {
+        None | Some('Z') => 0,
+        Some(sign) => {
+            let (zh, zm) = zone[1..].split_once(':')?;
+            let off = num(zh)? * 3600 + num(zm)? * 60;
+            if sign == '-' { -off } else { off }
+        }
+    };
+    // Дни от эпохи по гражданскому календарю (алгоритм Хиннанта).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + hh * 3600 + mm * 60 + ss - offset).ok()
 }
 
 /// Разбор одного соединения. Цепочка маршрутов, а не список приложений: список
@@ -1012,10 +1253,13 @@ fn parse_conn(c: &Value, owner_of: &dyn Fn(&'static str, u16, &str) -> Option<St
             .unwrap_or_default()
             .iter()
             .any(|tag| tag == TAG_PROXY),
+        bypass: c["chains"].as_array().is_some_and(|chain| chain.iter().any(|tag| tag == TAG_BYPASS)),
         // Выбранность и утечка — это уже сверка со списком выбранных, а списка
         // здесь нет: проставляет обе служба (`leaks_first`), она же и сортирует.
         picked: false,
         leak: false,
+        // Молчание — это ещё и возраст, а его здесь нет: считает `connections`.
+        silent: false,
         rx: c["download"].as_u64().unwrap_or(0),
         tx: c["upload"].as_u64().unwrap_or(0),
     }
@@ -1531,6 +1775,9 @@ mod tests {
                     .map(|o| &o["tag"])
                     .collect();
                 assert!(!tags.iter().any(|t| **t == json!("direct")), "тега direct быть не должно: {tags:?}");
+                // Исключений человек не заводил — и маршрута мимо туннеля нет
+                // вовсе, как и до них (`a_bypass_never_catches_the_probe`).
+                assert!(!tags.iter().any(|t| **t == json!(TAG_BYPASS)), "исключений не заводили: {tags:?}");
                 assert!(tags.iter().any(|t| **t == json!(TAG_PROXY)), "туннель обязан быть живым тегом: {tags:?}");
                 // Путь пробы обязан вести в тот же туннель: подтверждает его
                 // именно она, а без подтверждения выбранные приложения заперты.
@@ -2071,7 +2318,10 @@ mod tests {
             let Ok((socks_port, api_port)) = free_port().and_then(|a| Ok((a, free_port()?))) else {
                 return;
             };
-            let mut cfg = build_config(&node, &Options { tun, socks_port, api_port, ..Default::default() });
+            // С TUN — и с исключениями: outbound `bypass` переживает снятие
+            // правил на `tun-in` и обязан стартовать сам.
+            let bypass = if tun { vec!["158.160.0.0/16".to_string(), "yandex.cloud".to_string()] } else { vec![] };
+            let mut cfg = build_config(&node, &Options { tun, socks_port, api_port, bypass, ..Default::default() });
             if tun {
                 // Сам TUN тесту не поднять — прав нет. Но секция `dns` при TUN
                 // другая (появляется резолвер из DHCP), и её старт проверить
@@ -2092,6 +2342,158 @@ mod tests {
         }
     }
 
+    /// Исключение не ловит пробу, и пустой список не меняет в конфиге ничего.
+    ///
+    /// Первое — тот самый fail-closed: проба подтверждает туннель, а цель
+    /// пробы по умолчанию — сервер узла. Исключение «вся подсеть хостера»
+    /// накрыло бы её, проба ушла бы напрямую и получила ответ при мёртвом узле,
+    /// и `guard(false)` выдал бы пропуска выбранным приложениям. Поэтому каждое
+    /// правило на `bypass` стоит только на `tun-in` и после всех служебных, а
+    /// `final` остаётся туннелем.
+    ///
+    /// Второе — то, что прежнее обещание «мимо туннеля не уходит ничего»
+    /// держится, пока человек сам ничего не завёл: пустой список — до байта
+    /// тот же конфиг, что и до появления исключений.
+    #[test]
+    fn a_bypass_never_catches_the_probe() {
+        let bypass = vec!["138.124.0.0/16".to_string(), "yandex.cloud".to_string()];
+        for node in [node(), wg_node()] {
+            let cfg = build_config(&node, &Options { bypass: bypass.clone(), ..Default::default() });
+            assert_eq!(cfg["route"]["final"], TAG_PROXY, "маршрут по умолчанию — туннель: {cfg}");
+            let rules = cfg["route"]["rules"].as_array().unwrap();
+            let to_bypass: Vec<usize> =
+                rules.iter().enumerate().filter(|(_, r)| r["outbound"] == TAG_BYPASS).map(|(i, _)| i).collect();
+            assert_eq!(to_bypass.len(), 2, "по правилу на род — адреса и имена: {rules:#?}");
+            for &i in &to_bypass {
+                assert_eq!(rules[i]["inbound"], json!(["tun-in"]), "исключение обязано стоять только на TUN: {}", rules[i]);
+                assert!(rules[i]["process_path"].is_null(), "матчера по процессу исключение не заводит");
+            }
+            let first = *to_bypass.iter().min().unwrap();
+            for service in ["hijack-dns", "sniff"] {
+                let at = rules.iter().position(|r| r["action"] == service).unwrap();
+                assert!(at < first, "{service} обязан стоять раньше исключений: {rules:#?}");
+            }
+            let drop = rules.iter().position(|r| r["type"] == "logical").unwrap();
+            let probe = rules.iter().position(|r| r["inbound"] == json!(["local"])).unwrap();
+            assert!(drop < first && probe < first, "отбой шлюза и путь пробы — раньше исключений: {rules:#?}");
+            assert_eq!(rules[probe]["outbound"], TAG_PROXY, "проба уходит в туннель");
+            assert!(cfg["route"]["rules"][first]["ip_cidr"][0] == "138.124.0.0/16");
+            assert!(cfg["route"]["rules"][first + 1]["domain_suffix"][0] == "yandex.cloud");
+            let outbounds = cfg["outbounds"].as_array().unwrap();
+            assert!(outbounds.iter().any(|o| o["tag"] == TAG_BYPASS && o["type"] == "direct"), "{outbounds:#?}");
+            assert!(!outbounds.iter().any(|o| o["tag"] == "direct"), "тег direct не возвращается и с исключениями");
+
+            // Без TUN исключений нет вовсе: прогон профилей и окна браузера
+            // мимо узла не ходят никогда.
+            let bare = build_config(&node, &Options { tun: false, bypass: bypass.clone(), ..Default::default() });
+            assert_eq!(bare, build_config(&node, &Options { tun: false, ..Default::default() }));
+
+            // Пусто — тот же конфиг до байта.
+            let empty = build_config(&node, &Options { bypass: Vec::new(), ..Default::default() });
+            let plain = build_config(&node, &Options::default());
+            assert_eq!(empty, plain);
+            assert!(!empty.to_string().contains(TAG_BYPASS), "пустой список оставил след: {empty}");
+        }
+    }
+
+    /// Строка исключения либо приводится к виду конфига, либо отклоняется с
+    /// объяснением — и отклоняется ровно там, где сделала бы не то, что
+    /// написано.
+    #[test]
+    fn a_bypass_entry_is_normalised_or_refused() {
+        assert_eq!(bypass_entry(" 158.160.144.110 ").unwrap(), "158.160.144.110/32", "голый адрес — сеть из одного");
+        assert_eq!(bypass_entry("158.160.0.0/16").unwrap(), "158.160.0.0/16");
+        assert_eq!(bypass_entry("10.1.2.3/8").unwrap(), "10.0.0.0/8", "хвост маски обнуляется — повтор схлопнется");
+        assert_eq!(bypass_entry("*.Yandex.Cloud").unwrap(), "yandex.cloud", "суффикс и так ловит поддомены");
+        assert!(bypass_entry(".ru").is_err(), "зона целиком — то же, что шире /8");
+        assert!(bypass_entry("com").is_err());
+        // Шире /8 — это выключенный туннель, а не исключение.
+        assert!(bypass_entry("0.0.0.0/0").is_err());
+        assert!(bypass_entry("128.0.0.0/1").is_err());
+        assert!(bypass_entry("10.0.0.0/7").is_err());
+        // Служебные сети туннеля: пул FakeIP и подсеть TUN.
+        assert!(bypass_entry("198.18.0.0/16").is_err(), "пул FakeIP");
+        assert!(bypass_entry("198.0.0.0/8").is_err(), "сеть, накрывающая пул FakeIP");
+        assert!(bypass_entry("172.27.234.2").is_err(), "шлюз TUN");
+        assert!(bypass_entry("172.27.0.0/16").is_err(), "сеть, накрывающая TUN");
+        assert!(bypass_entry("172.28.0.0/16").is_ok(), "соседняя сеть — можно");
+        // Мусор и IPv6.
+        for bad in ["", "  ", "1.2.3", "1.2.3.4/33", "300.1.1.1", "2a02:6b8::1", "a b.ru", "-x.ru", "x..ru", "http://x.ru"] {
+            assert!(bypass_entry(bad).is_err(), "«{bad}» принят");
+        }
+    }
+
+    /// Не дошедшее исключение называется по журналу sing-box — строкой ровно
+    /// того вида, что пришла с живой машины 2 ноября: исключение уже стояло, а
+    /// дозвон мимо туннеля молчал так же, как и через туннель.
+    #[test]
+    fn a_dead_bypass_is_named() {
+        let lines: Vec<String> = [
+            "ERROR[0008] [690622563 5.0s] connection: open connection to 158.160.144.110:22 using outbound/direct[bypass]: dial tcp 158.160.144.110:22: i/o timeout",
+            "ERROR[0041] [3695825395 81ms] dns: lookup failed for ipv6.msftconnecttest.com: empty result",
+            "ERROR[0086] [3545315477 5.5s] connection: open connection to arboritm.ru:443 using outbound/direct[bypass]: dial tcp 141.133.194.46:443: i/o timeout",
+            "ERROR[0090] [3545315478 5.5s] connection: open connection to example.com:443 using outbound/vless[proxy]: EOF",
+            "ERROR[0288] [1997373909 5.30s] connection: open connection to 158.160.144.110:22 using outbound/direct[bypass]: dial tcp 158.160.144.110:22: i/o timeout",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(bypass_failures(&lines), ["158.160.144.110:22", "arboritm.ru:443"], "новые первыми, без повторов, только мимо туннеля");
+        assert!(bypass_failures(&[]).is_empty());
+    }
+
+    /// Причина отказа туннеля — не дозвон мимо него. Строка исключения тоже
+    /// несёт `outbound/` (`outbound/direct[bypass]`), и при мёртвом узле лента
+    /// назвала бы причиной таймаут до адреса, который к узлу отношения не
+    /// имеет, — ровно тот случай с живой машины, ради которого исключение и
+    /// заводили.
+    #[test]
+    fn the_reason_is_never_a_bypass_dial() {
+        let dir = std::env::temp_dir().join("pg-last-failure-bypass");
+        std::fs::create_dir_all(&dir).expect("каталог");
+        let path = dir.join("singbox.log");
+        let tunnel = "ERROR[0086] [1 5.0s] connection: open connection to api.github.com:443 using outbound/vless[proxy]: dial tcp 138.124.69.172:8443: i/o timeout";
+        let bypass = "ERROR[0090] [2 5.0s] connection: open connection to 158.160.144.110:22 using outbound/direct[bypass]: dial tcp 158.160.144.110:22: i/o timeout";
+        std::fs::write(&path, format!("{tunnel}\n{bypass}\n")).expect("лог");
+        let why = last_failure(&dir).expect("причина");
+        assert!(why.contains("138.124.69.172:8443"), "причиной названо исключение: {why}");
+        assert!(!why.contains(TAG_BYPASS), "{why}");
+
+        // Про туннель не сказано ничего — и в ленту добавить нечего.
+        std::fs::write(&path, format!("{bypass}\n")).expect("лог");
+        assert!(last_failure(&dir).is_none(), "{:?}", last_failure(&dir));
+    }
+
+    /// Молчит соединение, ушедшее в туннель и не получившее ни байта за
+    /// `SILENT_AFTER`, — так выглядит адрес, до которого узел не дотягивается.
+    /// Свежее соединение без ответа не молчит: ответ может быть в пути.
+    #[test]
+    fn a_silent_conn_is_named() {
+        assert_eq!(unix_of("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(unix_of("2026-11-02T13:17:08.123456789+03:00"), Some(1_793_614_628));
+        assert_eq!(unix_of("2026-11-02T10:17:08Z"), unix_of("2026-11-02T13:17:08+03:00"));
+        assert_eq!(unix_of("мусор"), None);
+
+        let conn = |tunneled, rx, tx| Conn {
+            process: String::new(),
+            host: "158.160.144.110:22".into(),
+            tunneled,
+            picked: false,
+            leak: false,
+            direct: false,
+            bypass: false,
+            silent: false,
+            rx,
+            tx,
+        };
+        let now = 1_000;
+        assert!(silent(&conn(true, 0, 21), Some(now - SILENT_AFTER), now), "SSH отдал баннер и ждёт ответного");
+        assert!(!silent(&conn(true, 0, 21), Some(now - 2), now), "свежему ответ может быть в пути");
+        assert!(!silent(&conn(true, 0, 21), None, now), "без возраста не молчит никто");
+        assert!(!silent(&conn(true, 5, 21), Some(0), now), "ответ пришёл");
+        assert!(!silent(&conn(true, 0, 0), Some(0), now), "не отдано ничего — и ждать нечего");
+        assert!(!silent(&conn(false, 0, 21), Some(0), now), "мимо туннеля узел ни при чём");
+    }
+
     /// Конфиг с включённым TUN тоже должен проходить проверку sing-box:
     /// именно его увидит Windows, а остальные тесты гоняют вариант без TUN.
     #[test]
@@ -2103,8 +2505,11 @@ mod tests {
         // Обе ветки: без профилировщика и с ним. Имя секции и поля внутри
         // компилятор не проверяет никак — ошибись в них, и служба узнает об
         // этом только на живой машине, отказом запуска.
-        for pprof in [None, Some("127.0.0.1:48294".to_string())] {
-            let cfg = build_config(&node, &Options { pprof, ..Default::default() });
+        // И с исключениями: свой outbound и два правила на него — тоже поля,
+        // которых компилятор не проверит.
+        let bypass = vec!["158.160.0.0/16".to_string(), "yandex.cloud".to_string()];
+        for (pprof, bypass) in [(None, vec![]), (Some("127.0.0.1:48294".to_string()), vec![]), (None, bypass)] {
+            let cfg = build_config(&node, &Options { pprof, bypass, ..Default::default() });
             std::fs::write(&path, serde_json::to_vec_pretty(&cfg).unwrap()).unwrap();
             let Ok(out) = Command::new(binary()).arg("check").arg("-c").arg(&path).output() else {
                 return; // sing-box не установлен
