@@ -1,0 +1,160 @@
+/* Отклик тумблера. База (размеры, цвета положений) живёт в `index.css`
+   (`.switch`), здесь только то, что движется: наведение, нажатие, ход ручки,
+   разовый отклик на включение. Файл грузится после `index.css` и с чуть
+   большей специфичностью (`button.switch`), чтобы не зависеть от порядка.
+
+   Двигаем только `translate`/`scale`/`opacity`: ни один layout-свойство не
+   анимируется, `requestAnimationFrame` нет, бесконечных анимаций нет. */
+
+/* Наведение: дорожка светлеет, ручка чуть растёт. Выключенный тумблер ни на
+   что не реагирует. */
+button.switch:hover:not(:disabled) {
+  background-color: var(--pg-hover);
+}
+
+button.switch[aria-checked="true"]:hover:not(:disabled) {
+  background-color: color-mix(in oklch, var(--pg-accent) 86%, white);
+  border-color: color-mix(in oklch, var(--pg-accent) 86%, white);
+}
+
+button.switch:hover:not(:disabled)::after {
+  scale: 1.1;
+}
+
+/* Нажатие: ручка вытягивается вдоль дорожки, как в Windows 11, и остаётся
+   прижатой к своему краю. Край логический: справа налево зеркалится. */
+button.switch::after {
+  transform-origin: left center;
+}
+
+button.switch[aria-checked="true"]::after {
+  transform-origin: right center;
+}
+
+[dir="rtl"] button.switch::after {
+  transform-origin: right center;
+}
+
+[dir="rtl"] button.switch[aria-checked="true"]::after {
+  transform-origin: left center;
+}
+
+button.switch:active:not(:disabled)::after {
+  scale: 1.45 1.1;
+}
+
+/* Кольцо фокуса — только от клавиатуры. */
+button.switch:focus-visible {
+  outline: 2px solid var(--pg-accent);
+  outline-offset: 2px;
+}
+
+/* Обёртка нужна кольцу включения: оно привязано к тумблеру, а не к карточке. */
+.sw-wrap {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+/* Разовый отклик на включение (см. `Switch` в `ui.tsx` и карточки состояния).
+   Элемент появляется в разметке только от нажатия человека и переживает одно
+   проигрывание: статус, пришедший от службы, и первая отрисовка его не
+   создают. Кольцо расходится от тумблера, полоса тона проходит по карточке от
+   стороны тумблера. Оба слоя — над картой (`z-index`), без событий мыши и с
+   `contain: paint`, так что карту (SVG) не перерисовывают. */
+.sw-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 2px solid var(--pg-accent);
+  opacity: 0;
+  pointer-events: none;
+  contain: paint;
+  will-change: transform, opacity;
+}
+
+.sw-sweep {
+  --sw-dir: 1;
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  opacity: 0;
+  pointer-events: none;
+  contain: paint;
+  will-change: transform, opacity;
+  background: linear-gradient(
+    to right,
+    transparent 0,
+    transparent 30%,
+    color-mix(in oklch, var(--tone) 30%, transparent) 50%,
+    transparent 70%,
+    transparent 100%
+  );
+}
+
+[dir="rtl"] .sw-sweep {
+  --sw-dir: -1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Дорожка перетекает цветом, ручка скользит с замедлением к концу. */
+  button.switch {
+    transition:
+      background-color 0.2s ease,
+      border-color 0.2s ease;
+  }
+
+  button.switch::after {
+    transition:
+      translate 0.2s cubic-bezier(0.2, 0.8, 0.2, 1),
+      scale 0.12s ease-out,
+      background-color 0.2s ease;
+  }
+
+  .sw-ring {
+    animation: sw-ring 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) 1 both;
+  }
+
+  .sw-sweep {
+    animation: sw-sweep 0.6s ease-out 1 both;
+  }
+
+  @keyframes sw-ring {
+    from {
+      opacity: 0.6;
+      scale: 1;
+    }
+    to {
+      opacity: 0;
+      scale: 1.7 2;
+    }
+  }
+
+  /* Полоса идёт от стороны тумблера (конец строки) к началу. */
+  @keyframes sw-sweep {
+    0% {
+      opacity: 0;
+      translate: calc(var(--sw-dir) * 100%) 0;
+    }
+    25% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+      translate: calc(var(--sw-dir) * -100%) 0;
+    }
+  }
+}
+
+/* Без движения состояние меняется сразу, и разовых слоёв нет вовсе. */
+@media (prefers-reduced-motion: reduce) {
+  button.switch,
+  button.switch::after {
+    transition: none;
+  }
+
+  .sw-ring,
+  .sw-sweep {
+    display: none;
+  }
+}

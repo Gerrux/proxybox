@@ -187,17 +187,28 @@ export function Switch({
   disabled?: boolean;
   size?: "md" | "lg";
 }) {
+  // Счётчик нажатий «включить»: кольцо рождается от нажатия человека и только
+  // от него — статус службы, первая отрисовка и перерисовка его не заводят.
+  // key перезапускает анимацию на повторном включении. Кольцо — у крупного
+  // тумблера (выключатель продукта); в настройках он тише.
+  const [shot, setShot] = useState(0);
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      title={label}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`switch smooth ${size === "lg" ? "switch-lg" : ""}`}
-    />
+    <span className="sw-wrap">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        title={label}
+        disabled={disabled}
+        onClick={() => {
+          if (!checked) setShot((n) => n + 1);
+          onChange(!checked);
+        }}
+        className={`switch smooth ${size === "lg" ? "switch-lg" : ""}`}
+      />
+      {shot > 0 && size === "lg" && <span key={shot} className="sw-ring" aria-hidden="true" />}
+    </span>
   );
 }
 

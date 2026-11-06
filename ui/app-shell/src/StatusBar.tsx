@@ -367,6 +367,9 @@ export function StatusBar({
 }) {
   const s = strings(status?.lang);
   const [trouble, setTrouble] = useState(false);
+  // Разовый отклик на включение (`.sw-sweep` в `switch.css`): растёт только от
+  // нажатия человека, статус службы его не трогает.
+  const [swept, setSwept] = useState(0);
   const [menu, setMenu] = useState<[number, number] | null>(null);
   const scope = status?.scope ?? "all";
   const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
@@ -419,6 +422,7 @@ export function StatusBar({
           следит, что строка не переносится. */}
       <div className="st-hero grid grid-cols-3">
         <div className="st st-state smooth">
+        {swept > 0 && <span key={swept} className="sw-sweep" aria-hidden="true" />}
         {/* Карта — фон конца блока состояния, а не отдельная плита: она
             уходит под текст маской. Слой абсолютный, поэтому высоту блока
             задаёт текст. */}
@@ -444,7 +448,10 @@ export function StatusBar({
               checked={on}
               label={on ? s.turnOff : s.turnOn}
               disabled={!status || (!on && !status.profile && status.profiles.length === 0)}
-              onChange={() => onToggle()}
+              onChange={(next) => {
+                if (next) setSwept((n) => n + 1);
+                onToggle();
+              }}
             />
           </div>
           {/* Подсказка — одна строка в любой ширине (`.st-hint` в `index.css`),

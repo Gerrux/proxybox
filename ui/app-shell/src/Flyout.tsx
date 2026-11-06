@@ -80,6 +80,8 @@ export function Flyout({
   // Масштаб один на оба направления — по той же причине, что и в шапке окна.
   const peak = Math.max(1, ...rates.map((r) => Math.max(r.rx, r.tx)));
   const [needle, setNeedle] = useState("");
+  // Разовый отклик на включение (`.sw-sweep` в `switch.css`), только от нажатия.
+  const [swept, setSwept] = useState(0);
   // Что человек раскрыл или свернул сам; нетронутые группы решает умолчание.
   const [toggled, setToggled] = useState<Record<string, boolean>>({});
 
@@ -160,6 +162,7 @@ export function Flyout({
   return (
     <div className="flex h-full flex-col" data-state={state}>
       <section data-state={state} className="st st-fly smooth relative shrink-0">
+        {swept > 0 && <span key={swept} className="sw-sweep" aria-hidden="true" />}
         <div className="flex items-start gap-3 px-3 pt-2.5 pb-2">
           <div className="min-w-0 flex-1">
             <h1 key={view.title} className="st-word swap flex items-center gap-2 text-xl font-semibold">
@@ -175,7 +178,10 @@ export function Flyout({
             checked={on}
             label={on ? s.turnOff : s.turnOn}
             disabled={!status || (!on && !status.profile && profiles.length === 0)}
-            onChange={() => onToggle()}
+            onChange={(next) => {
+              if (next) setSwept((n) => n + 1);
+              onToggle();
+            }}
           />
         </div>
         <WorldMap className="fly-map" code={code} fit={0.5} />
