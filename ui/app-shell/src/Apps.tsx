@@ -100,6 +100,41 @@ export function Apps({
     ? { ...app, enabled: status?.settings.direct_apps?.includes(app.path) ?? false }
     : app);
   const on = apps.filter((a) => a.enabled).length;
+  // «Раздельно»: каждая правка списка напрямую перезапускает туннель, и пока он
+  // не подтверждён, машина заперта. Десять галочек подряд — десять запертых
+  // машин, поэтому здесь они копятся в окне и уходят одной правкой по
+  // «Применить». Белый список так не делает: он туннель не трогает вовсе
+  // (`editing_the_list_never_restarts_the_tunnel`), и его галочки сбываются
+  // сразу. Ключ — путь, значение — чего хочет человек; запись, совпавшая с
+  // сохранённым, не хранится вовсе, а запись про приложение, которого уже нет в
+  // списке, не считается и не уезжает.
+  const [pending, setPending] = useState<Record<string, boolean>>({});
+  const edits = split ? apps.filter((a) => pending[a.path] != null && pending[a.path] !== a.enabled) : [];
+  const wants = (app: App) => (split && pending[app.path] != null ? pending[app.path] : app.enabled);
+  const toggle = (app: App, value: boolean) =>
+    setPending((prev) => {
+      const next = { ...prev };
+      if (value === app.enabled) delete next[app.path];
+      else next[app.path] = value;
+      return next;
+    });
+  // Охват сменился — накопленное относилось к другому охвату и к другому
+  // смыслу галочки; применить его после переключения значило бы тихо
+  // перезапустить туннель из-за правки, которой человек уже не видит.
+  useEffect(() => setPending({}), [status?.scope]);
+  const apply = () => {
+    if (!status) return;
+    const changed = new Map(edits.map((a) => [a.path, wants(a)]));
+    // Поле у службы бывает не прислано — тот же случай, что в `apps` выше.
+    const current = status.settings.direct_apps ?? [];
+    const direct_apps = [
+      ...current.filter((path) => changed.get(path) !== false),
+      ...[...changed].filter(([path, value]) => value && !current.includes(path)).map(([path]) => path),
+    ];
+    void act({ cmd: "set-settings", arg: { settings: { ...status.settings, direct_apps } } }).then(
+      (r) => r != null && r.reply !== "error" && setPending({}),
+    );
+  };
   const icons = useIcons(apps);
   const [query, setQuery] = useState("");
   // Путь вписывают отдельным окном, а не полем внутри панели: поле раздвигало
@@ -119,11 +154,14 @@ export function Apps({
   // вовсе, а в пустом белом списке его держало открытым `on === 0`. В обоих
   // случаях кнопка нажималась и не делала ничего — то есть выглядела сломанной,
   // потому что и была.
-  const [noteOpen, setNoteOpen] = useState(false);
+  const [noteOpen, setNoteOpen] = useState<boolean | null>(null);
   // Охват сменился — решение о прошлом абзаце к новому не относится: там другой
   // текст и другая срочность. Закрытая заметка «весь компьютер» не имеет права
   // унести с собой предупреждение пустого белого списка.
-  useEffect(() => setNoteOpen(split), [all, split]);
+  useEffect(() => setNoteOpen(null), [status?.scope]);
+  // Срочность: «Раздельно» и «весь компьютер» меняют смысл галочки (или
+  // отменяют его), а пустой белый список — это машина без сети.
+  const urgent = split || all || (status?.scope === "whitelist" && on === 0);
   const shown = matching(apps, query);
   // Две группы: отмеченные первой и остальные под ней. Поиск режет обе, и
   // пустая группа под поиском не рисуется — без поиска рисуется, даже пустая:
@@ -142,7 +180,7 @@ export function Apps({
   // Что показано под шапкой панели — одна заметка на оба охвата, а не две
   // независимые: кнопка у них общая, и переключать она обязана ровно то, что
   // видно.
-  const noteShown = noteOpen;
+  const noteShown = noteOpen ?? urgent;
 
   return (
     <Panel
@@ -181,6 +219,24 @@ export function Apps({
               </p>
             )}
             {searchable && <SearchField value={query} onChange={setQuery} placeholder={s.searchApps} />}
+          </div>
+        )
+      }
+      foot={
+        edits.length > 0 && (
+          // Накопленные галочки «Раздельно»: одна правка вместо перезапуска
+          // туннеля на каждую. Подсказка говорит, чем это оплачено.
+          <div
+            className="enter flex shrink-0 items-center gap-2 border-t border-edge p-2 ps-3"
+            title={s.splitApplyHint}
+          >
+            <span className="min-w-0 flex-1 truncate text-sm">{s.splitPending(edits.length)}</span>
+            <Button variant="ghost" disabled={busy} onClick={() => setPending({})}>
+              {s.splitDiscard}
+            </Button>
+            <Button variant="primary" disabled={busy} onClick={apply}>
+              {s.apply}
+            </Button>
           </div>
         )
       }
@@ -265,24 +321,19 @@ export function Apps({
                 // Путь — в подсказке строки и бледно справа от имени по
                 // наведению; судьба приложения (`fateHint`) — второй строкой
                 // подсказки, а не вместо пути.
-                title={`${app.path}\n${fateHint(s, app.enabled, status?.tunnel, status?.scope)}`}
+                title={`${app.path}\n${fateHint(s, wants(app), status?.tunnel, status?.scope)}`}
                 className="row enter smooth group/row flex h-[34px] items-center gap-2.5 ps-2.5 pe-1"
               >
                 <input
                   id={fieldId(app.path)}
                   type="checkbox"
-                  checked={app.enabled}
+                  checked={wants(app)}
                   disabled={busy}
-                  onChange={(e) => {
-                    if (split && status) {
-                      const direct_apps = e.target.checked
-                        ? [...status.settings.direct_apps, app.path]
-                        : status.settings.direct_apps.filter((path) => path !== app.path);
-                      void act({ cmd: "set-settings", arg: { settings: { ...status.settings, direct_apps } } });
-                    } else {
-                      void act({ cmd: "set-app", arg: { path: app.path, enabled: e.target.checked } });
-                    }
-                  }}
+                  onChange={(e) =>
+                    split
+                      ? toggle(app, e.target.checked)
+                      : void act({ cmd: "set-app", arg: { path: app.path, enabled: e.target.checked } })
+                  }
                   // Галочка — действие оператора, а не состояние канала:
                   // цвета состояний ей не положены. Состояние читается на
                   // шапке, и красить им ещё и галочку — обещать состояние
@@ -306,6 +357,9 @@ export function Apps({
                   <span className={`min-w-0 truncate text-sm ${app.enabled ? "font-semibold" : ""}`}>
                     {app.name}
                   </span>
+                  {/* Правка ещё не применена: точка вместо цвета строки —
+                      цвета состояний галочке не положены. */}
+                  {edits.includes(app) && <span aria-hidden className="size-1.5 shrink-0 self-center rounded-full bg-accent" />}
                   <span className="selectable hidden min-w-0 shrink-[8] truncate font-mono text-xs text-faint group-hover/row:inline group-focus-within/row:inline">
                     {app.path}
                   </span>

@@ -14,6 +14,7 @@ export function Panel({
   className = "",
   pad = "",
   bar,
+  foot,
   children,
 }: {
   title: string;
@@ -24,6 +25,10 @@ export function Panel({
    *  построению не мешает липкому заголовку группы, который липнет к кромке
    *  самой прокрутки. */
   bar?: ReactNode;
+  /** Полоса под прокруткой — зеркало `bar`: панель накопленных правок
+   *  («Применить» у галочек «Раздельно»). Вне прокрутки, чтобы кнопка не
+   *  уезжала вместе со списком и не терялась в его конце. */
+  foot?: ReactNode;
   className?: string;
   /** Отступ содержимого. Панель не даёт его сама: липкое внутри прокрутки
    *  (`.sub-head` в списке профилей) липнет не к её кромке, а к полю за
@@ -47,6 +52,7 @@ export function Panel({
       </header>
       {bar}
       <div className={`scroll min-h-0 flex-1 overflow-y-auto ${pad}`}>{children}</div>
+      {foot}
     </section>
   );
 }

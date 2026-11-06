@@ -2291,6 +2291,83 @@ mod tests {
             !apps.contains("noteOpen ||"),
             "у заметки снова два условия: одно из них кнопке неподвластно"
         );
+        // `null` — «человек не решал», и тогда решает срочность; охват
+        // сбрасывает решение обратно. Булево состояние с эффектом
+        // `setNoteOpen(split)` решало за человека при каждой смене охвата и
+        // не открывало заметку «весь компьютер» и пустого белого списка вовсе.
+        assert!(apps.contains("useState<boolean | null>(null)"), "у решения человека нет значения «не решал»");
+        assert!(apps.contains("noteOpen ?? urgent"), "за человека, не решавшего, решает не срочность");
+        assert!(apps.contains("setNoteOpen(null)"), "смена охвата не сбрасывает решение о заметке");
+        assert!(!apps.contains("setNoteOpen(split)"), "заметка снова решается за человека при смене охвата");
+    }
+
+    /// Галочки «Раздельно» не уходят службе по одной. Каждая правка
+    /// `direct_apps` перезапускает туннель, а пока он не подтверждён, машина
+    /// заперта: десять галочек подряд — десять запертых машин. Они копятся в
+    /// окне (`pending`) и уезжают одной командой по «Применить»; белый список
+    /// туннель не трогает (`editing_the_list_never_restarts_the_tunnel`) и
+    /// остаётся мгновенным. Сторож смотрит текстом на три вещи: обработчик
+    /// галочки не зовёт `set-settings`; команда в файле одна; и накопленное
+    /// сбрасывается со сменой охвата — иначе правка уехала бы в другой охват.
+    #[test]
+    fn a_split_edit_is_applied_once() {
+        let apps = include_str!("../../../ui/app-shell/src/Apps.tsx");
+        let checkbox = apps
+            .split("type=\"checkbox\"")
+            .nth(1)
+            .and_then(|s| s.split("className=\"size-4").next())
+            .expect("в строке приложения есть галочка");
+        assert!(!checkbox.contains("set-settings"), "галочка «Раздельно» снова шлёт службе каждую правку сама");
+        assert!(checkbox.contains("toggle("), "в «Раздельно» галочка не копит правку в окне");
+        assert!(checkbox.contains("set-app"), "белый список перестал быть мгновенным");
+        assert_eq!(apps.matches("cmd: \"set-settings\"").count(), 1, "правка списка напрямую уходит не одним местом");
+        let apply = apps.find("const apply = ").expect("есть применение накопленного");
+        let send = apps.find("cmd: \"set-settings\"").expect("есть команда");
+        let render = apps.find("<Panel").expect("есть разметка панели");
+        assert!(apply < send && send < render, "команда не в «Применить»");
+        assert!(apps.contains("setPending({}), [status?.scope]"), "охват не сбрасывает накопленное");
+        assert!(apps.contains("foot={"), "у накопленных правок нет полосы «Применить»");
+    }
+
+    /// Соединения — таблица, а не лента: шапка и строки на одной сетке колонок,
+    /// и слово пути стоит у каждой строки. Слово перед именем только у части
+    /// строк сдвигало всё, что правее, и числа не вставали в столбец.
+    #[test]
+    fn the_connections_are_a_table() {
+        let conns = include_str!("../../../ui/app-shell/src/Conns.tsx");
+        let css = include_str!("../../../ui/app-shell/src/index.css");
+        assert!(conns.contains("role=\"table\"") && conns.contains("role=\"columnheader\""), "у соединений нет шапки");
+        assert!(conns.matches("conn-row").count() >= 2, "шапка и строки не делят одну сетку колонок");
+        let grid = css
+            .split(".conn-row {")
+            .nth(1)
+            .and_then(|s| s.split('}').next())
+            .expect("сетка колонок живёт в .conn-row");
+        assert!(grid.contains("display: grid") && grid.contains("grid-template-columns"), "колонки не заданы сеткой");
+        for word in ["connsTunnel", "connsBypass", "connsSilent", "connsLeak", "connsDirect"] {
+            assert!(conns.contains(&format!("s.{word}")), "в таблице нет слова пути {word}");
+        }
+        assert!(!conns.contains("{route === \"bypass\" && ("), "слово пути снова пишется только у части строк");
+        // Правая кнопка работает во всех охватах, а не молчит в «Раздельно».
+        assert!(!conns.contains("c.process === \"\" || status?.scope === \"split\""), "в «Раздельно» меню снова отключено");
+        assert!(conns.contains("connsDirectApp") && conns.contains("connsBackToTunnel"), "«Раздельно» без своих пунктов меню");
+    }
+
+    /// Журнал фильтрует по признаку службы, а не по словам в тексте, и подпись
+    /// дня липнет к кромке прокрутки: у панели отступа на самой прокрутке нет,
+    /// иначе липкое встало бы ниже кромки (см. `the_sticky_head_sits_on_the_scroll_edge`).
+    #[test]
+    fn the_journal_filters_by_the_flag_from_the_service() {
+        let journal = include_str!("../../../ui/app-shell/src/Journal.tsx");
+        assert!(journal.contains("lines.filter((line) => line.bad)"), "отбор «Сбои» идёт не по признаку службы");
+        assert!(journal.contains("sticky top-0"), "подпись дня не липкая");
+        assert!(journal.contains("line-clamp-2"), "сбойная строка не ужата до двух строк");
+        let opening = journal
+            .split("<Panel")
+            .nth(1)
+            .and_then(|s| s.split("title={").next())
+            .expect("журнал живёт в плите");
+        assert!(!opening.contains("pad="), "у журнала снова отступ на прокрутке: липкая подпись встанет ниже кромки");
     }
 
     /// Остаток подписки без лимита обязан читаться как «израсходовано», а не

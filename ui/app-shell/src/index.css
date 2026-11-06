@@ -1026,6 +1026,45 @@ h3.sub-head:hover {
   background: linear-gradient(var(--pg-hover), var(--pg-hover)), var(--pg-bg);
 }
 
+/* Таблица соединений: шапка и строки делят одну сетку колонок — путь,
+   приложение, адрес (на остаток), принято, отправлено. Одна сетка, а не
+   две похожих: колонки обязаны стоять друг под другом при любом наборе слов
+   в строке. Шапка липнет к кромке прокрутки так же, как `.sub-head`, но под
+   указателем не меняется: на неё не нажимают.
+
+   Ниже 768 px адрес уходит второй строкой под приложение: четыре колонки
+   помещаются, пять — съедали бы у адреса последнее место. */
+.conn-row {
+  display: grid;
+  grid-template-columns: 5rem 8rem minmax(0, 1fr) 4.5rem 4.5rem;
+  column-gap: 12px;
+  align-items: center;
+}
+
+.tbl-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-bottom: 1px solid var(--pg-border);
+  background: linear-gradient(var(--pg-hover), var(--pg-hover)), var(--pg-bg);
+}
+
+@media (max-width: 767px) {
+  .conn-row {
+    grid-template-columns: 4.5rem minmax(0, 1fr) 4rem 4rem;
+  }
+
+  .conn-row > .conn-addr {
+    grid-column: 2 / -1;
+    grid-row: 2;
+    padding-block-end: 4px;
+  }
+
+  .conn-row > .conn-addr-head {
+    display: none;
+  }
+}
+
 /* Полоса подписок под панелью инструментов списка профилей: одна плоская
    строка, ячейки разделены волосяными линиями, как у приборной линейки.
    Выбранная ячейка — заливкой и акцентной чертой по нижней кромке: полоска у
