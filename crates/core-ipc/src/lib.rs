@@ -2556,6 +2556,70 @@ mod tests {
         }
     }
 
+    /// Список, отобранный одной подпиской, обходится без её заголовка: карточка
+    /// в полосе и есть заголовок, а второй с тем же именем строкой ниже только
+    /// повторял бы её. Действия заголовка — обновить и «⋯» с меню подписки —
+    /// переезжают в отобранную карточку, меню открывает и правая кнопка по
+    /// любой карточке (иначе отписаться, не сняв отбор, было бы нечем), а
+    /// правка имени встаёт в карточку, потому что заголовка с полем нет.
+    #[test]
+    fn a_selected_subscription_has_no_second_header() {
+        let profiles = include_str!("../../../ui/app-shell/src/Profiles.tsx").replace("\r\n", "\n");
+        let branch = profiles
+            .split("(filter !== null ? (")
+            .nth(1)
+            .expect("отбор одной подпиской рисует группу своей веткой");
+        let (filtered, rest) = branch.split_once("<details").expect("без отбора группа — <details>");
+        assert!(!filtered.contains("<summary") && !filtered.contains("sub-head"), "под отбором снова есть заголовок группы");
+        assert!(rest.contains("sub-head flex h-9"), "заголовок группы без отбора пропал");
+        let strip = profiles
+            .split("function SubStrip(")
+            .nth(1)
+            .and_then(|s| s.split("\n/** Со скольких профилей").next())
+            .expect("полоса подписок — SubStrip");
+        assert!(strip.contains("selected && !renamingHere"), "действия заголовка не переехали в отобранную карточку");
+        assert!(strip.contains("icon=\"refresh\"") && strip.contains("icon=\"more\""), "у карточки нет обновления или «⋯»");
+        assert!(strip.contains("onContextMenu={(e) => sub !== null && onMenu(e, sub)}"), "правая кнопка по карточке не открывает меню");
+        assert!(strip.contains("<SubRename"), "правка имени под отбором негде показать");
+    }
+
+    /// Подписки переставляются перетаскиванием и за карточку полосы, и за
+    /// заголовок группы — одним порядком (`pendingSubs`, `moved`) и одной
+    /// командой на отпускание (`commit`): временный порядок живёт в окне, а
+    /// `SetOrder` уходит один раз; пустой список профилей служба понимает как
+    /// «не трогать». «Все» не тащится. Под порядком по задержке и под поиском
+    /// нельзя — как за заголовок. Тихая полоса прокрутки: тонкая, прозрачная,
+    /// пока над рядом нет указателя (то есть `.scroll` без своих переопределений),
+    /// и без вертикальной.
+    #[test]
+    fn a_strip_card_reorders_like_a_header() {
+        let profiles = include_str!("../../../ui/app-shell/src/Profiles.tsx").replace("\r\n", "\n");
+        assert_eq!(
+            profiles.matches("draggable={draggable && sub !== null}").count(),
+            2,
+            "перетаскиваются не оба места: заголовок группы и карточка полосы"
+        );
+        assert!(profiles.contains("const stripDraggable = !byLat && needle === \"\";"), "условие переноса карточки разошлось с заголовком");
+        assert!(profiles.contains("draggable={stripDraggable}"), "полоса не получила условие переноса");
+        let at = profiles.find("draggable={stripDraggable}").unwrap();
+        let hooks = &profiles[at..(at + 700).min(profiles.len())];
+        assert!(hooks.contains("setPendingSubs(moved("), "карточка переставляет не тем порядком, что заголовок");
+        assert!(hooks.contains("commit();"), "карточку отпускают, а порядок не уезжает службе");
+        assert_eq!(profiles.matches("cmd: \"set-order\"").count(), 1, "порядок уходит службе не одним местом");
+
+        let css = include_str!("../../../ui/app-shell/src/index.css").replace("\r\n", "\n");
+        let strip = css
+            .split("\n.sub-strip {")
+            .nth(1)
+            .and_then(|s| s.split("\n}").next())
+            .expect("полоса подписок — .sub-strip");
+        assert!(
+            !strip.contains("scrollbar-width: none") && !strip.contains("scrollbar-color"),
+            "полоса прокрутки ряда подписок снова спрятана или всегда на виду"
+        );
+        assert!(strip.contains("overflow-y: hidden;"), "у ряда подписок появилась вертикальная прокрутка");
+    }
+
     /// Главное окно и плашка из трея строят один и тот же список — свои узлы
     /// первыми, затем подписки — и выбирают один и тот же «быстрейший». Делит и
     /// выбирает их `groups.ts`: написанные дважды, они разошлись бы, и один и

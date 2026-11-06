@@ -174,11 +174,50 @@ function Ticks({ alive, total }: { alive: number; total: number }) {
   );
 }
 
-/** Полоса подписок под панелью инструментов: одна плоская строка, ячейки
- *  разделены волосяными линиями, как у приборной линейки; много подписок —
+/** Поле переименования подписки. Стоит на месте подписи — в заголовке группы или,
+ *  пока список отобран одной подпиской и заголовка нет, в её карточке полосы:
+ *  один компонент на оба места, иначе форма в них разошлась бы. Нажатие
+ *  внутри не сворачивает группу (форма живёт в `<summary>`). */
+function SubRename({ s, sub, act, onDone }: { s: Strings; sub: Subscription; act: Act; onDone: () => void }) {
+  return (
+    <form
+      className="flex min-w-0 flex-1 items-center gap-2"
+      onClick={(e) => e.stopPropagation()}
+      onSubmit={(e) => {
+        e.preventDefault();
+        const name = new FormData(e.currentTarget).get("name");
+        void act({ cmd: "rename-subscription", arg: { url: sub.url, name: String(name ?? "") } }).then(onDone);
+      }}
+    >
+      <input
+        name="name"
+        autoFocus
+        defaultValue={sub.name}
+        placeholder={s.subName}
+        spellCheck={false}
+        onKeyDown={(e) => e.key === "Escape" && onDone()}
+        className={`${FIELD} h-7 font-normal`}
+      />
+      <Button type="submit" variant="quiet">
+        {s.save}
+      </Button>
+    </form>
+  );
+}
+
+/** Полоса подписок под панелью инструментов: ряд карточек-ячеек; много подписок —
  *  прокручивается вбок. Первая ячейка — «Все», дальше по ячейке на подписку:
  *  имя, сколько узлов отвечает, остаток и срок. Нажатие отбирает список до
  *  этой подписки (состояние окна, как и поиск); повторное — снимает.
+ *
+ *  Отобранная карточка — заголовок группы: самого заголовка под отбором нет
+ *  (он повторил бы её имя строкой ниже), и её действия — обновить и «⋯» с тем
+ *  же меню подписки — стоят в ней. Меню открывает и правая кнопка по любой
+ *  карточке: отписаться иначе можно было только из заголовка, которого под
+ *  отбором нет. Подписки переставляются перетаскиванием карточки — тем же
+ *  порядком и той же командой, что за заголовок группы (`reorder` внутри
+ *  `Profiles`): пока тащат, порядок живёт в окне, остальные карточки
+ *  сдвигаются, перетаскиваемая тускнеет. «Все» не тащится и всегда первая.
  *
  *  Заводится только с двумя подписками и больше: у одной полосе нечем
  *  отличаться от заголовка группы под ней, и остаток тогда стоит в нём. */
@@ -190,6 +229,17 @@ function SubStrip({
   filter,
   onPick,
   note,
+  act,
+  busy,
+  renaming,
+  onRenamed,
+  onRefresh,
+  onMenu,
+  draggable,
+  dragged,
+  onDragStart,
+  onDragOver,
+  onDragEnd,
 }: {
   s: Strings;
   lang: Lang | undefined;
@@ -199,8 +249,27 @@ function SubStrip({
   onPick: (url: string | null) => void;
   /** Что сказала бы шапка панели помимо счёта — в ячейке «Все», пока шапки нет. */
   note: ReactNode;
+  act: Act;
+  busy: boolean;
+  /** Подписка, чьё имя правят. Поле встаёт в карточку только под отбором: без
+   *  него оно стоит в заголовке группы. */
+  renaming: string | null;
+  onRenamed: () => void;
+  onRefresh: (sub: Subscription) => void;
+  onMenu: (e: React.MouseEvent<HTMLElement>, sub: Subscription) => void;
+  draggable: boolean;
+  dragged: string | null;
+  onDragStart: (url: string) => void;
+  onDragOver: (url: string) => void;
+  onDragEnd: () => void;
 }) {
   const subs = groups.filter((g): g is Group & { sub: Subscription } => g.sub !== null);
+  // Отобранная карточка несёт действия заголовка, и стоять за краем ряда ей
+  // нельзя: подвозим её в видимую часть, как только отбор сменился.
+  const ul = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    ul.current?.querySelector('[aria-pressed="true"]')?.scrollIntoView({ inline: "nearest", block: "nearest" });
+  }, [filter]);
   // «Все» — вся машина, включая свои узлы: ячейка про список целиком.
   const every = groups.flatMap((g) => g.all);
   const measured = (all: ProfileInfo[]) => all.some((p) => probeOf.has(p.name));
@@ -214,7 +283,11 @@ function SubStrip({
     title: string,
     all: ProfileInfo[],
     quota: Subscription["quota"] | null,
+    sub: Subscription | null,
   ) => {
+    const selected = sub !== null && filter === url;
+    // Правка имени — в карточке, только когда заголовка группы нет (отбор).
+    const renamingHere = sub !== null && filter !== null && renaming === url;
     const alive = aliveCount(all, probeOf);
     const f = quotaFacts(quota);
     const q = f && quotaParts(s, f, lang);
@@ -226,16 +299,9 @@ function SubStrip({
     ]
       .filter((x) => x !== "")
       .join("\n");
-    return (
-      <li key={key} className="flex min-w-0 flex-[1_0_13rem]">
-        <button
-          type="button"
-          aria-pressed={filter === url}
-          title={tip}
-          onClick={() => onPick(filter === url ? null : url)}
-          className="sub-cell smooth flex w-full min-w-0 flex-col items-stretch justify-start px-3 py-0.5"
-        >
-          <span className="flex min-w-0 items-center gap-2">
+    const inner = (
+      <>
+          <span className={`flex min-w-0 items-center gap-2 ${selected ? "pe-14" : ""}`}>
             <span className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</span>
             {measured(all) && all.length > 0 && <Ticks alive={alive} total={all.length} />}
             <span
@@ -262,14 +328,79 @@ function SubStrip({
           )}
           {f && q?.expiry && <span className={`truncate text-xs ${quotaTone(f)}`}>{q.expiry}</span>}
           {url === null && <span className="fold-only truncate text-xs text-muted">{note}</span>}
-        </button>
+      </>
+    );
+    return (
+      <li
+        key={key}
+        // Тащат за всю карточку, «Все» — нет. Перетаскивание не кликает: отбор
+        // от него не меняется.
+        draggable={draggable && sub !== null}
+        onDragStart={(e) => {
+          if (sub === null) return;
+          onDragStart(sub.url);
+          e.dataTransfer.effectAllowed = "move";
+          // Без полезной нагрузки Firefox не начинает перетаскивание вовсе.
+          e.dataTransfer.setData("text/plain", sub.url);
+        }}
+        onDragOver={(e) => {
+          if (sub === null || dragged === null || dragged === sub.url) return;
+          // Без preventDefault браузер считает, что бросать сюда нельзя.
+          e.preventDefault();
+          onDragOver(sub.url);
+        }}
+        onDrop={(e) => e.preventDefault()}
+        onDragEnd={onDragEnd}
+        onContextMenu={(e) => sub !== null && onMenu(e, sub)}
+        className={`relative flex min-w-0 ${selected ? "flex-[1_0_16rem]" : "flex-[1_0_13rem]"} ${
+          sub !== null && dragged === sub.url ? "opacity-40" : ""
+        }`}
+      >
+        {renamingHere ? (
+          <div className="sub-cell flex w-full min-w-0 items-center px-3 py-0.5">
+            <SubRename s={s} sub={sub} act={act} onDone={onRenamed} />
+          </div>
+        ) : (
+          <button
+            type="button"
+            aria-pressed={filter === url}
+            title={tip}
+            onClick={() => onPick(filter === url ? null : url)}
+            className="sub-cell smooth flex w-full min-w-0 flex-col items-stretch justify-start px-3 py-0.5"
+          >
+            {inner}
+          </button>
+        )}
+        {/* Отобранная карточка несёт действия заголовка, которого под отбором
+            нет: обновить (та же команда, что у пункта меню) и «⋯» с меню
+            подписки. Рядом с кнопкой-карточкой, а не внутри: вложенных кнопок
+            не бывает. */}
+        {selected && !renamingHere && (
+          <div className="absolute end-1 top-0.5 flex items-center">
+            <IconButton
+              icon="refresh"
+              label={s.refresh}
+              title={s.refreshSubscription(sub.url)}
+              disabled={busy}
+              className="size-6"
+              onClick={() => onRefresh(sub)}
+            />
+            <IconButton
+              icon="more"
+              label={s.actions}
+              aria-haspopup="menu"
+              className="size-6"
+              onClick={(e) => onMenu(e, sub)}
+            />
+          </div>
+        )}
       </li>
     );
   };
   return (
-    <ul className="sub-strip scroll flex shrink-0 overflow-x-auto" aria-label={s.subFilter}>
-      {cell("", null, s.allSubs, every, null)}
-      {subs.map((g) => cell(g.key, g.key, subTitle(g.sub), g.all, g.sub.quota))}
+    <ul ref={ul} className="sub-strip scroll flex shrink-0 overflow-x-auto" aria-label={s.subFilter}>
+      {cell("", null, s.allSubs, every, null, null)}
+      {subs.map((g) => cell(g.key, g.key, subTitle(g.sub), g.all, g.sub.quota, g.sub))}
     </ul>
   );
 }
@@ -549,6 +680,12 @@ export function Profiles({
   // отбором полосы подписок: он прячет остальные группы целиком, и порядок,
   // собранный из одной группы, оставил бы чужие без места.
   const draggable = !byLat && needle === "" && filter === null;
+  // Подписки в полосе тащатся и под отбором: перенос карточки меняет только
+  // порядок самих подписок (`pendingSubs`), а полоса показывает их все, —
+  // порядка профилей он не трогает, и пустой список профилей служба понимает
+  // как «не трогать». Под порядком по задержке и под поиском — нельзя, как и за
+  // заголовок: там порядок расставляет не человек.
+  const stripDraggable = !byLat && needle === "";
   // Заведённое руками и пришедшее с панели — разные вещи, и в одном списке
   // десяток своих узлов тонет в сотне чужих. Деление считает `groupProfiles`,
   // тот же, что у плашки из трея: связь знает служба, окно её только
@@ -612,6 +749,28 @@ export function Profiles({
       onPick: () => void act({ cmd: "remove-subscription", arg: { url: sub.url } }),
     },
   ];
+  // Строки группы — одни и те же с заголовком и без него (под отбором одной
+  // подпиской заголовка нет).
+  const rowsOf = (sub: Subscription | null, items: ProfileInfo[]) => (
+    <Rows
+      items={items}
+      status={status}
+      act={act}
+      s={s}
+      busy={busy}
+      editing={editing}
+      onEdit={openEditor}
+      onCopy={copyLink}
+      onQr={showQr}
+      onDone={() => setEditing(null)}
+      onMenu={openMenu}
+      onReorder={draggable ? (names) => reorder(sub?.url ?? "", names) : undefined}
+      onCommit={commit}
+      fromSub={sub !== null}
+      probeOf={probeOf}
+      tight={tight}
+    />
+  );
   // Действия списка. В широкой панели инструментов они кнопки: «Проверить все»
   // и «Быстрейший» — на виду, «Обновить все» — под «⋯» в конце, порядок — свой
   // переключатель. В тесной панели (плашка в 380 px, одна из трёх панелей)
@@ -803,6 +962,20 @@ export function Profiles({
               note={[query !== "" ? s.appsShown(shown) : "", syncedAgo(s, status?.refreshed_at ?? null)]
                 .filter((x) => x !== "")
                 .join(" · ")}
+              act={act}
+              busy={busy ?? false}
+              renaming={renaming}
+              onRenamed={() => setRenaming(null)}
+              onRefresh={refreshSub}
+              onMenu={(e, sub) => openMenu(e, subMenu(sub))}
+              draggable={stripDraggable}
+              dragged={dragged}
+              onDragStart={setDragged}
+              onDragOver={(url) => dragged !== null && setPendingSubs(moved(subs.map((x) => x.url), dragged, url))}
+              onDragEnd={() => {
+                setDragged(null);
+                commit();
+              }}
             />
           )}
         </>
@@ -886,7 +1059,15 @@ export function Profiles({
           groups.map(
             ({ sub, items }) =>
               (filter === null || sub?.url === filter) &&
-              (items.length > 0 || (sub !== null && needle === "")) && (
+              (items.length > 0 || (sub !== null && needle === "")) &&
+              (filter !== null ? (
+                // Список отобран одной подпиской: её карточка в полосе и есть
+                // заголовок — с обновлением, «⋯» и правкой имени, — а второй
+                // заголовок с тем же именем строкой ниже только повторил бы её.
+                // Здесь заголовка нет вовсе; он живёт в ветке без отбора.
+                // Сторож — `a_selected_subscription_has_no_second_header`.
+                <div key={sub?.url ?? ""}>{rowsOf(sub, items)}</div>
+              ) : (
                 // Сворачивается родным <details>: подписка на сотню узлов иначе
                 // уводит все остальные группы за нижний край окна.
                 <details
@@ -949,31 +1130,7 @@ export function Profiles({
                       // Поле стоит на месте подписи и по любому клику внутри
                       // себя не сворачивает группу: <summary> переключает
                       // <details> по всему, что в него попало.
-                      <form
-                        className="flex min-w-0 flex-1 items-center gap-2"
-                        onClick={(e) => e.stopPropagation()}
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          const name = new FormData(e.currentTarget).get("name");
-                          void act({
-                            cmd: "rename-subscription",
-                            arg: { url: sub.url, name: String(name ?? "") },
-                          }).then(() => setRenaming(null));
-                        }}
-                      >
-                        <input
-                          name="name"
-                          autoFocus
-                          defaultValue={sub.name}
-                          placeholder={s.subName}
-                          spellCheck={false}
-                          onKeyDown={(e) => e.key === "Escape" && setRenaming(null)}
-                          className={`${FIELD} h-7 font-normal`}
-                        />
-                        <Button type="submit" variant="quiet">
-                          {s.save}
-                        </Button>
-                      </form>
+                      <SubRename s={s} sub={sub} act={act} onDone={() => setRenaming(null)} />
                     ) : (
                       // `https://` съедает начало строки, а обрезается как раз
                       // хвост — то единственное, чем адреса и различаются.
@@ -1032,26 +1189,9 @@ export function Profiles({
                       </>
                     )}
                   </summary>
-                  <Rows
-                    items={items}
-                    status={status}
-                    act={act}
-                    s={s}
-                    busy={busy}
-                    editing={editing}
-                    onEdit={openEditor}
-                    onCopy={copyLink}
-                    onQr={showQr}
-                    onDone={() => setEditing(null)}
-                    onMenu={openMenu}
-                    onReorder={draggable ? (names) => reorder(sub?.url ?? "", names) : undefined}
-                    onCommit={commit}
-                    fromSub={sub !== null}
-                    probeOf={probeOf}
-                    tight={tight}
-                  />
+                  {rowsOf(sub, items)}
                 </details>
-              ),
+              )),
           )
         )}
       </div>
