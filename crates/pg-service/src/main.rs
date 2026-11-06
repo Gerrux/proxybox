@@ -146,6 +146,13 @@ fn dir() -> PathBuf {
     settle(base)
 }
 
+/// Кэш наборов правил «раздельного» охвата: по файлу на ссылку, имя —
+/// `core_tunnel::rule_set_file`. Лежит в каталоге состояния и наследует его
+/// замок, а нужен тому же, кому и всё остальное в нём, — службе.
+fn rule_set_dir() -> PathBuf {
+    dir().join("rulesets")
+}
+
 /// Куда класть каталог состояния. Служба работает под LocalSystem на Windows,
 /// и её %APPDATA% — это системный профиль внутри System32, а не профиль
 /// пользователя: состоянию место в `%ProgramData%`.
@@ -529,6 +536,13 @@ struct Service {
     /// дождался готовности (порт слушает, адрес TUN назначен) или выдержал свой
     /// предел и убедился, что процесс не умер.
     probe_now: bool,
+    /// Наборам правил пора проверить кэш: туннель перезапущен или выбран новый
+    /// набор. Снимает флаг круг надзора, когда качать уже можно — туннель
+    /// подтверждён (`rule_set_job`) — и запускает закачку своим потоком
+    /// (`sync_rule_sets`). Флаг, а не вызов из обработчика команд: тому нужен
+    /// `Arc`, которого у него нет, а до подтверждения туннеля качать всё равно
+    /// нельзя.
+    rule_sets_due: bool,
     /// Что уже применено к стене. Помним применённое, а не то, из чего оно
     /// выведено: без этой памяти надзор каждые три секунды открывал бы сеанс
     /// WFP и сверял с ним набор фильтров, а отказы сыпались бы в журнал
@@ -660,6 +674,7 @@ impl Service {
             retry_delay: RETRY_BASE,
             applied: None,
             probe_now: false,
+            rule_sets_due: false,
             browsers: BTreeMap::new(),
             generation: 0,
             failover_tried: BTreeSet::new(),
@@ -676,7 +691,11 @@ impl Service {
         let legacy_sites = if readable { legacy_split_sites(&raw) } else { Vec::new() };
         if !legacy_sites.is_empty() {
             let (moved, refused) = move_split_sites(&legacy_sites, &mut me.status.bypass);
-            me.log(tf!("сайты раздельного охвата перенесены в исключения ({}): теперь они идут мимо туннеля в любом охвате", moved));
+            // Ничего не принято — переносить нечего, и «перенесены (0)» было бы
+            // неправдой о смене поведения: отказанные названы ниже по одной.
+            if moved > 0 {
+                me.log(tf!("сайты раздельного охвата перенесены в исключения ({}): теперь они идут мимо туннеля в любом охвате", moved));
+            }
             for (site, why) in refused {
                 me.log(tf!("сайт «{}» раздельного охвата не перенесён в исключения: {}", site, why));
             }
@@ -687,6 +706,9 @@ impl Service {
             // другое. Строка объясняет и что сменилось, и почему именно так.
             me.log(t("охват «выбранные приложения» убран из продукта: он выпускал остальных в открытую сеть. Поставлен «весь компьютер» — он ничего не отключает; белый список включается вручную"));
         }
+        // Кэш наборов правил держит только выбранное: правят выбор и руками, в
+        // `state.json`, мимо `SetSettings`.
+        prune_rule_sets(&me.settings.direct_rule_sets);
         me
     }
 
@@ -891,6 +913,22 @@ impl Service {
         self.refence();
     }
 
+    /// Что и через что качать наборам правил: поколение туннеля, порт его
+    /// входа и ссылки — или `None`, если качать нельзя. Нельзя, пока приватный
+    /// режим выключен, охват не «раздельно», а туннель не **подтверждён**: у
+    /// службы нет пропуска сквозь стену, и прямая закачка вышла бы из туннеля.
+    /// Настройки, не прошедшие проверку (`state.json` правят руками), тоже
+    /// ничего не качают. Сторож —
+    /// `rule_sets_are_fetched_only_through_a_confirmed_tunnel`.
+    fn rule_set_job(&self) -> Option<(u64, u16, Vec<String>)> {
+        let confirmed = self.private && self.status.scope == Scope::Split && self.status.tunnel == TunnelState::Up;
+        if !confirmed || self.settings.direct_rule_sets.is_empty() || validate_direct(&self.settings).is_err() {
+            return None;
+        }
+        let port = self.tunnel.as_ref()?.socks_port;
+        Some((self.generation, port, self.settings.direct_rule_sets.clone()))
+    }
+
     /// Исключения входят в конфиг sing-box и применяются перезапуском.
     fn restart_routing(&mut self) -> Result<(), String> {
         if self.private {
@@ -979,9 +1017,13 @@ impl Service {
 
     fn start(&mut self, profile: &str) -> Result<(), String> {
         let node = self.profiles.get(profile).cloned().ok_or_else(|| tf!("нет профиля «{}»", profile))?;
-        if self.status.scope == Scope::Split {
-            validate_direct(&self.settings)?;
-        }
+        // Ничто ниже не имеет права вернуться раньше `guard(true)`: `start()`
+        // зовёт и восстановление после перезагрузки (`run()`), и круг надзора, и
+        // отказ до замка оставил бы машину открытой при включённом приватном
+        // режиме — а туннель при этом не поднимается вовсе. Проверка настроек
+        // «раздельно» поэтому стоит ПОСЛЕ замка и отказывает так же, как
+        // отказавший запуск sing-box (`start_failed`). Сторож —
+        // `split_validation_never_runs_ahead_of_the_lock`.
         self.private = true;
         self.status.profile = Some(profile.to_string());
         self.save();
@@ -998,6 +1040,12 @@ impl Service {
         self.guard(true);
         self.tunnel = None; // старый процесс убивается Drop'ом до запуска нового
         self.generation += 1; // всё, что проба знала о прошлом процессе, устарело
+        if self.status.scope == Scope::Split {
+            if let Err(message) = validate_direct(&self.settings) {
+                self.status.tunnel = TunnelState::Down;
+                return Err(self.start_failed(message));
+            }
+        }
 
         // В строгих охватах отбор держит брандмауэр; только Split добавляет
         // явные исключения в конфиг маршрутизации. Исключения-адреса и имена
@@ -1013,6 +1061,16 @@ impl Service {
                 }
             }
             opts.direct_rule_sets = self.settings.direct_rule_sets.clone();
+            // Наборы входят в конфиг файлами из кэша службы; без файла набора в
+            // конфиге нет, и об этом строка в журнале (повтор схлопывает
+            // `write_log`): скачивает его служба сквозь поднятый туннель
+            // (`sync_rule_sets`), а не sing-box на старте.
+            let cache = rule_set_dir();
+            let missing = core_tunnel::missing_rule_sets(Some(&cache), &opts.direct_rule_sets);
+            if !missing.is_empty() {
+                self.log(tf!("наборы правил ещё не скачаны и в конфиг не вошли: {}", missing.join(", ")));
+            }
+            opts.rule_set_dir = Some(cache);
         }
         let config = build_config(&node, &opts);
         self.probe_target = probe_target(&self.status.settings.probe, &node);
@@ -1030,6 +1088,9 @@ impl Service {
                 self.misses = 0;
                 self.retry_at = None;
                 self.retry_delay = RETRY_BASE;
+                // Новый процесс — повод заглянуть в кэш наборов: недостающие
+                // докачает надзор, когда туннель подтвердится.
+                self.rule_sets_due = true;
                 // Приложений, а не путей: в конфиг на каждое уходит до двух форм
                 // пути, и `opts.apps.len()` показывал бы человеку удвоенное число.
                 let count = self.status.apps.iter().filter(|a| a.enabled).count();
@@ -1058,14 +1119,21 @@ impl Service {
             }
             Err(e) => {
                 self.status.tunnel = TunnelState::Down;
-                self.retry_at = Some(Instant::now() + self.retry_delay);
-                let wait = self.retry_delay.as_secs();
-                self.retry_delay = (self.retry_delay * 2).min(RETRY_MAX);
-                let reason = explain(&e.to_string());
-                self.warn(tf!("sing-box не запустился: {}; следующая попытка через {} с", reason, wait));
-                Err(reason)
+                Err(self.start_failed(explain(&e.to_string())))
             }
         }
+    }
+
+    /// Отказ запуска: пауза до следующей попытки растёт, причина — в журнал.
+    /// Общий для отказавшего `Process::start` и отвергнутых настроек: и то и
+    /// другое обязано повторяться с паузой, а не крутиться вхолостую каждый круг
+    /// надзора. Замок к этому моменту уже стоит (`start` ставит его первым).
+    fn start_failed(&mut self, reason: String) -> String {
+        self.retry_at = Some(Instant::now() + self.retry_delay);
+        let wait = self.retry_delay.as_secs();
+        self.retry_delay = (self.retry_delay * 2).min(RETRY_MAX);
+        self.warn(tf!("sing-box не запустился: {}; следующая попытка через {} с", reason, wait));
+        reason
     }
 
     fn stop(&mut self) {
@@ -1226,7 +1294,25 @@ impl Service {
                 moved.push(app.name.clone());
             }
         }
+        // Прямые приложения «раздельного» охвата живут своим списком в
+        // настройках, и добавить туда путь можно из CLI (`--direct-apps`), минуя
+        // `status.apps`. Такой путь пакета MSIX тоже переезжает при
+        // обновлении — и без этого прохода `process_path` смотрел бы в
+        // пустоту, пока приложение уходит в туннель, а не напрямую, как
+        // просили. Те, что уже переехали выше вместе со строкой списка, тут
+        // файл находят и не двигаются.
+        for direct in &mut self.settings.direct_apps {
+            if let Some(path) = core_apps::rebind(direct) {
+                let name = path.rsplit(['\\', '/']).next().unwrap_or(&path).trim_end_matches(".exe").to_string();
+                *direct = path;
+                moved.push(name);
+            }
+        }
         if !moved.is_empty() {
+            // Две записи разных версий одного пакета читаются после переезда
+            // одним путём: дубль в списке — это две копии одного правила.
+            let mut seen = BTreeSet::new();
+            self.settings.direct_apps.retain(|path| seen.insert(path.clone()));
             // Переезд — единственное место, где путь меняется у уже принятой
             // записи: все прочие проверки стоят на добавлении. Две записи
             // разных версий одного пакета были законно разными путями, а после
@@ -1390,11 +1476,22 @@ fn get(url: &str, proxy: Option<&str>) -> Result<(String, Option<String>), Strin
     let fail = |e: &dyn std::fmt::Display| {
         tf!("подписка не скачалась: {}", e)
     };
-    let proxy = match proxy.map(ureq::Proxy::new).transpose() {
-        Ok(proxy) => proxy,
-        Err(e) => return Err(fail(&e)),
-    };
-    let agent: ureq::Agent = ureq::Agent::config_builder()
+    let agent = http_agent(proxy).map_err(|e| fail(&e))?;
+    let mut response = agent.get(url).call().map_err(|e| fail(&e))?;
+    // Заголовок снимаем до тела: `body_mut()` заимствует ответ изменяемо, и
+    // после него заголовки уже не спросить. Имя регистронезависимо — за это
+    // отвечает `HeaderMap`, а панели пишут его вразнобой.
+    let userinfo =
+        response.headers().get("subscription-userinfo").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let body = response.body_mut().read_to_string().map_err(|e| fail(&e))?;
+    Ok((body, userinfo))
+}
+
+/// Клиент для закачек службы: один на подписки и наборы правил, чтобы TLS, срок
+/// и User-Agent не разъезжались.
+fn http_agent(proxy: Option<&str>) -> Result<ureq::Agent, ureq::Error> {
+    let proxy = proxy.map(ureq::Proxy::new).transpose()?;
+    Ok(ureq::Agent::config_builder()
         .proxy(proxy)
         // TLS берём у системы (на Windows это SChannel): корни те же, что у
         // остальных программ на машине, и сборка не тянет за собой C-компилятор
@@ -1410,15 +1507,121 @@ fn get(url: &str, proxy: Option<&str>) -> Result<(String, Option<String>), Strin
         // с форматом здесь больше не отказ импорта.
         .user_agent(concat!("proxybox/", env!("CARGO_PKG_VERSION")))
         .build()
-        .into();
+        .into())
+}
+
+/// Потолок на размер одного набора правил. Самые большие из каталога — единицы
+/// мегабайт; сверх этого ссылка либо не то, либо подсунута, и писать её на диск
+/// службы, которая ходит от LocalSystem, незачем.
+const RULE_SET_MAX: u64 = 16 * 1024 * 1024;
+
+/// Похоже ли тело на набор правил sing-box: `.srs` начинается с магии `SRS`,
+/// `.json` — объект с массивом `rules`. Это не проверка содержимого (его
+/// определяют авторы набора), а защита от страницы ошибки, отданной с кодом 200:
+/// битый файл `type: local` роняет sing-box на старте, то есть туннель не
+/// поднимается вовсе — ровно то, ради чего наборы и вынесены из его конфига.
+fn looks_like_rule_set(url: &str, body: &[u8]) -> bool {
+    match core_tunnel::rule_set_file(url).ends_with(".srs") {
+        true => body.starts_with(b"SRS"),
+        false => serde_json::from_slice::<Value>(body).is_ok_and(|v| v["rules"].is_array()),
+    }
+}
+
+/// Скачать один набор в кэш — **только** сквозь поднятый туннель. Запасного
+/// прямого пути, как у подписки (`fetch`), тут нет намеренно: прямой запрос
+/// показал бы провайдеру, какими наборами человек пользуется, и вышел бы из
+/// туннеля, который режим обещает. Не вышло через туннель — набора нет.
+/// Запись — через `write_atomic`: оборванная закачка не должна оставить
+/// половинку, на которой sing-box не поднимется.
+fn download_rule_set(url: &str, tunnel_port: u16, cache: &Path) -> Result<(), String> {
+    // Причина — голый текст ошибки; фразу вокруг неё собирает вызывающий.
+    let fail = |e: &dyn std::fmt::Display| e.to_string();
+    // mixed-инбаунд отвечает и на HTTP CONNECT, как и у подписки.
+    let agent = http_agent(Some(&format!("http://127.0.0.1:{tunnel_port}"))).map_err(|e| fail(&e))?;
     let mut response = agent.get(url).call().map_err(|e| fail(&e))?;
-    // Заголовок снимаем до тела: `body_mut()` заимствует ответ изменяемо, и
-    // после него заголовки уже не спросить. Имя регистронезависимо — за это
-    // отвечает `HeaderMap`, а панели пишут его вразнобой.
-    let userinfo =
-        response.headers().get("subscription-userinfo").and_then(|v| v.to_str().ok()).map(str::to_string);
-    let body = response.body_mut().read_to_string().map_err(|e| fail(&e))?;
-    Ok((body, userinfo))
+    let body = response.body_mut().with_config().limit(RULE_SET_MAX).read_to_vec().map_err(|e| fail(&e))?;
+    if !looks_like_rule_set(url, &body) {
+        return Err(t("файл не похож на набор sing-box"));
+    }
+    std::fs::create_dir_all(cache).map_err(|e| fail(&e))?;
+    write_atomic(&cache.join(core_tunnel::rule_set_file(url)), &body).map_err(|e| fail(&e))
+}
+
+/// Идёт ли уже закачка наборов: вторая параллельно — это два потока на одни и те
+/// же файлы и два перезапуска подряд.
+static RULE_SETS_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Скачать наборы правил «раздельного» охвата и, если у набора впервые появился
+/// файл, один раз перезапустить туннель, чтобы он вошёл в конфиг.
+///
+/// Зовётся без общего замка и обязана его не держать: каждая закачка — до двадцати
+/// секунд сети. Туннель при этом должен быть **подтверждён** (`rule_set_job`):
+/// сам по себе у службы пропуска сквозь стену нет, а прямой запрос вышел бы из
+/// туннеля, — значит, пока он не поднят, не качаем вовсе. `all` — сверка по
+/// расписанию (все выбранные), иначе только те, у которых файла ещё нет.
+///
+/// Перезапуск ровно один и только на появлении файла: обновлённое содержимое
+/// уже вошедшего набора sing-box перечитывает сам при изменении файла (так
+/// сказано в его документации; живым прогоном здесь не проверено), а рвать
+/// живые соединения ради суточной сверки не стоит. Сторож —
+/// `rule_sets_are_fetched_only_through_a_confirmed_tunnel`.
+fn sync_rule_sets(svc: &Arc<Mutex<Service>>, all: bool) {
+    use std::sync::atomic::Ordering;
+    if RULE_SETS_BUSY.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    struct Free;
+    impl Drop for Free {
+        fn drop(&mut self) {
+            RULE_SETS_BUSY.store(false, Ordering::SeqCst);
+        }
+    }
+    let _free = Free;
+
+    let Some((generation, port, urls)) = lock(svc).rule_set_job() else { return };
+    let cache = rule_set_dir();
+    let missing = core_tunnel::missing_rule_sets(Some(&cache), &urls);
+    let todo = if all { urls } else { missing.clone() };
+    if todo.is_empty() {
+        return;
+    }
+    let failures: Vec<(String, String)> = todo
+        .iter()
+        .filter_map(|url| download_rule_set(url, port, &cache).err().map(|why| (url.clone(), why)))
+        .collect();
+
+    let mut s = lock(svc);
+    for (url, why) in &failures {
+        s.warn(tf!("набор правил {} не скачался: {}", url, why));
+    }
+    // Файл появился у того, кого не было: конфиг пора пересобрать. Туннель к
+    // этому моменту мог смениться или упасть — тогда отложенная сборка уже
+    // учтёт файлы сама (`start` читает кэш), и перезапускать нечего.
+    let appeared = missing.len() - core_tunnel::missing_rule_sets(Some(&cache), &missing).len();
+    if appeared > 0 && s.generation == generation && s.rule_set_job().is_some() {
+        if let Some(profile) = s.status.profile.clone() {
+            s.log(tf!("наборы правил скачаны ({}): перезапуск туннеля, чтобы они вошли в конфиг", appeared));
+            let _ = s.start(&profile);
+        }
+    }
+}
+
+/// Убрать из кэша файлы наборов, которые больше не выбраны. Без этого кэш рос бы
+/// с каждой сменой выбора, а убранный набор, возвращённый через месяц, вошёл бы в
+/// конфиг старым файлом до первой сверки. Незнакомые файлы (временные записи
+/// упавшей закачки) уходят тоже, но пока закачка идёт, временные не трогаем.
+fn prune_rule_sets(keep: &[String]) {
+    let cache = rule_set_dir();
+    let Ok(entries) = std::fs::read_dir(&cache) else { return };
+    let wanted: Vec<String> = keep.iter().map(|url| core_tunnel::rule_set_file(url)).collect();
+    let downloading = RULE_SETS_BUSY.load(std::sync::atomic::Ordering::SeqCst);
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if wanted.contains(&name) || (downloading && name.ends_with(".tmp")) {
+            continue;
+        }
+        let _ = std::fs::remove_file(entry.path());
+    }
 }
 
 /// Разбор заголовка `Subscription-Userinfo`.
@@ -2011,6 +2214,11 @@ fn after_refresh(before: Option<&Value>, after: Option<&Value>, private: bool, s
 }
 
 /// Только явные пути и URL наборов: произвольный конфиг через IPC не принимаем.
+///
+/// Наборы — только `https`: файл правил решает, что уйдёт мимо туннеля, и по
+/// открытому каналу его подменит любой на пути. Подписке `http` разрешён как
+/// размен (см. `fetch`), а здесь размена нет: свой набор можно положить на
+/// `https`, а подмена набора — это подмена маршрута.
 fn validate_direct(settings: &Settings) -> Result<(), String> {
     if settings.direct_apps.len() > 256 || settings.direct_rule_sets.len() > 64 {
         return Err(t("слишком много исключений: максимум 256 приложений и 64 ruleset'а"));
@@ -2022,12 +2230,12 @@ fn validate_direct(settings: &Settings) -> Result<(), String> {
     }
     for raw in &settings.direct_rule_sets {
         let valid = url::Url::parse(raw).is_ok_and(|u| {
-            matches!(u.scheme(), "http" | "https") && u.host_str().is_some()
+            u.scheme() == "https" && u.host_str().is_some()
                 && u.username().is_empty() && u.password().is_none() && u.fragment().is_none()
                 && (u.path().ends_with(".srs") || u.path().ends_with(".json"))
         });
         if raw.len() > 8192 || raw.trim() != raw || raw.chars().any(char::is_control) || !valid {
-            return Err(t("ruleset должен быть HTTP(S)-ссылкой на файл .json или .srs"));
+            return Err(t("ruleset должен быть HTTPS-ссылкой на файл .json или .srs"));
         }
     }
     Ok(())
@@ -2075,7 +2283,10 @@ fn move_split_sites(legacy: &[String], bypass: &mut Vec<String>) -> (usize, Vec<
     (moved, refused)
 }
 
-/// Ноль из вручную исправленного state.json не должен запускать сверку постоянно.
+/// Срок сверки из настроек. Ноль часов сюда не доходит — его отбивает
+/// `SetSettings`, — но `max(1)` стоит и здесь: `state.json` правят руками, а
+/// нулевой срок означал бы поход по всем подпискам каждый круг потока, то есть
+/// раз в пять минут. Сторож — `the_refresh_period_is_never_zero`.
 fn refresh_every(settings: &Settings) -> Duration {
     Duration::from_secs(u64::from(settings.refresh_hours.max(1)) * 60 * 60)
 }
@@ -2110,7 +2321,7 @@ fn refresh_loop(svc: Arc<Mutex<Service>>) {
         // Настройку спрашиваем каждый круг, а не при запуске потока: её
         // выключают в работающей службе, и молчать поток обязан с этого
         // момента, а не со следующего запуска.
-        let urls: Vec<String> = {
+        let (urls, sets): (Vec<String>, bool) = {
             let s = lock(&svc);
             if !s.status.settings.refresh {
                 continue;
@@ -2122,9 +2333,13 @@ fn refresh_loop(svc: Arc<Mutex<Service>>) {
             if !refresh_due(s.status.refreshed_at, now(), every) {
                 continue;
             }
-            s.subscriptions.keys().cloned().collect()
+            // Наборы правил сверяются тем же сроком и тем же флажком, что и
+            // подписки, — но качаются только при подтверждённом туннеле
+            // (`rule_set_job`): пока его нет, ждём следующего круга, а не
+            // отмечаем попытку.
+            (s.subscriptions.keys().cloned().collect(), s.rule_set_job().is_some())
         };
-        if urls.is_empty() {
+        if urls.is_empty() && !sets {
             continue;
         }
         tried = Some(Instant::now());
@@ -2132,6 +2347,9 @@ fn refresh_loop(svc: Arc<Mutex<Service>>) {
             // Ошибку сверки глотаем намеренно: панель бывает недоступна, и
             // существующие профили в этом случае остаются как есть.
             let _ = subscribe(&svc, &url, true);
+        }
+        if sets {
+            sync_rule_sets(&svc, true);
         }
     }
 }
@@ -2652,16 +2870,36 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             if let Err(message) = validate_direct(&next) {
                 return Response::Error { message };
             }
+            // В конфиг входят приложения и наборы, у которых есть файл, а не
+            // всё выбранное. Поэтому перезапуск нужен, когда сменились
+            // приложения или набор готовых файлов: добавленный набор без файла
+            // конфиг не меняет, и рвать живые соединения ради него незачем —
+            // его скачает служба (`rule_sets_due`) и перезапустит один раз
+            // сама, когда файл появится.
+            let ready = |sets: &[String]| {
+                let missing = core_tunnel::missing_rule_sets(Some(&rule_set_dir()), sets);
+                sets.iter().filter(|url| !missing.contains(url)).cloned().collect::<Vec<_>>()
+            };
             let routing_changed = s.status.scope == Scope::Split
-                && (next.direct_apps != s.settings.direct_apps || next.direct_rule_sets != s.settings.direct_rule_sets);
+                && (next.direct_apps != s.settings.direct_apps
+                    || ready(&next.direct_rule_sets) != ready(&s.settings.direct_rule_sets));
+            let sets_added = next.direct_rule_sets.iter().any(|url| !s.settings.direct_rule_sets.contains(url));
             s.settings = next;
             // Перезапуска требуют только изменённые исключения активного Split.
             s.apply_settings();
             s.save();
-            if routing_changed {
-                if let Err(message) = s.restart_routing() {
-                    return Response::Error { message };
-                }
+            if sets_added {
+                s.rule_sets_due = true;
+            }
+            let restarted = match routing_changed {
+                true => s.restart_routing(),
+                false => Ok(()),
+            };
+            // Файлы убранных наборов — после перезапуска: конфиг к этому
+            // моменту уже собран без них, а sing-box не видит исчезнувший файл.
+            prune_rule_sets(&s.settings.direct_rule_sets);
+            if let Err(message) = restarted {
+                return Response::Error { message };
             }
             Response::Status(s.status.clone())
         }
@@ -3070,6 +3308,18 @@ fn supervise(svc: &Arc<Mutex<Service>>) {
             if s.status.scope == Scope::Split && previous_direct != s.settings.direct_apps {
                 let _ = s.restart_routing();
             }
+            // Недостающие наборы правил — своим потоком и только при
+            // подтверждённом туннеле: сеть до двадцати секунд на набор, а
+            // надзор за смертью процесса ждать не может. Занятая закачка флаг
+            // не съедает — он дождётся следующего круга.
+            if s.rule_sets_due
+                && !RULE_SETS_BUSY.load(std::sync::atomic::Ordering::SeqCst)
+                && s.rule_set_job().is_some()
+            {
+                s.rule_sets_due = false;
+                let syncing = Arc::clone(svc);
+                std::thread::spawn(move || sync_rule_sets(&syncing, false));
+            }
             let alive = s.tunnel.as_mut().map(Process::alive).unwrap_or(false);
             match (alive, s.tunnel.as_ref()) {
                 (true, Some(t)) => Some((s.generation, t.socks_port, t.api_port, s.probe_target.clone())),
@@ -3436,15 +3686,34 @@ mod tests {
         assert!(scope_offered(Scope::Split, true));
     }
 
+    /// Ревью: `guard(true)` в `start()` идёт впереди всего. Отказ проверки
+    /// настроек «раздельно» до замка оставляет восстановление после перезагрузки
+    /// (`run()` → `start()`) без стены при включённом приватном режиме: до
+    /// первого круга надзора машина открыта, а туннель не поднимается вовсе.
+    #[test]
+    fn split_validation_never_runs_ahead_of_the_lock() {
+        let body = include_str!("main.rs")
+            .replace("\r\n", "\n")
+            .split("\n    fn start(&mut self, profile: &str)")
+            .nth(1)
+            .and_then(|s| s.split("\n    }\n").next())
+            .map(String::from)
+            .expect("start()");
+        let lock = body.find("self.guard(true)").expect("guard(true) в start()");
+        if let Some(check) = body.find("validate_direct(") {
+            assert!(lock < check, "отказ проверки настроек «раздельно» выходит из start() раньше, чем встал замок");
+        }
+    }
+
     #[test]
     fn direct_exceptions_are_validated_before_saving() {
         let mut settings = Settings {
             direct_apps: vec![if cfg!(windows) { r"C:\apps\browser.exe".into() } else { "/usr/bin/browser".into() }],
-            direct_rule_sets: vec!["https://example.com/rules.srs?version=2".into(), "http://localhost/rules.json".into()],
+            direct_rule_sets: vec!["https://example.com/rules.srs?version=2".into(), "https://localhost/rules.json".into()],
             ..Default::default()
         };
         assert!(validate_direct(&settings).is_ok());
-        for bad in ["file:///tmp/rules.json", "https://example.com/rules.txt", "https://u:p@example.com/rules.srs", "https://example.com/rules.srs#fragment", "garbage"] {
+        for bad in ["http://example.com/rules.srs", "http://localhost/rules.json", "file:///tmp/rules.json", "https://example.com/rules.txt", "https://u:p@example.com/rules.srs", "https://example.com/rules.srs#fragment", "garbage"] {
             settings.direct_rule_sets = vec![bad.into()];
             assert!(validate_direct(&settings).is_err(), "{bad}");
         }
@@ -3454,6 +3723,93 @@ mod tests {
         settings.direct_apps.clear();
         settings.direct_rule_sets = vec!["https://example.com/rules.srs".into(); 65];
         assert!(validate_direct(&settings).is_err());
+    }
+
+    /// Наборы правил качает служба, и только сквозь подтверждённый туннель:
+    /// прямой запрос вышел бы из туннеля, а у службы нет пропуска сквозь стену.
+    /// Пока приватный режим выключен, охват не «раздельно» или туннель не `Up`,
+    /// работы нет вовсе; а у самой закачки нет запасного прямого пути, как у
+    /// подписки.
+    #[test]
+    fn rule_sets_are_fetched_only_through_a_confirmed_tunnel() {
+        let _state = scratch("pg-rule-sets-job");
+        let mut s = Service::load();
+        s.settings.direct_rule_sets = vec!["https://example.com/rules.json".into()];
+        s.private = true;
+        s.status.scope = Scope::Split;
+        s.status.tunnel = TunnelState::Up;
+        // Туннеля-процесса в тесте нет, поэтому и порта: работа выдаётся только с ним.
+        assert!(s.rule_set_job().is_none(), "без живого процесса качать нечем");
+        for tunnel in [TunnelState::Off, TunnelState::Connecting, TunnelState::Down] {
+            s.status.tunnel = tunnel;
+            assert!(s.rule_set_job().is_none(), "туннель не подтверждён: {tunnel:?}");
+        }
+        s.status.tunnel = TunnelState::Up;
+        s.private = false;
+        assert!(s.rule_set_job().is_none(), "приватный режим выключен");
+        s.private = true;
+        for scope in [Scope::All, Scope::Whitelist, Scope::None] {
+            s.status.scope = scope;
+            assert!(s.rule_set_job().is_none(), "охват {scope:?} наборов не качает");
+        }
+        s.status.scope = Scope::Split;
+        s.settings.direct_rule_sets = vec!["http://example.com/rules.json".into()];
+        assert!(s.rule_set_job().is_none(), "по открытому каналу набор не качается");
+
+        let src = include_str!("main.rs").replace("\r\n", "\n");
+        let download = src.split("\nfn download_rule_set(").nth(1).and_then(|b| b.split("\n}\n").next()).expect("закачка набора");
+        assert!(download.contains("http_agent(Some("), "набор качается сквозь прокси туннеля");
+        assert!(!download.contains("http_agent(None") && !download.contains("direct"), "запасного прямого пути быть не должно: {download}");
+        let watch = src.split("\nfn supervise(").nth(1).and_then(|b| b.split("\n}\n").next()).expect("надзор");
+        assert!(watch.contains("s.rule_set_job().is_some()"), "надзор запускает закачку только при подтверждённом туннеле");
+        let refresh = src.split("\nfn refresh_loop(").nth(1).and_then(|b| b.split("\n}\n").next()).expect("сверка");
+        assert!(refresh.contains("s.rule_set_job().is_some()"), "сверка по расписанию — тоже только при подтверждённом");
+    }
+
+    /// Файл набора обязан быть набором: страница ошибки с кодом 200 в `type:
+    /// local` роняла бы sing-box на старте.
+    #[test]
+    fn a_downloaded_rule_set_must_look_like_one() {
+        assert!(looks_like_rule_set("https://e.com/a.srs", b"SRS\x01rest"));
+        assert!(!looks_like_rule_set("https://e.com/a.srs", b"<html>502 Bad Gateway</html>"));
+        assert!(looks_like_rule_set("https://e.com/a.json?v=1", br#"{"version":2,"rules":[]}"#));
+        assert!(!looks_like_rule_set("https://e.com/a.json", b"<html>"));
+        assert!(!looks_like_rule_set("https://e.com/a.json", br#"{"version":2}"#));
+        assert!(RULE_SET_MAX <= 32 * 1024 * 1024, "потолок размера не должен расти молча");
+    }
+
+    /// В кэше лежит только выбранное: убранный набор уходит с диска, чужие файлы
+    /// и недокачанные остатки тоже, а выбранный остаётся нетронутым.
+    #[test]
+    fn the_rule_set_cache_holds_only_what_is_selected() {
+        let _state = scratch("pg-rule-sets-prune");
+        let keep = "https://example.com/keep.json".to_string();
+        let gone = "https://example.com/gone.srs".to_string();
+        let cache = rule_set_dir();
+        std::fs::create_dir_all(&cache).unwrap();
+        for url in [&keep, &gone] {
+            std::fs::write(cache.join(core_tunnel::rule_set_file(url)), b"x").unwrap();
+        }
+        std::fs::write(cache.join("stray.json.tmp"), b"x").unwrap();
+        prune_rule_sets(std::slice::from_ref(&keep));
+        let left: Vec<String> = std::fs::read_dir(&cache).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(left, [core_tunnel::rule_set_file(&keep)], "осталось не то: {left:?}");
+        prune_rule_sets(&[]);
+        assert!(std::fs::read_dir(&cache).unwrap().next().is_none(), "ничего не выбрано — кэш пуст");
+    }
+
+    /// Строка о переносе сайтов не говорит «(0)»: если исключением не принято
+    /// ничего, переносить нечего, а отказанные названы каждый своей строкой.
+    #[test]
+    fn a_site_migration_that_moved_nothing_stays_silent() {
+        let _state = scratch("pg-split-sites-none");
+        std::fs::create_dir_all(dir()).unwrap();
+        let mut settings = serde_json::to_value(Settings::default()).unwrap();
+        settings["direct_domains"] = json!(["0.0.0.0/0", "10.0.0.1:443"]);
+        std::fs::write(dir().join("state.json"), serde_json::to_string(&json!({ "apps": [], "profiles": {}, "settings": settings })).unwrap()).unwrap();
+        let s = Service::load();
+        assert!(!s.status.log.iter().any(|l| l.text.contains("перенесены в исключения")), "{:?}", s.status.log);
+        assert_eq!(s.status.log.iter().filter(|l| l.text.contains("не перенесён в исключения")).count(), 2, "{:?}", s.status.log);
     }
 
     /// Сайты раздельного охвата переехали в исключения: `state.json` прошлой

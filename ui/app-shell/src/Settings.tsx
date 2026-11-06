@@ -315,7 +315,6 @@ export function Settings({
           </Row>
         </Group>
 
-
         <Group title={s.groupTunnel}>
           <Row title={s.probeTitle} note={s.probeHint}>
             <TextSetting
@@ -586,7 +585,7 @@ function RuleSets({ lang, value, onSubmit }: { lang: Lang | undefined; value: st
   const valid = urls.every((raw) => {
     try {
       const url = new URL(raw);
-      return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.hash
+      return url.protocol === "https:" && !url.username && !url.password && !url.hash
         && /\.(json|srs)$/.test(url.pathname);
     } catch { return false; }
   }) && urls.length <= 64;
@@ -607,7 +606,7 @@ function RuleSets({ lang, value, onSubmit }: { lang: Lang | undefined; value: st
                 <input type="checkbox" checked={urls.includes(set.url)} onChange={(e) => pick(set.url, e.target.checked)} className="size-4 shrink-0 accent-[var(--pg-accent)]" />
                 <span className="min-w-0">
                   <span className="block truncate text-sm">{set.name}</span>
-                  <span className="block truncate text-xs text-muted">{set.source}</span>
+                  <span className="block truncate text-xs text-muted">{set.source}{set.kind === "ip" && ` · ${s.rulesIpTag}`}</span>
                 </span>
               </label>
               <Button variant="quiet" onClick={() => void openUrl(`https://github.com/${set.source}`)}>{s.rulesSource}</Button>
@@ -615,6 +614,9 @@ function RuleSets({ lang, value, onSubmit }: { lang: Lang | undefined; value: st
           ))}
         </ul>
         {shown.length === 0 && <p className="py-2 text-sm text-muted">{s.noMatches}</p>}
+        {catalog.some((set) => set.kind === "ip" && urls.includes(set.url)) && (
+          <p className="mt-2 text-xs text-muted">{s.rulesIpHint}</p>
+        )}
         <details className="mt-3" open={urls.some((url) => !catalog.some((set) => set.url === url)) || undefined}>
           <summary className="cursor-pointer text-sm">{s.rulesCustom}</summary>
           <textarea aria-label={s.splitRuleSets} aria-invalid={!valid} value={draft} onChange={(e) => setDraft(e.target.value)}
@@ -628,6 +630,13 @@ function RuleSets({ lang, value, onSubmit }: { lang: Lang | undefined; value: st
   );
 }
 
+/** Настройка строкой: путь и адрес правят вручную, и уходить в службу на каждое
+ *  нажатие клавиши им нельзя — служба на каждую команду переписывает state.json.
+ *  Отсюда кнопка, а не сохранение по вводу.
+ *
+ *  Черновик перечитывается, когда снаружи пришло другое значение: статус ходит
+ *  по кругу каждые две секунды, и без этого поле стирало бы себя на каждом
+ *  круге, — но и правку из-под рук уносить оно не должно. */
 function TextSetting({
   lang,
   value,

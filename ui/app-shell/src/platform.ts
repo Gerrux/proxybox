@@ -252,7 +252,7 @@ export type Settings = {
   failover: boolean;
   /** Исключения раздельного туннелирования; белый список хранится отдельно. */
   direct_apps: string[];
-  /** HTTP(S)-ссылки на наборы sing-box .json или .srs. */
+  /** HTTPS-ссылки на наборы sing-box .json или .srs: файлы скачивает служба. */
   direct_rule_sets: string[];
   // Сайтов напрямую здесь нет: это исключения (`Status.bypass`), общие для всех охватов.
 };
