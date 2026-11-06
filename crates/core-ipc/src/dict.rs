@@ -18,9 +18,10 @@
 
 /// Английские строки.
 pub static EN: &[(&str, &str)] = &[
-    ("укажите не больше 256 доменов или HTTP(S)-ссылок на сайты, без IP-адресов и паролей", "enter up to 256 domains or HTTP(S) website URLs, without IP addresses or credentials"),
     ("Туннель с исключениями", "Tunnel with exceptions"),
-    ("раздельно: выбранные сайты, приложения и наборы правил напрямую, остальное через туннель", "split: selected websites, apps and rule sets go directly, everything else through the tunnel"),
+    ("раздельно: выбранные приложения и наборы правил напрямую, остальное через туннель", "split: selected apps and rule sets go directly, everything else through the tunnel"),
+    ("сайты раздельного охвата перенесены в исключения ({}): теперь они идут мимо туннеля в любом охвате", "split-tunnel sites moved to the exceptions ({}): they now bypass the tunnel in every scope"),
+    ("сайт «{}» раздельного охвата не перенесён в исключения: {}", "split-tunnel site “{}” was not moved to the exceptions: {}"),
     ("слишком много исключений: максимум 256 приложений и 64 ruleset'а", "too many exceptions: at most 256 apps and 64 rule sets"),
     ("для прямого подключения нужен абсолютный путь приложения", "direct connections require an absolute application path"),
     ("ruleset должен быть HTTP(S)-ссылкой на файл .json или .srs", "a rule set must be an HTTP(S) URL pointing to a .json or .srs file"),
@@ -239,9 +240,10 @@ pub static EN: &[(&str, &str)] = &[
 
 /// Персидские строки.
 pub static FA: &[(&str, &str)] = &[
-    ("укажите не больше 256 доменов или HTTP(S)-ссылок на сайты, без IP-адресов и паролей", "enter up to 256 domains or HTTP(S) website URLs, without IP addresses or credentials"),
     ("Туннель с исключениями", "تونل با استثناها"),
-    ("раздельно: выбранные сайты, приложения и наборы правил напрямую, остальное через туннель", "split: selected websites, apps and rule sets go directly, everything else through the tunnel"),
+    ("раздельно: выбранные приложения и наборы правил напрямую, остальное через туннель", "تفکیکی: برنامه‌ها و مجموعه‌قوانین انتخاب‌شده مستقیم، بقیه از تونل"),
+    ("сайты раздельного охвата перенесены в исключения ({}): теперь они идут мимо туннеля в любом охвате", "سایت‌های حالت تفکیکی به استثناها منتقل شدند ({}): اکنون در هر حالتی بیرون از تونل می‌روند"),
+    ("сайт «{}» раздельного охвата не перенесён в исключения: {}", "سایت «{}» حالت تفکیکی به استثناها منتقل نشد: {}"),
     ("слишком много исключений: максимум 256 приложений и 64 ruleset'а", "too many exceptions: at most 256 apps and 64 rule sets"),
     ("для прямого подключения нужен абсолютный путь приложения", "direct connections require an absolute application path"),
     ("ruleset должен быть HTTP(S)-ссылкой на файл .json или .srs", "a rule set must be an HTTP(S) URL pointing to a .json or .srs file"),
@@ -460,9 +462,10 @@ pub static FA: &[(&str, &str)] = &[
 
 /// Китайские строки (упрощённое письмо).
 pub static ZH: &[(&str, &str)] = &[
-    ("укажите не больше 256 доменов или HTTP(S)-ссылок на сайты, без IP-адресов и паролей", "enter up to 256 domains or HTTP(S) website URLs, without IP addresses or credentials"),
     ("Туннель с исключениями", "隧道已连接（含例外）"),
-    ("раздельно: выбранные сайты, приложения и наборы правил напрямую, остальное через туннель", "split: selected websites, apps and rule sets go directly, everything else through the tunnel"),
+    ("раздельно: выбранные приложения и наборы правил напрямую, остальное через туннель", "分流：所选应用和规则集直连，其余经过隧道"),
+    ("сайты раздельного охвата перенесены в исключения ({}): теперь они идут мимо туннеля в любом охвате", "分流模式的网站已移入例外（{}）：现在它们在任何范围下都绕过隧道"),
+    ("сайт «{}» раздельного охвата не перенесён в исключения: {}", "分流模式的网站“{}”未移入例外：{}"),
     ("слишком много исключений: максимум 256 приложений и 64 ruleset'а", "too many exceptions: at most 256 apps and 64 rule sets"),
     ("для прямого подключения нужен абсолютный путь приложения", "direct connections require an absolute application path"),
     ("ruleset должен быть HTTP(S)-ссылкой на файл .json или .srs", "a rule set must be an HTTP(S) URL pointing to a .json or .srs file"),
@@ -681,9 +684,10 @@ pub static ZH: &[(&str, &str)] = &[
 
 /// Турецкие строки.
 pub static TR: &[(&str, &str)] = &[
-    ("укажите не больше 256 доменов или HTTP(S)-ссылок на сайты, без IP-адресов и паролей", "enter up to 256 domains or HTTP(S) website URLs, without IP addresses or credentials"),
     ("Туннель с исключениями", "İstisnalı tünel"),
-    ("раздельно: выбранные сайты, приложения и наборы правил напрямую, остальное через туннель", "split: selected websites, apps and rule sets go directly, everything else through the tunnel"),
+    ("раздельно: выбранные приложения и наборы правил напрямую, остальное через туннель", "bölünmüş: seçili uygulamalar ve kural kümeleri doğrudan, geri kalanı tünelden"),
+    ("сайты раздельного охвата перенесены в исключения ({}): теперь они идут мимо туннеля в любом охвате", "bölünmüş moddaki siteler istisnalara taşındı ({}): artık her kapsamda tüneli atlıyor"),
+    ("сайт «{}» раздельного охвата не перенесён в исключения: {}", "bölünmüş moddaki “{}” sitesi istisnalara taşınmadı: {}"),
     ("слишком много исключений: максимум 256 приложений и 64 ruleset'а", "too many exceptions: at most 256 apps and 64 rule sets"),
     ("для прямого подключения нужен абсолютный путь приложения", "direct connections require an absolute application path"),
     ("ruleset должен быть HTTP(S)-ссылкой на файл .json или .srs", "a rule set must be an HTTP(S) URL pointing to a .json or .srs file"),
@@ -902,9 +906,10 @@ pub static TR: &[(&str, &str)] = &[
 
 /// Индонезийские строки.
 pub static ID: &[(&str, &str)] = &[
-    ("укажите не больше 256 доменов или HTTP(S)-ссылок на сайты, без IP-адресов и паролей", "enter up to 256 domains or HTTP(S) website URLs, without IP addresses or credentials"),
     ("Туннель с исключениями", "Terowongan dengan pengecualian"),
-    ("раздельно: выбранные сайты, приложения и наборы правил напрямую, остальное через туннель", "split: selected websites, apps and rule sets go directly, everything else through the tunnel"),
+    ("раздельно: выбранные приложения и наборы правил напрямую, остальное через туннель", "terpisah: aplikasi dan kumpulan aturan terpilih langsung, sisanya melalui terowongan"),
+    ("сайты раздельного охвата перенесены в исключения ({}): теперь они идут мимо туннеля в любом охвате", "situs mode terpisah dipindahkan ke pengecualian ({}): kini melewati terowongan di semua cakupan"),
+    ("сайт «{}» раздельного охвата не перенесён в исключения: {}", "situs “{}” mode terpisah tidak dipindahkan ke pengecualian: {}"),
     ("слишком много исключений: максимум 256 приложений и 64 ruleset'а", "too many exceptions: at most 256 apps and 64 rule sets"),
     ("для прямого подключения нужен абсолютный путь приложения", "direct connections require an absolute application path"),
     ("ruleset должен быть HTTP(S)-ссылкой на файл .json или .srs", "a rule set must be an HTTP(S) URL pointing to a .json or .srs file"),

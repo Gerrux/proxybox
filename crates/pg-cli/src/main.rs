@@ -43,7 +43,7 @@ const USAGE_RU: &str = "proxybox <команда>
   browse --stop --profile <имя>  погасить этот сеанс браузера
   lang <код>             язык сообщений службы и окна: ru, en, fa, zh, tr, id
   settings               настройки службы: что действует прямо сейчас
-  settings [--direct-domains JSON] [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
+  settings [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
            [--singbox <путь>]
                          сверка подписок, запрос страны у внешнего сервиса,
                          цель пробы (пусто — сервер самого узла) и путь к
@@ -85,7 +85,7 @@ const USAGE_EN: &str = "proxybox <command>
   browse --stop --profile <name>  close that browser session
   lang <code>            language of service and window messages: ru, en, fa, zh, tr, id
   settings               service settings: what is in force right now
-  settings [--direct-domains JSON] [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
+  settings [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
            [--singbox <path>]
                          subscription refresh, exit-country lookup, probe target
                          (empty — the node's own server) and the sing-box path.
@@ -127,7 +127,7 @@ const USAGE_FA: &str = "proxybox <فرمان>
   browse --stop --profile <نام>  بستن این نشست مرورگر
   lang <کد>              زبان پیام‌های سرویس و پنجره: ru, en, fa, zh, tr, id
   settings               تنظیمات سرویس: هم‌اکنون چه چیزی برقرار است
-  settings [--direct-domains JSON] [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
+  settings [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
            [--singbox <مسیر>]
                          به‌روزرسانی اشتراک‌ها، پرسیدن کشور از سرویس بیرونی،
                          هدف آزمون (خالی — سرور خود گره) و مسیر sing-box.
@@ -169,7 +169,7 @@ const USAGE_ZH: &str = "proxybox <命令>
   browse --stop --profile <名称>  关闭该浏览器会话
   lang <代码>            服务与窗口消息的语言：ru, en, fa, zh, tr, id
   settings               服务设置：此刻实际生效的内容
-  settings [--direct-domains JSON] [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
+  settings [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
            [--singbox <路径>]
                          订阅同步、向外部服务查询国家、探测目标
                          （留空即节点自身的服务器）以及 sing-box 路径。
@@ -211,7 +211,7 @@ const USAGE_TR: &str = "proxybox <komut>
   browse --stop --profile <ad>   bu tarayıcı oturumunu kapat
   lang <kod>             hizmet ve pencere iletilerinin dili: ru, en, fa, zh, tr, id
   settings               hizmet ayarları: şu anda neyin geçerli olduğu
-  settings [--direct-domains JSON] [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
+  settings [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
            [--singbox <yol>]
                          abonelik eşitlemesi, dış hizmetten çıkış ülkesi sorgusu,
                          ölçüm hedefi (boş — düğümün kendi sunucusu) ve sing-box
@@ -253,7 +253,7 @@ const USAGE_ID: &str = "proxybox <perintah>
   browse --stop --profile <nama> tutup sesi peramban itu
   lang <kode>            bahasa pesan layanan dan jendela: ru, en, fa, zh, tr, id
   settings               pengaturan layanan: apa yang berlaku sekarang
-  settings [--direct-domains JSON] [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
+  settings [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
            [--singbox <jalur>]
                          penyelarasan langganan, permintaan negara ke layanan
                          luar, sasaran uji (kosong — server node itu sendiri) dan
@@ -346,9 +346,6 @@ fn patch_settings(args: &[String]) -> Result<Request, String> {
     }
     if let Some(v) = flag(args, "--direct-rule-sets") {
         settings.direct_rule_sets = serde_json::from_str(&v).map_err(|e| e.to_string())?;
-    }
-    if let Some(v) = flag(args, "--direct-domains") {
-        settings.direct_domains = serde_json::from_str(&v).map_err(|e| e.to_string())?;
     }
     Ok(Request::SetSettings { settings })
 }
@@ -625,7 +622,6 @@ fn main() -> std::process::ExitCode {
             println!("{:<10} {}", "failover", onoff(s.settings.failover));
             println!("{:<10} {}", "direct-apps", serde_json::to_string(&s.settings.direct_apps).unwrap());
             println!("{:<10} {}", "direct-rule-sets", serde_json::to_string(&s.settings.direct_rule_sets).unwrap());
-            println!("{:<10} {}", "direct-domains", serde_json::to_string(&s.settings.direct_domains).unwrap());
             println!("{:<10} {}", "probe", or(&s.settings.probe, t("сервер узла")));
             println!("{:<10} {}", "singbox", or(&s.settings.singbox, t("рядом со службой либо PATH")));
             std::process::ExitCode::SUCCESS
@@ -711,7 +707,7 @@ fn main() -> std::process::ExitCode {
                 "{:<11} {}",
                 t("охват:"),
                 match s.scope {
-                    Scope::Split => t("раздельно: выбранные сайты, приложения и наборы правил напрямую, остальное через туннель"),
+                    Scope::Split => t("раздельно: выбранные приложения и наборы правил напрямую, остальное через туннель"),
                     Scope::All => t("весь трафик компьютера"),
                     Scope::Whitelist => t("только выбранные приложения, остальным сеть закрыта"),
                     Scope::None => t("никто: туннель поднят, но пропусков нет ни у кого"),

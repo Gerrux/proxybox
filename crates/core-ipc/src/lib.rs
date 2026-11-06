@@ -401,9 +401,6 @@ pub struct Conn {
     /// Идёт ли соединение в туннель. Считается по цепочке маршрутов, а не по
     /// списку приложений: список — это намерение, а цепочка — то, что вышло.
     pub tunneled: bool,
-    /// Соединение попало в direct, а не было обработано внутри sing-box.
-    #[serde(default)]
-    pub direct: bool,
     /// Выбранное приложение: оно есть в белом списке и получило пропуск.
     ///
     /// Считает это служба по той же причине, по какой считает утечку: путь у
@@ -424,8 +421,9 @@ pub struct Conn {
     /// заведена, — и настоящая утечка красилась бы серым, как чужой трафик.
     /// Сторож — `a_leak_is_never_truncated_away`.
     pub leak: bool,
-    /// Ушло мимо туннеля по исключению, которое человек завёл сам
-    /// (`Status::bypass`). Не утечка: утечка — это промах, а исключение — выбор,
+    /// Ушло мимо туннеля по правилу, которое человек завёл сам: исключение
+    /// (`Status::bypass`) или, в охвате «раздельно», выбранное приложение и
+    /// набор правил. Не утечка: утечка — это промах, а исключение — выбор,
     /// и красить их одним цветом значило бы либо пугать каждым исключением,
     /// либо приучить не замечать настоящую утечку. Считается по цепочке, как и
     /// `tunneled`: тег `bypass` у маршрута один (`core_tunnel::TAG_BYPASS`).
@@ -443,8 +441,10 @@ pub struct Conn {
     pub tx: u64,
 }
 
-/// Охват приватного режима. All и Whitelist используют один конфиг без direct.
-/// Split добавляет только явные прямые исключения и требует перезапуска туннеля.
+/// Охват приватного режима. All и Whitelist используют один конфиг без правил
+/// по приложению и по набору. Split добавляет к исключениям (`Status::bypass`)
+/// ещё эти два рода правил — на тот же маршрут `bypass`, `direct` не возвращается
+/// — и требует перезапуска туннеля.
 /// Старый охват apps мигрирует отдельно: его галочки не становятся исключениями.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -859,9 +859,10 @@ pub struct Settings {
     /// URL наборов sing-box (.json или .srs), направляемых напрямую в Split.
     #[serde(default)]
     pub direct_rule_sets: Vec<String>,
-    /// Сайты напрямую в Split: домен и его поддомены.
-    #[serde(default)]
-    pub direct_domains: Vec<String>,
+    // Сайтов напрямую здесь нет: это исключения (`Status::bypass`), общие для
+    // всех охватов. Прежнее поле `direct_domains` служба читает один раз при
+    // загрузке (`legacy_split_sites`) и обратно не пишет. Сторож —
+    // `split_sites_move_into_the_exclusions`.
 }
 
 /// Умолчание срока сверки. Функцией, а не константой: `serde(default = …)`
@@ -876,7 +877,7 @@ fn six_hours() -> u32 {
 /// страна спрашивается.
 impl Default for Settings {
     fn default() -> Self {
-        Self { refresh: true, refresh_hours: six_hours(), probe: String::new(), singbox: String::new(), geo: true, failover: false, direct_apps: Vec::new(), direct_rule_sets: Vec::new(), direct_domains: Vec::new() }
+        Self { refresh: true, refresh_hours: six_hours(), probe: String::new(), singbox: String::new(), geo: true, failover: false, direct_apps: Vec::new(), direct_rule_sets: Vec::new() }
     }
 }
 
@@ -1424,7 +1425,6 @@ mod tests {
                     failover: true,
                     direct_apps: vec![r"C:\app.exe".into()],
                     direct_rule_sets: vec!["https://example.com/rules.srs".into()],
-                    direct_domains: vec!["example.org".into()],
                 },
             },
             Request::Pulse,
@@ -1485,7 +1485,6 @@ mod tests {
                     process: r"C:\Program Files\Google\Chrome\chrome.exe".into(),
                     host: "example.com:443".into(),
                     tunneled: true,
-                    direct: false,
                     picked: true,
                     leak: false,
                     bypass: false,

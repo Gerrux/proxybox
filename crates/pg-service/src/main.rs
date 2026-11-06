@@ -593,7 +593,11 @@ impl Service {
 
     fn load() -> Self {
         let raw = std::fs::read_to_string(dir().join("state.json")).unwrap_or_default();
-        let saved: Saved = serde_json::from_str(&raw).unwrap_or_default();
+        let parsed = serde_json::from_str::<Saved>(&raw).ok();
+        // Нечитаемый файл переносу не подлежит: сохранение поверх него стёрло бы
+        // то, что ещё можно спасти руками.
+        let readable = parsed.is_some();
+        let saved: Saved = parsed.unwrap_or_default();
         let (scope, migrated) = migrate_scope(&saved.scope, saved.all_traffic);
         // Журнал лежит своим файлом, а не полем state.json: его переписывает
         // каждая строка, а состояние с подпиской на сотню узлов — нет.
@@ -663,6 +667,21 @@ impl Service {
         };
         arrange(&mut me.status, &me.order, &me.sub_order);
         me.apply_settings();
+        // Сайты раздельного охвата теперь исключения: поля настроек больше нет, а
+        // человек их вписывал. Одна строка в журнале говорит и о переносе, и о
+        // перемене поведения; отказанные — каждая своей, с причиной. На диск
+        // сразу, иначе при падении до первой записи перенос повторился бы.
+        // Ключа `direct_domains` в `Settings` нет, значит и обратно он не
+        // пишется. Сторож — `split_sites_move_into_the_exclusions`.
+        let legacy_sites = if readable { legacy_split_sites(&raw) } else { Vec::new() };
+        if !legacy_sites.is_empty() {
+            let (moved, refused) = move_split_sites(&legacy_sites, &mut me.status.bypass);
+            me.log(tf!("сайты раздельного охвата перенесены в исключения ({}): теперь они идут мимо туннеля в любом охвате", moved));
+            for (site, why) in refused {
+                me.log(tf!("сайт «{}» раздельного охвата не перенесён в исключения: {}", site, why));
+            }
+            me.save();
+        }
         if migrated {
             // Молчать тут нельзя: человек выбирал одно, а работать будет
             // другое. Строка объясняет и что сменилось, и почему именно так.
@@ -960,10 +979,9 @@ impl Service {
 
     fn start(&mut self, profile: &str) -> Result<(), String> {
         let node = self.profiles.get(profile).cloned().ok_or_else(|| tf!("нет профиля «{}»", profile))?;
-        let direct_domains = if self.status.scope == Scope::Split {
+        if self.status.scope == Scope::Split {
             validate_direct(&self.settings)?;
-            normalize_direct_domains(&self.settings.direct_domains)?
-        } else { Vec::new() };
+        }
         self.private = true;
         self.status.profile = Some(profile.to_string());
         self.save();
@@ -995,7 +1013,6 @@ impl Service {
                 }
             }
             opts.direct_rule_sets = self.settings.direct_rule_sets.clone();
-            opts.direct_domains = direct_domains;
         }
         let config = build_config(&node, &opts);
         self.probe_target = probe_target(&self.status.settings.probe, &node);
@@ -1017,7 +1034,7 @@ impl Service {
                 // пути, и `opts.apps.len()` показывал бы человеку удвоенное число.
                 let count = self.status.apps.iter().filter(|a| a.enabled).count();
                 let scope = match self.status.scope {
-                    Scope::Split => t("раздельно: выбранные сайты, приложения и наборы правил напрямую, остальное через туннель"),
+                    Scope::Split => t("раздельно: выбранные приложения и наборы правил напрямую, остальное через туннель"),
                     Scope::All => t("весь трафик компьютера"),
                     Scope::Whitelist => tf!("приложений с сетью: {}, у остальных её нет", count),
                     Scope::None => t("никто: туннель поднят, но пропусков нет ни у кого"),
@@ -1995,7 +2012,6 @@ fn after_refresh(before: Option<&Value>, after: Option<&Value>, private: bool, s
 
 /// Только явные пути и URL наборов: произвольный конфиг через IPC не принимаем.
 fn validate_direct(settings: &Settings) -> Result<(), String> {
-    normalize_direct_domains(&settings.direct_domains)?;
     if settings.direct_apps.len() > 256 || settings.direct_rule_sets.len() > 64 {
         return Err(t("слишком много исключений: максимум 256 приложений и 64 ruleset'а"));
     }
@@ -2017,36 +2033,46 @@ fn validate_direct(settings: &Settings) -> Result<(), String> {
     Ok(())
 }
 
-fn normalize_direct_domains(values: &[String]) -> Result<Vec<String>, String> {
-    let invalid = || t("укажите не больше 256 доменов или HTTP(S)-ссылок на сайты, без IP-адресов и паролей");
-    if values.len() > 256 {
-        return Err(invalid());
+/// Сайты раздельного охвата, как они лежали в `state.json` прошлой версии, —
+/// сырыми строками, в том виде, в каком их записало окно. Читается из «живого»
+/// JSON, а не из `Settings`: поля в контракте больше нет (сайты напрямую — это
+/// исключения, `Status::bypass`), и держать его в структуре только ради одного
+/// чтения при загрузке значило бы оставить в контракте то, чего там быть не
+/// должно, и дать ему шанс снова оказаться на диске.
+fn legacy_split_sites(raw: &str) -> Vec<String> {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|v| v["settings"]["direct_domains"].as_array().cloned())
+        .map(|list| list.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+/// Перенос сайтов раздельного охвата в исключения при загрузке. Приводит их тем
+/// же `bypass_entry`, что и `SetBypass`, схлопывает повторы с сохранением
+/// порядка и дописывает к уже заведённому списку (свои исключения человека идут
+/// впереди). Отказанные строки возвращаются отдельно, с причиной, — молча
+/// терять сайт, который человек вписывал, нельзя.
+///
+/// Это смена поведения, и о ней говорит журнал (`Service::load`): имена, что
+/// раньше уходили мимо туннеля только в охвате «раздельно», теперь — как любое
+/// исключение — идут мимо него в любом охвате.
+fn move_split_sites(legacy: &[String], bypass: &mut Vec<String>) -> (usize, Vec<(String, String)>) {
+    let mut moved = 0;
+    let mut refused = Vec::new();
+    for raw in legacy {
+        match core_tunnel::bypass_entry(raw) {
+            Ok(entry) => {
+                // Считаем принятые, а не добавленные: имя, которое в
+                // исключениях уже стояло, тоже «перенесено» — оно там есть.
+                moved += 1;
+                if !bypass.contains(&entry) {
+                    bypass.push(entry);
+                }
+            }
+            Err(why) => refused.push((raw.clone(), why)),
+        }
     }
-    let mut domains = Vec::new();
-    for raw in values {
-        let raw = raw.trim();
-        if raw.is_empty() || raw.len() > 8192 || raw.chars().any(char::is_control) {
-            return Err(invalid());
-        }
-        let raw = raw.strip_prefix("*.").unwrap_or(raw);
-        let address = if raw.contains("://") { raw.to_string() } else { format!("https://{raw}") };
-        let url = url::Url::parse(&address).map_err(|_| invalid())?;
-        if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some() {
-            return Err(invalid());
-        }
-        let Some(url::Host::Domain(host)) = url.host() else { return Err(invalid()) };
-        let domain = host.trim_end_matches('.');
-        if domain.is_empty() || domain.len() > 253 || domain.split('.').any(|label| {
-            label.is_empty() || label.len() > 63 || label.starts_with('-') || label.ends_with('-')
-                || !label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        }) {
-            return Err(invalid());
-        }
-        if !domains.iter().any(|d| d == domain) {
-            domains.push(domain.to_string());
-        }
-    }
-    Ok(domains)
+    (moved, refused)
 }
 
 /// Ноль из вручную исправленного state.json не должен запускать сверку постоянно.
@@ -2423,7 +2449,7 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
                 }
                 s.status.scope = scope;
                 s.log(match scope {
-                    Scope::Split => t("раздельно: выбранные сайты, приложения и наборы правил напрямую, остальное через туннель"),
+                    Scope::Split => t("раздельно: выбранные приложения и наборы правил напрямую, остальное через туннель"),
                     Scope::All => t("охват: весь трафик компьютера"),
                     Scope::Whitelist => t("охват: только выбранные приложения, остальным сеть закрыта"),
                     Scope::None => t("никто: туннель поднят, но пропусков нет ни у кого"),
@@ -2623,16 +2649,11 @@ fn handle(svc: &Mutex<Service>, req: Request) -> Response {
             // сроком. Верхняя граница — про то же с другой стороны: срок в
             // тысячу лет неотличим от выключенной сверки, только молча.
             next.refresh_hours = next.refresh_hours.clamp(1, 24 * 30);
-            match normalize_direct_domains(&next.direct_domains) {
-                Ok(domains) => next.direct_domains = domains,
-                Err(message) => return Response::Error { message },
-            }
             if let Err(message) = validate_direct(&next) {
                 return Response::Error { message };
             }
             let routing_changed = s.status.scope == Scope::Split
-                && (next.direct_apps != s.settings.direct_apps || next.direct_rule_sets != s.settings.direct_rule_sets
-                    || next.direct_domains != s.settings.direct_domains);
+                && (next.direct_apps != s.settings.direct_apps || next.direct_rule_sets != s.settings.direct_rule_sets);
             s.settings = next;
             // Перезапуска требуют только изменённые исключения активного Split.
             s.apply_settings();
@@ -3394,7 +3415,6 @@ mod tests {
             process: process.into(),
             host: "example.org:443".into(),
             tunneled,
-            direct: false,
             picked: false,
             leak: false,
             bypass: false,
@@ -3436,16 +3456,54 @@ mod tests {
         assert!(validate_direct(&settings).is_err());
     }
 
+    /// Сайты раздельного охвата переехали в исключения: `state.json` прошлой
+    /// версии с `settings.direct_domains` загружается так, что имена встают в
+    /// `Status::bypass` (приведённые `bypass_entry`, без повторов, в своём
+    /// порядке, после уже заведённых), отказанные пропускаются с причиной в
+    /// журнале, о переносе в журнале ровно одна строка, а на диск поле обратно
+    /// не пишется — ни следующей записью, ни тут же.
     #[test]
-    fn websites_accept_links_and_store_only_normalized_domains() {
-        let input = [" EXAMPLE.com ", "https://example.com/path?q=1#section", "*.sub.example.com", "пример.рф", "https://site.ru:8443/page"];
-        let domains = normalize_direct_domains(&input.map(String::from)).unwrap();
-        assert_eq!(domains, ["example.com", "sub.example.com", "xn--e1afmkfd.xn--p1ai", "site.ru"]);
-        assert!(normalize_direct_domains(&[]).unwrap().is_empty());
-        for bad in ["", "https://", "ftp://example.com", "https://u:p@example.com", "127.0.0.1", "https://[::1]", "https://*.example.com", "example..com", "-example.com", "exam_ple.com", "example.com\nother.com"] {
-            assert!(normalize_direct_domains(&[bad.into()]).is_err(), "{bad}");
-        }
-        assert!(normalize_direct_domains(&vec!["example.com".into(); 257]).is_err());
+    fn split_sites_move_into_the_exclusions() {
+        let _state = scratch("pg-split-sites-test");
+        std::fs::create_dir_all(dir()).unwrap();
+        let state = dir().join("state.json");
+        // Настройки прошлой версии: нынешние плюс поле, которого в структуре уже нет.
+        let mut settings = serde_json::to_value(Settings::default()).unwrap();
+        settings["direct_apps"] = json!(["/bin/direct"]);
+        settings["direct_domains"] = json!(["Example.com", "site.ru", "*.sub.example.com", "10.0.0.1:443", "0.0.0.0/0", "example.com"]);
+        std::fs::write(
+            &state,
+            serde_json::to_string(&json!({ "apps": [], "profiles": {}, "bypass": ["158.160.0.0/16", "site.ru"], "settings": settings })).unwrap(),
+        )
+        .unwrap();
+
+        let s = Service::load();
+        assert_eq!(
+            s.status.bypass,
+            ["158.160.0.0/16", "site.ru", "example.com", "sub.example.com"],
+            "свои исключения впереди, имена приведены, повторы схлопнуты",
+        );
+        assert_eq!(s.settings.direct_apps, ["/bin/direct"], "остальное в настройках цело");
+        let moved: Vec<_> = s.status.log.iter().filter(|l| l.text.contains("перенесены в исключения")).collect();
+        assert_eq!(moved.len(), 1, "о переносе — одна строка: {:?}", s.status.log);
+        let refused = s.status.log.iter().filter(|l| l.text.contains("не перенесён в исключения")).count();
+        assert_eq!(refused, 2, "отказанные названы по одной: {:?}", s.status.log);
+
+        // На диске поля больше нет, а исключения есть: перенос не повторится.
+        let on_disk: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+        assert!(on_disk["settings"].get("direct_domains").is_none(), "{on_disk}");
+        assert_eq!(on_disk["bypass"], json!(["158.160.0.0/16", "site.ru", "example.com", "sub.example.com"]));
+        drop(s);
+        let again = Service::load();
+        assert_eq!(again.status.bypass.len(), 4);
+        assert_eq!(again.status.log.iter().filter(|l| l.text.contains("перенесены в исключения")).count(), 1, "второй загрузкой строка не множится");
+
+        // Без прежнего поля — никакого шума.
+        let _ = std::fs::remove_file(&state);
+        let _ = std::fs::remove_file(dir().join("journal.json"));
+        let clean = Service::load();
+        assert!(clean.status.bypass.is_empty());
+        assert!(!clean.status.log.iter().any(|l| l.text.contains("исключения")));
     }
 
     /// Белый список запирает дверь и раздаёт пропуска, а не наоборот.
@@ -4621,7 +4679,6 @@ mod tests {
         s.status.scope = Scope::Whitelist;
         s.settings.direct_apps = vec!["/bin/direct".into()];
         s.settings.direct_rule_sets = vec!["https://example.com/rules.srs".into()];
-        s.settings.direct_domains = vec!["example.com".into()];
         s.save();
 
         let restored = Service::load();
@@ -4635,7 +4692,6 @@ mod tests {
         assert_eq!(restored.status.apps.len(), 1);
         assert_eq!(restored.settings.direct_apps, ["/bin/direct"]);
         assert_eq!(restored.settings.direct_rule_sets, ["https://example.com/rules.srs"]);
-        assert_eq!(restored.settings.direct_domains, ["example.com"]);
         assert_eq!(restored.status.tunnel, TunnelState::Off, "туннель после старта ещё не поднят");
         assert_eq!(restored.status.rx, 0, "счётчики трафика не переносятся");
 

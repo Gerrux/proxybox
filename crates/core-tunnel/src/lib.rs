@@ -169,10 +169,12 @@ pub struct Options {
     /// продублирована намеренно: включённый по недосмотру профилировщик — это
     /// открытый порт в службе, которая ходит от LocalSystem.
     pub pprof: Option<String>,
-    /// Исключения задаёт только основной туннель в режиме Split, не проба/сеансы.
+    /// Приложения (пути, `process_path`) и наборы правил (ссылки) раздельного
+    /// охвата. Задаёт только основной туннель в режиме Split — не проба и не
+    /// сеансы — и уходят они на тот же маршрут `bypass`, что и исключения.
+    /// Сайтов здесь нет: сайт напрямую — это имя в `bypass`.
     pub direct_apps: Vec<String>,
     pub direct_rule_sets: Vec<String>,
-    pub direct_domains: Vec<String>,
     /// Исключения: адреса (`a.b.c.d/n`) и имена, которые идут мимо туннеля, —
     /// уже приведённые `bypass_entry`. Пусто — конфиг тот же, что и без поля,
     /// до байта: ни тега `bypass`, ни правила на него (сторож —
@@ -194,7 +196,6 @@ impl Default for Options {
             pprof: pprof_value(&std::env::var("PG_PPROF").unwrap_or_default()),
             direct_apps: Vec::new(),
             direct_rule_sets: Vec::new(),
-            direct_domains: Vec::new(),
             bypass: Vec::new(),
         }
     }
@@ -462,38 +463,11 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
     if wireguard {
         cfg["endpoints"] = json!([node]);
     }
-    if opts.tun && !opts.bypass.is_empty() {
-        add_bypass(&mut cfg, &opts.bypass);
+    if opts.tun && !(opts.bypass.is_empty() && opts.direct_apps.is_empty() && opts.direct_rule_sets.is_empty()) {
+        add_bypass(&mut cfg, opts);
     }
     if let Some(listen) = &opts.pprof {
         cfg["experimental"]["debug"] = json!({ "listen": listen });
-    }
-    if opts.tun && (!opts.direct_apps.is_empty() || !opts.direct_rule_sets.is_empty() || !opts.direct_domains.is_empty()) {
-        cfg["outbounds"].as_array_mut().expect("outbounds").push(json!({ "type": "direct", "tag": "direct" }));
-        let rules = cfg["route"]["rules"].as_array_mut().expect("правила");
-        // После перехвата DNS, отбоя шлюза, sniff и принудительного proxy для
-        // local: исключения никогда не подтверждают пробу напрямую.
-        if !opts.direct_apps.is_empty() {
-            rules.push(json!({ "inbound": ["tun-in"], "process_path": opts.direct_apps, "action": "route", "outbound": "direct" }));
-        }
-        if !opts.direct_domains.is_empty() {
-            rules.push(json!({ "inbound": ["tun-in"], "domain_suffix": opts.direct_domains, "action": "route", "outbound": "direct" }));
-        }
-        if !opts.direct_rule_sets.is_empty() {
-            let tags: Vec<String> = (0..opts.direct_rule_sets.len()).map(|i| format!("direct-{i}")).collect();
-            let direct = json!({ "inbound": ["tun-in"], "rule_set": tags, "action": "route", "outbound": "direct" });
-            // Доменные наборы проверяем до DNS: им достаточно имени из FakeIP.
-            rules.push(direct.clone());
-            // GeoIP-наборам нужен настоящий адрес. Разрешаем через TCP/HTTPS,
-            // чтобы выбор набора не требовал поддержки UDP от узла.
-            rules.push(json!({ "inbound": ["tun-in"], "action": "resolve", "server": "remote", "strategy": "ipv4_only" }));
-            rules.push(direct);
-            cfg["route"]["rule_set"] = json!(opts.direct_rule_sets.iter().zip(tags).map(|(url, tag)| {
-                let path = url.split(['?', '#']).next().unwrap_or(url);
-                json!({ "type": "remote", "tag": tag, "format": if path.ends_with(".srs") { "binary" } else { "source" },
-                    "url": url, "download_detour": TAG_PROXY, "update_interval": "1d" })
-            }).collect::<Vec<_>>());
-        }
     }
     cfg
 }
@@ -505,7 +479,11 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
 /// соединений отличал исключение от утечки (`Conn::bypass`).
 pub const TAG_BYPASS: &str = "bypass";
 
-/// Исключения в конфиг: свой outbound и правила на него, по одному на род.
+/// Путь мимо туннеля в конфиг: свой outbound и правила на него, по одному на
+/// род. Родов четыре — адреса и имена из исключений (`Options::bypass`), а в
+/// охвате «раздельно» ещё приложения и наборы правил (`Options::direct_apps`,
+/// `Options::direct_rule_sets`), — и маршрут у всех один: outbound `bypass`
+/// заводится ровно один раз, как бы много родов ни набралось.
 ///
 /// Только на `tun-in`, и это главное в этой функции. Вход `local` — путь пробы:
 /// попади её цель под исключение (по умолчанию цель — сам сервер узла, и
@@ -515,11 +493,18 @@ pub const TAG_BYPASS: &str = "bypass";
 /// шлюза, сниффингом и маршрутом пробы, — а `final` остаётся туннелем. Сторож —
 /// `a_bypass_never_catches_the_probe`.
 ///
-/// Без TUN исключений нет вовсе: прогон профилей и сеансы браузера живут без
-/// него, и окно браузера, ушедшее мимо узла, показало бы сайту настоящий адрес
-/// — ровно то, ради чего браузерный профиль и заводят.
-fn add_bypass(cfg: &mut Value, bypass: &[String]) {
-    let (cidrs, names): (Vec<&String>, Vec<&String>) = bypass.iter().partition(|e| e.contains('/'));
+/// Порядок среди своих — от дешёвого к дорогому: адреса и имена, потом
+/// `process_path`, потом наборы правил. Порядок читается, но ничего не
+/// экономит: одно правило по `process_path` где угодно в наборе заставляет
+/// sing-box выяснять процесс **каждому** соединению машины, до разбора правил и
+/// без сокращения ранним совпадением (замер в CLAUDE.md, 1.13.19). Это цена
+/// охвата «раздельно», названная и принятая.
+///
+/// Без TUN этого нет вовсе: прогон профилей и сеансы браузера живут без него, и
+/// окно браузера, ушедшее мимо узла, показало бы сайту настоящий адрес — ровно
+/// то, ради чего браузерный профиль и заводят.
+fn add_bypass(cfg: &mut Value, opts: &Options) {
+    let (cidrs, names): (Vec<&String>, Vec<&String>) = opts.bypass.iter().partition(|e| e.contains('/'));
     let rules = cfg["route"]["rules"].as_array_mut().expect("правила маршрута");
     if !cidrs.is_empty() {
         rules.push(json!({ "inbound": ["tun-in"], "ip_cidr": cidrs, "action": "route", "outbound": TAG_BYPASS }));
@@ -530,6 +515,24 @@ fn add_bypass(cfg: &mut Value, bypass: &[String]) {
     // мимо туннеля), а не сервер узла: соединение и так идёт мимо него.
     if !names.is_empty() {
         rules.push(json!({ "inbound": ["tun-in"], "domain_suffix": names, "action": "route", "outbound": TAG_BYPASS }));
+    }
+    if !opts.direct_apps.is_empty() {
+        rules.push(json!({ "inbound": ["tun-in"], "process_path": opts.direct_apps, "action": "route", "outbound": TAG_BYPASS }));
+    }
+    if !opts.direct_rule_sets.is_empty() {
+        let tags: Vec<String> = (0..opts.direct_rule_sets.len()).map(|i| format!("bypass-set-{i}")).collect();
+        let route = json!({ "inbound": ["tun-in"], "rule_set": tags, "action": "route", "outbound": TAG_BYPASS });
+        // Доменные наборы проверяем до DNS: им достаточно имени из FakeIP.
+        rules.push(route.clone());
+        // GeoIP-наборам нужен настоящий адрес. Разрешаем через TCP/HTTPS,
+        // чтобы выбор набора не требовал поддержки UDP от узла.
+        rules.push(json!({ "inbound": ["tun-in"], "action": "resolve", "server": "remote", "strategy": "ipv4_only" }));
+        rules.push(route);
+        cfg["route"]["rule_set"] = json!(opts.direct_rule_sets.iter().zip(tags).map(|(url, tag)| {
+            let path = url.split(['?', '#']).next().unwrap_or(url);
+            json!({ "type": "remote", "tag": tag, "format": if path.ends_with(".srs") { "binary" } else { "source" },
+                "url": url, "download_detour": TAG_PROXY, "update_interval": "1d" })
+        }).collect::<Vec<_>>());
     }
     let outbounds = cfg["outbounds"].as_array_mut().expect("список outbounds");
     outbounds.push(json!({ "type": "direct", "tag": TAG_BYPASS }));
@@ -1246,7 +1249,6 @@ fn parse_conn(c: &Value, owner_of: &dyn Fn(&'static str, u16, &str) -> Option<St
             .and_then(|port| owner_of(proto, port, &str_of(&meta["sourceIP"])))
             .unwrap_or_default(),
         host: if port.is_empty() { host } else { format!("{host}:{port}") },
-        direct: c["chains"].as_array().is_some_and(|tags| tags.iter().any(|tag| tag == "direct")),
         tunneled: c["chains"]
             .as_array()
             .map(Vec::as_slice)
@@ -1470,19 +1472,21 @@ mod tests {
         assert!(tunneled.tunneled);
         assert_eq!((tunneled.rx, tunneled.tx), (2048, 512));
 
-        let direct = parse_conn(
+        // Мимо туннеля теперь ведёт один тег, и неважно, что на него отправило —
+        // исключение, выбранное приложение или набор правил раздельного охвата.
+        let aside = parse_conn(
             &json!({
                 "metadata": { "destinationIP": "1.1.1.1", "destinationPort": "53" },
-                "chains": ["direct"],
+                "chains": [TAG_BYPASS],
             }),
             &|_, _, _| None,
         );
-        assert_eq!(direct.host, "1.1.1.1:53", "домена нет — остаётся адрес");
-        assert!(!direct.tunneled);
-        assert!(direct.direct);
+        assert_eq!(aside.host, "1.1.1.1:53", "домена нет — остаётся адрес");
+        assert!(!aside.tunneled);
+        assert!(aside.bypass);
         let internal = parse_conn(&json!({ "chains": [] }), &|_, _, _| None);
-        assert!(!internal.direct);
-        assert!(!tunneled.direct);
+        assert!(!internal.bypass);
+        assert!(!tunneled.bypass);
     }
 
     /// Имя процесса берётся по локальному порту, а не из ответа sing-box.
@@ -1606,34 +1610,45 @@ mod tests {
         json!({ "type": "trojan", "server": "a.com", "server_port": 443, "password": "p" })
     }
 
+    /// Правила раздельного охвата и исключения — один маршрут: outbound `bypass`
+    /// один, как бы много родов ни набралось, а `direct` не возвращается ни с
+    /// приложениями, ни с наборами правил, ни с исключениями вместе.
     #[test]
-    fn split_exceptions_are_explicit_and_never_affect_the_probe() {
+    fn split_rules_share_the_bypass_outbound() {
         for node in [node(), wg_node()] {
             for (apps, sets, sites) in [(true, false, false), (false, true, false), (true, true, false), (false, false, true), (true, false, true), (false, true, true), (true, true, true)] {
                 let opts = Options {
                     direct_apps: if apps { vec![r"C:\apps\browser.exe".into()] } else { vec![] },
                     direct_rule_sets: if sets { vec!["https://example.com/geo.srs?version=1".into(), "https://example.com/site.json".into()] } else { vec![] },
-                    direct_domains: if sites { vec!["example.org".into()] } else { vec![] },
+                    bypass: if sites { vec!["example.org".into(), "158.160.0.0/16".into()] } else { vec![] },
                     ..Default::default()
                 };
                 let cfg = build_config(&node, &opts);
                 assert_eq!(cfg["route"]["final"], TAG_PROXY);
-                assert!(cfg["outbounds"].as_array().unwrap().iter().any(|o| o["tag"] == "direct"));
+                let outbounds = cfg["outbounds"].as_array().unwrap();
+                assert_eq!(outbounds.iter().filter(|o| o["tag"] == TAG_BYPASS && o["type"] == "direct").count(), 1, "outbound bypass ровно один: {outbounds:#?}");
+                assert!(!outbounds.iter().any(|o| o["tag"] == "direct"), "тег direct не возвращается: {outbounds:#?}");
                 let rules = cfg["route"]["rules"].as_array().unwrap();
                 let local = rules.iter().position(|r| r["inbound"][0] == "local").unwrap();
-                for (i, rule) in rules.iter().enumerate().filter(|(_, r)| r["outbound"] == "direct") {
+                for (i, rule) in rules.iter().enumerate().filter(|(_, r)| r["outbound"] == TAG_BYPASS) {
                     assert_eq!(rule["inbound"], json!(["tun-in"]));
                     assert!(i > local, "проба всегда через proxy");
                     assert!(i > rules.iter().position(|r| r["action"] == "hijack-dns").unwrap());
+                    assert!(i > rules.iter().position(|r| r["action"] == "sniff").unwrap());
                 }
+                assert!(!rules.iter().any(|r| r["outbound"] == "direct"), "ни одно правило не ведёт на direct: {rules:#?}");
                 if apps {
-                    assert!(rules.iter().any(|r| r["process_path"] == json!(opts.direct_apps)));
+                    assert!(rules.iter().any(|r| r["process_path"] == json!(opts.direct_apps) && r["outbound"] == TAG_BYPASS));
                 }
                 if sites {
-                    let site = rules.iter().position(|r| r["domain_suffix"] == json!(opts.direct_domains)).unwrap();
-                    assert_eq!(rules[site]["outbound"], "direct");
+                    let site = rules.iter().position(|r| r["domain_suffix"] == json!(["example.org"])).unwrap();
+                    assert_eq!(rules[site]["outbound"], TAG_BYPASS);
                     if sets {
                         assert!(site < rules.iter().position(|r| r["action"] == "resolve").unwrap());
+                    }
+                    if apps {
+                        let process = rules.iter().position(|r| !r["process_path"].is_null()).unwrap();
+                        assert!(site < process, "дешёвые правила — до матчера по процессу");
                     }
                 }
                 if sets {
@@ -1651,7 +1666,7 @@ mod tests {
                 }
                 let bare = build_config(&node, &Options { tun: false, ..opts });
                 assert!(bare["route"]["rule_set"].is_null());
-                assert!(!bare["outbounds"].as_array().unwrap().iter().any(|o| o["tag"] == "direct"));
+                assert!(!bare["outbounds"].as_array().unwrap().iter().any(|o| o["tag"] == "direct" || o["tag"] == TAG_BYPASS));
             }
         }
     }
@@ -1665,7 +1680,7 @@ mod tests {
             let cfg = build_config(&node, &Options {
                 direct_apps: vec![r"C:\apps\browser.exe".into()],
                 direct_rule_sets: vec!["https://example.com/rules.srs".into(), "https://example.com/rules.json".into()],
-                direct_domains: vec!["example.org".into()],
+                bypass: vec!["example.org".into(), "158.160.0.0/16".into()],
                 ..Default::default()
             });
             std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
@@ -1713,7 +1728,7 @@ mod tests {
         assert_eq!(cfg["dns"]["servers"][0]["type"], "https", "TCP-узел не обязан поддерживать UDP DNS");
         // Вместо TUN — тот же вход по тегу, но на loopback, без прав администратора.
         cfg["inbounds"][1] = json!({ "type": "mixed", "tag": "tun-in", "listen": "127.0.0.1", "listen_port": test_port });
-        cfg["route"]["rule_set"] = json!([{ "type": "inline", "tag": "direct-0", "rules": [{ "domain_suffix": ["direct.test"] }] }]);
+        cfg["route"]["rule_set"] = json!([{ "type": "inline", "tag": "bypass-set-0", "rules": [{ "domain_suffix": ["direct.test"] }] }]);
         for rule in cfg["route"]["rules"].as_array_mut().unwrap() {
             if !rule["rule_set"].is_null() {
                 // Цель теста локальная: DNS не требуется и самому direct-outbound.
@@ -1749,7 +1764,7 @@ mod tests {
     fn nothing_can_go_direct() {
         assert!(Options::default().direct_apps.is_empty());
         assert!(Options::default().direct_rule_sets.is_empty());
-        assert!(Options::default().direct_domains.is_empty());
+        assert!(Options::default().bypass.is_empty());
 
         for node in [node(), wg_node()] {
             for tun in [true, false] {
@@ -2479,7 +2494,6 @@ mod tests {
             tunneled,
             picked: false,
             leak: false,
-            direct: false,
             bypass: false,
             silent: false,
             rx,
