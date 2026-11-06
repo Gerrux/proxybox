@@ -22,14 +22,22 @@
  *  собственную привилегированную часть скачанным файлом без подписи нельзя.
  *  Поэтому окно доводит до установщика и останавливается.
  *
- *  Строки собраны в группы, а не в один список через линейку. Список был
- *  ровный: девять одинаковых полос, у каждой подпись тем же гравированным
- *  шрифтом, что и у панели, — и найти в нём глазом «путь к sing-box» стоило
- *  чтения всех девяти. Теперь гравировкой подписана группа, а строка внутри —
- *  обычным текстом: разного размера подписи и есть то, чем список читается не
- *  подряд. Группы утоплены в плиту тем же пазом, что списки и поля, — новой
- *  поверхности ради настроек не заводится. */
-import { useEffect, useState, type ReactNode } from "react";
+ *  Строки собраны в разделы, а не в один список через линейку: разделов восемь,
+ *  и найти глазом «путь к sing-box» среди двадцати полос стоило чтения всех.
+ *  Слева — оглавление (липкое), справа — разделы подряд; нажатие в оглавлении
+ *  прокручивает к разделу, а подсвечивает текущий `IntersectionObserver`:
+ *  опроса и таймеров нет, событие даёт сама прокрутка. Порядок — по частоте
+ *  обращений: внешний вид и подписки открывают каждую неделю, диагностику и
+ *  «о программе» — когда что-то сломалось. Пока ширины на колонку не хватает,
+ *  оглавление ложится полосой сверху и прокручивается вбок. Ширину спрашиваем
+ *  у самой панели, а не у окна: выше 1100 px рейка и панели делят окно иначе,
+ *  и `max-width` про это молчит (тот же замер, что и у списка профилей).
+ *
+ *  Подсказка строки — две строки текста и «подробнее», а не весь абзац: четыре
+ *  подсказки в пять строк каждая превращали экран в чтение. Нужна ли кнопка,
+ *  решает замер (`Note`): подсказка, которая помещается, кнопки не получает.
+ *  Подсказки при этом остались теми же строками — сокращён показ, не текст. */
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   autostart as readAutostart,
   call,
@@ -44,10 +52,27 @@ import {
   type Status,
 } from "./platform";
 import { strings, type Strings } from "./i18n";
-import { Button, CopyButton, FIELD, Icon, Modal, Panel, SearchField, Segmented, Switch } from "./ui";
+import { Button, CopyButton, FIELD, Icon, Modal, Panel, SearchField, Segmented, Switch, useBoxWidth } from "./ui";
 import { ruleSets } from "./ruleSets";
 
 const REPO = "Gerrux/proxybox";
+
+/** Ширина панели, с которой оглавление встаёт колонкой слева. Колонка в 176 px
+ *  плюс отступы оставляют разделу около 500 px — строка настройки с полем в
+ *  240 px и подписью в 200 помещается в один ряд; уже панели оглавление
+ *  занимало бы место у самих настроек, и оно ложится полосой сверху. */
+const INDEX_FROM = 720;
+
+/** Верхний край полосы, в которой раздел считается «текущим»: полоса оглавления
+ *  в узком виде (~44 px) и отступ раздела. Нижний — 55% высоты прокрутки, чтобы
+ *  текущим был тот раздел, что занимает верх экрана, а не тот, что только
+ *  показался внизу. */
+const SPY_MARGIN = "-56px 0px -55% 0px";
+
+/** Слова для подсказок строк. Строка настройки стоит глубоко в разметке, и
+ *  тащить в неё `Strings` пропсом через каждую группу — шум; контекст у одной
+ *  панели, и читают его только `Note` и оглавление. */
+const Words = createContext<Strings>(strings(undefined));
 
 type Release = {
   tag_name: string;
@@ -214,9 +239,126 @@ export function Settings({
     void act({ cmd: "set-settings", arg: { settings: { ...settings, ...change } } });
   };
 
+  // Разделы в порядке частоты обращений. «Раздельно» есть, только когда
+  // настройки пришли: без них нечего показать, а пустой раздел в оглавлении
+  // вёл бы в никуда. Подпись в оглавлении короткая (`scopeSplit`), заголовок
+  // раздела — полное имя режима.
+  const sections: { key: string; label: string }[] = [
+    { key: "look", label: s.groupLook },
+    { key: "subs", label: s.groupNodes },
+    { key: "tunnel", label: s.groupTunnel },
+    ...(settings ? [{ key: "split", label: s.scopeSplit }] : []),
+    { key: "bypass", label: s.bypassTitle },
+    { key: "startup", label: s.groupStartup },
+    { key: "diag", label: s.groupDiagnostics },
+    { key: "about", label: s.groupAbout },
+  ];
+  const keys = sections.map((x) => x.key).join();
+
+  const rootRef = useRef<HTMLDivElement>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+  const indexRef = useRef<HTMLElement>(null);
+  const row = useBoxWidth(rootRef) < INDEX_FROM;
+  const [active, setActive] = useState("look");
+
+  // Подсветка текущего раздела. Наблюдатель за пересечением, а не слушатель
+  // прокрутки: событие приходит, только когда раздел вошёл в полосу или вышел
+  // из неё, а не на каждый пиксель. Ни одного раздела в полосе нет — остаётся
+  // прежний: длинный раздел может занять её целиком, и подсветка не должна
+  // гаснуть посреди него.
+  //
+  // Последний раздел короткий и до верха экрана не доезжает никогда, даже
+  // когда прокручено до упора, — его «видит» отдельный наблюдатель за меткой
+  // в конце списка, и только пока что-то прокручено: если всё помещается,
+  // метка видна всегда и последним объявляться было бы нечестно.
+  useEffect(() => {
+    const root = rootRef.current;
+    const box = root?.closest(".scroll");
+    if (!root || !(box instanceof HTMLElement)) return;
+    const order = keys.split(",");
+    const seen = new Set<string>();
+    let bottom = false;
+    const decide = () => {
+      if (bottom && box.scrollTop > 0) return setActive(order[order.length - 1]);
+      const first = order.find((k) => seen.has(k));
+      if (first) setActive(first);
+    };
+    const spy = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          const k = (e.target as HTMLElement).dataset.section;
+          if (!k) continue;
+          if (e.isIntersecting) seen.add(k);
+          else seen.delete(k);
+        }
+        decide();
+      },
+      { root: box, rootMargin: SPY_MARGIN },
+    );
+    root.querySelectorAll("[data-section]").forEach((el) => spy.observe(el));
+    const end = new IntersectionObserver(
+      ([e]) => {
+        bottom = !!e?.isIntersecting;
+        decide();
+      },
+      { root: box },
+    );
+    if (endRef.current) end.observe(endRef.current);
+    return () => {
+      spy.disconnect();
+      end.disconnect();
+    };
+  }, [keys]);
+
+  // В полосе подсвеченный пункт обязан быть виден: полоса прокручивается вбок,
+  // и текущий раздел, чей пункт ушёл за край, подсвечивался бы вслепую.
+  // Двигаем саму полосу, а не зовём `scrollIntoView` у пункта: тот прокручивает
+  // заодно и все предки, то есть обрывал плавную прокрутку разделов на первой
+  // же смене подсветки (замерено: нажатие шло на 53 px и вставало). `scrollBy`
+  // физический, поэтому одинаково работает и справа налево.
+  useEffect(() => {
+    const bar = indexRef.current;
+    const item = bar?.querySelector('[aria-current="true"]');
+    if (!row || !bar || !item) return;
+    const b = bar.getBoundingClientRect();
+    const r = item.getBoundingClientRect();
+    if (r.left < b.left) bar.scrollBy({ left: r.left - b.left });
+    else if (r.right > b.right) bar.scrollBy({ left: r.right - b.right });
+  }, [active, row]);
+
+  const go = (key: string) => {
+    setActive(key);
+    const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    rootRef.current
+      ?.querySelector(`[data-section="${key}"]`)
+      ?.scrollIntoView({ block: "start", behavior: calm ? "auto" : "smooth" });
+  };
+
+  const index = (
+    <nav
+      ref={indexRef}
+      aria-label={s.settingsSections}
+      className={row ? "scroll flex gap-1 overflow-x-auto px-3 py-1.5" : "flex w-44 flex-none flex-col gap-0.5"}
+    >
+      {sections.map(({ key, label }) => (
+        <button
+          key={key}
+          type="button"
+          aria-current={active === key ? "true" : undefined}
+          onClick={() => go(key)}
+          className={`set-item smooth h-8 px-3 text-start text-sm text-muted aria-[current=true]:text-ink ${
+            row ? "shrink-0 whitespace-nowrap" : "truncate"
+          }`}
+          title={label}
+        >
+          {label}
+        </button>
+      ))}
+    </nav>
+  );
+
   return (
     <Panel
-      pad="p-4"
       className={className}
       title={s.settings}
       action={
@@ -225,22 +367,11 @@ export function Settings({
         </Button>
       }
     >
-      <div className="mx-auto flex max-w-3xl flex-col gap-6 px-1 pb-4">
-        {settings && (
-          <Group title={s.splitTitle}>
-            <p className="border-b border-edge py-3 text-sm text-muted">{s.splitSitesPointer}</p>
-            <details className="border-b border-edge py-3">
-              <summary className="cursor-pointer text-sm">{s.rulesReady} · {s.rulesSelected(settings.direct_rule_sets?.length ?? 0)}</summary>
-              <div className="pt-3">
-                <h4 className="text-sm">{s.splitRuleSets}</h4>
-                <p className="mb-3 mt-0.5 text-xs text-muted">{s.splitRulesNote}</p>
-                <RuleSets lang={lang} value={settings.direct_rule_sets ?? []} onSubmit={(direct_rule_sets) => patch({ direct_rule_sets })} />
-              </div>
-            </details>
-          </Group>
-        )}
-
-        <Group title={s.groupLook}>
+      <Words.Provider value={s}>
+      <div ref={rootRef} className={row ? "set-narrow" : "flex items-start"}>
+        {row ? <div className="set-bar">{index}</div> : <div className="sticky top-0 flex-none ps-3 pt-4">{index}</div>}
+      <div className="mx-auto flex min-w-0 max-w-3xl flex-1 flex-col gap-8 p-4 pb-8">
+        <Group id="look" title={s.groupLook}>
           <Row title={s.language} note={s.languageHint}>
             {/* Выпадающий список, а не полоска: шесть двухбуквенных кодов в ряд
                 читались шифром, а названия языков в ряд не помещаются. */}
@@ -280,13 +411,7 @@ export function Settings({
           </Row>
         </Group>
 
-        <Group title={s.groupStartup}>
-          <Row title={s.autostartTitle} note={s.autostartHint}>
-            <Autostart lang={lang} onError={onError} />
-          </Row>
-        </Group>
-
-        <Group title={s.groupNodes}>
+        <Group id="subs" title={s.groupNodes}>
           <Row title={s.refreshSubs} note={s.refreshSubsHint}>
             <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
               {/* Срок показывается только при включённой сверке: выключенной он
@@ -315,7 +440,7 @@ export function Settings({
           </Row>
         </Group>
 
-        <Group title={s.groupTunnel}>
+        <Group id="tunnel" title={s.groupTunnel}>
           <Row title={s.probeTitle} note={s.probeHint}>
             <TextSetting
               lang={lang}
@@ -335,8 +460,33 @@ export function Settings({
             />
           </Row>
 
-          <Bypass lang={lang} rules={status?.bypass ?? []} act={act} />
+        </Group>
 
+        {settings && (
+          <Group id="split" title={s.splitTitle}>
+            <p className="border-b border-edge py-3 text-sm text-muted">{s.splitSitesPointer}</p>
+            <details className="border-b border-edge py-3">
+              <summary className="cursor-pointer text-sm">{s.rulesReady} · {s.rulesSelected(settings.direct_rule_sets?.length ?? 0)}</summary>
+              <div className="pt-3">
+                <h4 className="text-sm">{s.splitRuleSets}</h4>
+                <p className="mb-3 mt-0.5 text-xs text-muted">{s.splitRulesNote}</p>
+                <RuleSets lang={lang} value={settings.direct_rule_sets ?? []} onSubmit={(direct_rule_sets) => patch({ direct_rule_sets })} />
+              </div>
+            </details>
+          </Group>
+        )}
+
+        <Group id="bypass" title={s.bypassTitle}>
+          <Bypass lang={lang} rules={status?.bypass ?? []} act={act} />
+        </Group>
+
+        <Group id="startup" title={s.groupStartup}>
+          <Row title={s.autostartTitle} note={s.autostartHint}>
+            <Autostart lang={lang} onError={onError} />
+          </Row>
+        </Group>
+
+        <Group id="diag" title={s.groupDiagnostics}>
           <Row title={s.singboxTitle} note={s.singboxHint}>
             <TextSetting
               lang={lang}
@@ -368,10 +518,13 @@ export function Settings({
           </Row>
         </Group>
 
-        <Group title={s.groupAbout}>
+        <Group id="about" title={s.groupAbout}>
+          {/* Состояние обновления — не подсказка, а ответ на нажатие: он
+              стоит отдельной строкой под именем и под сокращение не попадает,
+              иначе «вышла новая версия» пряталась бы за «подробнее». */}
           <Row
             title={s.versionAndUpdates}
-            note={
+            status={
               <>
                 {s.version} <span className="font-semibold text-ink">{VERSION}</span>
                 {latest && fresh && <span className="text-accent"> · {s.updateAvailable(latest.tag_name)}</span>}
@@ -379,10 +532,9 @@ export function Settings({
                 {/* Не дозвонились до GitHub — это поломка, а не запертый канал:
                     янтарь тут значил бы сработавшую защиту, которой здесь нет. */}
                 {error != null && <span className="selectable text-fault"> · {error}</span>}
-                <br />
-                {s.updatesHint}
               </>
             }
+            note={s.updatesHint}
           >
             {latest && fresh && (
               <Button variant="primary" onClick={rel.openUpdate}>
@@ -423,18 +575,18 @@ export function Settings({
           {/* Дыры продукта видит тот, у кого он не работает, а до трекера от
               него дороги не было вовсе. Ведёт на форму заведения — снимок
               экрана человек прикладывает там же, перетаскиванием. */}
-          <Row title={s.shortcutsTitle} note={s.shortcutsHint}>
-            {null}
-          </Row>
+          <Row title={s.shortcutsTitle} note={s.shortcutsHint} />
 
           <Row title={s.issueTitle} note={s.issueHint}>
             <Button variant="quiet" onClick={() => void openUrl(`https://github.com/${REPO}/issues/new`)}>
               {s.issueOpen}
             </Button>
           </Row>
-
         </Group>
+        <div ref={endRef} aria-hidden className="-mt-8 h-px" />
       </div>
+      </div>
+      </Words.Provider>
       {showLog && <SingboxLog s={s} onClose={() => setShowLog(false)} />}
     </Panel>
   );
@@ -510,14 +662,16 @@ function SingboxLog({ s, onClose }: { s: Strings; onClose: () => void }) {
  *  «Параметров»: в стопке одинаковых карточек глаз не отличал группу от
  *  строки. Подпись стоит снаружи, а не внутри: внутри она стала бы ещё одной
  *  строкой и снова сравнялась бы с настройками, от которых её и отделяют. */
-function Group({ title, children }: { title: string; children: ReactNode }) {
+function Group({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return (
-    <section>
+    <section data-section={id}>
       <h3 className="mb-1 text-base font-semibold">{title}</h3>
       <div className="flex flex-col">{children}</div>
     </section>
   );
 }
+
+type RowProps = { title: string | null; note: ReactNode; status?: ReactNode; children?: ReactNode };
 
 /** Строка настройки: слева — что это и почему, справа — чем этим управляют,
  *  под строкой волосяная линия. В узком окне управление уезжает под подпись,
@@ -539,16 +693,71 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
  *  `no_setting_is_out_of_reach_in_the_flyout`.
  *
  *  Строки разведены линиями, а не карточками: карточка на каждую настройку
- *  делала настройки неотличимыми от панелей, а окно — стопкой плиток. */
-function Row({ title, note, children }: { title: string; note: ReactNode; children: ReactNode }) {
+ *  делала настройки неотличимыми от панелей, а окно — стопкой плиток.
+ *
+ *  Управление прижато к концу строки (`ms-auto`), а не к подписи: колонка
+ *  управлений в разных строках ровная, и по ней глаз идёт сверху вниз. Заголовка
+ *  у строки может не быть (`title` — `null`): у раздела «Исключения» он совпал
+ *  бы с заголовком самого раздела. Не бывает и управления — строка «Клавиши»
+ *  только читается, и пустой блок не рисуется. `status` — то, что отвечает на
+ *  действие (версия, ошибка проверки), и под сокращение подсказки оно не
+ *  попадает. */
+function Row({ title, note, status, children }: RowProps) {
   return (
     <div className="flex min-h-16 flex-wrap items-center gap-x-4 gap-y-2.5 border-b border-edge py-3">
       <div className="min-w-[200px] flex-1">
-        <h4 className="text-sm">{title}</h4>
-        <p className="mt-0.5 text-xs text-muted">{note}</p>
+        {title != null && <h4 className="text-sm">{title}</h4>}
+        {status != null && <p className="mt-0.5 text-xs text-muted">{status}</p>}
+        <Note>{note}</Note>
       </div>
-      <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">{children}</div>
+      {children != null && (
+        <div className="ms-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">{children}</div>
+      )}
     </div>
+  );
+}
+
+/** Подсказка строки: две строки и «подробнее». Кнопка появляется, только когда
+ *  текст действительно не поместился, — это решает замер (`scrollHeight` против
+ *  `clientHeight` свернутого абзаца), а не длина строки: ту же фразу в 380 px
+ *  и в 900 px читают за разное число строк, и на длину глазом не угадать.
+ *
+ *  Замер повторяется на каждую отрисовку и на смену размера самого абзаца:
+ *  язык, перенос под шириной панели и ответ GitHub меняют текст, не меняя
+ *  числа строк в свернутом виде. В развёрнутом виде мерить нечем — клампа нет,
+ *  — поэтому прежний ответ остаётся и кнопка «свернуть» не пропадает. */
+function Note({ children }: { children: ReactNode }) {
+  const s = useContext(Words);
+  const ref = useRef<HTMLParagraphElement>(null);
+  const [open, setOpen] = useState(false);
+  const [over, setOver] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && !open) setOver(el.scrollHeight > el.clientHeight + 1);
+  });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || open) return;
+    const watch = new ResizeObserver(() => setOver(el.scrollHeight > el.clientHeight + 1));
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [open]);
+  return (
+    <>
+      <p ref={ref} className={`mt-0.5 text-xs text-muted ${open ? "" : "line-clamp-2"}`}>
+        {children}
+      </p>
+      {(over || open) && (
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+          className="mt-0.5 text-xs text-accent hover:underline"
+        >
+          {open ? s.noteLess : s.noteMore}
+        </button>
+      )}
+    </>
   );
 }
 
@@ -721,7 +930,8 @@ function Bypass({
 
   return (
     <div>
-      <Row title={s.bypassTitle} note={s.bypassHint}>
+      {/* Заголовка у строки нет: он совпал бы с заголовком раздела. */}
+      <Row title={null} note={s.bypassHint}>
         <form
           className="flex min-w-[240px] flex-1 gap-2"
           onSubmit={(e) => {

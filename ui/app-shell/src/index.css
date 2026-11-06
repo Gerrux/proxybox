@@ -346,6 +346,65 @@ body {
   background: var(--pg-press);
 }
 
+/* Бляшка у верхнего угла значка — InfoBadge Windows 11. Таблетка 16 px с
+   заливкой слоя и кольцом в 2 px цвета того, на чём лежит пункт: кольцо
+   вырезает угол значка, и цифры не ложатся на его штрихи. Бляшка заходит на
+   значок (20 px) на 10 px вширь и на 8 вниз: закрыт угол, а середина значка
+   (10, 10) осталась свободной. Двузначное число при этом ещё помещается в
+   рейку в 48 px (замерено: правый край впритык к кромке рейки); «99+» в такой
+   рейке кольцом чуть обрезается, на читаемость цифр это не влияет. Левый
+   край — логический, справа налево бляшка встаёт у другого угла.
+
+   Выбранный пункт лежит на прозрачной заливке `--pg-press`, и кольцо цвета
+   рейки вокруг бляшки светилось бы тёмным пятном на нём, — поэтому у
+   выбранного кольцо того же тона, что и заливка поверх рейки (смесь считана
+   теми же 8% и 10%, что и у токена). Точка — то же без числа: 10 px, цвет —
+   состояние (`closed` — заперто, `fault` — сбой). */
+.rail-badge {
+  --ring: var(--pg-bg);
+  position: absolute;
+  inset-block-start: -8px;
+  inset-inline-start: 100%;
+  margin-inline-start: -10px;
+  display: grid;
+  place-items: center;
+  block-size: 16px;
+  min-inline-size: 16px;
+  padding-inline: 4px;
+  border: 1px solid var(--pg-border-strong);
+  border-radius: 9999px;
+  background: var(--pg-surface);
+  box-shadow: 0 0 0 2px var(--ring);
+  color: var(--pg-text);
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.rail-item[aria-pressed="true"] .rail-badge {
+  --ring: light-dark(
+    color-mix(in srgb, var(--pg-bg), black 8%),
+    color-mix(in srgb, var(--pg-bg), white 10%)
+  );
+}
+
+.rail-badge[data-dot] {
+  inset-block-start: -4px;
+  margin-inline-start: -5px;
+  block-size: 10px;
+  min-inline-size: 10px;
+  padding: 0;
+  border: 0;
+}
+
+.rail-badge[data-dot="closed"] {
+  background: var(--pg-closed);
+}
+
+.rail-badge[data-dot="fault"] {
+  background: var(--pg-fault);
+}
+
 .rail-item[aria-pressed="true"]::before {
   content: "";
   position: absolute;
@@ -1095,6 +1154,63 @@ h3.sub-head:hover {
   inset-block-end: 0;
   block-size: 2px;
   background: var(--pg-accent);
+}
+
+/* Оглавление настроек. Пункт — как пункт рейки: заливка под указателем и у
+   текущего, акцентная полоска у начала. В узком виде оглавление — полоса
+   сверху, липнущая к кромке прокрутки (она же и держит липкое, отступа у
+   панели нет — см. `.sub-head`), и полоска у пункта ложится снизу, как у
+   `.sub-cell`. Разделам в таком виде нужен запас под полосу, иначе заголовок
+   после нажатия остался бы под ней. */
+.set-item {
+  position: relative;
+  border-radius: 4px;
+}
+
+.set-item:hover {
+  background: var(--pg-hover);
+}
+
+.set-item[aria-current="true"] {
+  background: var(--pg-press);
+}
+
+.set-item[aria-current="true"]::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: 0;
+  top: 50%;
+  translate: 0 -50%;
+  inline-size: 3px;
+  block-size: 16px;
+  border-radius: 9999px;
+  background: var(--pg-accent);
+}
+
+.set-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  border-bottom: 1px solid var(--pg-border);
+  background: var(--pg-bg);
+}
+
+.set-bar .set-item[aria-current="true"]::before {
+  inset-inline: 8px;
+  inset-block: auto 0;
+  top: auto;
+  translate: none;
+  inline-size: auto;
+  block-size: 2px;
+  border-radius: 0;
+}
+
+[data-section] {
+  scroll-margin-top: 16px;
+}
+
+.set-narrow [data-section] {
+  scroll-margin-top: 60px;
 }
 
 /* Строка списка профилей под прокруткой раскладывается и рисуется, только

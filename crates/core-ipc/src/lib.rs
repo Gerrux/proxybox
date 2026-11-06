@@ -2576,6 +2576,55 @@ mod tests {
         }
     }
 
+    /// Пункт рейки «Журнал» не получает числа. Лента режется тридцатью строками,
+    /// и число в бляшке показывало бы всегда одну и ту же отсечку — то есть
+    /// ничего, но на самом видном месте окна. Бляшка журнала — только точка
+    /// внимания, когда самая новая строка (она первая в `status.log`) — сбой.
+    /// Компилятора у фронтенда нет — сверяем текстом.
+    #[test]
+    fn the_journal_rail_item_carries_no_count() {
+        let app = include_str!("../../../ui/app-shell/src/App.tsx");
+        let item = app
+            .split("icon=\"lines\"")
+            .nth(1)
+            .and_then(|s| s.split("/>").next())
+            .expect("пункт журнала в рейке");
+        assert!(!item.contains("count="), "у пункта «Журнал» снова число: оно всегда равно отсечке ленты");
+        assert!(item.contains("dot="), "у пункта «Журнал» нет точки сбоя");
+        assert!(item.contains("log[0]?.bad"), "точка журнала смотрит не на самую новую строку ленты");
+    }
+
+    /// Оглавление настроек и разделы обязаны совпадать: пункт без раздела
+    /// прокручивал бы в никуда, раздел без пункта до него нельзя было бы
+    /// домотать, а подсветка не знала бы о нём вовсе. Порядок — по частоте
+    /// обращений (`docs/interface.md`). Компилятора у фронтенда нет — сверяем
+    /// текстом.
+    #[test]
+    fn the_settings_index_matches_its_sections() {
+        let settings = include_str!("../../../ui/app-shell/src/Settings.tsx");
+        let index = settings
+            .split("const sections")
+            .nth(1)
+            .and_then(|s| s.split("];").next())
+            .expect("оглавление настроек живёт в `sections`");
+        let in_index: Vec<&str> = index
+            .split("key: \"")
+            .skip(1)
+            .filter_map(|s| s.split('"').next())
+            .collect();
+        let order = ["look", "subs", "tunnel", "split", "bypass", "startup", "diag", "about"];
+        assert_eq!(in_index, order, "порядок разделов настроек разошёлся с принятым");
+        // Разделы в разметке идут в том же порядке.
+        let mut at = 0;
+        for key in order {
+            let needle = format!("<Group id=\"{key}\"");
+            let found = settings[at..]
+                .find(&needle)
+                .unwrap_or_else(|| panic!("раздел «{key}» отсутствует или стоит не на своём месте"));
+            at += found + needle.len();
+        }
+    }
+
     /// Карточка первого запуска не рисуется ни кадра, когда все шаги сбылись:
     /// гасил её эффект уже после отрисовки, и на загрузке она вспыхивала на
     /// один кадр. Условие обязано стоять в самом рендере, а не в эффекте.

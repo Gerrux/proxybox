@@ -572,7 +572,8 @@ export type MenuItem = {
   hint?: string;
   /** Пояснение второй строкой, видимое сразу, а не по наведению. Для выбора из
    *  вариантов, где без пояснения пункты не отличить (охват в шапке): `hint`
-   *  на сенсоре и с клавиатуры недоступен. */
+   *  на сенсоре и с клавиатуры недоступен. Показывается в две строки, целиком
+   *  лежит в `title` пункта. */
   sub?: string;
   danger?: boolean;
   /** Пункт-переключатель во включённом положении. Галочкой слева, а не цветом:
@@ -664,7 +665,9 @@ export function Menu({
           </span>
           <span className="min-w-0 flex-1">
             <span className="block truncate">{armed === item.label ? item.ask : item.label}</span>
-            {item.sub && <span className="block text-xs text-muted">{item.sub}</span>}
+            {/* Две строки, а не весь абзац: пояснение охвата «Весь компьютер» в
+                узком меню занимало пять. Целиком оно лежит в `title` пункта. */}
+            {item.sub && <span className="line-clamp-2 block text-xs text-muted">{item.sub}</span>}
           </span>
         </button>
       ))}

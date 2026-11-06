@@ -448,6 +448,10 @@ const RU = {
   connsUnreached: (list: string) =>
     `Напрямую тоже не отвечает: ${list} — дело не в туннеле, исключение тут не поможет`,
   groupAbout: "О программе",
+  groupDiagnostics: "Диагностика",
+  settingsSections: "Разделы настроек",
+  noteMore: "подробнее",
+  noteLess: "свернуть",
   themeTitle: "Тема",
   themeHint:
     "Системная — та же, что у Windows: окно живёт в трее рядом с системным интерфейсом и по умолчанию с ним не спорит. Выбор хранит само окно: службы он не касается и на другую машину не едет.",
@@ -902,6 +906,10 @@ const EN: typeof RU = {
   connsUnreached: (list: string) =>
     `Direct does not answer either: ${list} — it is not the tunnel, an exception will not help here`,
   groupAbout: "About",
+  groupDiagnostics: "Diagnostics",
+  settingsSections: "Settings sections",
+  noteMore: "more",
+  noteLess: "less",
   themeTitle: "Theme",
   themeHint:
     "System means the same as Windows: the window lives in the tray next to the system interface and by default does not argue with it. The choice is kept by the window itself: the service knows nothing about it, and it does not travel to another machine.",
@@ -1357,6 +1365,10 @@ const FA: typeof RU = {
   connsUnreached: (list: string) =>
     `مستقیم هم پاسخ نمی‌دهد: ${list} — مشکل از تونل نیست و استثنا اینجا کمکی نمی‌کند`,
   groupAbout: "درباره",
+  groupDiagnostics: "عیب‌یابی",
+  settingsSections: "بخش‌های تنظیمات",
+  noteMore: "بیشتر",
+  noteLess: "کمتر",
   themeTitle: "پوسته",
   themeHint:
     "سیستمی همان پوستهٔ ویندوز است: پنجره در سینی، کنار رابط سیستم زندگی می‌کند و به‌طور پیش‌فرض با آن نمی‌ستیزد. این انتخاب را خودِ پنجره نگه می‌دارد: به سرویس ربطی ندارد و به رایانهٔ دیگر نمی‌رود.",
@@ -1810,6 +1822,10 @@ const ZH: typeof RU = {
   connsExceptYes: "加入例外",
   connsUnreached: (list: string) => `直连同样无响应：${list} — 问题不在隧道，例外在这里没有帮助`,
   groupAbout: "关于",
+  groupDiagnostics: "诊断",
+  settingsSections: "设置分区",
+  noteMore: "展开",
+  noteLess: "收起",
   themeTitle: "主题",
   themeHint:
     "跟随系统即与 Windows 一致：窗口驻留在托盘里，紧挨着系统界面，默认不与它相争。这个选择由窗口自己保存：与服务无关，也不会带到另一台机器。",
@@ -2263,6 +2279,10 @@ const TR: typeof RU = {
   connsUnreached: (list: string) =>
     `Doğrudan da yanıt vermiyor: ${list} — sorun tünelde değil, istisna burada yardımcı olmaz`,
   groupAbout: "Hakkında",
+  groupDiagnostics: "Tanılama",
+  settingsSections: "Ayar bölümleri",
+  noteMore: "daha fazla",
+  noteLess: "daha az",
   themeTitle: "Tema",
   themeHint:
     "Sistem, Windows ile aynısı demektir: pencere sistem arayüzünün yanında, tepside yaşar ve varsayılan olarak onunla çekişmez. Seçimi pencerenin kendisi tutar: hizmeti ilgilendirmez ve başka bir makineye taşınmaz.",
@@ -2719,6 +2739,10 @@ const ID: typeof RU = {
   connsUnreached: (list: string) =>
     `Langsung pun tidak menjawab: ${list} — masalahnya bukan di terowongan, pengecualian tidak akan membantu`,
   groupAbout: "Tentang",
+  groupDiagnostics: "Diagnostik",
+  settingsSections: "Bagian pengaturan",
+  noteMore: "selengkapnya",
+  noteLess: "ringkas",
   themeTitle: "Tema",
   themeHint:
     "Sistem berarti sama dengan Windows: jendela tinggal di baki, di samping antarmuka sistem, dan secara baku tidak berselisih dengannya. Pilihan disimpan oleh jendela itu sendiri: tidak menyangkut layanan dan tidak ikut pindah ke mesin lain.",

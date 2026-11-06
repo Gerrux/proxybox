@@ -319,23 +319,33 @@ export function App() {
 
       <div className="flex min-h-0 flex-1">
         {/* Рейка — NavigationView Windows 11: значки в столбец, под каждым
-            подпись, а счётчик строк — бляшкой у значка. Счётчик — не
-            украшение: он единственное, что говорит о закрытой панели хоть
-            что-то. Узкая рейка и широкая «Главная» — одна навигация в двух
+            подпись, а бляшка у значка — число или точка внимания, что-то
+            говорящие о закрытой панели. Узкая рейка и широкая «Главная» — одна навигация в двух
             видах, кто из них показан, решает `index.css` по ширине окна. */}
         <nav className="rail flex shrink-0 flex-col items-center gap-0.5 py-1.5" aria-label={s.tabMain}>
           <RailItem className="rail-narrow" icon="server" active={!settings && tab === "profiles"} onClick={() => pick("profiles")}
             label={s.profiles} count={status?.profiles.length ?? 0} />
+          {/* Бляшка — это внимание или число, которое что-то значит. «Весь
+              компьютер» список не применяет, и число там врало бы; пустой
+              белый список — запертая машина, и это не «0», а предупреждение.
+              Журнал числа не получает вовсе: лента режется тридцатью строками,
+              и число показывало бы всегда одну и ту же отсечку. Вместо него —
+              точка, когда самая новая строка ленты (она первая) — сбой. */}
           <RailItem className="rail-narrow" icon="screen" active={!settings && tab === "apps"} onClick={() => pick("apps")}
-            label={s.apps} count={selectedApps} full={s.railOf(selectedApps, status?.apps.length ?? 0)} />
+            label={s.apps}
+            count={status?.scope === "all" || selectedApps === 0 ? undefined : selectedApps}
+            full={s.railOf(selectedApps, status?.apps.length ?? 0)}
+            dot={status?.scope === "whitelist" && selectedApps === 0 ? "closed" : undefined}
+            note={s.noAppsAhead} />
           <RailItem className="rail-narrow" icon="lines" active={!settings && tab === "journal"} onClick={() => pick("journal")}
-            label={s.journal} count={status?.log.length ?? 0} />
+            label={s.journal} dot={status?.log[0]?.bad ? "fault" : undefined} note={s.journalBad} />
           {/* Шире 1100 px первые три стоят рядом, и выбирать между ними
               нечего: остаётся развилка «списки или браузерные профили». */}
           <RailItem className="rail-wide" icon="server" active={!settings && !WIDE.includes(tab)} onClick={() => pick("profiles")}
             label={s.tabMain} />
           <RailItem icon="browser" active={!settings && tab === "browsers"} onClick={() => pick("browsers")}
-            label={s.tabBrowsers} count={status?.browser_profiles.length ?? 0} />
+            label={s.tabBrowsers}
+            count={status?.browser_profiles.length ? status.browser_profiles.length : undefined} />
           {/* Счётчика у соединений нет: сколько их, знает только сама
               панель, а спрашивать это ради подписи на закрытой вкладке
               значило бы опрашивать службу всегда — ровно то, чего эта
@@ -458,19 +468,28 @@ function CloseDialog({
   );
 }
 
-/** Пункт рейки: значок, под ним подпись, счётчик — бляшкой у угла значка.
+/** Пункт рейки: значок, под ним подпись, бляшка — у верхнего угла значка.
  *  Подпись прячется вместе с шириной рейки (`.rail-label` в `index.css`, 470 px),
  *  и тогда пункт — один значок с бляшкой, как рейка и была.
+ *
+ *  Бляшка — InfoBadge Windows 11: таблетка с заливкой и кольцом цвета рейки
+ *  (`.rail-badge`). Без заливки цифры ложились прямо на штрихи значка и
+ *  читались вместе с ними; кольцо вырезает угол значка, а не пересекается с ним.
+ *  Бляшек два рода, и пункт получает их по смыслу, а не по привычке: число
+ *  (`count`) — когда оно что-то значит, точка (`dot`) — когда нужно внимание.
+ *  Сторож — `the_journal_rail_item_carries_no_count`.
  *
  *  В бляшке стоит одно число — «сколько выбрано», а не «41/359»: дробь в 16 px
  *  не читается. Полная запись («41 из 359») остаётся в имени для чтения с
  *  экрана и в подсказке — вместе с подписью, чтобы диктор прочёл «Приложения ·
- *  41 из 359», а не голое число. */
+ *  41 из 359», а не голое число. Точка в имени называет причину (`note`). */
 function RailItem({
   label,
   icon,
   count,
   full,
+  dot,
+  note,
   active,
   onClick,
   className = "",
@@ -480,11 +499,16 @@ function RailItem({
   count?: number;
   /** Что сказать вместо голого числа, когда оно — числитель дроби. */
   full?: string;
+  /** Точка внимания: «заперто» (янтарь) или «сбой» (красный). */
+  dot?: "closed" | "fault";
+  /** Что сказать вместо точки — её причина. */
+  note?: string;
   active: boolean;
   onClick: () => void;
   className?: string;
 }) {
-  const name = count != null ? `${label} · ${full ?? count}` : label;
+  const name =
+    count != null ? `${label} · ${full ?? count}` : dot && note ? `${label} · ${note}` : label;
   return (
     <button
       type="button"
@@ -498,13 +522,12 @@ function RailItem({
     >
       <span className="relative inline-flex">
         <Icon name={icon} size={20} className={active ? "text-accent" : ""} />
-        {count != null && (
-          <span
-            className="absolute -top-2 start-full -ms-2.5 grid h-4 min-w-4 place-items-center rounded-full bg-press px-1 text-xs leading-none tabular-nums text-ink"
-            aria-hidden="true"
-          >
-            {count}
+        {count != null ? (
+          <span className="rail-badge text-xs" aria-hidden="true">
+            {count > 99 ? "99+" : count}
           </span>
+        ) : (
+          dot && <span className="rail-badge" data-dot={dot} aria-hidden="true" />
         )}
       </span>
       <span className="rail-label max-w-full truncate px-0.5 text-xs leading-none" aria-hidden="true">
