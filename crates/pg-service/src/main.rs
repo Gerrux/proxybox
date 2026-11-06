@@ -1944,7 +1944,7 @@ fn preview(svc: &Mutex<Service>, urls: &[String], rest: &str) -> Response {
             Ok(batch) => {
                 let s = lock(svc);
                 for p in &batch.found {
-                    if s.profiles.values().any(|node| *node == p.node) {
+                    if s.profiles.values().any(|node| core_config::same_node(node, &p.node)) {
                         tally.kept += 1;
                     } else {
                         tally.added += 1;
@@ -1966,7 +1966,10 @@ fn add_profiles(s: &mut Service, batch: core_config::Batch) -> Tally {
     let mut tally = Tally { skipped: batch.skipped, ..Default::default() };
     let mut names: Vec<String> = Vec::new();
     for profile in batch.found {
-        if s.profiles.values().any(|node| *node == profile.node) {
+        // Имя в сравнение не входит: узел из JSON несёт его в `tag`, из ссылки —
+        // нигде, и «Изменить как свой» с одним лишь новым именем иначе заводил
+        // бы двойника (`core_config::same_node`).
+        if s.profiles.values().any(|node| core_config::same_node(node, &profile.node)) {
             tally.kept += 1;
             continue;
         }
@@ -2008,7 +2011,7 @@ fn edit_profile(s: &mut Service, name: &str, rename: &str, node: &str) -> Respon
     };
     if s.subscriptions.values().any(|nodes| nodes.iter().any(|n| n == name)) {
         return Response::Error {
-            message: t("узел пришёл из подписки: сверка вернёт его прежним. Отпишитесь или заведите свою копию"),
+            message: t("узел пришёл из подписки: сверка вернёт его прежним. Удалите подписку или измените узел как свой"),
         };
     }
     let to = match rename.trim() {
@@ -2097,6 +2100,17 @@ fn apply_subscription(
     userinfo: Option<&str>,
     scheduled: bool,
 ) -> Result<Tally, String> {
+    // Плановая сверка обновляет подписку, а не заводит её: список адресов она
+    // снимает под замком, а качает каждый уже без него, и пока качалось, подписку
+    // могли убрать (`RemoveSubscription`) или перевезти на другой адрес
+    // (`edit_subscription`). Ответ на адрес, которого больше нет, пропадает молча —
+    // ни записи, ни строки в журнале, — иначе рядом с переехавшей подпиской
+    // вставал бы воскресший двойник с теми же узлами. Нажатие человека —
+    // `scheduled == false` — адрес заводит как раньше. Сторож —
+    // `a_late_refresh_never_resurrects_an_edited_subscription`.
+    if scheduled && !s.subscriptions.contains_key(url) {
+        return Ok(Tally::default());
+    }
     // Открытый канал называется в журнале на нажатие, а не на каждую сверку:
     // сверка идёт в фоне и через поднятый туннель, если он есть, а строка раз в
     // несколько часов читалась бы как новое событие. Событие же одно — человек
@@ -2128,8 +2142,11 @@ fn apply_subscription(
         .get(url)
         .map(|names| names.iter().filter_map(|n| s.profiles.get(n).cloned()).collect())
         .unwrap_or_default();
+    let mut old_nodes: Vec<(String, Value)> = Vec::new();
     for name in s.subscriptions.remove(url).unwrap_or_default() {
-        s.profiles.remove(&name);
+        if let Some(node) = s.profiles.remove(&name) {
+            old_nodes.push((name, node));
+        }
     }
     let mut tally = Tally { skipped: batch.skipped, ..Default::default() };
     let mut names: Vec<String> = Vec::new();
@@ -2146,6 +2163,15 @@ fn apply_subscription(
         names.push(name);
     }
     tally.gone = was.iter().filter(|node| !now_nodes.contains(node)).count();
+    // Замер держится на имени, а имя панель отдаёт тому же или совсем другому
+    // узлу. Узел сменился или исчез — его замер уходит: отказ, измеренный на
+    // прежнем, не вправе остаться на новом («Удалить нерабочие» снесла бы узел,
+    // которого никто не мерил). Тот же узел сохраняет замер. Сторож —
+    // `an_edited_subscription_does_not_inherit_dead_probes`.
+    s.status.probes.retain(|p| match old_nodes.iter().find(|(name, _)| *name == p.name) {
+        Some((_, old)) => s.profiles.get(&p.name).is_some_and(|now| core_config::same_node(old, now)),
+        None => true,
+    });
     s.log(tf!("подписка обновлена, узлов — {}", names.len()));
     // Отметку двигает любая удачная сверка, а не только плановая: список пришёл
     // с панели — значит он свежий, и ходить за ним снова через пять минут после
@@ -2272,6 +2298,14 @@ fn edit_subscription(svc: &Mutex<Service>, url: &str, new_url: &str, name: &str)
         *slot = new_url.to_string();
     }
     set_sub_name(&mut s, new_url, name);
+    // Адрес переехал — это событие, и оно стоит в журнале. Подписка названа по
+    // подписи, а без неё — по хосту: полный адрес несёт токен панели, а журнал
+    // лежит на диске и показывается в окне.
+    let label = match s.sub_names.get(new_url) {
+        Some(label) => label.clone(),
+        None => url::Url::parse(new_url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_default(),
+    };
+    s.log(tf!("адрес подписки «{}» изменён", label));
     match apply_subscription(&mut s, new_url, batch, userinfo.as_deref(), false) {
         Ok(tally) => tally.into_response_or_error(),
         Err(message) => Response::Error { message },
@@ -4997,11 +5031,118 @@ mod tests {
         assert_eq!(subs[&fresh].len(), 2);
         assert!(profiles.contains_key("дом") && profiles.contains_key("офис"));
         assert_eq!(subs[&other], vec!["чужой".to_string()], "чужая подписка не тронута");
+        // Переезд адреса — строка в журнале, названная подписью; полный адрес
+        // (в нём токен панели) в журнал не попадает.
+        {
+            let s = lock(&svc);
+            assert!(s.status.log.iter().any(|l| l.text.contains("«работа»") && l.text.contains("изменён")), "{:?}", s.status.log);
+            assert!(!s.status.log.iter().any(|l| l.text.contains(&fresh) && l.text.contains("изменён")), "адрес в журнале");
+        }
 
         // Только подпись: сети не нужно, адрес и узлы те же.
         let out = edit_subscription(&svc, &fresh, "", "");
         assert!(matches!(out, Response::Done), "{out:?}");
         assert!(!lock(&svc).sub_names.contains_key(&fresh), "пустая подпись возвращает показ адреса");
+    }
+
+    /// Плановая сверка снимает список адресов под замком, а качает каждый уже
+    /// без него — то есть успевает скачать старый адрес до правки подписки и
+    /// записать ответ после. Сверка обновляет подписку, а не заводит её: адрес,
+    /// которого больше нет, обязан остаться ушедшим, иначе рядом с переехавшей
+    /// подпиской встаёт воскресшая старая — с теми же узлами вторым набором.
+    #[test]
+    fn a_late_refresh_never_resurrects_an_edited_subscription() {
+        let _state = scratch("pg-edit-sub-race-test");
+        const BODY: &str = "vless://11111111-1111-1111-1111-111111111111@a.com:443?security=tls#дом\n";
+        let (old_port, old_served) = serve_body(BODY, 1);
+        let old = format!("http://127.0.0.1:{old_port}/sub");
+        let mut s = Service::load();
+        s.profiles.insert("дом".into(), json!({"type": "vless", "server": "a.com"}));
+        s.subscriptions.insert(old.clone(), vec!["дом".into()]);
+        s.sub_order = vec![old.clone()];
+        s.save();
+        let svc = Mutex::new(s);
+
+        let (port, served) = serve_body(BODY, 1);
+        let fresh = format!("http://127.0.0.1:{port}/sub");
+        let out = edit_subscription(&svc, &old, &fresh, "");
+        assert!(matches!(out, Response::Imported { .. }), "{out:?}");
+        served.join().expect("сервер отработал");
+
+        // Круг сверки, взявший список адресов до правки, доходит до старого.
+        let _ = subscribe(&svc, &old, true);
+        old_served.join().expect("старый адрес ответил");
+        let s = lock(&svc);
+        assert!(
+            !s.subscriptions.contains_key(&old),
+            "сверка воскресила подписку, которую переименовали: {:?}",
+            s.subscriptions
+        );
+    }
+
+    /// Замер держится на имени узла, а новый адрес подписки приносит узлы под
+    /// теми же именами, что и старый, — и чаще всего другие: правят адрес как
+    /// раз тогда, когда прежние узлы перестали отвечать. Отказ, измеренный на
+    /// прежнем узле, не вправе остаться на новом: «Удалить нерабочие» снесла бы
+    /// узел, которого никто не мерил.
+    #[test]
+    fn an_edited_subscription_does_not_inherit_dead_probes() {
+        let _state = scratch("pg-edit-sub-probe-test");
+        let mut s = Service::load();
+        let old = "https://old.panel/sub".to_string();
+        s.profiles.insert("дом".into(), json!({"type": "vless", "server": "old.com"}));
+        s.subscriptions.insert(old.clone(), vec!["дом".into()]);
+        s.sub_order = vec![old.clone()];
+        s.status.probes.push(Probe {
+            name: "дом".into(),
+            latency_ms: None,
+            country: None,
+            code: None,
+            error: Some("туннель не пропустил соединение (код 1)".into()),
+            brief: Some("таймаут".into()),
+            at: 1,
+        });
+        s.save();
+        let svc = Mutex::new(s);
+
+        let (port, served) = serve_body(
+            "vless://11111111-1111-1111-1111-111111111111@new.com:443?security=tls#дом\n",
+            1,
+        );
+        let fresh = format!("http://127.0.0.1:{port}/sub");
+        let out = edit_subscription(&svc, &old, &fresh, "");
+        assert!(matches!(out, Response::Imported { added: 1, gone: 1, .. }), "{out:?}");
+        served.join().expect("сервер отработал");
+        let s = lock(&svc);
+        assert!(s.profiles["дом"]["server"] == "new.com", "под тем же именем — новый узел");
+        assert!(
+            !s.status.probes.iter().any(|p| p.name == "дом" && p.latency_ms.is_none()),
+            "новый узел унаследовал отказ прежнего: {:?}",
+            s.status.probes
+        );
+    }
+
+    /// «Изменить как свой» шлёт узел обычной вставкой, а имя в JSON — это
+    /// `tag` (`withName` в окне переписывает его). Ссылка с новым фрагментом
+    /// разбирается в тот же узел, и дедупликация отказывает, как и обещано;
+    /// JSON с новым `tag` — это тот же сервер с тем же ключом, и отказ обязан
+    /// быть тем же, иначе «не изменили узел» зависит от того, был ли он ссылкой.
+    #[test]
+    fn a_renamed_json_copy_is_still_the_same_node() {
+        let _state = scratch("pg-own-copy-tag-test");
+        let mut s = Service::load();
+        let node = json!({"type": "vless", "tag": "NL", "server": "a.com", "server_port": 443, "uuid": "u"});
+        s.profiles.insert("NL".into(), node);
+        s.subscriptions.insert("https://panel/sub".into(), vec!["NL".into()]);
+        let batch = parse_pasted(r#"{"type":"vless","tag":"мой NL","server":"a.com","server_port":443,"uuid":"u"}"#)
+            .expect("JSON узла разбирается");
+        let tally = add_profiles(&mut s, batch);
+        assert_eq!(
+            (tally.added, tally.kept),
+            (0, 1),
+            "переименованная копия того же узла завелась вторым профилем: {:?}",
+            s.profiles.keys().collect::<Vec<_>>()
+        );
     }
 
     /// Удаление пачки — одна запись и одна строка в журнале; активный узел

@@ -162,7 +162,8 @@ export function Flyout({
   return (
     <div className="flex h-full flex-col" data-state={state}>
       <section data-state={state} className="st st-fly smooth relative shrink-0">
-        {swept > 0 && <span key={swept} className="sw-sweep" aria-hidden="true" />}
+        {/* Отыграла — ушла из разметки (`will-change` не живёт вечно). */}
+        {swept > 0 && <span key={swept} className="sw-sweep" aria-hidden="true" onAnimationEnd={() => setSwept(0)} />}
         <div className="flex items-start gap-3 px-3 pt-2.5 pb-2">
           <div className="min-w-0 flex-1">
             <h1 key={view.title} className="st-word swap flex items-center gap-2 text-xl font-semibold">

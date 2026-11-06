@@ -422,7 +422,8 @@ export function StatusBar({
           следит, что строка не переносится. */}
       <div className="st-hero grid grid-cols-3">
         <div className="st st-state smooth">
-        {swept > 0 && <span key={swept} className="sw-sweep" aria-hidden="true" />}
+        {/* Отыграла — ушла из разметки (`will-change` не живёт вечно). */}
+        {swept > 0 && <span key={swept} className="sw-sweep" aria-hidden="true" onAnimationEnd={() => setSwept(0)} />}
         {/* Карта — фон конца блока состояния, а не отдельная плита: она
             уходит под текст маской. Слой абсолютный, поэтому высоту блока
             задаёт текст. */}

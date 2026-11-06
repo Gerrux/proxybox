@@ -102,14 +102,15 @@ export function App() {
   // настройках, и шаги, сбывшиеся там, иначе не запомнились бы.
   useWelcomeDone(flyout ? null : status);
 
-  const send =useCallback(async (req: Request): Promise<Response | null> => {
+  const send =useCallback(async (req: Request, local = false): Promise<Response | null> => {
     try {
       const r = await call(req);
       // Ошибку баннер только показывает, но никогда не снимает по своей воле:
       // сразу за командой идёт перечитывание статуса, и «успех» от него стирал
       // бы сообщение раньше, чем его успевали прочитать. Снимает ошибку
-      // следующая команда или крестик.
-      if (r.reply === "error") setError(r.data.message);
+      // следующая команда или крестик. `local` — форма сама покажет отказ рядом
+      // с полем, и второй раз наверху он не нужен.
+      if (r.reply === "error" && !local) setError(r.data.message);
       if (r.reply === "status") setStatus(r.data);
       // Пульс — вырезка из статуса: подменяются только горячие поля, всё
       // остальное (списки, журнал, настройки) остаётся тем, что приехало с
@@ -241,11 +242,11 @@ export function App() {
   // Команда и сразу перечитанный статус: окно не гадает, что получилось, —
   // единственный источник истины остаётся у службы.
   const act = useCallback<Act>(
-    (req: Request) => {
+    (req: Request, opts) => {
       // Прошлая ошибка снимается здесь: новое действие — новый разговор.
       setError(null);
       setBusy((n) => n + 1);
-      return send(req)
+      return send(req, opts?.local)
         .then((r) => refresh().then(() => r))
         .finally(() => setBusy((n) => n - 1));
     },

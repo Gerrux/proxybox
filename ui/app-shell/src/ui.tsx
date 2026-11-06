@@ -207,7 +207,12 @@ export function Switch({
         }}
         className={`switch smooth ${size === "lg" ? "switch-lg" : ""}`}
       />
-      {shot > 0 && size === "lg" && <span key={shot} className="sw-ring" aria-hidden="true" />}
+      {/* Отыграв, кольцо уходит из разметки: оставшийся слой держал бы
+          `will-change` (то есть своё место в видеопамяти) до конца сеанса.
+          Повторное «включить» заводит его заново с нуля. */}
+      {shot > 0 && size === "lg" && (
+        <span key={shot} className="sw-ring" aria-hidden="true" onAnimationEnd={() => setShot(0)} />
+      )}
     </span>
   );
 }

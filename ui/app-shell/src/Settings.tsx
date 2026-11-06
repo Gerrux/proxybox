@@ -383,10 +383,30 @@ export function Settings({
                 и все шесть видны сразу — список прятал их за лишний щелчок.
                 Колонок три, пока каждая не уже 9rem, иначе две: в 380 px
                 «Bahasa Indonesia» в третьей колонке обрезалась. */}
+            {/* Группа — одна остановка Tab (выбранный язык), а между языками
+                ходят стрелки, как в любой группе переключателей. Стрелка только
+                переводит фокус, а не переключает: каждый шаг стрелкой иначе
+                перекладывал бы всё окно на другой язык, а через фарси — и на
+                другое направление письма. Выбор — Пробелом или Enter. */}
             <div
               role="radiogroup"
               aria-label={s.language}
               className="grid w-full max-w-md grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-1.5"
+              onKeyDown={(e) => {
+                const rtl = document.documentElement.dir === "rtl";
+                const step =
+                  e.key === "ArrowDown" || e.key === (rtl ? "ArrowLeft" : "ArrowRight")
+                    ? 1
+                    : e.key === "ArrowUp" || e.key === (rtl ? "ArrowRight" : "ArrowLeft")
+                      ? -1
+                      : 0;
+                if (step === 0) return;
+                const radios = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]')];
+                const at = radios.indexOf(document.activeElement as HTMLElement);
+                if (at < 0) return;
+                e.preventDefault();
+                radios[(at + step + radios.length) % radios.length].focus();
+              }}
             >
               {(
                 [
@@ -405,6 +425,7 @@ export function Settings({
                     type="button"
                     role="radio"
                     aria-checked={on}
+                    tabIndex={on ? 0 : -1}
                     title={here}
                     onClick={() => !on && void act({ cmd: "set-lang", arg: { lang: code as Lang } })}
                     className={`smooth flex min-w-0 flex-col items-start rounded border px-2.5 py-1.5 text-start ${

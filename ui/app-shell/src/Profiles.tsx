@@ -196,7 +196,8 @@ function SubEdit({ s, sub, act, onDone }: { s: Strings; sub: Subscription; act: 
           e.preventDefault();
           setBusy(true);
           setError(null);
-          void act({ cmd: "edit-subscription", arg: { url: sub.url, new_url: url.trim(), name: name.trim() } })
+          // `local`: причину показывает строка под полем, общая рамка её не дублирует.
+          void act({ cmd: "edit-subscription", arg: { url: sub.url, new_url: url.trim(), name: name.trim() } }, { local: true })
             .then((r) => (r?.reply === "error" ? setError(r.data.message) : r && onDone()))
             .finally(() => setBusy(false));
         }}
@@ -280,9 +281,24 @@ function typing(t: EventTarget | null): boolean {
   return t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
 }
 
+/** vmess-ссылка в base64 несёт имя внутри — это поле `ps` вложенного JSON, а
+ *  фрагмент ей не добавишь (служба читает именно `ps`). Раскрываем, ставим имя,
+ *  собираем обратно; не раскрылась — `null`, и ссылка уходит как есть. */
+function vmessWithName(link: string, want: string): string | null {
+  try {
+    const blob = link.slice("vmess://".length).trim().replace(/-/g, "+").replace(/_/g, "/");
+    const bytes = Uint8Array.from(atob(blob), (c) => c.charCodeAt(0));
+    const obj: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+    const out = new TextEncoder().encode(JSON.stringify({ ...obj, ps: want }));
+    return `vmess://${btoa(Array.from(out, (b) => String.fromCharCode(b)).join(""))}`;
+  } catch {
+    return null;
+  }
+}
+
 /** Узел подписки, переименованный для «Изменить как свой»: имя ведёт тот же
- *  разбор, что и импорт (фрагмент ссылки, `tag` в JSON). vmess-ссылка в base64
- *  имя несёт внутри, фрагмент ей не добавишь — она остаётся как есть. */
+ *  разбор, что и импорт (фрагмент ссылки, `tag` в JSON, `ps` в base64-vmess). */
 function withName(text: string, want: string, was: string): string {
   if (text.startsWith("{")) {
     if (want === was) return text;
@@ -297,7 +313,7 @@ function withName(text: string, want: string, was: string): string {
     return text;
   }
   const head = text.split("#")[0];
-  if (/^vmess:\/\/[^@]*$/i.test(head)) return text;
+  if (/^vmess:\/\/[^@]*$/i.test(head)) return vmessWithName(head, want) ?? text;
   return `${head}#${encodeURIComponent(want)}`;
 }
 
@@ -610,8 +626,14 @@ export function Profiles({
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.code !== "KeyF" || !visible()) return;
       e.preventDefault();
+      // Пока что-то выделено, поля поиска на экране нет — его место занимает
+      // панель выделения, и фокусу было бы некуда идти. Поиск важнее выделения
+      // (сам Ctrl+F — это «хочу искать»), поэтому выделение снимается.
+      setSelected(new Set());
       setSearchOpen(true);
-      requestAnimationFrame(() => searchRef.current?.focus());
+      // Два кадра: первый перерисовывает панель инструментов вместо панели
+      // выделения, второй застаёт поле уже на месте.
+      requestAnimationFrame(() => requestAnimationFrame(() => searchRef.current?.focus()));
     };
     window.addEventListener("paste", onPaste);
     window.addEventListener("keydown", onKey);
@@ -803,16 +825,22 @@ export function Profiles({
   const visibleNames = groups.flatMap((g) =>
     filter === null && collapsed.includes(g.key) ? [] : g.items.map((i) => i.name),
   );
-  // Профиль исчез (сверка, удаление из другого места) — выпадает и из
-  // выделения: удалять по нему пришлось бы то, чего уже нет.
+  // Выделение держится только на видимых строках. Профиль исчез (сверка,
+  // удаление из другого места), строку спрятал поиск, отбор полосы подписок
+  // или свёрнутая группа — она выпадает из выделения: пачка («Удалить»,
+  // «Измерить», экспорт) обязана действовать на то, что человек видит, а не на
+  // строки, которых на экране нет. Исчезнувший профиль — частный случай:
+  // видимые строки берутся из текущего списка. Ключ — состав и порядок
+  // видимых имён: пересчитывать на каждый статус, не поменявший список, нечего.
+  const visibleKey = JSON.stringify(visibleNames);
   useEffect(() => {
     setSelected((was) => {
       if (was.size === 0) return was;
-      const live = new Set(profiles.map((p) => p.name));
+      const live = new Set<string>(JSON.parse(visibleKey) as string[]);
       const kept = [...was].filter((n) => live.has(n));
       return kept.length === was.size ? was : new Set(kept);
     });
-  }, [profiles]);
+  }, [visibleKey]);
   const toggleRow = (name: string) =>
     setSelected((was) => {
       const next = new Set(was);
@@ -907,8 +935,11 @@ export function Profiles({
     });
   // Всё, что стоит сказать перед удалением пачки: туннель погаснет, окно
   // браузера закроется, узлы подписок вернутся со сверкой.
-  // Спрашивают только когда есть что прочесть; «нерабочие» спрашивают всегда
-  // (`always`): число заранее никто не знает, и удалять его вслепую нельзя.
+  // Одиночное удаление спрашивает, только когда есть что прочесть. Пачка из
+  // двух и больше спрашивает всегда, с числом в заголовке: вернуть её вставкой
+  // за секунду нельзя, а промах по Shift-диапазону стоит десятка строк.
+  // «Нерабочие» спрашивают всегда (`always`) по той же причине: число заранее
+  // никто не знает, и удалять его вслепую нельзя.
   const askRemove = (names: string[], title: (n: number) => string, always = false) => {
     const fromSubs = new Set(members.filter((g) => g.sub !== null).flatMap((g) => g.all.map((p) => p.name)));
     const notes: string[] = [];
@@ -916,7 +947,7 @@ export function Profiles({
     if (status?.browser_profiles.some((b) => names.includes(b.node) && status.browsers.includes(b.name)))
       notes.push(s.confirmBrowserNote);
     if (names.some((n) => fromSubs.has(n))) notes.push(s.confirmSubNote);
-    if (notes.length === 0 && !always) return removeProfiles(names);
+    if (notes.length === 0 && !always && names.length < 2) return removeProfiles(names);
     setConfirm({ title: title(names.length), notes, names });
   };
   function removeProfiles(names: string[]) {
@@ -1094,7 +1125,11 @@ export function Profiles({
             // Пока что-то выделено, панель инструментов уступает место панели
             // выделения: поиск и «Добавить» в это время не нужны, а те же 41 px
             // высоты держат список там, где он был.
-            <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1" role="toolbar">
+            <div
+              className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1"
+              role="group"
+              aria-label={s.selectedCount(selected.size)}
+            >
               <span className="min-w-0 flex-1 truncate text-sm font-semibold" aria-live="polite">
                 {s.selectedCount(selected.size)}
               </span>
@@ -1589,7 +1624,8 @@ function Editor({
         setBusy(true);
         setError(null);
         if (own) {
-          void act({ cmd: "add-profile", arg: { link: withName(node.trim(), want.trim(), name) } })
+          // `local`: отказ (в том числе «узел уже есть») читают в форме, а не в рамке наверху.
+          void act({ cmd: "add-profile", arg: { link: withName(node.trim(), want.trim(), name) } }, { local: true })
             .then((r) => {
               if (r?.reply === "error") return setError(r.data.message);
               if (r?.reply !== "imported") return;
@@ -1602,13 +1638,16 @@ function Editor({
             .finally(() => setBusy(false));
           return;
         }
-        void act({
-          cmd: "edit-profile",
-          // Нетронутый узел не отправляем вовсе: разбор вернул бы тот же самый,
-          // но лишний повод перезапустить туннель на активном профиле здесь ни
-          // к чему.
-          arg: { name, rename: want.trim(), node: node.trim() === text.trim() ? "" : node.trim() },
-        })
+        void act(
+          {
+            cmd: "edit-profile",
+            // Нетронутый узел не отправляем вовсе: разбор вернул бы тот же самый,
+            // но лишний повод перезапустить туннель на активном профиле здесь ни
+            // к чему.
+            arg: { name, rename: want.trim(), node: node.trim() === text.trim() ? "" : node.trim() },
+          },
+          { local: true },
+        )
           .then((r) => (r?.reply === "error" ? setError(r.data.message) : onDone()))
           .finally(() => setBusy(false));
       }}
