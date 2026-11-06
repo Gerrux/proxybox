@@ -373,29 +373,59 @@ export function Settings({
       <div className="mx-auto flex min-w-0 max-w-3xl flex-1 flex-col gap-8 p-4 pb-8">
         <Group id="look" title={s.groupLook}>
           <Row title={s.language} note={s.languageHint}>
-            {/* Выпадающий список, а не полоска: шесть двухбуквенных кодов в ряд
-                читались шифром, а названия языков в ряд не помещаются. */}
-            <select
-              value={lang ?? "ru"}
+            {/* Каждый язык назван на самом себе, а ниже мелко — на языке окна.
+                Пока названия были только на языке окна, вернуть свой язык из
+                чужого было нечем: китаец, по ошибке включивший персидский,
+                искал «中文» в списке вязи. Самоназвание от языка окна не
+                зависит, поэтому живёт константой здесь, а не словарём.
+
+                Кнопками, а не выпадающим списком: язык меняют одним нажатием,
+                и все шесть видны сразу — список прятал их за лишний щелчок.
+                Колонок три, пока каждая не уже 9rem, иначе две: в 380 px
+                «Bahasa Indonesia» в третьей колонке обрезалась. */}
+            <div
+              role="radiogroup"
               aria-label={s.language}
-              onChange={(e) => void act({ cmd: "set-lang", arg: { lang: e.target.value as Lang } })}
-              className={`${FIELD} w-48 flex-none cursor-pointer`}
+              className="grid w-full max-w-md grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-1.5"
             >
               {(
                 [
-                  ["ru", s.langRu],
-                  ["en", s.langEn],
-                  ["fa", s.langFa],
-                  ["zh", s.langZh],
-                  ["tr", s.langTr],
-                  ["id", s.langId],
+                  ["ru", "Русский", s.langRu],
+                  ["en", "English", s.langEn],
+                  ["fa", "فارسی", s.langFa],
+                  ["zh", "中文", s.langZh],
+                  ["tr", "Türkçe", s.langTr],
+                  ["id", "Bahasa Indonesia", s.langId],
                 ] as const
-              ).map(([code, name]) => (
-                <option key={code} value={code}>
-                  {name}
-                </option>
-              ))}
-            </select>
+              ).map(([code, own, here]) => {
+                const on = (lang ?? "ru") === code;
+                return (
+                  <button
+                    key={code}
+                    type="button"
+                    role="radio"
+                    aria-checked={on}
+                    title={here}
+                    onClick={() => !on && void act({ cmd: "set-lang", arg: { lang: code as Lang } })}
+                    className={`smooth flex min-w-0 flex-col items-start rounded border px-2.5 py-1.5 text-start ${
+                      on
+                        ? "border-accent bg-[color-mix(in_oklch,var(--pg-accent)_10%,transparent)]"
+                        : "border-edge hover:bg-[var(--pg-hover)]"
+                    }`}
+                  >
+                    {/* `lang` — чтобы вязь и иероглифы подбирали свой шрифт и в
+                        русском окне; `<bdi>` — чтобы «فارسی» читалась справа
+                        налево, но стояла по общему краю с соседями, а не
+                        уезжала к правой кромке кнопки, как от `dir="auto"`. */}
+                    <span lang={code} className="w-full truncate text-sm font-semibold">
+                      <bdi>{own}</bdi>
+                    </span>
+                    {/* На своём языке второе название повторило бы первое. */}
+                    <span className="w-full truncate text-xs text-muted">{own === here ? " " : here}</span>
+                  </button>
+                );
+              })}
+            </div>
           </Row>
 
           <Row title={s.themeTitle} note={s.themeHint}>
