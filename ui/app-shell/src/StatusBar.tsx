@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { call, type Scope, type Status } from "./platform";
 import { strings, type Strings } from "./i18n";
-import { Button, CopyButton, Icon, type IconName, Modal, Segmented, flag } from "./ui";
+import { Button, CopyButton, Icon, type IconName, Menu, Modal, Switch, flag } from "./ui";
 import { WorldMap } from "./WorldMapView";
 
 /** Длина доезда числа. Заметно меньше периода опроса (2 с), иначе счётчик не
@@ -134,6 +134,38 @@ export function useRates(status: Status | null): Rate[] {
   return rates;
 }
 
+/** Не чаще одного отсчёта задержки за это время. Окно спрашивает пульс каждые
+ *  две секунды, а после каждой команды — ещё раз сразу; задержку служба
+ *  обновляет своей пробой раз в три секунды, и без прореживания один и тот же
+ *  замер ложился бы в историю несколько раз подряд — полоски стояли бы
+ *  ступеньками, а не измерениями. */
+const LATENCY_SPACING_MS = 1500;
+
+/** История задержки для полосок под числом. Та же договорённость, что у
+ *  `useRates`: живёт в памяти окна, умирает с ним и с подъёмом туннеля — нового
+ *  опроса у неё нет, она едет на статусе, который окно и так спрашивает.
+ *  Хранить задержки в службе значило бы вести журнал качества канала, а он
+ *  продукту ни к чему: смотрят на него здесь и сейчас. */
+export function useLatencies(status: Status | null): number[] {
+  const [values, setValues] = useState<number[]>([]);
+  const at = useRef(0);
+
+  useEffect(() => {
+    if (!status || status.tunnel !== "up") {
+      at.current = 0;
+      setValues((v) => (v.length ? [] : v));
+      return;
+    }
+    const ms = status.latency_ms;
+    const now = Date.now();
+    if (ms == null || now - at.current < LATENCY_SPACING_MS) return;
+    at.current = now;
+    setValues((v) => [...v, ms].slice(-SPARK));
+  }, [status]);
+
+  return values;
+}
+
 /** Путь по отсчётам, сверху вниз в координатах SVG. Именно путь, а не
  *  polyline: тем же контуром закрашивается заливка под линией, и второй раз
  *  считать те же точки незачем. */
@@ -144,17 +176,17 @@ function path(values: number[], peak: number): string {
     .join(" ");
 }
 
-/** История скорости фоном той ячейки, которая считает эти же байты: график
- *  принятого — под числом принятого, отданного — под отданным.
+/** Одна линия истории скорости. Две таких — принятое и отданное — кладутся
+ *  друг на друга в одном поле под числами ячейки «Скорость».
  *
  *  Масштаб общий на оба графика (`peak` считается по обоим), иначе молчащая
  *  отдача рисовалась бы такой же горой, что и загруженный приём, — два
- *  графика рядом читаются как один прибор, и разные шкалы у них врут.
+ *  графика в одном поле читаются как один прибор, и разные шкалы у них врут.
  *
  *  Бледный намеренно: это история, а не показание. Число читают, форму
  *  замечают краем глаза. Ровная линия по нижней кромке значит «туннель поднят,
  *  и по нему молчат» — это не то же самое, что замерший график. */
-function CellSpark({ values, peak, id, tone }: { values: number[]; peak: number; id: string; tone: string }) {
+export function CellSpark({ values, peak, id, tone }: { values: number[]; peak: number; id: string; tone: string }) {
   // Одна точка — ещё не линия: рисовать нечего, пока не пришёл второй статус.
   if (values.length < 2) return null;
   const line = path(values, peak);
@@ -184,6 +216,26 @@ function CellSpark({ values, peak, id, tone }: { values: number[]; peak: number;
           </linearGradient>
         </defs>
       </svg>
+    </span>
+  );
+}
+
+/** Последние отсчёты задержки полосками: форма ряда важнее числа, а число
+ *  стоит рядом. Высота — от пика видимого окна, а не от нуля: нулевая
+ *  шкала сделала бы ровный канал в 85 мс одной сплошной полосой. Цвет у
+ *  каждой полоски свой — по тем же порогам, что и у числа. */
+export function LatencyBars({ values, className = "" }: { values: number[]; className?: string }) {
+  if (values.length === 0) return null;
+  const top = Math.max(...values, 1);
+  return (
+    <span className={`lat-bars ${className}`} aria-hidden="true">
+      {values.map((ms, i) => (
+        <i
+          key={i}
+          className={`lat-bar ${latencyTone(ms) || "text-muted"}`}
+          style={{ blockSize: `${Math.max(14, (ms / top) * 100)}%` }}
+        />
+      ))}
     </span>
   );
 }
@@ -302,11 +354,13 @@ export function StatusBar({
 }) {
   const s = strings(status?.lang);
   const [trouble, setTrouble] = useState(false);
+  const [menu, setMenu] = useState<[number, number] | null>(null);
   const scope = status?.scope ?? "all";
   const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
   // Профиль не выбран, но включать есть что: поднимется первый по алфавиту.
   const pending = status != null && !status.profile && status.profiles.length > 0;
   const latency = useCounted(status?.latency_ms ?? null);
+  const latencies = useLatencies(status);
   const rates = useRates(status);
   // Байты не доезжают: между двумя статусами их набегают десятки килобайт, и
   // доезд читался бы не как измерение, а как перебор случайных цифр.
@@ -324,6 +378,20 @@ export function StatusBar({
   const code = status?.probes.find((p) => p.name === status.profile)?.code;
   const exitFlag = status?.country ? flag(code) : null;
   const [exitCountry, exitCity] = splitExit(status?.country);
+  // Узел, через который идёт (или пойдёт) канал, и его тип для метки.
+  const nodeName = status?.profile ?? status?.profiles[0]?.name ?? null;
+  const nodeKind = status?.profiles.find((p) => p.name === nodeName)?.kind;
+  // Охваты, которые окно предлагает. `none` диагностический и в списке не
+  // стоит (`the_frontend_knows_the_same_scopes`): показать его как состояние
+  // окно умеет, выбрать — нет.
+  const scopes: [Scope, string, string][] = [
+    ["whitelist", s.scopeWhitelist, inTunnel === 0 ? s.noAppsAhead : s.scopeHintWhitelist],
+    ["all", s.scopeAll, s.scopeHint],
+    ["split", s.scopeSplit, s.splitHint],
+  ];
+  const scopeName = scopes.find(([value]) => value === scope)?.[1] ?? s.scope;
+  const [rxNum, rxUnit] = last ? bytes(last.rx).split(" ") : ["—", ""];
+  const [txNum, txUnit] = last ? bytes(last.tx).split(" ") : ["—", ""];
 
   return (
     <header data-state={state} className="relative shrink-0">
@@ -334,10 +402,23 @@ export function StatusBar({
                 вплывом, а не подменой символов на месте. Не обрезаем: в
                 узком окне «Туннеля нет — доступ закрыт» обрубалось бы до
                 «Туннел…», а это ровно та надпись, ради которой окно открыли. */}
-            <h1 key={view.title} className="st-word swap flex items-center gap-2.5 text-2xl font-semibold">
-              <StateGlyph state={state} size={22} />
-              <span className="min-w-0">{view.title}</span>
-            </h1>
+            <div className="flex items-center gap-3">
+              <h1 key={view.title} className="st-word swap flex min-w-0 flex-1 items-center gap-2.5 text-2xl font-semibold">
+                <StateGlyph state={state} size={22} />
+                <span className="min-w-0">{view.title}</span>
+              </h1>
+              {/* Выключатель продукта — тот же тумблер, что в плашке из трея:
+                  одна и та же вещь не должна выглядеть в двух окнах двумя
+                  разными кнопками. Надпись и условия запрета — те же, что
+                  были у кнопки «Включить». */}
+              <Switch
+                size="lg"
+                checked={on}
+                label={on ? s.turnOff : s.turnOn}
+                disabled={!status || (!on && !status.profile && status.profiles.length === 0)}
+                onChange={() => onToggle()}
+              />
+            </div>
             {/* Подсказка целиком остаётся в `title`: в узком окне она
                 обрезается до одной строки (`index.css`), а обрезается как раз
                 хвост — отсчёт до следующей попытки. */}
@@ -357,29 +438,69 @@ export function StatusBar({
               )}
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant={on ? "ghost" : "primary"}
-              disabled={!status || (!on && !status.profile && status.profiles.length === 0)}
-              onClick={onToggle}
-              className="min-w-30"
-            >
-              <Icon name="power" />
-              {on ? s.turnOff : s.turnOn}
-            </Button>
+          <div className="st-meta flex min-w-0 flex-col items-start gap-2">
             {/* Охват — «кого касается канал», и переключать его надо глядя на
-                состояние туннеля, а не в настройках через две панели от него. */}
-            <Segmented
-              label={s.scope}
-              options={[
-                ["whitelist", s.scopeWhitelist, inTunnel === 0 ? s.noAppsAhead : s.scopeHintWhitelist],
-                ["all", s.scopeAll, s.scopeHint],
-                ["split", s.scopeSplit, s.splitHint],
-              ]}
-              value={scope}
+                состояние туннеля, а не в настройках через две панели от него.
+                Выпадающим выбором, а не полоской рядом с выключателем: охват
+                меняют редко, а ряд из выключателя и трёх сегментов в 460 px
+                не помещался и уходил на второй ряд. Пояснения — прямо в
+                пунктах меню: по ним охваты и различают. */}
+            <Button
+              aria-haspopup="menu"
+              aria-label={`${s.scope}: ${scopeName}`}
+              title={s.scope}
               disabled={!status || busy}
-              onPick={(v) => onScope(v as Scope)}
-            />
+              onClick={(e) => {
+                const at = e.currentTarget.getBoundingClientRect();
+                setMenu([at.left, at.bottom + 4]);
+              }}
+              className="st-scope max-w-full"
+            >
+              <span className="min-w-0 truncate">{scopeName}</span>
+              <Icon name="chevron" size={14} className="rotate-90 text-muted" />
+            </Button>
+            {/* Точка выхода и узел — одной строкой в плите, а не двумя ячейками
+                линейки: «через какой узел и куда выходим» читается как одна
+                фраза. Прочерк без объяснения читается как поломка; настоящую
+                страну при выключенном режиме не показываем намеренно: спросить
+                её можно только у стороннего сервиса, а без туннеля запрос ушёл
+                бы с настоящего адреса. «Не выбран» — не то же, что
+                «неизвестен»: `App.tsx` включает первый по алфавиту, и молчание
+                тут уводило бы в чужую страну без единого слова, поэтому
+                предстоящий узел показан приглушённо и с подсказкой. */}
+            <p
+              className="st-exit flex min-w-0 max-w-full items-baseline gap-x-2 text-sm"
+              title={status?.country ? undefined : pending ? s.profileFirst : s.exitUnknown}
+            >
+              {status?.country ? (
+                <>
+                  {exitFlag && (
+                    <span className="shrink-0 self-center leading-none" aria-hidden="true">
+                      {exitFlag}
+                    </span>
+                  )}
+                  {/* Название прячется только тогда, когда вместо него
+                      остаётся флаг: без флага пустая строка не значила бы
+                      ничего. */}
+                  <span className={`min-w-0 truncate font-semibold ${exitFlag ? "m-country" : ""}`}>{exitCountry}</span>
+                  {exitCity && <span className="m-city min-w-0 truncate text-muted">{exitCity}</span>}
+                  {nodeName && (
+                    <span className="min-w-0 truncate text-muted" title={nodeName}>
+                      {s.viaNode(nodeName)}
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className={`min-w-0 truncate ${pending ? "text-muted" : "font-semibold"}`}>
+                  {nodeName ?? s.noProfile}
+                </span>
+              )}
+              {nodeKind && (
+                <span className="shrink-0 rounded-md border border-edge px-1.5 font-mono text-xs text-muted">
+                  {nodeKind}
+                </span>
+              )}
+            </p>
           </div>
         </div>
         <div className="st-map-plate smooth">
@@ -387,71 +508,59 @@ export function StatusBar({
         </div>
       </div>
 
-      {/* Пять колонок или ни одной: промежуточные сетки из двух и трёх колонок
-          уносили счётчики трафика на второй-третий ряд, а его — за нижний край
-          окна. Ниже 768 px линейка целиком уходит в строку (`index.css`). */}
-      <dl className="st-metrics relative grid grid-cols-5 px-4 py-2">
-        {/* «Не выбран» — не то же, что «неизвестен»: `App.tsx` включает первый
-            по алфавиту, и молчание тут уводит в чужую страну без единого слова.
-            Показываем предстоящий профиль приглушённо и с подсказкой. */}
-        <Metric
-          name={s.profile}
-          value={status?.profile ?? status?.profiles[0]?.name ?? s.noProfile}
-          tone={pending ? "text-muted" : ""}
-          hint={pending ? s.profileFirst : undefined}
-        />
-        {/* Прочерк без объяснения читается как поломка. Настоящую страну при
-            выключенном режиме не показываем намеренно: спросить её можно только
-            у стороннего сервиса, а без туннеля запрос ушёл бы с настоящего
-            адреса. */}
-        <Metric name={s.exit} value={status?.country ?? "—"} hint={status?.country ? undefined : s.exitUnknown}>
-          {status?.country ? (
-            <>
-              {exitFlag && (
-                <span className="shrink-0 leading-none" aria-hidden="true">
-                  {exitFlag}
-                </span>
-              )}
-              {/* Название прячется только тогда, когда вместо него остаётся
-                  флаг: без флага пустая ячейка не значила бы ничего. */}
-              <span className={`min-w-0 truncate ${exitFlag ? "m-country" : ""}`}>
-                {exitCountry}
-                {/* Город — приглушённо следом и только если он есть. */}
-                {exitCity && <span className="m-city font-normal text-muted"> · {exitCity}</span>}
+      {/* Три колонки или ни одной: промежуточные сетки из двух колонок
+          уносили счётчики трафика на второй ряд, а его — за нижний край
+          окна. Ниже 768 px линейка целиком уходит в строку (`index.css`).
+          Скорость — главное число линейки, итог сеанса — мелкая справка. */}
+      <dl className="st-metrics relative grid grid-cols-3 px-4 py-2">
+        <Cell name={s.speed} hint={scaleHint}>
+          <span className="m-rates flex items-baseline gap-x-4 font-mono tabular-nums">
+            <span className="flex items-baseline gap-1 text-open" title={s.received}>
+              <Icon name="down" size={12} className="m-icon-down shrink-0 self-center" />
+              <span className="text-lg font-semibold">{rxNum}</span>
+              <span className="text-xs font-normal text-muted">
+                {rxUnit}
+                {last ? s.perSecond : ""}
               </span>
-            </>
-          ) : (
-            "—"
-          )}
-        </Metric>
+            </span>
+            <span className="flex items-baseline gap-1 text-accent" title={s.sent}>
+              <Icon name="up" size={12} className="m-icon-up shrink-0 self-center" />
+              <span className="text-lg font-semibold">{txNum}</span>
+              <span className="text-xs font-normal text-muted">
+                {txUnit}
+                {last ? s.perSecond : ""}
+              </span>
+            </span>
+          </span>
+          {/* Принятое и отданное — одним полем и на одной шкале: так видно,
+              какая из двух сторон несёт канал. */}
+          <span className="chart" aria-hidden="true">
+            <CellSpark values={rates.map((r) => r.rx)} peak={peak} id="pg-spark-down" tone="text-open" />
+            <CellSpark values={rates.map((r) => r.tx)} peak={peak} id="pg-spark-up" tone="text-accent" />
+          </span>
+        </Cell>
         {/* Цвет — по настоящей задержке, а не по кадру анимации: порог должен
             переключаться по факту, а не по тому, докуда доехало число. */}
-        <Metric
-          name={s.latency}
-          value={latency != null ? `${Math.round(latency)} ms` : "—"}
-          tone={latencyTone(status?.latency_ms)}
-          mono
-        />
-        <Metric
-          name={s.received}
-          value={rx != null ? bytes(rx) : "—"}
-          hint={s.trafficHint}
-          icon="down"
-          mono
-          rate={last ? `${bytes(last.rx)}${s.perSecond}` : undefined}
-          rateHint={scaleHint}
-          spark={<CellSpark values={rates.map((r) => r.rx)} peak={peak} id="pg-spark-down" tone="text-open" />}
-        />
-        <Metric
-          name={s.sent}
-          value={tx != null ? bytes(tx) : "—"}
-          hint={s.trafficHint}
-          icon="up"
-          mono
-          rate={last ? `${bytes(last.tx)}${s.perSecond}` : undefined}
-          rateHint={scaleHint}
-          spark={<CellSpark values={rates.map((r) => r.tx)} peak={peak} id="pg-spark-up" tone="text-accent" />}
-        />
+        <Cell name={s.latency}>
+          <span
+            className={`m-latency smooth block truncate font-mono text-lg font-semibold tabular-nums ${latencyTone(status?.latency_ms)}`}
+          >
+            {latency != null ? `${Math.round(latency)} ms` : "—"}
+          </span>
+          <LatencyBars values={latencies} className="chart" />
+        </Cell>
+        <Cell name={s.sessionTotal} hint={s.trafficHint} className="m-session">
+          <span className="flex items-baseline gap-x-3 whitespace-nowrap font-mono text-sm tabular-nums text-muted">
+            <span className="inline-flex items-center gap-1" title={s.received}>
+              <Icon name="down" size={12} className="shrink-0" />
+              {rx != null ? bytes(rx) : "—"}
+            </span>
+            <span className="inline-flex items-center gap-1" title={s.sent}>
+              <Icon name="up" size={12} className="shrink-0" />
+              {tx != null ? bytes(tx) : "—"}
+            </span>
+          </span>
+        </Cell>
       </dl>
 
       {/* Пока служба не ответила, по нижней кромке плиты идёт бегунок. Прогресса
@@ -460,6 +569,18 @@ export function StatusBar({
         <div className="bar absolute inset-x-0 bottom-0 h-0.5 overflow-hidden text-[color:var(--tone)]" />
       )}
       {trouble && status && <Trouble s={s} status={status} onClose={() => setTrouble(false)} />}
+      {menu && (
+        <Menu
+          at={menu}
+          onClose={() => setMenu(null)}
+          items={scopes.map(([value, label, hint]) => ({
+            label,
+            sub: hint,
+            mark: value === scope,
+            onPick: () => onScope(value),
+          }))}
+        />
+      )}
     </header>
   );
 }
@@ -520,73 +641,36 @@ function Trouble({ s, status, onClose }: { s: Strings; status: Status; onClose: 
 }
 
 /** Ячейка приборной линейки: подпись, под ней значение ступенью крупнее —
- *  линейка читается как прибор, а не как подпись к подписи.
+ *  линейка читается как прибор, а не как подпись к подписи. Ячеек три —
+ *  скорость, задержка, итог сеанса; профиль и точка выхода переехали в плиту.
  *  Цифры табличные — статус приходит каждые две секунды, и прыгать по ширине
  *  им нельзя.
  *
  *  В узком окне (`@media (max-width: 767px)` в `index.css`) подписи уходят
- *  с глаз, и всё, что ячейка о себе рассказывает, остаётся в подсказке — она
- *  поэтому и собирается из имени, значения и пояснения разом, а не из одного
- *  значения. */
-function Metric({
+ *  с глаз, а графики исчезают: остаются числа в одну строку. Пояснение ячейки
+ *  при этом живёт в подсказке. */
+function Cell({
   name,
-  value,
-  tone = "",
   hint,
-  icon,
+  className = "",
   children,
-  spark,
-  rate,
-  rateHint,
-  mono,
 }: {
   name: string;
-  value: string;
-  /** Число, а не слово: набирается моноширинным — цифры прибора стоят
-   *  столбиком и не дёргаются, когда меняются. */
-  mono?: boolean;
-  tone?: string;
   /** Что именно измерено, если из подписи это не следует: счётчики трафика
    *  считают с запуска туннеля, а не с установки приложения. */
   hint?: string;
-  /** Стрелка вместо подписи там, где подписи не осталось. Только у счётчиков:
-   *  «принято» и «отправлено» — единственная пара, которую рисунок различает
-   *  не хуже слова. */
-  icon?: "down" | "up";
-  /** Значение сложнее строки — точка выхода: флаг и название живут отдельно,
-   *  чтобы в узком окне название могло уйти, а флаг остаться. */
-  children?: ReactNode;
-  /** История скорости фоном ячейки. Только у счётчиков: у профиля и страны
-   *  истории нет, а у задержки она есть, но в байтах её не нарисовать. */
-  spark?: ReactNode;
-  /** Скорость под числом — то же измерение, что и график, только словами. */
-  rate?: string;
-  rateHint?: string;
+  className?: string;
+  children: ReactNode;
 }) {
   return (
     // Разделители только там, где линейка стоит одной строкой: в две колонки
     // левая граница второго ряда висела бы посреди пустоты.
-    <div className="m-cell min-w-0 md:border-s md:border-edge md:px-3 md:first:border-s-0 md:first:ps-0">
-      {spark}
+    <div
+      className={`m-cell min-w-0 md:border-s md:border-edge md:px-3 md:first:border-s-0 md:first:ps-0 ${className}`}
+      title={hint ? `${name} — ${hint}` : name}
+    >
       <dt className="m-label text-xs text-muted">{name}</dt>
-      {/* tabular-nums обязателен именно из-за доезда: цифры разной ширины
-          меняются каждый кадр и дёргали бы линейку по всей строке. */}
-      <dd
-        className={`m-value smooth mt-0.5 flex items-baseline gap-1.5 overflow-hidden text-lg font-semibold tabular-nums ${mono ? "font-mono" : ""} ${tone}`}
-        title={hint ? `${name}: ${value} — ${hint}` : `${name}: ${value}`}
-      >
-        {icon && (
-          <span className="m-icon shrink-0 self-center text-muted">
-            <Icon name={icon} size={12} />
-          </span>
-        )}
-        {children ?? <span className="truncate">{value}</span>}
-      </dd>
-      {rate && (
-        <dd className="rates truncate font-mono" title={rateHint}>
-          {rate}
-        </dd>
-      )}
+      <dd className="m-value mt-0.5 min-w-0">{children}</dd>
     </div>
   );
 }

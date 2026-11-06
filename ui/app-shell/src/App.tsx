@@ -275,7 +275,6 @@ export function App() {
           error={error}
           onError={setError}
           onToggle={toggle}
-          onScope={setScope}
         />
       </div>
     );
@@ -319,16 +318,16 @@ export function App() {
       )}
 
       <div className="flex min-h-0 flex-1">
-        {/* Рейка — NavigationView Windows 11 в компактном виде: значки в
-            столбец, под каждым счётчик строк. Счётчик — не украшение: он
-            единственное, что говорит о закрытой панели хоть что-то. Узкая
-            рейка и широкая «Главная» — одна навигация в двух видах, кто из
-            них показан, решает `index.css` по ширине окна. */}
+        {/* Рейка — NavigationView Windows 11: значки в столбец, под каждым
+            подпись, а счётчик строк — бляшкой у значка. Счётчик — не
+            украшение: он единственное, что говорит о закрытой панели хоть
+            что-то. Узкая рейка и широкая «Главная» — одна навигация в двух
+            видах, кто из них показан, решает `index.css` по ширине окна. */}
         <nav className="rail flex shrink-0 flex-col items-center gap-0.5 py-1.5" aria-label={s.tabMain}>
           <RailItem className="rail-narrow" icon="server" active={!settings && tab === "profiles"} onClick={() => pick("profiles")}
             label={s.profiles} count={status?.profiles.length ?? 0} />
           <RailItem className="rail-narrow" icon="screen" active={!settings && tab === "apps"} onClick={() => pick("apps")}
-            label={s.apps} count={`${selectedApps}/${status?.apps.length ?? 0}`} />
+            label={s.apps} count={selectedApps} full={s.railOf(selectedApps, status?.apps.length ?? 0)} />
           <RailItem className="rail-narrow" icon="lines" active={!settings && tab === "journal"} onClick={() => pick("journal")}
             label={s.journal} count={status?.log.length ?? 0} />
           {/* Шире 1100 px первые три стоят рядом, и выбирать между ними
@@ -459,28 +458,33 @@ function CloseDialog({
   );
 }
 
-/** Пункт рейки: значок и счётчик строк под ним. Подпись живёт в подсказке и
- *  в имени для чтения с экрана — вместе со счётчиком, чтобы диктор прочёл
- *  «Профили · 7», а не голое число.
+/** Пункт рейки: значок, под ним подпись, счётчик — бляшкой у угла значка.
+ *  Подпись прячется вместе с шириной рейки (`.rail-label` в `index.css`, 470 px),
+ *  и тогда пункт — один значок с бляшкой, как рейка и была.
  *
- *  Строка под счётчик держится и у пунктов без счётчика: иначе значки
- *  соседних пунктов стояли бы на разной высоте, и столбец рассыпался бы. */
+ *  В бляшке стоит одно число — «сколько выбрано», а не «41/359»: дробь в 16 px
+ *  не читается. Полная запись («41 из 359») остаётся в имени для чтения с
+ *  экрана и в подсказке — вместе с подписью, чтобы диктор прочёл «Приложения ·
+ *  41 из 359», а не голое число. */
 function RailItem({
   label,
   icon,
   count,
+  full,
   active,
   onClick,
   className = "",
 }: {
   label: string;
   icon: IconName;
-  count?: number | string;
+  count?: number;
+  /** Что сказать вместо голого числа, когда оно — числитель дроби. */
+  full?: string;
   active: boolean;
   onClick: () => void;
   className?: string;
 }) {
-  const name = count != null ? `${label} · ${count}` : label;
+  const name = count != null ? `${label} · ${full ?? count}` : label;
   return (
     <button
       type="button"
@@ -488,13 +492,23 @@ function RailItem({
       aria-label={name}
       title={name}
       onClick={onClick}
-      className={`rail-item smooth flex h-12 w-10 flex-col items-center justify-center gap-1 ${
+      className={`rail-item smooth flex flex-col items-center justify-center gap-1 ${
         active ? "text-ink" : "text-muted hover:text-ink"
       } ${className}`}
     >
-      <Icon name={icon} className={active ? "text-accent" : ""} />
-      <span className="h-3 text-xs leading-none tabular-nums text-faint" aria-hidden="true">
-        {count ?? ""}
+      <span className="relative inline-flex">
+        <Icon name={icon} size={20} className={active ? "text-accent" : ""} />
+        {count != null && (
+          <span
+            className="absolute -top-2 start-full -ms-2.5 grid h-4 min-w-4 place-items-center rounded-full bg-press px-1 text-xs leading-none tabular-nums text-ink"
+            aria-hidden="true"
+          >
+            {count}
+          </span>
+        )}
+      </span>
+      <span className="rail-label max-w-full truncate px-0.5 text-xs leading-none" aria-hidden="true">
+        {label}
       </span>
     </button>
   );
