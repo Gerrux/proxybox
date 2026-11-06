@@ -16,8 +16,9 @@ const USAGE_RU: &str = "proxybox <команда>
   list-apps              приложения под управлением
   discover               найти установленные приложения и добавить выключенными
   add-app --path <exe>   добавить приложение по пути к .exe
-  enable --path <exe>    пустить приложение в туннель
-  disable --path <exe>   убрать приложение из-под управления
+  enable --path <exe>    отметить приложение в белом списке; в охватах «весь
+                         компьютер» и «раздельно» ни на что не влияет
+  disable --path <exe>   снять отметку с приложения в белом списке
   scope whitelist|all|split    охват: сеть только выбранным приложениям и только
                          через туннель; либо весь трафик машины в туннель
   add-profile --link <l> импортировать share-link (vless/vmess/trojan/ss/hy2/tuic/wg),
@@ -58,8 +59,9 @@ const USAGE_EN: &str = "proxybox <command>
   list-apps              apps under control
   discover               find installed apps and add them disabled
   add-app --path <exe>   add an app by path to its .exe
-  enable --path <exe>    let the app into the tunnel
-  disable --path <exe>   take the app out of control
+  enable --path <exe>    tick the app in the whitelist; has no effect in the
+                         'all' and 'split' scopes
+  disable --path <exe>   untick the app in the whitelist
   scope whitelist|all|split    scope: network for selected apps only and only
                          through the tunnel; or all machine traffic
   add-profile --link <l> import a share-link (vless/vmess/trojan/ss/hy2/tuic/wg),
@@ -100,8 +102,9 @@ const USAGE_FA: &str = "proxybox <فرمان>
   list-apps              برنامه‌های زیر کنترل
   discover               یافتن برنامه‌های نصب‌شده و افزودن آن‌ها به‌صورت خاموش
   add-app --path <exe>   افزودن برنامه با مسیر فایل .exe
-  enable --path <exe>    راه دادن برنامه به تونل
-  disable --path <exe>   بیرون بردن برنامه از کنترل
+  enable --path <exe>    انتخاب برنامه در فهرست سفید؛ در حالت‌های all و
+                         split اثری ندارد
+  disable --path <exe>   برداشتن انتخاب برنامه در فهرست سفید
   scope whitelist|all|split    دامنه: شبکه فقط برای برنامه‌های انتخاب‌شده و فقط از
                          راه تونل؛ یا همهٔ ترافیک رایانه در تونل
   add-profile --link <l> وارد کردن share-link (vless/vmess/trojan/ss/hy2/tuic/wg)،
@@ -142,8 +145,9 @@ const USAGE_ZH: &str = "proxybox <命令>
   list-apps              受管理的应用
   discover               查找已安装的应用并以关闭状态加入
   add-app --path <exe>   按 .exe 路径添加应用
-  enable --path <exe>    放行应用进入隧道
-  disable --path <exe>   将应用移出管理
+  enable --path <exe>    在白名单中勾选应用；在 all 和 split 范围内
+                         不起作用
+  disable --path <exe>   在白名单中取消勾选应用
   scope whitelist|all|split    范围：仅所选应用联网且只能走隧道；
                          或整机流量进入隧道
   add-profile --link <l> 导入 share-link（vless/vmess/trojan/ss/hy2/tuic/wg）、
@@ -184,8 +188,9 @@ const USAGE_TR: &str = "proxybox <komut>
   list-apps              yönetim altındaki uygulamalar
   discover               kurulu uygulamaları bul ve kapalı olarak ekle
   add-app --path <exe>   uygulamayı .exe yoluyla ekle
-  enable --path <exe>    uygulamayı tünele al
-  disable --path <exe>   uygulamayı yönetimden çıkar
+  enable --path <exe>    uygulamayı beyaz listede işaretle; 'all' ve 'split'
+                         kapsamlarında etkisi yoktur
+  disable --path <exe>   uygulamanın beyaz listedeki işaretini kaldır
   scope whitelist|all|split    kapsam: ağ yalnızca seçili uygulamalara ve yalnızca
                          tünel üzerinden; ya da makinenin tüm trafiği tünele
   add-profile --link <l> share-link (vless/vmess/trojan/ss/hy2/tuic/wg),
@@ -226,8 +231,9 @@ const USAGE_ID: &str = "proxybox <perintah>
   list-apps              aplikasi yang dikelola
   discover               cari aplikasi terpasang dan tambahkan dalam keadaan mati
   add-app --path <exe>   tambahkan aplikasi lewat jalur .exe
-  enable --path <exe>    izinkan aplikasi masuk terowongan
-  disable --path <exe>   keluarkan aplikasi dari pengelolaan
+  enable --path <exe>    centang aplikasi di daftar putih; tidak berpengaruh
+                         pada cakupan 'all' dan 'split'
+  disable --path <exe>   hapus centang aplikasi di daftar putih
   scope whitelist|all|split    cakupan: jaringan hanya untuk aplikasi terpilih dan
                          hanya lewat terowongan; atau seluruh lalu lintas mesin
   add-profile --link <l> impor share-link (vless/vmess/trojan/ss/hy2/tuic/wg),
