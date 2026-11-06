@@ -13,10 +13,11 @@ function fieldId(path: string): string {
 /** Список короче этого искать незачем — поле только мешало бы. */
 const SEARCH_FROM = 8;
 
-/** Включённые сверху, дальше по алфавиту: список после автообнаружения длинный,
- *  и важно видеть в первую очередь то, что реально под управлением. */
-function ordered(apps: App[]): App[] {
-  return [...apps].sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.name.localeCompare(b.name));
+/** По алфавиту внутри группы. Деление на «выбраны» и «остальные» делают сами
+ *  группы: список после автообнаружения длинный, и важно видеть в первую
+ *  очередь то, что реально под управлением, — оно стоит первой группой. */
+function alphabetical(apps: App[]): App[] {
+  return [...apps].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Ищем и по имени, и по пути: «chrome» находит браузер, «steamapps» — всё, что
@@ -123,7 +124,14 @@ export function Apps({
   // текст и другая срочность. Закрытая заметка «весь компьютер» не имеет права
   // унести с собой предупреждение пустого белого списка.
   useEffect(() => setNoteOpen(split), [all, split]);
-  const shown = matching(ordered(apps), query);
+  const shown = matching(apps, query);
+  // Две группы: отмеченные первой и остальные под ней. Поиск режет обе, и
+  // пустая группа под поиском не рисуется — без поиска рисуется, даже пустая:
+  // «Выбраны (0)» в белом списке и есть предупреждение.
+  const groups = [
+    { key: "picked", title: s.appsPicked(shown.filter((a) => a.enabled).length), items: alphabetical(shown.filter((a) => a.enabled)) },
+    { key: "rest", title: s.appsRest(shown.filter((a) => !a.enabled).length), items: alphabetical(shown.filter((a) => !a.enabled)) },
+  ].filter((g) => g.items.length > 0 || query === "");
   // Поле не прячем, пока в нём что-то есть: иначе фильтр остался бы включённым
   // и невидимым, а строки просто пропали бы.
   const searchable = apps.length > SEARCH_FROM || query !== "";
@@ -138,15 +146,42 @@ export function Apps({
 
   return (
     <Panel
-      pad="p-3"
+      // Отступа у прокрутки нет — по той же причине, что у списка профилей:
+      // липкий заголовок группы липнет к кромке прокрутки, а не к её полю за
+      // вычетом отступа. Поиск и заметка стоят вне прокрутки (`bar`), поля
+      // раздают сами строки и пустые состояния.
       className={className}
       title={s.apps}
       note={
         apps.length > 0 && (
           <span className="text-muted">
-            {split ? s.splitAppsCount(on, apps.length) : s.appsCount(on, apps.length)}
+            {/* «Весь компьютер»: счёт «в туннеле» там врал бы — список не
+                применяется, а идёт всё. */}
+            {all ? s.appsNotApplied : split ? s.splitAppsCount(on, apps.length) : s.appsCount(on, apps.length)}
             {query !== "" && ` · ${s.appsShown(shown.length)}`}
           </span>
+        )
+      }
+      bar={
+        (noteShown || searchable) && (
+          <div className="flex shrink-0 flex-col gap-2 border-b border-edge p-2">
+            {/* Заметка одна, а текст в ней по охвату — и то и другое
+                переключает «?» в шапке панели. Одной строкой говорит, что
+                значит галочка в этом охвате: в белом списке — «в туннеле» (и
+                что без неё сети нет вовсе), в «Раздельно» — «напрямую», в «весь
+                компьютер» — что список не применяется.
+
+                Открывается сама в «Раздельно», но закрывается по нажатию:
+                постоянный абзац отнимал у списка строки в плашке из трея, а
+                читают его один раз. Судьба конкретной строки остаётся в её
+                подсказке (`fateHint`). */}
+            {noteShown && (
+              <p className="enter rounded-md bg-hover px-3 py-1.5 text-sm text-muted">
+                {split ? s.splitAppsNote : all ? s.scopeAllNote : s.whitelistNote}
+              </p>
+            )}
+            {searchable && <SearchField value={query} onChange={setQuery} placeholder={s.searchApps} />}
+          </div>
         )
       }
       action={
@@ -183,32 +218,14 @@ export function Apps({
         </>
       }
     >
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col">
         {/* Список виден в обоих охватах. Прятать его в «весь компьютер» —
             значит оставить единственным путём к нему само переключение охвата,
             а оно и есть то действие, которое рубит сеть всем неотмеченным:
             сначала стреляем, потом целимся. Раньше это оправдывали тем, что на
             виду список соврал бы про судьбу строк, — теперь про судьбу не врёт
-            `fateHint`, он спрашивает охват. Строка над списком говорит прямо,
+            `fateHint`, он спрашивает охват. Заметка над списком говорит прямо,
             что здесь он не применяется. */}
-        {/* Заметка одна, а текст в ней по охвату — и то и другое переключает
-            «?» в шапке панели.
-
-            В «весь компьютер» она говорит, что список здесь не применяется. В
-            белом списке — что галочка значит не то, что значила в split-tunnel,
-            и разница опасная: тогда снятая возвращала приложение в открытую
-            сеть, а теперь оставляет его без интернета вовсе.
-
-            Открывается сама в обоих срочных случаях (охват «весь компьютер» и
-            пустой белый список), но закрывается по нажатию: постоянный абзац
-            отнимал у списка четыре строки в плашке из трея, а читают его один
-            раз. Судьба конкретной строки остаётся в её подсказке
-            (`fateHint`). */}
-        {noteShown && (
-          <p className="enter rounded-md bg-hover px-3 py-2 text-sm text-muted">
-            {split ? s.splitAppsNote : all ? s.scopeAllNote : s.whitelistNote}
-          </p>
-        )}
         {adding && (
           <Modal title={s.addApp} onClose={() => setAdding(false)}>
             <AddField
@@ -221,24 +238,35 @@ export function Apps({
             />
           </Modal>
         )}
-        {searchable && <SearchField value={query} onChange={setQuery} placeholder={s.searchApps} />}
         {apps.length === 0 ? (
           // Тот же случай, что и у профилей: поле пути больше не открыто само.
-          <div className="flex flex-col items-center gap-2">
+          <div className="flex flex-col items-center gap-2 p-3">
             <Empty>{s.noApps}</Empty>
             <Button variant="primary" onClick={() => setAdding(true)}>
               {s.addApp}
             </Button>
           </div>
         ) : shown.length === 0 ? (
-          <Empty>{s.noMatches}</Empty>
+          <div className="p-3">
+            <Empty>{s.noMatches}</Empty>
+          </div>
         ) : (
-          <ul className="-mx-1.5 flex flex-col">
-            {shown.map((app) => (
+          groups.map((group) => (
+            <section key={group.key}>
+              {/* Заголовок группы — рубеж списка и липкий, как у подписок в
+                  профилях (`.sub-head`): список после автообнаружения длиннее
+                  любого окна, и посреди прокрутки ответить «это выбранные или
+                  остальные» было бы нечем. */}
+              <h3 className="sub-head flex h-8 items-center gap-2 ps-3 pe-2 text-sm font-semibold">{group.title}</h3>
+          <ul className="flex flex-col gap-0.5 px-1.5 py-1">
+            {group.items.map((app) => (
               <li
                 key={app.path}
-                title={fateHint(s, app.enabled, status?.tunnel, status?.scope)}
-                className="row enter smooth flex min-h-11 items-center gap-3 ps-2.5 pe-1"
+                // Путь — в подсказке строки и бледно справа от имени по
+                // наведению; судьба приложения (`fateHint`) — второй строкой
+                // подсказки, а не вместо пути.
+                title={`${app.path}\n${fateHint(s, app.enabled, status?.tunnel, status?.scope)}`}
+                className="row enter smooth group/row flex h-[34px] items-center gap-2.5 ps-2.5 pe-1"
               >
                 <input
                   id={fieldId(app.path)}
@@ -268,11 +296,17 @@ export function Apps({
                 ) : (
                   <span className="size-5 shrink-0" />
                 )}
-                <label htmlFor={fieldId(app.path)} className="min-w-0 flex-1 cursor-pointer leading-tight">
-                  <span className={`block truncate text-sm ${app.enabled ? "font-semibold" : ""}`}>
+                {/* Одна строка: имя, а путь проступает справа бледным по
+                    наведению. Обрезается он первым (`shrink-[8]`): двух
+                    приложений с одним именем путь и различает. */}
+                <label
+                  htmlFor={fieldId(app.path)}
+                  className="flex min-w-0 flex-1 cursor-pointer items-baseline gap-2"
+                >
+                  <span className={`min-w-0 truncate text-sm ${app.enabled ? "font-semibold" : ""}`}>
                     {app.name}
                   </span>
-                  <span className="selectable block truncate font-mono text-xs text-muted" title={app.path}>
+                  <span className="selectable hidden min-w-0 shrink-[8] truncate font-mono text-xs text-faint group-hover/row:inline group-focus-within/row:inline">
                     {app.path}
                   </span>
                 </label>
@@ -285,6 +319,8 @@ export function Apps({
               </li>
             ))}
           </ul>
+            </section>
+          ))
         )}
       </div>
     </Panel>

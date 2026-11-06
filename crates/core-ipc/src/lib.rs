@@ -2248,15 +2248,21 @@ mod tests {
             .any(|c| c.starts_with("p-") || c.starts_with("pt-") || c.starts_with("py-"));
         assert!(!padded, "отступ снова стоит на самой прокрутке: липкий заголовок встанет ниже кромки");
 
-        // Список профилей — единственный, кто отступа не просит: липкое живёт
-        // только у него.
-        let profiles = include_str!("../../../ui/app-shell/src/Profiles.tsx");
-        let opening = profiles
-            .split("<Panel")
-            .nth(1)
-            .and_then(|s| s.split(">").next())
-            .expect("список живёт в плите");
-        assert!(!opening.contains("pad="), "список профилей просит отступ у прокрутки");
+        // Списки профилей и приложений не просят отступа: липкое живёт только у
+        // них. Читаем открывающий тег плиты до её `bar={` — первая плита файла
+        // стоит там, где её свойства кончаются полосой под шапкой, а не
+        // первым попавшимся `>` внутри стрелки или сравнения.
+        for (name, text) in [
+            ("Profiles.tsx", include_str!("../../../ui/app-shell/src/Profiles.tsx")),
+            ("Apps.tsx", include_str!("../../../ui/app-shell/src/Apps.tsx")),
+        ] {
+            let opening = text
+                .split("<Panel")
+                .nth(1)
+                .and_then(|s| s.split("bar={").next())
+                .unwrap_or_else(|| panic!("{name}: список живёт в плите с полосой под шапкой"));
+            assert!(!opening.contains("pad="), "{name}: список просит отступ у прокрутки");
+        }
 
         let css = include_str!("../../../ui/app-shell/src/index.css");
         let head = css
@@ -2285,6 +2291,71 @@ mod tests {
             !apps.contains("noteOpen ||"),
             "у заметки снова два условия: одно из них кнопке неподвластно"
         );
+    }
+
+    /// Остаток подписки без лимита обязан читаться как «израсходовано», а не
+    /// остаток. Панели шлют `total == 0` и безлимитным, и когда лимита не
+    /// прислали, а `upload + download` при этом — то, что уже потрачено: голое
+    /// «284 GB» читалось «осталось много» там, где лимита нет вовсе.
+    ///
+    /// Подпись обязана быть во всех шести словарях окна (`tsc` и так не даст
+    /// завести словарь с дыркой, но имя ключа держим здесь: переименуют в одном
+    /// месте — разойдётся молча), а разбор остатка не вправе складывать
+    /// использованное в строку голым числом.
+    #[test]
+    fn the_quota_never_reads_as_a_remainder() {
+        let i18n = include_str!("../../../ui/app-shell/src/i18n.ts");
+        assert_eq!(
+            i18n.matches("quotaUsedNoLimit: (used: string)").count(),
+            6,
+            "подпись «израсходовано · без лимита» есть не во всех шести словарях окна"
+        );
+        let profiles = include_str!("../../../ui/app-shell/src/Profiles.tsx");
+        assert!(profiles.contains("s.quotaUsedNoLimit(bytes(f.used))"), "безлимитная подписка снова без подписи");
+        assert!(
+            !profiles.contains(": bytes(f.used)") && !profiles.contains("push(bytes("),
+            "использованное снова показано голым числом — читается остатком"
+        );
+    }
+
+    /// Под отбором полосы подписок тащить строки нельзя: отбор прячет остальные
+    /// группы, и порядок, собранный из одной, оставил бы чужие без места — тот
+    /// же тихий промах, что у поиска. Условие переноса обязано читать и поиск,
+    /// и отбор, и порядок по задержке.
+    #[test]
+    fn a_filtered_strip_never_lets_the_list_be_dragged() {
+        let profiles = include_str!("../../../ui/app-shell/src/Profiles.tsx");
+        let line = profiles
+            .lines()
+            .find(|l| l.trim_start().starts_with("const draggable ="))
+            .expect("условие переноса живёт в `draggable`");
+        for part in ["!byLat", "needle === \"\"", "filter === null"] {
+            assert!(line.contains(part), "перенос разрешён без условия `{part}`: порядок уедет службе неполным");
+        }
+    }
+
+    /// Главное окно и плашка из трея строят один и тот же список — свои узлы
+    /// первыми, затем подписки — и выбирают один и тот же «быстрейший». Делит и
+    /// выбирает их `groups.ts`: написанные дважды, они разошлись бы, и один и
+    /// тот же узел оказывался бы в разных группах в двух окнах.
+    #[test]
+    fn both_windows_group_profiles_the_same_way() {
+        let groups = include_str!("../../../ui/app-shell/src/groups.ts");
+        for own in ["export function groupProfiles(", "export function fastestProbe(", "export function aliveCount("] {
+            assert!(groups.contains(own), "общего помощника больше нет: {own}");
+        }
+        for (name, text) in [
+            ("Profiles.tsx", include_str!("../../../ui/app-shell/src/Profiles.tsx")),
+            ("Flyout.tsx", include_str!("../../../ui/app-shell/src/Flyout.tsx")),
+        ] {
+            for used in ["groupProfiles(", "fastestProbe(", "aliveCount("] {
+                assert!(text.contains(used), "{name} считает мимо общего помощника: {used}");
+            }
+            assert!(
+                !text.contains("new Set(subscriptions.flatMap"),
+                "{name} снова делит узлы на свои и подписочные сам"
+            );
+        }
     }
 
     /// Пульс точки выхода обязан жить вне карты. Он идёт всё время, пока

@@ -13,11 +13,17 @@ export function Panel({
   action,
   className = "",
   pad = "",
+  bar,
   children,
 }: {
   title: string;
   note?: ReactNode;
   action?: ReactNode;
+  /** Полоса под шапкой, которая не прокручивается вместе со списком: панель
+   *  инструментов списка профилей и полоса подписок. Вне прокрутки она по
+   *  построению не мешает липкому заголовку группы, который липнет к кромке
+   *  самой прокрутки. */
+  bar?: ReactNode;
   className?: string;
   /** Отступ содержимого. Панель не даёт его сама: липкое внутри прокрутки
    *  (`.sub-head` в списке профилей) липнет не к её кромке, а к полю за
@@ -39,9 +45,30 @@ export function Panel({
         </h2>
         {action && <div className="flex shrink-0 items-center gap-0.5">{action}</div>}
       </header>
+      {bar}
       <div className={`scroll min-h-0 flex-1 overflow-y-auto ${pad}`}>{children}</div>
     </section>
   );
+}
+
+/** Ширина самого блока, а не окна. Панель не знает, сколько ей дали: выше
+ *  1100 px три панели стоят рядом и профилям достаётся 300–450 px при любой
+ *  ширине окна, ниже — одна панель во всю ширину. `max-width` на окне про это
+ *  молчит, а ряд кнопок, который ему не хватает места, обязан сворачиваться
+ *  по месту, а не по окну. Замер — `ResizeObserver` на самом блоке: события
+ *  меняет только размер, опроса нет. До первого замера — 0, а ждать его
+ *  нельзя, поэтому он делается синхронно (`useLayoutEffect`). */
+export function useBoxWidth(ref: React.RefObject<HTMLElement | null>): number {
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setWidth(el.getBoundingClientRect().width);
+    const watch = new ResizeObserver(([entry]) => entry && setWidth(entry.contentRect.width));
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [ref]);
+  return width;
 }
 
 /** Порог узкого окна — тот же, по которому сжимается раскладка в `index.css`

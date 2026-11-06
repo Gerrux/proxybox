@@ -31,6 +31,7 @@ import { Fragment, useState } from "react";
 import type { Act, ProfileInfo, Status } from "./platform";
 import { openMain } from "./platform";
 import { strings } from "./i18n";
+import { aliveCount, fastestProbe, groupProfiles, quotaExpired, subTitle } from "./groups";
 import {
   bytes,
   CellSpark,
@@ -74,7 +75,6 @@ export function Flyout({
   const probes = status?.probes ?? [];
   const subscriptions = status?.subscriptions ?? [];
   const probeOf = new Map(probes.map((p) => [p.name, p]));
-  const byName = new Map(profiles.map((p) => [p.name, p]));
   const rates = useRates(status);
   const last = rates.at(-1) ?? null;
   // Масштаб один на оба направления — по той же причине, что и в шапке окна.
@@ -92,17 +92,9 @@ export function Flyout({
   // он был бы вторым.
   const favouritesFirst = (list: ProfileInfo[]) => [...list].sort((a, b) => Number(b.favorite) - Number(a.favorite));
 
-  // Группы: свои узлы первыми, затем подписки в порядке службы. Своё — то,
-  // чего нет ни в одной подписке; связь знает служба, плашка её только читает.
-  const fromSubs = new Set(subscriptions.flatMap((sub) => sub.nodes));
-  const members = [
-    { key: "", sub: null, all: profiles.filter((p) => !fromSubs.has(p.name)) },
-    ...subscriptions.map((sub) => ({
-      key: sub.url,
-      sub,
-      all: sub.nodes.flatMap((name) => byName.get(name) ?? []),
-    })),
-  ];
+  // Группы: свои узлы первыми, затем подписки в порядке службы — то же деление,
+  // что в главном окне, и считает его один и тот же `groupProfiles`.
+  const members = groupProfiles(profiles, subscriptions);
   const groups = members
     .map((g) => ({ ...g, items: favouritesFirst(g.all.filter(match)) }))
     .filter((g) => g.items.length > 0);
@@ -117,11 +109,9 @@ export function Flyout({
   const openByDefault = holder ?? groups[0]?.key;
   const isOpen = (key: string) => q !== "" || (toggled[key] ?? key === openByDefault);
 
-  // Самый быстрый из измеренных и всё ещё живущих в списке — тот же выбор, что
-  // у «Включить быстрый» в главном окне.
-  const fastest = probes
-    .filter((p) => p.latency_ms != null && byName.has(p.name))
-    .sort((a, b) => (a.latency_ms ?? 0) - (b.latency_ms ?? 0))[0];
+  // Самый быстрый из измеренных — тот же выбор, что у «Быстрейшего» в главном
+  // окне: делает его одна и та же функция.
+  const fastest = fastestProbe(probes, profiles);
 
   const row = (p: ProfileInfo) => {
     const probe = probeOf.get(p.name);
@@ -276,9 +266,8 @@ export function Flyout({
           {groups.map((g) => {
             const open = isOpen(g.key);
             if (!grouped) return g.items.map(row);
-            const alive = g.all.filter((p) => probeOf.get(p.name)?.latency_ms != null).length;
-            const quota = g.sub?.quota;
-            const expired = quota != null && quota.expire > 0 && quota.expire * 1000 < Date.now();
+            const alive = aliveCount(g.all, probeOf);
+            const expired = quotaExpired(g.sub?.quota);
             return (
               <Fragment key={`group:${g.key}`}>
                 <li>
@@ -290,7 +279,7 @@ export function Flyout({
                   >
                     <Icon name="chevron" size={12} className={`shrink-0 text-muted ${open ? "rotate-90" : "rtl:rotate-180"}`} />
                     <span className="min-w-0 flex-1 truncate">
-                      {g.sub ? g.sub.name || g.sub.url.replace(/^https:\/\//, "") : s.ownProfiles}
+                      {g.sub ? subTitle(g.sub) : s.ownProfiles}
                     </span>
                     {expired && <span className="shrink-0 text-xs font-normal text-fault">{s.expiredShort}</span>}
                     <span
