@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import qrcode from "qrcode-generator";
 import type { Act, Lang, ProfileInfo, Probe, Response, Status, Subscription } from "./platform";
 import type { Strings } from "./i18n";
@@ -159,15 +159,17 @@ function Remaining({ s, quota, lang }: { s: Strings; quota: Subscription["quota"
   );
 }
 
-/** Тонкая полоска доли: дорожка и заливка. Ширина — единственное, что ей
- *  нужно от данных; цвет задаёт вызывающий классом `bg-*` у заливки. */
-function Meter({ ratio, tone, label }: { ratio: number; tone: string; label?: string }) {
+/** Деления «сколько узлов отвечает»: не больше восьми, закрашены живые — доля,
+ *  а не счёт (счёт стоит числом рядом). Узлов в подписке бывает сотня, и сотня
+ *  делений не читается. */
+function Ticks({ alive, total }: { alive: number; total: number }) {
+  const n = Math.min(total, 8);
+  const lit = alive === 0 ? 0 : Math.max(1, Math.round((alive / total) * n));
   return (
-    <span className="block h-[3px] overflow-hidden rounded-full bg-edge" role="img" aria-label={label} title={label}>
-      <span
-        className={`block h-full rounded-full ${tone}`}
-        style={{ inlineSize: `${Math.round(Math.min(1, Math.max(0, ratio)) * 100)}%` }}
-      />
+    <span className="flex shrink-0 gap-0.5" aria-hidden="true">
+      {Array.from({ length: n }, (_, i) => (
+        <i key={i} className={`block h-2.5 w-1.5 rounded-sm ${i < lit ? "bg-open" : "bg-edge-strong"}`} />
+      ))}
     </span>
   );
 }
@@ -187,6 +189,7 @@ function SubStrip({
   probeOf,
   filter,
   onPick,
+  note,
 }: {
   s: Strings;
   lang: Lang | undefined;
@@ -194,11 +197,17 @@ function SubStrip({
   probeOf: ReadonlyMap<string, Probe>;
   filter: string | null;
   onPick: (url: string | null) => void;
+  /** Что сказала бы шапка панели помимо счёта — в ячейке «Все», пока шапки нет. */
+  note: ReactNode;
 }) {
   const subs = groups.filter((g): g is Group & { sub: Subscription } => g.sub !== null);
   // «Все» — вся машина, включая свои узлы: ячейка про список целиком.
   const every = groups.flatMap((g) => g.all);
   const measured = (all: ProfileInfo[]) => all.some((p) => probeOf.has(p.name));
+  // Ячейка — до трёх строк (~63 px с рамкой): имя с делениями «живых узлов»,
+  // остаток с полоской, срок. Прежние 62 px вернулись не случайно: ниже ячейка
+  // не читалась как ячейка, а выше стоила списку строку. Тонкая полоска остатка
+  // — единственное место, где доля видна глазом, а не числом.
   const cell = (
     key: string,
     url: string | null,
@@ -209,17 +218,26 @@ function SubStrip({
     const alive = aliveCount(all, probeOf);
     const f = quotaFacts(quota);
     const q = f && quotaParts(s, f, lang);
+    const tail = q ? [q.amount, q.expiry].filter((x): x is string => x != null).join(" · ") : "";
+    const tip = [
+      url === null ? s.allSubs : `${s.subFilter}: ${title}`,
+      measured(all) ? s.groupAlive(alive, all.length) : "",
+      tail,
+    ]
+      .filter((x) => x !== "")
+      .join("\n");
     return (
-      <li key={key} className="flex min-w-0 flex-[1_0_10rem]">
+      <li key={key} className="flex min-w-0 flex-[1_0_13rem]">
         <button
           type="button"
           aria-pressed={filter === url}
-          title={url === null ? s.allSubs : `${s.subFilter}: ${title}`}
+          title={tip}
           onClick={() => onPick(filter === url ? null : url)}
-          className="sub-cell smooth flex w-full min-w-0 flex-col gap-1 px-3 py-2"
+          className="sub-cell smooth flex w-full min-w-0 flex-col items-stretch justify-start gap-0.5 px-3 py-1"
         >
-          <span className="flex min-w-0 items-baseline gap-2">
+          <span className="flex min-w-0 items-center gap-2">
             <span className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</span>
+            {measured(all) && all.length > 0 && <Ticks alive={alive} total={all.length} />}
             <span
               className="shrink-0 font-mono text-xs font-normal tabular-nums text-muted"
               title={s.groupAlive(alive, all.length)}
@@ -227,24 +245,23 @@ function SubStrip({
               {alive}/{all.length}
             </span>
           </span>
-          {measured(all) && (
-            <Meter ratio={all.length > 0 ? alive / all.length : 0} tone="bg-open" label={s.groupAlive(alive, all.length)} />
-          )}
-          {f && q && (
-            <>
-              {q.amount && (
-                <span className={`truncate text-xs ${quotaTone(f)}`} title={s.quotaHint}>
-                  {q.amount}
+          {f && q?.amount && (
+            <span className="flex min-w-0 items-center gap-2 text-xs">
+              {f.total > 0 && (
+                <span className="block h-1 min-w-6 flex-1 overflow-hidden rounded-full bg-[var(--pg-sunken)]">
+                  <span
+                    className={`block h-full rounded-full ${f.low ? "bg-wait" : "bg-muted"}`}
+                    style={{ inlineSize: `${Math.round(Math.min(1, Math.max(0, f.used / f.total)) * 100)}%` }}
+                  />
                 </span>
               )}
-              {f.total > 0 && <Meter ratio={f.used / f.total} tone={f.low ? "bg-wait" : "bg-accent"} />}
-              {q.expiry && (
-                <span className={`truncate text-xs ${f.expired ? "text-fault" : quotaTone(f)}`} title={s.quotaHint}>
-                  {q.expiry}
-                </span>
-              )}
-            </>
+              <span className={`min-w-0 truncate ${f.total > 0 ? "shrink-0" : "flex-1"} ${quotaTone(f)}`}>
+                {q.amount}
+              </span>
+            </span>
           )}
+          {f && q?.expiry && <span className={`truncate text-xs ${quotaTone(f)}`}>{q.expiry}</span>}
+          {url === null && <span className="fold-only truncate text-xs text-muted">{note}</span>}
         </button>
       </li>
     );
@@ -266,7 +283,7 @@ const SEARCH_FROM = 8;
  *  порядка, «Проверить все», «Быстрейший», «Добавить» и «⋯» в одну строку.
  *  Меньше — только поиск, «⋯» со всеми действиями и «+». Число — сумма самих
  *  кнопок с минимальным полем поиска, а не вкус: пересчитайте, добавляя кнопку. */
-const ROOMY = 620;
+const ROOMY = 760;
 
 /** Итог прогона рядом с именем: задержка либо причина отказа. Отказ приезжает
  *  строкой от службы, поэтому он уже на нужном языке — и виден целиком по
@@ -658,30 +675,35 @@ export function Profiles({
   const tools = present<MenuItem>(measured && toggleOrder, turnFastest, refreshAll, testAll);
   // Хвост широкой: то, чему в строке кнопки не нашлось.
   const overflow = present<MenuItem>(refreshAll);
+  // Счёт и возраст списка. Живут в шапке панели (она ≥1100 px) и, пока шапки
+  // нет (`folds`), в панели инструментов: в ячейке «Все» полосы подписок, а без
+  // полосы — на месте распорки. Один узел, а не две копии текста: разойдясь,
+  // они показывали бы разное в двух состояниях окна.
+  const note =
+    profiles.length > 0 ? (
+      <span className="text-muted">
+        {profiles.length}
+        {query !== "" && ` · ${s.appsShown(shown)}`}
+        {/* Возраст списка, а не адреса: узлы в подписке меняет панель, и по
+            одному адресу не видно, пришли они час назад или лежат тут с
+            прошлого месяца. Отметка одна на все подписки — сверяются они
+            вместе, и повторять её над каждой было бы шумом. */}
+        {grouped && ` · ${syncedAgo(s, status?.refreshed_at ?? null)}`}
+      </span>
+    ) : null;
   return (
     <Panel
       className={className}
       title={s.profiles}
-      note={
-        profiles.length > 0 && (
-          <span className="text-muted">
-            {profiles.length}
-            {query !== "" && ` · ${s.appsShown(shown)}`}
-            {/* Возраст списка, а не адреса: узлы в подписке меняет панель, и по
-                одному адресу не видно, пришли они час назад или лежат тут с
-                прошлого месяца. Отметка одна на все подписки — сверяются они
-                вместе, и повторять её над каждой было бы шумом. */}
-            {grouped && ` · ${syncedAgo(s, status?.refreshed_at ?? null)}`}
-          </span>
-        )
-      }
+      folds="narrow"
+      note={note}
       bar={
         <>
           {/* Панель инструментов стоит вне прокрутки: поиск и «Добавить» нужны
               на любой глубине списка, а липкому заголовку группы она не
               мешает — он липнет к кромке самой прокрутки, которая начинается
-              под ней. */}
-          <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1.5">
+              под ней. Высота — 41 px: поле в 32 и по 4 сверху и снизу. */}
+          <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1">
             {searchable && (
               <div className={compact ? "min-w-0 flex-1" : "min-w-32 flex-[0_1_18rem]"}>
                 <SearchField inputRef={searchRef} value={query} onChange={setQuery} placeholder={s.searchProfiles} />
@@ -702,7 +724,13 @@ export function Profiles({
                 onPick={(v) => setByLatency(v === "latency")}
               />
             )}
-            {(!compact || !searchable) && <span className="flex-1" />}
+            {/* Распорка несёт счёт, когда шапки нет, а полосы подписок (где он
+                стоит в ячейке «Все») тоже нет; места ему нет — обрезается. */}
+            {(!compact || !searchable) && (
+              <span className="min-w-0 flex-1 truncate text-xs">
+                {!stripped && <span className="fold-only">{note}</span>}
+              </span>
+            )}
             {compact ? (
               tools.length > 0 && (
                 <IconButton
@@ -755,7 +783,19 @@ export function Profiles({
             )}
           </div>
           {stripped && (
-            <SubStrip s={s} lang={status?.lang} groups={members} probeOf={probeOf} filter={filter} onPick={setSubFilter} />
+            <SubStrip
+              s={s}
+              lang={status?.lang}
+              groups={members}
+              probeOf={probeOf}
+              filter={filter}
+              onPick={setSubFilter}
+              // Счёт у ячейки «Все» уже есть (8/11), поэтому ей — только то, чего
+              // в ней нет: отбор поиском и возраст списка.
+              note={[query !== "" ? s.appsShown(shown) : "", syncedAgo(s, status?.refreshed_at ?? null)]
+                .filter((x) => x !== "")
+                .join(" · ")}
+            />
           )}
         </>
       }

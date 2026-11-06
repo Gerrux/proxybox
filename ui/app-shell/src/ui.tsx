@@ -14,6 +14,7 @@ export function Panel({
   className = "",
   pad = "",
   bar,
+  folds,
   foot,
   children,
 }: {
@@ -25,6 +26,13 @@ export function Panel({
    *  построению не мешает липкому заголовку группы, который липнет к кромке
    *  самой прокрутки. */
   bar?: ReactNode;
+  /** Шапка панели прячется (`.panel-head[data-folds]` в `index.css`): `"narrow"` —
+   *  ниже 1100 px, где панель одна и её называет рейка; `"always"` — на любой
+   *  ширине, для панели, которая не стоит рядом с соседями. Заводится только
+   *  панелью со своей `bar`: счёт из `note` и кнопки из `action` в таком виде
+   *  обязана нести сама панель инструментов (`.fold-only` — виден, пока шапки
+   *  нет), иначе они пропали бы вместе со строкой. */
+  folds?: "narrow" | "always";
   /** Полоса под прокруткой — зеркало `bar`: панель накопленных правок
    *  («Применить» у галочек «Раздельно»). Вне прокрутки, чтобы кнопка не
    *  уезжала вместе со списком и не терялась в его конце. */
@@ -39,11 +47,16 @@ export function Panel({
   children: ReactNode;
 }) {
   return (
-    <section className={`flex min-h-0 flex-col overflow-hidden ${className}`}>
+    // Имя панели — и когда шапки нет: читалке с экрана она остаётся областью с
+    // названием, а не безымянным блоком.
+    <section aria-label={title} className={`flex min-h-0 flex-col overflow-hidden ${className}`}>
       {/* Подпись обрезаться не имеет права — по ней и находят панель.
           Ужимается сначала счётчик, потом действия. Высота полосы одна у всех
           панелей (40 px), и кнопки в ней одного размера. */}
-      <header className="panel-head flex h-10 shrink-0 items-center justify-between gap-2 ps-4 pe-2">
+      <header
+        data-folds={folds}
+        className="panel-head flex h-10 shrink-0 items-center justify-between gap-2 ps-4 pe-2"
+      >
         <h2 className="flex min-w-0 flex-1 items-baseline gap-2 text-sm font-semibold text-ink">
           <span className="shrink-0">{title}</span>
           {note != null && <span className="min-w-0 truncate text-xs font-normal text-muted">{note}</span>}

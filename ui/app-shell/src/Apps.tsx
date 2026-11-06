@@ -181,6 +181,51 @@ export function Apps({
   // независимые: кнопка у них общая, и переключать она обязана ровно то, что
   // видно.
   const noteShown = noteOpen ?? urgent;
+  // Счёт и три кнопки. Стоят в шапке панели (≥1100 px) и, пока шапки нет
+  // (`folds`), в строке поиска: один узел на оба места, а не две копии кнопок,
+  // разошедшиеся при первой правке. Обе стоят в DOM, лишняя спрятана CSS-ом
+  // (`.fold-only`, `.panel-head[data-folds]`) — порог один, в `index.css`.
+  const count = apps.length > 0 && (
+    <span className="text-muted">
+      {/* «Весь компьютер»: счёт «в туннеле» там врал бы — список не
+          применяется, а идёт всё. */}
+      {all ? s.appsNotApplied : split ? s.splitAppsCount(on, apps.length) : s.appsCount(on, apps.length)}
+      {query !== "" && ` · ${s.appsShown(shown.length)}`}
+    </span>
+  );
+  const actions = (
+    // Кнопки стоят в обоих охватах: список собирают до переключения на
+    // белый, а не после — переключение и есть то действие, которое рубит
+    // сеть всем неотмеченным.
+    <>
+      <Button
+        variant="quiet"
+        disabled={busy}
+        onClick={() => {
+          setFinding(true);
+          void act({ cmd: "discover", arg: { env: {} } }).finally(() => setFinding(false));
+        }}
+      >
+        {finding ? s.searching : s.discover}
+      </Button>
+      <IconButton
+        icon="help"
+        aria-pressed={noteShown}
+        aria-expanded={noteShown}
+        label={s.whatIsCheck}
+        onClick={() => setNoteOpen(!noteShown)}
+        className={noteShown ? "bg-press" : ""}
+      />
+      <IconButton
+        icon="plus"
+        variant="ghost"
+        aria-haspopup="dialog"
+        label={s.addApp}
+        title={s.appPlaceholder}
+        onClick={() => setAdding(true)}
+      />
+    </>
+  );
 
   return (
     <Panel
@@ -190,37 +235,40 @@ export function Apps({
       // раздают сами строки и пустые состояния.
       className={className}
       title={s.apps}
-      note={
-        apps.length > 0 && (
-          <span className="text-muted">
-            {/* «Весь компьютер»: счёт «в туннеле» там врал бы — список не
-                применяется, а идёт всё. */}
-            {all ? s.appsNotApplied : split ? s.splitAppsCount(on, apps.length) : s.appsCount(on, apps.length)}
-            {query !== "" && ` · ${s.appsShown(shown.length)}`}
-          </span>
-        )
-      }
+      folds="narrow"
+      note={count}
       bar={
-        (noteShown || searchable) && (
-          <div className="flex shrink-0 flex-col gap-2 border-b border-edge p-2">
-            {/* Заметка одна, а текст в ней по охвату — и то и другое
-                переключает «?» в шапке панели. Одной строкой говорит, что
-                значит галочка в этом охвате: в белом списке — «в туннеле» (и
-                что без неё сети нет вовсе), в «Раздельно» — «напрямую», в «весь
-                компьютер» — что список не применяется.
+        <>
+          {/* Строка инструментов: поиск, счёт и кнопки. Выше 1100 px счёт и
+              кнопки стоят в шапке, и без поиска строка там пуста — тогда её
+              нет вовсе, а не пустая полоса с линией. */}
+          <div className={`${searchable ? "" : "fold-only "}flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1`}>
+            {searchable && (
+              <div className="min-w-24 flex-[1_0_7rem]">
+                <SearchField value={query} onChange={setQuery} placeholder={s.searchApps} />
+              </div>
+            )}
+            <span className={`fold-only min-w-0 truncate text-xs ${searchable ? "" : "flex-1"}`}>{count}</span>
+            <div className="fold-only flex shrink-0 items-center gap-0.5">{actions}</div>
+          </div>
+          {/* Заметка одна, а текст в ней по охвату — и то и другое
+              переключает «?» в шапке панели. Одной строкой говорит, что
+              значит галочка в этом охвате: в белом списке — «в туннеле» (и
+              что без неё сети нет вовсе), в «Раздельно» — «напрямую», в «весь
+              компьютер» — что список не применяется.
 
-                Открывается сама в «Раздельно», но закрывается по нажатию:
-                постоянный абзац отнимал у списка строки в плашке из трея, а
-                читают его один раз. Судьба конкретной строки остаётся в её
-                подсказке (`fateHint`). */}
-            {noteShown && (
+              Открывается сама в «Раздельно», но закрывается по нажатию:
+              постоянный абзац отнимал у списка строки в плашке из трея, а
+              читают его один раз. Судьба конкретной строки остаётся в её
+              подсказке (`fateHint`). */}
+          {noteShown && (
+            <div className="shrink-0 border-b border-edge p-2">
               <p className="enter rounded-md bg-hover px-3 py-1.5 text-sm text-muted">
                 {split ? s.splitAppsNote : all ? s.scopeAllNote : s.whitelistNote}
               </p>
-            )}
-            {searchable && <SearchField value={query} onChange={setQuery} placeholder={s.searchApps} />}
-          </div>
-        )
+            </div>
+          )}
+        </>
       }
       foot={
         edits.length > 0 && (
@@ -240,39 +288,7 @@ export function Apps({
           </div>
         )
       }
-      action={
-        // Кнопки стоят в обоих охватах: список собирают до переключения на
-        // белый, а не после — переключение и есть то действие, которое рубит
-        // сеть всем неотмеченным.
-        <>
-          <Button
-            variant="quiet"
-            disabled={busy}
-            onClick={() => {
-              setFinding(true);
-              void act({ cmd: "discover", arg: { env: {} } }).finally(() => setFinding(false));
-            }}
-          >
-            {finding ? s.searching : s.discover}
-          </Button>
-          <IconButton
-            icon="help"
-            aria-pressed={noteShown}
-            aria-expanded={noteShown}
-            label={s.whatIsCheck}
-            onClick={() => setNoteOpen(!noteShown)}
-            className={noteShown ? "bg-press" : ""}
-          />
-          <IconButton
-            icon="plus"
-            variant="ghost"
-            aria-haspopup="dialog"
-            label={s.addApp}
-            title={s.appPlaceholder}
-            onClick={() => setAdding(true)}
-          />
-        </>
-      }
+      action={actions}
     >
       <div className="flex flex-col">
         {/* Список виден в обоих охватах. Прятать его в «весь компьютер» —

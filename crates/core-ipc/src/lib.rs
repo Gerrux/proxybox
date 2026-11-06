@@ -2080,12 +2080,13 @@ mod tests {
         assert!(!rates.contains("performance.now()"), "часы окна не знают, когда служба сняла счётчики");
     }
 
-    /// Приборная линейка обязана стоять одной строкой везде, где её колонки не
-    /// встают в ряд: перенос уносил счётчики трафика на второй ряд, а его — за
-    /// нижний край окна, и человек их просто не видел. Порог у сжатия и у
-    /// трёхколоночной сетки один (768 px), промежуточных сеток нет. Колонок
-    /// три — скорость, задержка, итог сеанса: профиль и точка выхода переехали
-    /// в плиту, и строка точки выхода обязана так же не переноситься в узком
+    /// Верх окна — один ряд из трёх блоков (состояние, скорость, задержка) и
+    /// обязан стоять так везде, где колонки встают в ряд; ниже 768 px блок
+    /// состояния — во всю ширину, а измерители — одной строкой под ним, и эта
+    /// строка не переносится: перенос уносил счётчики трафика на второй ряд, а
+    /// его — за нижний край окна, и человек их просто не видел. Порог у сжатия
+    /// и у трёхколоночной сетки один (768 px), промежуточных сеток нет. Строки
+    /// точки выхода в блоке состояния обязаны так же не переноситься в узком
     /// окне, иначе перенос просто переехал бы выше.
     #[test]
     fn the_instrument_row_never_wraps() {
@@ -2109,9 +2110,149 @@ mod tests {
         assert!(exit.contains("white-space: nowrap;"), "строка точки выхода переносится в узком окне");
 
         let bar = include_str!("../../../ui/app-shell/src/StatusBar.tsx");
-        let row = bar.lines().find(|l| l.contains("st-metrics")).expect("линейка размечена классом st-metrics");
-        assert!(row.contains("grid-cols-3"), "сетка линейки не трёхколоночная");
-        assert!(!row.contains(":grid-cols"), "промежуточная сетка складывает линейку в два ряда");
+        let row = bar
+            .lines()
+            .find(|l| l.contains("className=\"st-hero"))
+            .expect("верх окна размечен классом st-hero");
+        assert!(row.contains("grid-cols-3"), "сетка верха не трёхколоночная");
+        assert!(!row.contains(":grid-cols"), "промежуточная сетка складывает верх в два ряда");
+        // Измерители на широком окне — колонки самой сетки, а не вторая сетка.
+        let metrics = css
+            .split(".st-metrics {")
+            .nth(1)
+            .and_then(|s| s.split('}').next())
+            .expect("измерители размечены .st-metrics");
+        assert!(metrics.contains("display: contents;"), "измерители — вложенная сетка: пропорции разойдутся");
+    }
+
+    /// Плита и линейка не вправе отнимать у списка профилей больше, чем им
+    /// нужно: в окне 1007×705 плита в 177 px, линейка в 89, шапка панели в 40 и
+    /// две полосы по ~50 уводили первую группу списка на 445-й пиксель — шесть
+    /// строк из ста. Держится это на пяти вещах, и каждую молча вернёт любая
+    /// «мелкая» правка:
+    ///
+    /// - подсказка состояния — одна строка в любой ширине, а ссылка «что не
+    ///   так» стоит рядом с ней, а не внутри: обрезается хвост строки, и ссылка
+    ///   в хвосте уехала бы первой;
+    /// - в низком окне (до 640 px) уходит подсказка и подписи линейки, а ряд с
+    ///   ссылкой остаётся, пока ссылка есть;
+    /// - три блока верха стоят в одном ряду (состояние, скорость, задержка), а
+    ///   колодец графика берёт остаток высоты ряда и своей не имеет;
+    /// - карта — абсолютный фон конца блока состояния: высоту ряда задаёт
+    ///   текстовая колонка, а не карта;
+    /// - бляшка рейки стоит рядом со значком и только в узкой рейке — на его
+    ///   углу.
+    #[test]
+    fn the_plate_and_the_row_leave_the_list_its_height() {
+        let css = include_str!("../../../ui/app-shell/src/index.css");
+        let bar = include_str!("../../../ui/app-shell/src/StatusBar.tsx");
+        let block = |head: &str| -> String {
+            css.split(head)
+                .nth(1)
+                .and_then(|s| s.split('}').next())
+                .unwrap_or_else(|| panic!("в index.css нет правила {head}"))
+                .to_string()
+        };
+
+        // Подсказка: правило вне любого @media и обе строки обрезки.
+        let hint = block(".st-hint {");
+        assert!(hint.contains("white-space: nowrap;"), "подсказка состояния переносится на вторую строку");
+        assert!(hint.contains("text-overflow: ellipsis;"), "подсказка обрезается без многоточия");
+        // Правило вне @media стоит с нулевым отступом, внутри — с отступом.
+        assert!(
+            css.contains("\n.st-hint {"),
+            "обрезка подсказки снова под условием по ширине: выше него она идёт в две строки"
+        );
+        let paragraph = bar
+            .split("className=\"st-hint ")
+            .nth(1)
+            .and_then(|s| s.split("</p>").next())
+            .expect("подсказка размечена классом st-hint");
+        assert!(!paragraph.contains("setTrouble"), "ссылка «что не так» снова в обрезаемой строке");
+        assert!(bar.contains("st-hint-row"), "у подсказки и ссылки нет общего ряда");
+
+        // Низкое окно.
+        let short = css
+            .split("@media (max-height: 640px) {")
+            .nth(1)
+            .expect("у низкого окна нет своего правила");
+        assert!(short.contains(".st-hint {"), "в низком окне подсказка остаётся");
+        assert!(short.contains(".m-legend {"), "в низком окне остаются подписи измерителей");
+        assert!(short.contains(":not(:has(button))"), "в низком окне ряд со ссылкой уйдёт вместе с подсказкой");
+
+        // Колодец графика растягивается на остаток высоты ряда, а не задаёт её:
+        // с фиксированной высотой он растил бы ряд на каждом перерисованном
+        // статусе и делал бы его выше блока состояния.
+        let chart = block(".chart {");
+        assert!(chart.contains("flex: 1 1 0;"), "колодец графика не берёт остаток высоты ряда");
+        assert!(
+            !chart.lines().any(|l| l.trim_start().starts_with("block-size:") || l.trim_start().starts_with("height:")),
+            "у колодца снова своя высота: он растит ряд"
+        );
+        assert!(
+            block(".st-hero {").contains("1.75fr") && block(".st-hero {").contains("0.72fr"),
+            "ряд из трёх блоков разошёлся с пропорциями макета"
+        );
+        assert!(bar.contains("st-hero grid grid-cols-3"), "три блока верха не в одном ряду");
+
+        // Карта — фон конца блока состояния, а не отдельная плита, и высоту
+        // блока задаёт текст.
+        let map = block(".st-map-plate {");
+        assert!(map.contains("position: absolute;"), "карта снова отдельная плита: она растит блок состояния");
+        assert!(map.contains("inset-inline: 38% 0;"), "карта не занимает конец блока состояния");
+        assert!(map.contains("mask-image"), "карта не уходит под текст маской");
+        assert!(css.contains("[dir=\"rtl\"] .st-map-plate"), "маска карты не зеркалится справа налево");
+
+        // Рейка: рядом со значком, на углу — только в узкой.
+        let badge = block(".rail-badge {");
+        assert!(badge.contains("margin-inline-start: 4px;"), "бляшка заходит на значок");
+        let narrow = css.split("@media (max-width: 470px) {").nth(1).expect("есть узкое окно");
+        let corner = narrow
+            .split(".rail-badge {")
+            .nth(1)
+            .and_then(|s| s.split('}').next())
+            .expect("в узкой рейке бляшка не возвращена на угол");
+        assert!(corner.contains("margin-inline-start: -10px;"), "в узкой рейке бляшка не на углу значка");
+    }
+
+    /// Шапка панели с панелью инструментов прячется там, где она ничего не
+    /// различает, — иначе строка в 40 px стоит над строкой инструментов в 41 и
+    /// съедает у списка ту самую строку. Прячет её CSS (`data-folds`), а то,
+    /// что шапка несла, — счёт и кнопки — обязано переехать в панель
+    /// инструментов: пропавшие вместе со строкой «найти приложения» и «?» —
+    /// это недоступная возможность, а не экономия.
+    #[test]
+    fn a_folded_head_hands_its_content_to_the_toolbar() {
+        let css = include_str!("../../../ui/app-shell/src/index.css");
+        let narrow = css
+            .split("@media (max-width: 1099px) {")
+            .nth(1)
+            .and_then(|s| s.split("\n}").next())
+            .expect("шапка прячется ниже 1100 px");
+        assert!(narrow.contains(".panel-head[data-folds]"), "шапка не прячется в одной панели");
+        let wide = css
+            .split("@media (min-width: 1100px) {")
+            .nth(1)
+            .and_then(|s| s.split("\n}").next())
+            .expect("у широкого окна есть правило");
+        assert!(wide.contains(".fold-only"), "перенесённое в панель инструментов остаётся и рядом с шапкой");
+        assert!(css.contains(".panel-head[data-folds=\"always\"]"), "у соединений шапка снова есть");
+
+        let profiles = include_str!("../../../ui/app-shell/src/Profiles.tsx");
+        let apps = include_str!("../../../ui/app-shell/src/Apps.tsx");
+        let conns = include_str!("../../../ui/app-shell/src/Conns.tsx");
+        assert!(profiles.contains("folds=\"narrow\""), "шапка профилей не прячется");
+        assert!(apps.contains("folds=\"narrow\""), "шапка приложений не прячется");
+        assert!(conns.contains("folds=\"always\""), "шапка соединений не прячется");
+
+        // Что несла шапка, должно стоять и в панели инструментов.
+        assert!(profiles.contains("note={note}") && profiles.contains("fold-only"), "счёт профилей пропал вместе с шапкой");
+        assert!(
+            apps.contains("fold-only flex shrink-0 items-center gap-0.5\">{actions}"),
+            "кнопки приложений пропали вместе с шапкой"
+        );
+        assert!(apps.contains("action={actions}"), "в широкой шапке приложений нет кнопок");
+        assert!(conns.contains("s.connsNote(") && !conns.contains("note={"), "счёт соединений не в строке поиска");
     }
 
     /// Значки титульной полосы обязаны быть одной семьёй: одна сетка, одна

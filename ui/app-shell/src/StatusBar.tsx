@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import { call, type Scope, type Status } from "./platform";
 import { strings, type Strings } from "./i18n";
-import { Button, CopyButton, Icon, type IconName, Menu, Modal, Switch, flag } from "./ui";
+import { CopyButton, Icon, type IconName, Menu, Modal, Switch, flag } from "./ui";
 import { WorldMap } from "./WorldMapView";
 
 /** Длина доезда числа. Заметно меньше периода опроса (2 с), иначе счётчик не
@@ -177,7 +177,7 @@ function path(values: number[], peak: number): string {
 }
 
 /** Одна линия истории скорости. Две таких — принятое и отданное — кладутся
- *  друг на друга в одном поле под числами ячейки «Скорость».
+ *  друг на друга в одном поле — фоне ячейки «Скорость».
  *
  *  Масштаб общий на оба графика (`peak` считается по обоим), иначе молчащая
  *  отдача рисовалась бы такой же горой, что и загруженный приём, — два
@@ -221,7 +221,7 @@ export function CellSpark({ values, peak, id, tone }: { values: number[]; peak: 
 }
 
 /** Последние отсчёты задержки полосками: форма ряда важнее числа, а число
- *  стоит рядом. Высота — от пика видимого окна, а не от нуля: нулевая
+ *  лежит поверх них, в той же ячейке. Высота — от пика видимого окна, а не от нуля: нулевая
  *  шкала сделала бы ровный канал в 85 мс одной сплошной полосой. Цвет у
  *  каждой полоски свой — по тем же порогам, что и у числа. */
 export function LatencyBars({ values, className = "" }: { values: number[]; className?: string }) {
@@ -395,83 +395,104 @@ export function StatusBar({
 
   return (
     <header data-state={state} className="relative shrink-0">
-      <div className="st st-plate smooth">
-        <div className="st-text flex min-w-0 flex-col gap-3 p-4">
-          <div className="min-w-0">
-            {/* key — чтобы React заменил узел: надпись состояния сменяется
-                вплывом, а не подменой символов на месте. Не обрезаем: в
-                узком окне «Туннеля нет — доступ закрыт» обрубалось бы до
-                «Туннел…», а это ровно та надпись, ради которой окно открыли. */}
-            <div className="flex items-center gap-3">
-              <h1 key={view.title} className="st-word swap flex min-w-0 flex-1 items-center gap-2.5 text-2xl font-semibold">
-                <StateGlyph state={state} size={22} />
-                <span className="min-w-0">{view.title}</span>
-              </h1>
-              {/* Выключатель продукта — тот же тумблер, что в плашке из трея:
-                  одна и та же вещь не должна выглядеть в двух окнах двумя
-                  разными кнопками. Надпись и условия запрета — те же, что
-                  были у кнопки «Включить». */}
-              <Switch
-                size="lg"
-                checked={on}
-                label={on ? s.turnOff : s.turnOn}
-                disabled={!status || (!on && !status.profile && status.profiles.length === 0)}
-                onChange={() => onToggle()}
-              />
-            </div>
-            {/* Подсказка целиком остаётся в `title`: в узком окне она
-                обрезается до одной строки (`index.css`), а обрезается как раз
-                хвост — отсчёт до следующей попытки. */}
-            <p key={view.hint} title={view.hint} className="st-hint swap mt-1 text-sm text-muted">
-              {view.hint}
-              {/* Дверь к причине там, где её ищут: «доступ закрыт» читают в
-                  ту секунду, когда пропала сеть. Ссылкой в самой подсказке,
-                  а не кнопкой в ряду: ряд кнопок в 460 px её не вмещал, и
-                  она уезжала на второй ряд одна. */}
-              {status?.tunnel === "down" && (
-                <>
-                  {" · "}
-                  <button type="button" className="text-accent hover:underline" onClick={() => setTrouble(true)}>
-                    {s.whatsWrong}
-                  </button>
-                </>
-              )}
-            </p>
+      {/* Верх окна — один ряд из трёх блоков на одной поверхности, разделённых
+          волосяными линиями: состояние, скорость, задержка (1.75 : 1 : 0.72 —
+          `.st-hero` в `index.css`). Прежде это были плита в 177 px и отдельная
+          линейка в 89 под ней, и первая группа списка начиналась на 445-м
+          пикселе окна в 705 px. Трёх колонок или ни одной: ниже 768 px блок
+          состояния встаёт во всю ширину, а скорость и задержка — одной строкой
+          под ним (`.st-metrics`), и сторож `the_instrument_row_never_wraps`
+          следит, что строка не переносится. */}
+      <div className="st-hero grid grid-cols-3">
+        <div className="st st-state smooth">
+        {/* Карта — фон конца блока состояния, а не отдельная плита: она
+            уходит под текст маской. Слой абсолютный, поэтому высоту блока
+            задаёт текст. */}
+        <div className="st-map-plate smooth">
+          <WorldMap className="st-map" code={exitCode(status)} />
+        </div>
+        <div className="st-text relative flex h-full min-w-0 flex-col gap-1.5 px-4 py-2.5">
+          {/* key — чтобы React заменил узел: надпись состояния сменяется
+              вплывом, а не подменой символов на месте. Не обрезаем: в
+              узком окне «Туннеля нет — доступ закрыт» обрубалось бы до
+              «Туннел…», а это ровно та надпись, ради которой окно открыли. */}
+          <div className="flex min-w-0 items-center gap-3">
+            <h1 key={view.title} className="st-word swap flex min-w-0 flex-1 items-center gap-2.5 text-2xl font-semibold">
+              <StateGlyph state={state} size={22} />
+              <span className="min-w-0">{view.title}</span>
+            </h1>
+            {/* Выключатель продукта — тот же тумблер, что в плашке из трея:
+                одна и та же вещь не должна выглядеть в двух окнах двумя
+                разными кнопками. Надпись и условия запрета — те же, что
+                были у кнопки «Включить». */}
+            <Switch
+              size="lg"
+              checked={on}
+              label={on ? s.turnOff : s.turnOn}
+              disabled={!status || (!on && !status.profile && status.profiles.length === 0)}
+              onChange={() => onToggle()}
+            />
           </div>
-          <div className="st-meta flex min-w-0 flex-col items-start gap-2">
-            {/* Охват — «кого касается канал», и переключать его надо глядя на
-                состояние туннеля, а не в настройках через две панели от него.
-                Выпадающим выбором, а не полоской рядом с выключателем: охват
-                меняют редко, а ряд из выключателя и трёх сегментов в 460 px
-                не помещался и уходил на второй ряд. Пояснения — прямо в
-                пунктах меню: по ним охваты и различают. */}
-            <Button
-              aria-haspopup="menu"
-              aria-label={`${s.scope}: ${scopeName}`}
-              title={s.scope}
-              disabled={!status || busy}
-              onClick={(e) => {
-                const at = e.currentTarget.getBoundingClientRect();
-                setMenu([at.left, at.bottom + 4]);
-              }}
-              className="st-scope max-w-full"
-            >
-              <span className="min-w-0 truncate">{scopeName}</span>
-              <Icon name="chevron" size={14} className="rotate-90 text-muted" />
-            </Button>
-            {/* Точка выхода и узел — одной строкой в плите, а не двумя ячейками
-                линейки: «через какой узел и куда выходим» читается как одна
-                фраза. Прочерк без объяснения читается как поломка; настоящую
-                страну при выключенном режиме не показываем намеренно: спросить
-                её можно только у стороннего сервиса, а без туннеля запрос ушёл
-                бы с настоящего адреса. «Не выбран» — не то же, что
-                «неизвестен»: `App.tsx` включает первый по алфавиту, и молчание
-                тут уводило бы в чужую страну без единого слова, поэтому
-                предстоящий узел показан приглушённо и с подсказкой. */}
-            <p
-              className="st-exit flex min-w-0 max-w-full items-baseline gap-x-2 text-sm"
-              title={status?.country ? undefined : pending ? s.profileFirst : s.exitUnknown}
-            >
+          {/* Подсказка — одна строка в любой ширине (`.st-hint` в `index.css`),
+              целиком она остаётся в `title`: обрезается как раз хвост —
+              отсчёт до следующей попытки. Дверь к причине стоит рядом с ней,
+              а не внутри: «доступ закрыт» читают в ту секунду, когда пропала
+              сеть, и ссылка в хвосте обрезаемой строки уезжала бы первой.
+              Ряд один на подсказку и ссылку: в низком окне подсказка уходит
+              (`@media (max-height)`), а ссылка остаётся — без неё «доступ
+              закрыт» не говорил бы, где смотреть причину. */}
+          <div className="st-hint-row flex min-w-0 items-baseline gap-2">
+            <p key={view.hint} title={view.hint} className="st-hint swap min-w-0 flex-1 text-sm text-muted">
+              {view.hint}
+            </p>
+            {status?.tunnel === "down" && (
+              <button
+                type="button"
+                className="shrink-0 text-sm text-accent hover:underline"
+                onClick={() => setTrouble(true)}
+              >
+                {s.whatsWrong}
+              </button>
+            )}
+          </div>
+          {/* Охват — «кого касается канал», и переключать его надо глядя на
+              состояние туннеля, а не в настройках через две панели от него.
+              Выпадающим выбором, а не полоской рядом с выключателем: охват
+              меняют редко, а ряд из выключателя и трёх сегментов в 460 px
+              не помещался и уходил на второй ряд. Пояснения — прямо в
+              пунктах меню: по ним охваты и различают. Точка перед названием —
+              тон состояния. */}
+          <button
+            type="button"
+            aria-haspopup="menu"
+            aria-label={`${s.scope}: ${scopeName}`}
+            title={s.scope}
+            disabled={!status || busy}
+            onClick={(e) => {
+              const at = e.currentTarget.getBoundingClientRect();
+              setMenu([at.left, at.bottom + 4]);
+            }}
+            className="st-scope smooth inline-flex h-7 max-w-full shrink-0 items-center gap-1.5 self-start rounded-md px-2 text-sm font-medium disabled:opacity-40"
+          >
+            <span className="st-scope-dot" aria-hidden="true" />
+            <span className="min-w-0 truncate">{scopeName}</span>
+            <Icon name="chevron" size={14} className="rotate-90 text-muted" />
+          </button>
+          {/* Точка выхода и узел — внизу блока состояния, в две строки: куда
+              выходим и через какой узел, а не двумя ячейками линейки. Прочерк
+              без объяснения читается как поломка; настоящую страну при
+              выключенном режиме не показываем намеренно: спросить её можно
+              только у стороннего сервиса, а без туннеля запрос ушёл бы с
+              настоящего адреса. «Не выбран» — не то же, что «неизвестен»:
+              `App.tsx` включает первый по алфавиту, и молчание тут уводило бы в
+              чужую страну без единого слова, поэтому предстоящий узел показан
+              приглушённо и с подсказкой. Ужимается город, потом имя узла;
+              страна и метка типа — последними. */}
+          <div
+            className="st-exit mt-auto flex min-w-0 flex-col gap-0.5 overflow-hidden whitespace-nowrap"
+            title={status?.country ? undefined : pending ? s.profileFirst : s.exitUnknown}
+          >
+            <p className="flex min-w-0 items-baseline gap-x-2 text-base">
               {status?.country ? (
                 <>
                   {exitFlag && (
@@ -482,86 +503,116 @@ export function StatusBar({
                   {/* Название прячется только тогда, когда вместо него
                       остаётся флаг: без флага пустая строка не значила бы
                       ничего. */}
-                  <span className={`min-w-0 truncate font-semibold ${exitFlag ? "m-country" : ""}`}>{exitCountry}</span>
-                  {exitCity && <span className="m-city min-w-0 truncate text-muted">{exitCity}</span>}
-                  {nodeName && (
-                    <span className="min-w-0 truncate text-muted" title={nodeName}>
-                      {s.viaNode(nodeName)}
-                    </span>
-                  )}
+                  <span className={`min-w-0 shrink-[0.1] truncate font-semibold ${exitFlag ? "m-country" : ""}`}>
+                    {exitCountry}
+                  </span>
+                  {exitCity && <span className="m-city min-w-0 shrink-[100] truncate text-muted">{exitCity}</span>}
                 </>
               ) : (
                 <span className={`min-w-0 truncate ${pending ? "text-muted" : "font-semibold"}`}>
                   {nodeName ?? s.noProfile}
                 </span>
               )}
-              {nodeKind && (
-                <span className="shrink-0 rounded-md border border-edge px-1.5 font-mono text-xs text-muted">
-                  {nodeKind}
-                </span>
-              )}
             </p>
+            {(status?.country ? nodeName : null) || nodeKind ? (
+              <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
+                {status?.country && nodeName && (
+                  <span className="min-w-0 shrink-[10] truncate" title={nodeName}>
+                    {s.viaNode(nodeName)}
+                  </span>
+                )}
+                {nodeKind && (
+                  <span className="shrink-0 rounded-md border border-edge px-1.5 font-mono text-xs">{nodeKind}</span>
+                )}
+              </p>
+            ) : null}
           </div>
         </div>
-        <div className="st-map-plate smooth">
-          <WorldMap className="st-map" code={exitCode(status)} />
+        </div>
+
+        {/* Два блока-измерителя: подпись и «окно» истории справа от неё, под
+            ними — крупное число, под числом — колодец с графиком на всю
+            оставшуюся высоту ряда и мелкая справка внизу. Колодец — не фон
+            числа, а своё место: графику нужна площадь, а не просвет между
+            цифрами. В узком окне (`.st-metrics` ниже 768 px) блоки
+            складываются в строку чисел, а колодцы и подписи уходят. */}
+        <div className="st-metrics">
+          <section className="m-block" role="group" aria-label={s.speed} title={scaleHint}>
+            <div className="m-legend">
+              <span className="m-label text-xs">{s.speed}</span>
+              <span className="m-aside text-xs">{s.histSpan}</span>
+            </div>
+            <div className="m-rates flex items-baseline gap-x-4 font-mono tabular-nums">
+              <span className="flex items-baseline gap-1 text-open" title={s.received}>
+                <Icon name="down" size={14} className="m-icon-down shrink-0 self-center" />
+                <span className="m-num text-xl font-medium">{rxNum}</span>
+                <span className="text-xs font-normal text-muted">
+                  {rxUnit}
+                  {last ? s.perSecond : ""}
+                </span>
+              </span>
+              <span className="flex items-baseline gap-1 text-accent" title={s.sent}>
+                <Icon name="up" size={14} className="m-icon-up shrink-0 self-center" />
+                <span className="m-num text-xl font-medium">{txNum}</span>
+                <span className="text-xs font-normal text-muted">
+                  {txUnit}
+                  {last ? s.perSecond : ""}
+                </span>
+              </span>
+            </div>
+            {/* Принятое и отданное — одним колодцем и на одной шкале: так
+                видно, какая из двух сторон несёт канал. */}
+            <div className="chart" aria-hidden="true">
+              <CellSpark values={rates.map((r) => r.rx)} peak={peak} id="pg-spark-down" tone="text-open" />
+              <CellSpark values={rates.map((r) => r.tx)} peak={peak} id="pg-spark-up" tone="text-accent" />
+            </div>
+            <div className="m-foot m-session" title={s.trafficHint}>
+              <span className="m-foot-label">{s.sessionTotal}</span>
+              <span className="flex items-center gap-x-2.5 whitespace-nowrap font-mono tabular-nums text-muted">
+                <span className="inline-flex items-center gap-0.5" title={s.received}>
+                  <Icon name="down" size={12} className="shrink-0" />
+                  {rx != null ? bytes(rx) : "—"}
+                </span>
+                <span className="inline-flex items-center gap-0.5" title={s.sent}>
+                  <Icon name="up" size={12} className="shrink-0" />
+                  {tx != null ? bytes(tx) : "—"}
+                </span>
+              </span>
+            </div>
+          </section>
+          {/* Цвет — по настоящей задержке, а не по кадру анимации: порог должен
+              переключаться по факту, а не по тому, докуда доехало число. */}
+          <section className="m-block" role="group" aria-label={s.latency}>
+            <div className="m-legend">
+              <span className="m-label text-xs">{s.latency}</span>
+              <span className="m-aside text-xs">{s.probeEvery}</span>
+            </div>
+            <div
+              className={`m-latency smooth truncate font-mono text-2xl font-medium tabular-nums ${latencyTone(status?.latency_ms)}`}
+            >
+              {latency != null ? Math.round(latency) : "—"}
+              {latency != null && <span className="ms-1 text-sm font-normal text-muted">ms</span>}
+            </div>
+            <div className="chart" aria-hidden="true">
+              <LatencyBars values={latencies} className="m-bars" />
+            </div>
+            <div className="m-foot m-range">
+              <span>
+                {s.minShort}{" "}
+                <span className="font-mono tabular-nums text-muted">
+                  {latencies.length > 0 ? Math.round(Math.min(...latencies)) : "—"}
+                </span>
+              </span>
+              <span>
+                {s.maxShort}{" "}
+                <span className="font-mono tabular-nums text-muted">
+                  {latencies.length > 0 ? Math.round(Math.max(...latencies)) : "—"}
+                </span>
+              </span>
+            </div>
+          </section>
         </div>
       </div>
-
-      {/* Три колонки или ни одной: промежуточные сетки из двух колонок
-          уносили счётчики трафика на второй ряд, а его — за нижний край
-          окна. Ниже 768 px линейка целиком уходит в строку (`index.css`).
-          Скорость — главное число линейки, итог сеанса — мелкая справка. */}
-      <dl className="st-metrics relative grid grid-cols-3 px-4 py-2">
-        <Cell name={s.speed} hint={scaleHint}>
-          <span className="m-rates flex items-baseline gap-x-4 font-mono tabular-nums">
-            <span className="flex items-baseline gap-1 text-open" title={s.received}>
-              <Icon name="down" size={12} className="m-icon-down shrink-0 self-center" />
-              <span className="text-lg font-semibold">{rxNum}</span>
-              <span className="text-xs font-normal text-muted">
-                {rxUnit}
-                {last ? s.perSecond : ""}
-              </span>
-            </span>
-            <span className="flex items-baseline gap-1 text-accent" title={s.sent}>
-              <Icon name="up" size={12} className="m-icon-up shrink-0 self-center" />
-              <span className="text-lg font-semibold">{txNum}</span>
-              <span className="text-xs font-normal text-muted">
-                {txUnit}
-                {last ? s.perSecond : ""}
-              </span>
-            </span>
-          </span>
-          {/* Принятое и отданное — одним полем и на одной шкале: так видно,
-              какая из двух сторон несёт канал. */}
-          <span className="chart" aria-hidden="true">
-            <CellSpark values={rates.map((r) => r.rx)} peak={peak} id="pg-spark-down" tone="text-open" />
-            <CellSpark values={rates.map((r) => r.tx)} peak={peak} id="pg-spark-up" tone="text-accent" />
-          </span>
-        </Cell>
-        {/* Цвет — по настоящей задержке, а не по кадру анимации: порог должен
-            переключаться по факту, а не по тому, докуда доехало число. */}
-        <Cell name={s.latency}>
-          <span
-            className={`m-latency smooth block truncate font-mono text-lg font-semibold tabular-nums ${latencyTone(status?.latency_ms)}`}
-          >
-            {latency != null ? `${Math.round(latency)} ms` : "—"}
-          </span>
-          <LatencyBars values={latencies} className="chart" />
-        </Cell>
-        <Cell name={s.sessionTotal} hint={s.trafficHint} className="m-session">
-          <span className="flex items-baseline gap-x-3 whitespace-nowrap font-mono text-sm tabular-nums text-muted">
-            <span className="inline-flex items-center gap-1" title={s.received}>
-              <Icon name="down" size={12} className="shrink-0" />
-              {rx != null ? bytes(rx) : "—"}
-            </span>
-            <span className="inline-flex items-center gap-1" title={s.sent}>
-              <Icon name="up" size={12} className="shrink-0" />
-              {tx != null ? bytes(tx) : "—"}
-            </span>
-          </span>
-        </Cell>
-      </dl>
 
       {/* Пока служба не ответила, по нижней кромке плиты идёт бегунок. Прогресса
           у нас нет и быть не может — показываем только сам факт ожидания. */}
@@ -637,40 +688,5 @@ function Trouble({ s, status, onClose }: { s: Strings; status: Status; onClose: 
         </div>
       </div>
     </Modal>
-  );
-}
-
-/** Ячейка приборной линейки: подпись, под ней значение ступенью крупнее —
- *  линейка читается как прибор, а не как подпись к подписи. Ячеек три —
- *  скорость, задержка, итог сеанса; профиль и точка выхода переехали в плиту.
- *  Цифры табличные — статус приходит каждые две секунды, и прыгать по ширине
- *  им нельзя.
- *
- *  В узком окне (`@media (max-width: 767px)` в `index.css`) подписи уходят
- *  с глаз, а графики исчезают: остаются числа в одну строку. Пояснение ячейки
- *  при этом живёт в подсказке. */
-function Cell({
-  name,
-  hint,
-  className = "",
-  children,
-}: {
-  name: string;
-  /** Что именно измерено, если из подписи это не следует: счётчики трафика
-   *  считают с запуска туннеля, а не с установки приложения. */
-  hint?: string;
-  className?: string;
-  children: ReactNode;
-}) {
-  return (
-    // Разделители только там, где линейка стоит одной строкой: в две колонки
-    // левая граница второго ряда висела бы посреди пустоты.
-    <div
-      className={`m-cell min-w-0 md:border-s md:border-edge md:px-3 md:first:border-s-0 md:first:ps-0 ${className}`}
-      title={hint ? `${name} — ${hint}` : name}
-    >
-      <dt className="m-label text-xs text-muted">{name}</dt>
-      <dd className="m-value mt-0.5 min-w-0">{children}</dd>
-    </div>
   );
 }

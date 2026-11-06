@@ -261,20 +261,22 @@ export function Conns({
       // поля раздают блоки сверху и пустые состояния.
       className={className}
       title={s.conns}
-      note={
-        live &&
-        conns.length > 0 && (
-          <span className="text-muted" title={s.connsHint}>
-            {filter === ""
-              ? s.connsNote(conns.length, total)
-              : s.connsFound(conns.length, matched, total)}
-          </span>
-        )
-      }
+      // Соединения не делят окно с соседями ни на какой ширине, и рейка уже
+      // называет панель, — шапки нет вовсе, а счёт стоит в строке поиска.
+      folds="always"
       bar={
         searchable && (
-          <div className="shrink-0 border-b border-edge p-2" title={s.connsFindHint}>
-            <SearchField value={query} onChange={setQuery} placeholder={s.connsFind} />
+          <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1">
+            <div className="min-w-24 flex-[1_0_7rem]" title={s.connsFindHint}>
+              <SearchField value={query} onChange={setQuery} placeholder={s.connsFind} />
+            </div>
+            {live && conns.length > 0 && (
+              <span className="min-w-0 truncate text-xs text-muted" title={s.connsHint}>
+                {filter === ""
+                  ? s.connsNote(conns.length, total)
+                  : s.connsFound(conns.length, matched, total)}
+              </span>
+            )}
           </div>
         )
       }
