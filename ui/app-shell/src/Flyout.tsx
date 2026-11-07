@@ -175,7 +175,9 @@ export function Flyout({
             владелец. Стоит первой и под текстом (`.fly-map` — абсолютный слой,
             строки поверх — `relative`), а место под страну выхода держит
             пустой промежуток той же высоты, что была у полосы. */}
-        <WorldMap className="fly-map" code={code} fit={0.5} />
+        {/* Страна правее середины (`focus`): слева над ней стоит слово
+            состояния, а справа — пустое поле карты. */}
+        <WorldMap className="fly-map" code={code} fit={0.5} focus={[0.64, 0.5]} />
         <div className="relative flex items-start gap-3 px-3 pt-2.5 pb-2">
           <div className="min-w-0 flex-1">
             <h1 key={view.title} className="st-word swap flex items-center gap-2 text-xl font-semibold">
@@ -197,7 +199,7 @@ export function Flyout({
             }}
           />
         </div>
-        <div className="h-[100px]" aria-hidden="true" />
+        <div className="h-16" aria-hidden="true" />
         {/* Точка выхода — строкой, числа — строкой ниже: в 356 px «Нидерланды ·
             Амстердам» и три числа рядом резались до «Нидерла… Амстер…». */}
         {/* Задержка — своим блоком справа на высоту обеих строк (страна и
