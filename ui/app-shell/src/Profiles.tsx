@@ -389,7 +389,10 @@ function SubStrip({
       .join("\n");
     const inner = (
       <>
-          <span className={`flex min-w-0 items-baseline gap-2 ${selected ? "pe-14" : ""}`}>
+          {/* У отобранной ячейки справа стоят две кнопки (52 px с отступом от
+              кромки); место под них — с зазором, иначе счёт «3/3» вставал
+              вплотную к значку обновления и читался его подписью. */}
+          <span className={`flex min-w-0 items-baseline gap-2 ${selected ? "pe-16" : ""}`}>
             <span className={`min-w-0 truncate text-sm font-semibold ${url === null ? "shrink-0" : "flex-1"}`}>
               {title}
             </span>
