@@ -2852,6 +2852,46 @@ mod tests {
         assert!(motion.contains("@keyframes sw-ring") && motion.contains("@keyframes sw-sweep"));
     }
 
+    /// Управление — кнопки, поля, сегменты — без рамок и на одной заливке
+    /// (`--pg-control`). С рамками и нижней кромкой Fluent в одном ряду стояли
+    /// три разных серых — подложка сегментов, плитка кнопки и поле — и обводка
+    /// вокруг каждого. Рамка в волосок осталась только у всплывающих слоёв
+    /// (меню, диалог): они над поверхностью, и кромка там — граница слоя.
+    #[test]
+    fn controls_share_one_fill_and_no_border() {
+        let css = include_str!("../../../ui/app-shell/src/index.css").replace("\r\n", "\n");
+        let rule = |selector: &str| -> String {
+            css.split(&format!("\n{selector} {{"))
+                .nth(1)
+                .and_then(|s| s.split("\n}").next())
+                .unwrap_or_else(|| panic!("в index.css нет правила {selector}"))
+                .to_string()
+        };
+        for selector in [".btn", ".btn-accent", ".btn-subtle", ".field", ".segmented"] {
+            let body = rule(selector);
+            assert!(body.contains("border: 0;"), "у {selector} снова рамка");
+            assert!(!body.contains("border-bottom-color"), "у {selector} снова нижняя кромка Fluent");
+        }
+        for selector in [".btn", ".field"] {
+            assert!(rule(selector).contains("background: var(--pg-control);"), "{selector} не на заливке управления");
+        }
+        assert!(
+            rule(".segmented > button[aria-pressed=\"true\"]").contains("var(--pg-control-hover)"),
+            "выбранный сегмент не на заливке управления"
+        );
+        for (name, text) in [
+            ("Profiles.tsx", include_str!("../../../ui/app-shell/src/Profiles.tsx")),
+            ("Apps.tsx", include_str!("../../../ui/app-shell/src/Apps.tsx")),
+            ("Conns.tsx", include_str!("../../../ui/app-shell/src/Conns.tsx")),
+            ("Browsers.tsx", include_str!("../../../ui/app-shell/src/Browsers.tsx")),
+            ("Settings.tsx", include_str!("../../../ui/app-shell/src/Settings.tsx")),
+            ("StatusBar.tsx", include_str!("../../../ui/app-shell/src/StatusBar.tsx")),
+            ("Flyout.tsx", include_str!("../../../ui/app-shell/src/Flyout.tsx")),
+        ] {
+            assert!(!text.contains("border border-edge"), "в {name} снова рамка вокруг блока");
+        }
+    }
+
     /// Карточки в окне — ровно в двух местах (верхний ряд и блок состояния
     /// плашки; полоса подписок стала лентой вкладок вплотную к кромкам), у них скругления из одной лестницы и нет тени:
     /// тень в окне только у всплывающих слоёв (меню и диалога). Решение

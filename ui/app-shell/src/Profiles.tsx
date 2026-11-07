@@ -2168,7 +2168,7 @@ function Rows({
                   wireguard, и это единственное, что в одной строке не
                   повторяет имя. В тесной панели её нет — остаётся в подсказке. */}
               {!tight && item.kind && (
-                <span className="shrink-0 rounded-sm bg-hover px-1.5 font-mono text-xs text-muted">{item.kind}</span>
+                <span className="shrink-0 rounded-sm bg-control px-1.5 font-mono text-xs text-muted">{item.kind}</span>
               )}
               {/* Пометки — значками, а не словами: слово «без шифрования»
                   заглавными в каждой строке кричало громче имени узла. Смысл

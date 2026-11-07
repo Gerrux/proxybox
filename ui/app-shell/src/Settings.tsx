@@ -428,10 +428,10 @@ export function Settings({
                     tabIndex={on ? 0 : -1}
                     title={here}
                     onClick={() => !on && void act({ cmd: "set-lang", arg: { lang: code as Lang } })}
-                    className={`smooth flex min-w-0 flex-col items-start rounded border px-2.5 py-1.5 text-start ${
+                    className={`smooth flex min-w-0 flex-col items-start rounded px-2.5 py-1.5 text-start ${
                       on
-                        ? "border-accent bg-[color-mix(in_oklch,var(--pg-accent)_10%,transparent)]"
-                        : "border-edge hover:bg-[var(--pg-hover)]"
+                        ? "bg-[color-mix(in_oklch,var(--pg-accent)_16%,transparent)] shadow-[inset_0_-2px_0_var(--pg-accent)]"
+                        : "bg-control hover:bg-[var(--pg-control-hover)]"
                     }`}
                   >
                     {/* `lang` — чтобы вязь и иероглифы подбирали свой шрифт и в

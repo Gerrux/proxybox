@@ -598,7 +598,7 @@ export function StatusBar({
                   </span>
                 )}
                 {nodeKind && (
-                  <span className="shrink-0 rounded-sm border border-edge px-1.5 font-mono text-xs">{nodeKind}</span>
+                  <span className="shrink-0 rounded-sm bg-control px-1.5 font-mono text-xs text-muted">{nodeKind}</span>
                 )}
               </p>
             ) : null}
