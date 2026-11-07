@@ -297,6 +297,7 @@ export function App() {
           error={error}
           onError={setError}
           onToggle={toggle}
+          onScope={setScope}
         />
       </div>
     );

@@ -2953,17 +2953,36 @@ mod tests {
         }
     }
 
-    /// В плашке из трея нет охвата, и это не недосмотр: одно касание из трея
-    /// не должно уметь запереть машину. Белый список без галочек и «Раздельно»
-    /// выглядят со стороны как «интернет отвалился», а плашку открывают
-    /// мимоходом. Состояние называет подсказка под словом — выбор остаётся за
-    /// главным окном. Компилятора у фронтенда нет — сверяем текстом.
+    /// Охват в шапке окна (кнопка с меню) и в плашке из трея (полоска
+    /// сегментов) берут один список с пояснениями — `scopeOptions`: написанные
+    /// дважды, пояснения разошлись бы на первой правке. И белый список без
+    /// единой отмеченной программы — выбор, после которого сети нет ни у кого,
+    /// — обязан переспрашивать в обоих окнах (`scopeLocks`): из трея иначе
+    /// машину запирало бы одно случайное касание. Компилятора у фронтенда нет
+    /// — сверяем текстом.
     #[test]
-    fn the_flyout_never_offers_a_scope() {
+    fn both_windows_pick_the_scope_the_same_way() {
         let flyout = include_str!("../../../ui/app-shell/src/Flyout.tsx");
-        for forbidden in ["set-scope", "onScope", "Segmented", "scopeWhitelist", "scopeAll", "scopeSplit"] {
-            assert!(!flyout.contains(forbidden), "в плашке снова выбор охвата ({forbidden}): касание из трея запирает машину");
+        let bar = include_str!("../../../ui/app-shell/src/StatusBar.tsx").replace("\r\n", "\n");
+        assert!(bar.contains("<ScopePicker"), "шапка выбирает охват мимо ScopePicker");
+        let picker = bar
+            .split("export function ScopePicker(")
+            .nth(1)
+            .and_then(|rest| rest.split("\nexport function ").next())
+            .expect("ScopePicker в StatusBar.tsx");
+        for (name, text) in [("ScopePicker", picker), ("Flyout.tsx", flyout)] {
+            assert!(text.contains("scopeOptions(s, status)"), "{name} собирает охваты сам: разойдётся с соседом");
+            assert!(text.contains("scopeLocks(status,"), "{name} выбирает пустой белый список без переспроса");
         }
+        for own in ["\"set-scope\"", "s.scopeAll", "s.scopeSplit"] {
+            assert!(!flyout.contains(own), "плашка выбирает охват сама ({own}): разойдётся с шапкой");
+        }
+        let locks = bar
+            .split("export function scopeLocks(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("scopeLocks в StatusBar.tsx");
+        assert!(locks.contains("inTunnel === 0") && locks.contains("\"whitelist\""), "{locks}");
     }
 
     /// Пункт рейки «Журнал» не получает числа. Лента режется тридцатью строками,

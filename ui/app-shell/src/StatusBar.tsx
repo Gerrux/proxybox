@@ -351,6 +351,87 @@ export function StateGlyph({ state, size = 20 }: { state: State; size?: number }
  *  раньше, говорил одно — поднят туннель или перерублен; это теперь говорят
  *  слово и цвет, а карта добавляет, где именно трафик выходит в сеть, и
  *  заливкой страны повторяет состояние (`WorldMapView.tsx`). */
+/** Охваты, которые окно предлагает, с пояснениями — один список на шапку и
+ *  плашку: пояснения, написанные дважды, разошлись бы на первой правке.
+ *  `none` диагностический и в списке не стоит
+ *  (`the_frontend_knows_the_same_scopes`): показать его как состояние окно
+ *  умеет, выбрать — нет. */
+export function scopeOptions(s: Strings, status: Status | null): [Scope, string, string][] {
+  const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
+  return [
+    ["whitelist", s.scopeWhitelist, inTunnel === 0 ? s.noAppsAhead : s.scopeHintWhitelist],
+    ["all", s.scopeAll, s.scopeHint],
+    ["split", s.scopeSplit, s.splitHint],
+  ];
+}
+
+/** Запрёт ли этот выбор сеть всей машине: белый список без единой отмеченной
+ *  программы — ноль пропусков. Такой выбор оба окна спрашивают подтверждением,
+ *  остальные охваты выбираются сразу. Сторож —
+ *  `both_windows_pick_the_scope_the_same_way`. */
+export function scopeLocks(status: Status | null, value: Scope): boolean {
+  const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
+  return value === "whitelist" && inTunnel === 0 && (status?.scope ?? "all") !== "whitelist";
+}
+
+/** Выбор охвата в шапке главного окна — кнопка с меню под словом состояния.
+ *  В плашке из трея тот же список стоит полоской сегментов (по решению
+ *  владельца), а подтверждение пустого белого списка у неё своё, строкой под
+ *  полоской. Здесь подтверждение — тем же меню: первое нажатие взводит пункт,
+ *  второе выбирает (`ask` у `MenuItem`). */
+export function ScopePicker({
+  s,
+  status,
+  busy,
+  onScope,
+}: {
+  s: Strings;
+  status: Status | null;
+  busy: boolean;
+  onScope: (scope: Scope) => void;
+}) {
+  const [menu, setMenu] = useState<[number, number] | null>(null);
+  const scope = status?.scope ?? "all";
+  const scopes = scopeOptions(s, status);
+  const scopeName = scopes.find(([value]) => value === scope)?.[1] ?? s.scope;
+  return (
+    <>
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-label={`${s.scope}: ${scopeName}`}
+        title={s.scope}
+        disabled={!status || busy}
+        onClick={(e) => {
+          // Начальный край кнопки, а не физический левый: в раскладке
+          // справа налево меню растёт от правого (`fromStart` у `Menu`).
+          const at = e.currentTarget.getBoundingClientRect();
+          setMenu([document.documentElement.dir === "rtl" ? at.right : at.left, at.bottom + 4]);
+        }}
+        className="st-scope smooth inline-flex h-7 max-w-full shrink-0 items-center gap-1.5 self-start px-2 text-sm font-medium disabled:opacity-40"
+      >
+        <span className="st-scope-dot" aria-hidden="true" />
+        <span className="min-w-0 truncate">{scopeName}</span>
+        <Icon name="chevron" size={14} className="rotate-90 text-muted" />
+      </button>
+      {menu && (
+        <Menu
+          at={menu}
+          onClose={() => setMenu(null)}
+          fromStart
+          items={scopes.map(([value, label, hint]) => ({
+            label,
+            sub: hint,
+            mark: value === scope,
+            ask: scopeLocks(status, value) ? s.scopeLockAsk : undefined,
+            onPick: () => onScope(value),
+          }))}
+        />
+      )}
+    </>
+  );
+}
+
 export function StatusBar({
   status,
   busy,
@@ -370,9 +451,6 @@ export function StatusBar({
   // Разовый отклик на включение (`.sw-sweep` в `switch.css`): растёт только от
   // нажатия человека, статус службы его не трогает.
   const [swept, setSwept] = useState(0);
-  const [menu, setMenu] = useState<[number, number] | null>(null);
-  const scope = status?.scope ?? "all";
-  const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
   // Профиль не выбран, но включать есть что: поднимется первый по алфавиту.
   const pending = status != null && !status.profile && status.profiles.length > 0;
   const latency = useCounted(status?.latency_ms ?? null);
@@ -398,15 +476,6 @@ export function StatusBar({
   // Узел, через который идёт (или пойдёт) канал, и его тип для метки.
   const nodeName = status?.profile ?? status?.profiles[0]?.name ?? null;
   const nodeKind = status?.profiles.find((p) => p.name === nodeName)?.kind;
-  // Охваты, которые окно предлагает. `none` диагностический и в списке не
-  // стоит (`the_frontend_knows_the_same_scopes`): показать его как состояние
-  // окно умеет, выбрать — нет.
-  const scopes: [Scope, string, string][] = [
-    ["whitelist", s.scopeWhitelist, inTunnel === 0 ? s.noAppsAhead : s.scopeHintWhitelist],
-    ["all", s.scopeAll, s.scopeHint],
-    ["split", s.scopeSplit, s.splitHint],
-  ];
-  const scopeName = scopes.find(([value]) => value === scope)?.[1] ?? s.scope;
   const [rxNum, rxUnit] = last ? bytes(last.rx).split(" ") : ["—", ""];
   const [txNum, txUnit] = last ? bytes(last.tx).split(" ") : ["—", ""];
 
@@ -484,24 +553,7 @@ export function StatusBar({
               не помещался и уходил на второй ряд. Пояснения — прямо в
               пунктах меню: по ним охваты и различают. Точка перед названием —
               тон состояния. */}
-          <button
-            type="button"
-            aria-haspopup="menu"
-            aria-label={`${s.scope}: ${scopeName}`}
-            title={s.scope}
-            disabled={!status || busy}
-            onClick={(e) => {
-              // Начальный край кнопки, а не физический левый: в раскладке
-              // справа налево меню растёт от правого (`fromStart` у `Menu`).
-              const at = e.currentTarget.getBoundingClientRect();
-              setMenu([document.documentElement.dir === "rtl" ? at.right : at.left, at.bottom + 4]);
-            }}
-            className="st-scope smooth inline-flex h-7 max-w-full shrink-0 items-center gap-1.5 self-start px-2 text-sm font-medium disabled:opacity-40"
-          >
-            <span className="st-scope-dot" aria-hidden="true" />
-            <span className="min-w-0 truncate">{scopeName}</span>
-            <Icon name="chevron" size={14} className="rotate-90 text-muted" />
-          </button>
+          <ScopePicker s={s} status={status} busy={busy} onScope={onScope} />
           {/* Точка выхода и узел — внизу блока состояния, в две строки: куда
               выходим и через какой узел, а не двумя ячейками линейки. Прочерк
               без объяснения читается как поломка; настоящую страну при
@@ -644,19 +696,6 @@ export function StatusBar({
         <div className="bar absolute inset-x-0 bottom-0 h-0.5 overflow-hidden text-[color:var(--tone)]" />
       )}
       {trouble && status && <Trouble s={s} status={status} onClose={() => setTrouble(false)} />}
-      {menu && (
-        <Menu
-          at={menu}
-          onClose={() => setMenu(null)}
-          fromStart
-          items={scopes.map(([value, label, hint]) => ({
-            label,
-            sub: hint,
-            mark: value === scope,
-            onPick: () => onScope(value),
-          }))}
-        />
-      )}
     </header>
   );
 }
