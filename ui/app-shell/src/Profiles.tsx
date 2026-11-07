@@ -464,22 +464,24 @@ function SubStrip({
         {/* Отобранная карточка несёт действия заголовка, которого под отбором
             нет: обновить (та же команда, что у пункта меню) и «⋯» с меню
             подписки. Рядом с кнопкой-карточкой, а не внутри: вложенных кнопок
-            не бывает. */}
+            не бывает. Кнопки — 24 px (`size-6!`: без `!` побеждает `h-8 w-8`
+            самой `IconButton`, и 32-пиксельная кнопка свисала ниже ячейки в
+            30 px), а `top-[3px]` ставит их середину на середину строки имени. */}
         {selected && (
-          <div className="absolute end-1 top-1 flex items-center">
+          <div className="absolute end-1 top-[3px] flex items-center">
             <IconButton
               icon="refresh"
               label={s.refresh}
               title={s.refreshSubscription(sub.url)}
               disabled={busy}
-              className="size-6"
+              className="size-6!"
               onClick={() => onRefresh(sub)}
             />
             <IconButton
               icon="more"
               label={s.actions}
               aria-haspopup="menu"
-              className="size-6"
+              className="size-6!"
               onClick={(e) => onMenu(e, sub)}
             />
           </div>
