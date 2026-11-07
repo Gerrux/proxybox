@@ -317,7 +317,6 @@ body {
   position: relative;
   overflow: hidden;
   container-type: inline-size;
-  border: 1px solid color-mix(in oklch, var(--tone) 22%, var(--pg-border));
   border-radius: var(--pg-r-card);
 }
 
@@ -370,25 +369,23 @@ body {
 }
 
 /* Выбор охвата — чип под подсказкой: точка тона состояния, название, шеврон.
-   Не кнопка Fluent в 32 px: чип стоит на заливке плиты, и заливка кнопки
-   (светлее поверхности) читалась бы на ней отдельной плиткой. */
+   Не кнопка в 32 px, но на той же заливке управления и, как всё управление,
+   без рамки. */
 .st-scope {
-  border: 1px solid color-mix(in oklch, var(--tone) 18%, var(--pg-border));
   border-radius: var(--pg-r-chip);
-  background: var(--pg-sunken);
+  background: var(--pg-control);
 }
 
 /* Блок состояния плашки из трея — такая же карточка, как в главном окне, но
-   вложенная: поле 8 px со всех сторон кроме низа, скругление 10, рамка тона. */
+   вложенная: поле 8 px со всех сторон кроме низа, скругление 10. */
 .st-fly {
   margin: 8px 8px 0;
   overflow: hidden;
-  border: 1px solid color-mix(in oklch, var(--tone) 22%, var(--pg-border));
   border-radius: var(--pg-r-cell);
 }
 
 .st-scope:hover:not(:disabled) {
-  background: var(--pg-hover);
+  background: var(--pg-control-hover);
 }
 
 .st-scope-dot {
@@ -882,7 +879,6 @@ body {
   min-inline-size: 0;
   flex-direction: column;
   padding: 10px 12px;
-  border: 1px solid var(--pg-border);
   border-radius: var(--pg-r-card);
   background: var(--pg-tile);
 }
@@ -932,7 +928,6 @@ body {
   min-block-size: 28px;
   margin-block-start: 6px;
   overflow: hidden;
-  border: 1px solid var(--pg-border);
   border-radius: var(--pg-r-well);
   background-color: var(--pg-well);
   background-image: linear-gradient(to top, color-mix(in oklch, var(--pg-border) 70%, transparent) 1px, transparent 1px);
@@ -1147,7 +1142,6 @@ body {
     align-items: baseline;
     column-gap: 12px;
     padding: 4px 12px;
-    border: 1px solid var(--pg-border);
     border-radius: var(--pg-r-card);
     background: var(--pg-tile);
   }

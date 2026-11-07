@@ -2938,6 +2938,7 @@ mod tests {
         ] {
             let body = rule(selector);
             assert!(!body.contains("box-shadow"), "у {selector} тень: тень в окне только у всплывающих слоёв");
+            assert!(!body.contains("border:"), "у {selector} снова рамка: карточку отделяет заливка");
             assert!(body.contains(&format!("border-radius: {radius};")), "у {selector} скругление не {radius}");
         }
         assert!(rule(".m-block").contains("background: var(--pg-tile);"), "карточка верха не на плитке");
