@@ -102,13 +102,13 @@ export function Journal({ lines, lang, className }: { lines: LogLine[]; lang?: L
           <Empty>{s.journalNoBad}</Empty>
         </div>
       ) : (
-        <ol className="flex flex-col px-3 pb-3 pt-1 text-sm">
+        <ol className="flex flex-col px-4 pb-3 text-sm">
           {days.map((group) => (
             <li key={group.key} className="flex flex-col">
               {group.day && (
                 // Подпись и черта липнут к кромке прокрутки (`top-0`): у
                 // панели отступа на самой прокрутке нет — он стоит на списке.
-                <div className="sticky top-0 z-[1] -mx-3 mt-2 flex items-center gap-2 bg-bg px-3 py-1.5">
+                <div className="sticky top-0 z-[1] -mx-4 mt-2 flex items-center gap-2 bg-bg px-4 py-1.5">
                   <span className="shrink-0 text-xs font-semibold text-muted">{group.day}</span>
                   <span className="h-px flex-1 bg-edge" />
                 </div>

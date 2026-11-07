@@ -35,7 +35,6 @@ import { strings } from "./i18n";
 import { aliveCount, fastestProbe, groupProfiles, quotaExpired, subTitle } from "./groups";
 import {
   bytes,
-  CellSpark,
   describe,
   exitCode,
   latencyTone,
@@ -81,9 +80,15 @@ export function Flyout({
   const subscriptions = status?.subscriptions ?? [];
   const probeOf = new Map(probes.map((p) => [p.name, p]));
   const rates = useRates(status);
-  const last = rates.at(-1) ?? null;
-  // Масштаб один на оба направления — по той же причине, что и в шапке окна.
-  const peak = Math.max(1, ...rates.map((r) => Math.max(r.rx, r.tx)));
+  // Число — скорость, посчитанная службой (`rx_rate`): плашку открывают на пару
+  // секунд, и своей разницы двух снятий счётчиков (служба снимает их раз в
+  // ~15 с) она не дожидалась — в строке стояли прочерки. Графика в плашке нет:
+  // за пару секунд он не успевал накопить ни одной точки. Служба прежней
+  // сборки скорости не присылает — тогда остаётся своя разница, как было.
+  const last =
+    status?.traffic_at && typeof status.rx_rate === "number"
+      ? { rx: status.rx_rate, tx: status.tx_rate }
+      : (rates.at(-1) ?? null);
   const [needle, setNeedle] = useState("");
   // Разовый отклик на включение (`.sw-sweep` в `switch.css`), только от нажатия.
   const [swept, setSwept] = useState(0);
@@ -171,7 +176,14 @@ export function Flyout({
       <section data-state={state} className="st st-fly smooth relative shrink-0">
         {/* Отыграла — ушла из разметки (`will-change` не живёт вечно). */}
         {swept > 0 && <span key={swept} className="sw-sweep" aria-hidden="true" onAnimationEnd={() => setSwept(0)} />}
-        <div className="flex items-start gap-3 px-3 pt-2.5 pb-2">
+        {/* Карта — фон всей карточки, а не полоса между строками: так просил
+            владелец. Стоит первой и под текстом (`.fly-map` — абсолютный слой,
+            строки поверх — `relative`), а место под страну выхода держит
+            пустой промежуток той же высоты, что была у полосы. */}
+        {/* Страна правее середины (`focus`): слева над ней стоит слово
+            состояния, а справа — пустое поле карты. */}
+        <WorldMap className="fly-map" code={code} fit={0.5} focus={[0.64, 0.5]} />
+        <div className="relative flex items-start gap-3 px-3 pt-2.5 pb-2">
           <div className="min-w-0 flex-1">
             <h1 key={view.title} className="st-word swap flex items-center gap-2 text-xl font-semibold">
               <StateGlyph state={state} size={18} />
@@ -192,22 +204,19 @@ export function Flyout({
             }}
           />
         </div>
-        <WorldMap className="fly-map" code={code} fit={0.5} />
+        <div className="h-16" aria-hidden="true" />
         {/* Точка выхода — строкой, числа — строкой ниже: в 356 px «Нидерланды ·
             Амстердам» и три числа рядом резались до «Нидерла… Амстер…». */}
-        <div className="px-3 pt-1.5 pb-2 text-sm">
+        {/* Задержка — своим блоком справа на высоту обеих строк (страна и
+            скорость), крупным числом: мелким хвостом строки страны она
+            терялась, а это второе, за чем открывают плашку. */}
+        <div className="relative flex items-center gap-3 px-3 pt-1.5 pb-2 text-sm">
+          <div className="min-w-0 flex-1">
           {status?.country ? (
             <p className="flex min-w-0 items-baseline gap-1.5 font-semibold">
               {flag(code) && <span aria-hidden="true">{flag(code)}</span>}
               <span className="truncate">{country}</span>
               {city && <span className="truncate font-normal text-muted">{city}</span>}
-              {status.tunnel === "up" && status.latency_ms != null && (
-                <span
-                  className={`ms-auto shrink-0 ps-2 font-mono text-xs font-normal tabular-nums ${latencyTone(status.latency_ms)}`}
-                >
-                  {status.latency_ms} ms
-                </span>
-              )}
             </p>
           ) : (
             <p className="truncate text-muted" title={s.exitUnknown}>
@@ -226,10 +235,16 @@ export function Flyout({
                 <Icon name="up" size={12} />
                 {last ? `${bytes(last.tx)}${s.perSecond}` : "—"}
               </span>
-              <span className="fly-chart" aria-hidden="true">
-                <CellSpark values={rates.map((r) => r.rx)} peak={peak} id="pg-spark-down" tone="text-open" />
-                <CellSpark values={rates.map((r) => r.tx)} peak={peak} id="pg-spark-up" tone="text-accent" />
-              </span>
+            </p>
+          )}
+          </div>
+          {status?.tunnel === "up" && status.latency_ms != null && (
+            <p
+              className={`shrink-0 font-mono text-2xl font-medium leading-none tabular-nums ${latencyTone(status.latency_ms)}`}
+              title={s.latency}
+            >
+              {status.latency_ms}
+              <span className="ms-1 text-sm font-normal text-muted">ms</span>
             </p>
           )}
         </div>

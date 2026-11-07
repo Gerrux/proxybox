@@ -128,6 +128,8 @@ export function App() {
               rx: p.rx,
               tx: p.tx,
               traffic_at: p.traffic_at,
+              rx_rate: p.rx_rate,
+              tx_rate: p.tx_rate,
               retry_in: p.retry_in,
               testing: p.testing,
             },

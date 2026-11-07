@@ -159,21 +159,6 @@ function Remaining({ s, quota, lang }: { s: Strings; quota: Subscription["quota"
   );
 }
 
-/** Деления «сколько узлов отвечает»: не больше восьми, закрашены живые — доля,
- *  а не счёт (счёт стоит числом рядом). Узлов в подписке бывает сотня, и сотня
- *  делений не читается. */
-function Ticks({ alive, total }: { alive: number; total: number }) {
-  const n = Math.min(total, 8);
-  const lit = alive === 0 ? 0 : Math.max(1, Math.round((alive / total) * n));
-  return (
-    <span className="flex shrink-0 gap-0.5" aria-hidden="true">
-      {Array.from({ length: n }, (_, i) => (
-        <i key={i} className={`block h-2.5 w-1.5 rounded-sm ${i < lit ? "bg-open" : "bg-edge-strong"}`} />
-      ))}
-    </span>
-  );
-}
-
 /** Правка подписки: подпись и адрес в небольшом окне поверх панели. Стояло полем
  *  на месте подписи, пока править можно было только имя; с адресом полю тесно
  *  (адрес длинный, и ошибку скачивания негде показать), а окно и заголовок
@@ -377,10 +362,11 @@ function SubStrip({
   // «Все» — вся машина, включая свои узлы: ячейка про список целиком.
   const every = groups.flatMap((g) => g.all);
   const measured = (all: ProfileInfo[]) => all.some((p) => probeOf.has(p.name));
-  // Ячейка — до трёх строк (~63 px с рамкой): имя с делениями «живых узлов»,
-  // остаток с полоской, срок. Прежние 62 px вернулись не случайно: ниже ячейка
-  // не читалась как ячейка, а выше стоила списку строку. Тонкая полоска остатка
-  // — единственное место, где доля видна глазом, а не числом.
+  // Ячейка — строка: имя и «живых из всех» числом. Вторая строка появляется,
+  // только когда есть о чём предупредить: у подписки лимит (остаток с полоской
+  // — единственное место, где доля видна глазом) или срок. Израсходованное у
+  // безлимитной и деления живых узлов рядом с тем же числом ушли в подсказку:
+  // по владельцу полоса была перегружена тем, что читают раз в месяц.
   const cell = (
     key: string,
     url: string | null,
@@ -403,17 +389,26 @@ function SubStrip({
       .join("\n");
     const inner = (
       <>
-          <span className={`flex min-w-0 items-center gap-2 ${selected ? "pe-14" : ""}`}>
-            <span className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</span>
-            {measured(all) && all.length > 0 && <Ticks alive={alive} total={all.length} />}
+          {/* У отобранной ячейки справа стоят две кнопки (52 px с отступом от
+              кромки); место под них — с зазором, иначе счёт «3/3» вставал
+              вплотную к значку обновления и читался его подписью. */}
+          <span className={`flex min-w-0 items-baseline gap-2 ${selected ? "pe-16" : ""}`}>
+            <span className={`min-w-0 truncate text-sm font-semibold ${url === null ? "shrink-0" : "flex-1"}`}>
+              {title}
+            </span>
+            {/* Возраст списка — в той же строке, что «Все», бледно: второй
+                строкой он один растил всю полосу на этаж. */}
+            {url === null && <span className="fold-only min-w-0 flex-1 truncate text-xs text-faint">{note}</span>}
             <span
-              className="shrink-0 font-mono text-xs font-normal tabular-nums text-muted"
+              className={`shrink-0 font-mono text-xs font-normal tabular-nums ${
+                measured(all) && alive === 0 ? "text-fault" : "text-muted"
+              }`}
               title={s.groupAlive(alive, all.length)}
             >
-              {alive}/{all.length}
+              {measured(all) ? `${alive}/${all.length}` : all.length}
             </span>
           </span>
-          {f && q?.amount && (
+          {f && q?.amount && f.total > 0 && (
             <span className="flex min-w-0 items-center gap-2 text-xs">
               {f.total > 0 && (
                 <span className="block h-1 min-w-6 flex-1 overflow-hidden rounded-full bg-[var(--pg-sunken)]">
@@ -429,7 +424,6 @@ function SubStrip({
             </span>
           )}
           {f && q?.expiry && <span className={`truncate text-xs ${quotaTone(f)}`}>{q.expiry}</span>}
-          {url === null && <span className="fold-only truncate text-xs text-muted">{note}</span>}
       </>
     );
     return (
@@ -454,7 +448,7 @@ function SubStrip({
         onDrop={(e) => e.preventDefault()}
         onDragEnd={onDragEnd}
         onContextMenu={(e) => sub !== null && onMenu(e, sub)}
-        className={`relative flex min-w-0 ${selected ? "flex-[1_0_16rem]" : "flex-[1_0_13rem]"} ${
+        className={`relative flex min-w-0 ${selected ? "flex-[1_0_14rem]" : "flex-[1_0_10rem]"} ${
           sub !== null && dragged === sub.url ? "opacity-40" : ""
         }`}
       >
@@ -463,29 +457,31 @@ function SubStrip({
           aria-pressed={filter === url}
           title={tip}
           onClick={() => onPick(filter === url ? null : url)}
-          className="sub-cell smooth flex w-full min-w-0 flex-col items-stretch justify-start px-3 py-0.5"
+          className="sub-cell smooth flex w-full min-w-0 flex-col items-stretch justify-center px-4 py-1.5"
         >
           {inner}
         </button>
         {/* Отобранная карточка несёт действия заголовка, которого под отбором
             нет: обновить (та же команда, что у пункта меню) и «⋯» с меню
             подписки. Рядом с кнопкой-карточкой, а не внутри: вложенных кнопок
-            не бывает. */}
+            не бывает. Кнопки — 24 px (`size-6!`: без `!` побеждает `h-8 w-8`
+            самой `IconButton`, и 32-пиксельная кнопка свисала ниже ячейки в
+            30 px), а `top-[3px]` ставит их середину на середину строки имени. */}
         {selected && (
-          <div className="absolute end-1 top-0.5 flex items-center">
+          <div className="absolute end-1 top-[3px] flex items-center">
             <IconButton
               icon="refresh"
               label={s.refresh}
               title={s.refreshSubscription(sub.url)}
               disabled={busy}
-              className="size-6"
+              className="size-6!"
               onClick={() => onRefresh(sub)}
             />
             <IconButton
               icon="more"
               label={s.actions}
               aria-haspopup="menu"
-              className="size-6"
+              className="size-6!"
               onClick={(e) => onMenu(e, sub)}
             />
           </div>
@@ -500,6 +496,14 @@ function SubStrip({
     </ul>
   );
 }
+
+/** Действия, которые проступают по наведению и по фокусу, а не стоят столбцом в
+ *  каждой строке. Прозрачностью, а не `hidden`: место держится, и строка под
+ *  указателем не прыгает; клавиатура до них добирается как прежде, и тогда
+ *  они видны (`focus-within`). Меню строки есть и по правой кнопке. Сторож —
+ *  `row_actions_show_on_hover`. */
+const REVEAL_ROW = "opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100";
+const REVEAL_HEAD = "opacity-0 group-hover/head:opacity-100 group-focus-within/head:opacity-100";
 
 /** Со скольких профилей список перестаёт читаться глазом. Порог тот же, что у
  *  приложений: одна подписка приносит десятки узлов, а подписок бывает
@@ -1092,7 +1096,9 @@ export function Profiles({
   // Всё разом — для тесной раскладки.
   const tools = present<MenuItem>(measured && toggleOrder, turnFastest, refreshAll, testAll, exportAll, deadItem);
   // Хвост широкой: то, чему в строке кнопки не нашлось.
-  const overflow = present<MenuItem>(refreshAll, exportAll, deadItem);
+  // Порядок списка — тоже сюда: переключают его редко, а полоской сегментов он
+  // был третьим серым блоком в ряду из шести.
+  const overflow = present<MenuItem>(measured && toggleOrder, refreshAll, exportAll, deadItem);
   // Счёт и возраст списка. Живут в шапке панели (она ≥1100 px) и, пока шапки
   // нет (`folds`), в панели инструментов: в ячейке «Все» полосы подписок, а без
   // полосы — на месте распорки. Один узел, а не две копии текста: разойдясь,
@@ -1126,7 +1132,7 @@ export function Profiles({
             // выделения: поиск и «Добавить» в это время не нужны, а те же 41 px
             // высоты держат список там, где он был.
             <div
-              className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1"
+              className="flex h-[41px] shrink-0 items-center gap-2 border-b border-edge ps-4 pe-1"
               role="group"
               aria-label={s.selectedCount(selected.size)}
             >
@@ -1173,26 +1179,11 @@ export function Profiles({
               <IconButton icon="close" label={s.clearSelection} onClick={() => setSelected(new Set())} />
             </div>
           ) : (
-          <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1">
+          <div className="flex h-[41px] shrink-0 items-center gap-2 border-b border-edge pe-1">
             {searchable && (
-              <div className={compact ? "min-w-0 flex-[1_0_8rem]" : "min-w-32 flex-[0_1_18rem]"}>
-                <SearchField inputRef={searchRef} value={query} onChange={setQuery} placeholder={s.searchProfiles} />
+              <div className={compact ? "min-w-0 flex-[1_0_8rem]" : "min-w-32 flex-[1_1_18rem]"}>
+                <SearchField flush inputRef={searchRef} value={query} onChange={setQuery} placeholder={s.searchProfiles} />
               </div>
-            )}
-            {/* Вид списка — переключатель, а не кнопка «сбросить»: оба порядка
-                названы, и видно, какой включён. Только когда есть что
-                упорядочивать: без замеров он не сделал бы ничего. В тесном виде
-                тот же выбор — пункт меню. */}
-            {!compact && measured && (
-              <Segmented
-                label={s.viewOrder}
-                options={[
-                  ["mine", s.viewMine],
-                  ["latency", s.byLatency, s.byLatencyHint],
-                ]}
-                value={byLat ? "latency" : "mine"}
-                onPick={(v) => setByLatency(v === "latency")}
-              />
             )}
             {/* Распорка несёт счёт, когда шапки нет, а полосы подписок (где он
                 стоит в ячейке «Все») тоже нет; места ему нет — обрезается.
@@ -1217,13 +1208,21 @@ export function Profiles({
               )
             ) : (
               <>
+                {/* Без заливки: залитой в ряду остаётся одна кнопка —
+                    «Добавить», — и ряд читается как поиск и одно действие, а не
+                    как стопка серых плиток. */}
                 {testAll && (
-                  <Button disabled={testAll.disabled} title={testAll.hint} onClick={testAll.onPick}>
+                  <Button variant="quiet" disabled={testAll.disabled} title={testAll.hint} onClick={testAll.onPick}>
                     {testAll.label}
                   </Button>
                 )}
                 {turnFastest && (
-                  <Button disabled={turnFastest.disabled} title={turnFastest.hint} onClick={turnFastest.onPick}>
+                  <Button
+                    variant="quiet"
+                    disabled={turnFastest.disabled}
+                    title={turnFastest.hint}
+                    onClick={turnFastest.onPick}
+                  >
                     {/* Молния — акцентом, как у той же строки в плашке: это
                         единственное действие ряда, которое сразу включает узел,
                         и его ищут взглядом, а не читают подпись. */}
@@ -1429,7 +1428,7 @@ export function Profiles({
                       commit();
                     }}
                     onContextMenu={(e) => sub !== null && openMenu(e, subMenu(sub))}
-                    className={`sub-head flex h-9 cursor-pointer list-none items-center gap-2 ps-3 pe-2 text-sm font-semibold [&::-webkit-details-marker]:hidden ${
+                    className={`sub-head group/head flex h-9 cursor-pointer list-none items-center gap-2 ps-4 pe-2 text-sm font-semibold [&::-webkit-details-marker]:hidden ${
                       dragged === sub?.url ? "opacity-40" : ""
                     }`}
                   >
@@ -1481,7 +1480,7 @@ export function Profiles({
                           label={s.refresh}
                           title={s.refreshSubscription(sub.url)}
                           disabled={busy}
-                          className="size-7"
+                          className={`size-7 ${REVEAL_HEAD}`}
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
@@ -1492,7 +1491,7 @@ export function Profiles({
                           icon="more"
                           label={s.actions}
                           aria-haspopup="menu"
-                          className="-me-1 size-7"
+                          className={`-me-1 size-7 ${REVEAL_HEAD}`}
                           onClick={(e) => openMenu(e, subMenu(sub))}
                         />
                       </>
@@ -1972,7 +1971,7 @@ function Rows({
     // Отступ строк — на самом списке, а не на прокрутке: скруглённая подсветка
     // строки иначе упирается в кромку плиты. Заголовок группы при этом остаётся
     // во всю ширину — он рубеж списка, а не его строка.
-    <ul className="flex flex-col gap-0.5 px-1.5 py-1">
+    <ul className="flex flex-col px-2">
       {items.map((item) => {
         const name = item.name;
         const active = status?.profile === name;
@@ -2086,7 +2085,7 @@ function Rows({
               data-picked={picked}
               // Одна строка в 34 px: имя, метка, замер. `group/row` нужен
               // адресу, который показывается по наведению и по фокусу.
-              className={`row enter smooth group/row flex h-[34px] items-center gap-2 ps-2.5 pe-1 ${
+              className={`row enter smooth group/row flex h-[34px] items-center gap-2 ps-2 pe-1 ${
                 dragged === name ? "opacity-40" : ""
               }`}
             >
@@ -2158,18 +2157,16 @@ function Rows({
                     {s.connecting}
                   </span>
                 )}
-                {item.server && (
+                {/* Тип узла проступает вместе с адресом — по наведению и по
+                    фокусу, бледным моноширинным текстом, а не меткой в каждой
+                    строке: метка на всех строках разом была самым громким
+                    повтором списка, а нужна она при выборе одного узла. */}
+                {(item.kind || item.server) && (
                   <span className="hidden min-w-0 shrink-[8] truncate font-mono text-xs font-normal text-faint group-hover/row:inline group-focus-within/row:inline">
-                    {item.server}
+                    {[item.kind, item.server].filter(Boolean).join(" · ")}
                   </span>
                 )}
               </button>
-              {/* Тип узла меткой, моноширинно: по нему на глаз отличают vless от
-                  wireguard, и это единственное, что в одной строке не
-                  повторяет имя. В тесной панели её нет — остаётся в подсказке. */}
-              {!tight && item.kind && (
-                <span className="shrink-0 rounded-sm bg-hover px-1.5 font-mono text-xs text-muted">{item.kind}</span>
-              )}
               {/* Пометки — значками, а не словами: слово «без шифрования»
                   заглавными в каждой строке кричало громче имени узла. Смысл
                   остался в подсказке и для чтения с экрана, а жёлтый замок
@@ -2206,20 +2203,12 @@ function Rows({
                   сравнением — значит, сказать об этом обязано само число. */}
               {probe && (
                 <span
-                  className={`flex shrink-0 items-center justify-end gap-2 font-mono text-xs ${
+                  className={`flex shrink-0 items-center justify-end font-mono text-xs ${
                     tight ? "w-16" : "w-24"
                   } ${latencyTone(probe.latency_ms) || "text-muted"}`}
                 >
-                  {/* Полоска — длина задержки на шкале до 500 мс, цветом числа:
-                      столбец полосок читается раньше столбца чисел. */}
-                  {!tight && probe.latency_ms != null && (
-                    <span className="block h-1 w-8 shrink-0 overflow-hidden rounded-full bg-edge" aria-hidden="true">
-                      <span
-                        className="block h-full rounded-full bg-current"
-                        style={{ inlineSize: `${Math.min(100, Math.max(8, probe.latency_ms / 5))}%` }}
-                      />
-                    </span>
-                  )}
+                  {/* Только число, тоном задержки: полоска рядом повторяла его
+                      же длиной, и в столбце стояли две шкалы одного замера. */}
                   <Verdict
                     probe={probe}
                     failed={s.probeFailed}
@@ -2231,10 +2220,14 @@ function Rows({
                   />
                 </span>
               )}
+              {/* «⋯» проступает по наведению и по фокусу (место держит всегда,
+                  строка не прыгает): одиннадцать одинаковых значков столбцом
+                  читались шумом, а меню есть и по правой кнопке. */}
               <IconButton
                 icon="more"
                 label={s.actions}
                 aria-haspopup="menu"
+                className={REVEAL_ROW}
                 onClick={(e) => onMenu(e, rowMenu())}
               />
             </div>

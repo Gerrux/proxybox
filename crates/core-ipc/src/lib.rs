@@ -920,6 +920,15 @@ pub struct Status {
     /// линии. 0 — не снимали ни разу.
     #[serde(default)]
     pub traffic_at: u64,
+    /// Скорость между двумя последними снятиями счётчиков, байт в секунду.
+    /// Считает служба, потому что только у неё оба снятия есть всегда: окно,
+    /// открытое на пару секунд (плашка из трея), второго снятия не дожидается —
+    /// счётчики снимают раз в `TRAFFIC_EVERY` кругов, — и скорости у него не
+    /// было бы никогда. Сторож — `the_speed_is_known_as_soon_as_asked`.
+    #[serde(default)]
+    pub rx_rate: u64,
+    #[serde(default)]
+    pub tx_rate: u64,
     pub apps: Vec<App>,
     /// Кого касается приватный режим. В охвате `All` список `apps` не
     /// применяется, но и не теряется; в `Whitelist` он же — единственный
@@ -1022,6 +1031,10 @@ pub struct Pulse {
     pub rx: u64,
     pub tx: u64,
     pub traffic_at: u64,
+    #[serde(default)]
+    pub rx_rate: u64,
+    #[serde(default)]
+    pub tx_rate: u64,
     pub retry_in: Option<u32>,
     pub testing: Option<TestRun>,
     pub cold: u64,
@@ -1040,6 +1053,8 @@ impl Pulse {
             rx: status.rx,
             tx: status.tx,
             traffic_at: status.traffic_at,
+            rx_rate: status.rx_rate,
+            tx_rate: status.tx_rate,
             retry_in: status.retry_in,
             testing: status.testing,
             cold: cold_hash(status),
@@ -1061,6 +1076,8 @@ pub fn cold_hash(status: &Status) -> u64 {
         rx: 0,
         tx: 0,
         traffic_at: 0,
+        rx_rate: 0,
+        tx_rate: 0,
         retry_in: None,
         testing: None,
         ..status.clone()
@@ -1548,6 +1565,8 @@ mod tests {
                 rx: 1,
                 tx: 2,
                 traffic_at: 1_755_000_000_000,
+                rx_rate: 3,
+                tx_rate: 4,
                 retry_in: None,
                 testing: Some(TestRun { done: 1, total: 2 }),
                 cold: 7,
@@ -1581,6 +1600,8 @@ mod tests {
         hot.rx = 5;
         hot.tx = 6;
         hot.traffic_at = 7;
+        hot.rx_rate = 8;
+        hot.tx_rate = 9;
         hot.retry_in = Some(3);
         hot.testing = Some(TestRun { done: 1, total: 2 });
         assert_eq!(cold_hash(&hot), cold, "горячие поля не двигают отпечаток");
@@ -2280,7 +2301,7 @@ mod tests {
         // Что несла шапка, должно стоять и в панели инструментов.
         assert!(profiles.contains("note={note}") && profiles.contains("fold-only"), "счёт профилей пропал вместе с шапкой");
         assert!(
-            apps.contains("fold-only flex shrink-0 items-center gap-0.5\">{actions}"),
+            apps.contains("fold-only flex shrink-0 items-center gap-1\">{actions}"),
             "кнопки приложений пропали вместе с шапкой"
         );
         assert!(apps.contains("action={actions}"), "в широкой шапке приложений нет кнопок");
@@ -2603,7 +2624,7 @@ mod tests {
             .expect("отбор одной подпиской рисует группу своей веткой");
         let (filtered, rest) = branch.split_once("<details").expect("без отбора группа — <details>");
         assert!(!filtered.contains("<summary") && !filtered.contains("sub-head"), "под отбором снова есть заголовок группы");
-        assert!(rest.contains("sub-head flex h-9"), "заголовок группы без отбора пропал");
+        assert!(rest.contains("sub-head group/head flex h-9"), "заголовок группы без отбора пропал");
         let strip = profiles
             .split("function SubStrip(")
             .nth(1)
@@ -2852,13 +2873,76 @@ mod tests {
         assert!(motion.contains("@keyframes sw-ring") && motion.contains("@keyframes sw-sweep"));
     }
 
-    /// Карточки в окне — ровно в трёх местах (верхний ряд, полоса подписок,
-    /// блок состояния плашки), у них скругления из одной лестницы и нет тени:
+    /// Действия строки профиля и заголовка группы проступают по наведению, а не
+    /// стоят столбцом в каждой строке: одиннадцать одинаковых «⋯» и меток типа
+    /// узла читались шумом. Но прятать их обязаны прозрачностью и с
+    /// `focus-within`: `hidden` или одно `hover` отрезали бы клавиатуру от меню
+    /// строки, а строка под указателем прыгала бы.
+    #[test]
+    fn row_actions_show_on_hover() {
+        let profiles = include_str!("../../../ui/app-shell/src/Profiles.tsx").replace("\r\n", "\n");
+        for (name, group) in [("REVEAL_ROW", "row"), ("REVEAL_HEAD", "head")] {
+            let line = profiles
+                .lines()
+                .find(|l| l.starts_with(&format!("const {name} = ")))
+                .unwrap_or_else(|| panic!("нет {name}"));
+            assert!(line.contains("opacity-0"), "{name} прячет не прозрачностью");
+            assert!(line.contains(&format!("group-focus-within/{group}:opacity-100")), "{name} не видно с клавиатуры");
+        }
+        assert!(profiles.contains("className={REVEAL_ROW}"), "«⋯» строки снова стоит всегда");
+        assert_eq!(profiles.matches("${REVEAL_HEAD}").count(), 2, "действия заголовка группы снова стоят всегда");
+        assert!(profiles.contains("sub-head group/head"), "заголовку группы не на что проступать");
+        assert!(!profiles.contains("bg-control px-1.5 font-mono"), "метка типа узла снова в каждой строке");
+    }
+
+    /// Управление — кнопки, поля, сегменты — без рамок и на одной заливке
+    /// (`--pg-control`). С рамками и нижней кромкой Fluent в одном ряду стояли
+    /// три разных серых — подложка сегментов, плитка кнопки и поле — и обводка
+    /// вокруг каждого. Рамка в волосок осталась только у всплывающих слоёв
+    /// (меню, диалог): они над поверхностью, и кромка там — граница слоя.
+    #[test]
+    fn controls_share_one_fill_and_no_border() {
+        let css = include_str!("../../../ui/app-shell/src/index.css").replace("\r\n", "\n");
+        let rule = |selector: &str| -> String {
+            css.split(&format!("\n{selector} {{"))
+                .nth(1)
+                .and_then(|s| s.split("\n}").next())
+                .unwrap_or_else(|| panic!("в index.css нет правила {selector}"))
+                .to_string()
+        };
+        for selector in [".btn", ".btn-accent", ".btn-subtle", ".field", ".segmented"] {
+            let body = rule(selector);
+            assert!(body.contains("border: 0;"), "у {selector} снова рамка");
+            assert!(!body.contains("border-bottom-color"), "у {selector} снова нижняя кромка Fluent");
+        }
+        for selector in [".btn", ".field"] {
+            assert!(rule(selector).contains("background: var(--pg-control);"), "{selector} не на заливке управления");
+        }
+        assert!(
+            rule(".segmented > button[aria-pressed=\"true\"]").contains("var(--pg-control-hover)"),
+            "выбранный сегмент не на заливке управления"
+        );
+        for (name, text) in [
+            ("Profiles.tsx", include_str!("../../../ui/app-shell/src/Profiles.tsx")),
+            ("Apps.tsx", include_str!("../../../ui/app-shell/src/Apps.tsx")),
+            ("Conns.tsx", include_str!("../../../ui/app-shell/src/Conns.tsx")),
+            ("Browsers.tsx", include_str!("../../../ui/app-shell/src/Browsers.tsx")),
+            ("Settings.tsx", include_str!("../../../ui/app-shell/src/Settings.tsx")),
+            ("StatusBar.tsx", include_str!("../../../ui/app-shell/src/StatusBar.tsx")),
+            ("Flyout.tsx", include_str!("../../../ui/app-shell/src/Flyout.tsx")),
+        ] {
+            assert!(!text.contains("border border-edge"), "в {name} снова рамка вокруг блока");
+        }
+    }
+
+    /// Карточки в окне — только верхний ряд главного окна (полоса подписок
+    /// стала лентой вкладок, блок состояния плашки — вплотную к кромкам окна),
+    /// у них скругления из одной лестницы и нет тени:
     /// тень в окне только у всплывающих слоёв (меню и диалога). Решение
     /// владельца заменило прежнее «плоское окно без карточек», и граница
     /// осталась границей: плитка (`--pg-tile`) в разметке не вставляется
     /// классами, а лишь в этих правилах, иначе карточками обросли бы списки.
-    /// Лестница: 12 карточки верха, 10 ячейки полосы и блока плашки, 8 колодца
+    /// Лестница: 12 карточки верха, 10 блока плашки, 8 колодца
     /// графика, 6 чипа охвата; 4 — всё управление (`--radius-*` в `@theme`).
     #[test]
     fn cards_have_radii_and_no_shadow() {
@@ -2892,17 +2976,26 @@ mod tests {
         for (selector, radius) in [
             (".st-state", "var(--pg-r-card)"),
             (".m-block", "var(--pg-r-card)"),
-            (".sub-cell", "var(--pg-r-cell)"),
-            (".st-fly", "var(--pg-r-cell)"),
             (".chart", "var(--pg-r-well)"),
             (".st-scope", "var(--pg-r-chip)"),
         ] {
             let body = rule(selector);
             assert!(!body.contains("box-shadow"), "у {selector} тень: тень в окне только у всплывающих слоёв");
+            assert!(!body.contains("border:"), "у {selector} снова рамка: карточку отделяет заливка");
             assert!(body.contains(&format!("border-radius: {radius};")), "у {selector} скругление не {radius}");
         }
         assert!(rule(".m-block").contains("background: var(--pg-tile);"), "карточка верха не на плитке");
-        assert!(rule(".sub-cell").contains("var(--pg-tile)"), "ячейка полосы не на плитке");
+        // Блок состояния плашки — вплотную к кромкам окна, без полей, а углы —
+        // ровно по углу окна (`--pg-r-window`, как скругляет Windows 11): своё
+        // скругление разошлось бы с углом окна.
+        let fly = rule(".st-fly");
+        assert!(!fly.contains("margin"), "у блока плашки снова поля");
+        assert!(fly.contains("border-radius: var(--pg-r-window);"), "углы блока плашки не по углу окна");
+        assert_eq!(token("--pg-r-window"), "8px", "угол окна Windows 11 — 8 px");
+        // Полоса подписок — лента вкладок вплотную к кромкам, а не карточки в
+        // полях: скруглённая ячейка, вписанная в кромку, читалась бы обрезанной.
+        assert!(!rule(".sub-cell").contains("border-radius"), "ячейка полосы снова скруглена");
+        assert!(rule(".sub-strip").contains("padding: 0;"), "у полосы подписок снова поля");
         assert!(rule(".chart").contains("background-color: var(--pg-well);"), "колодец графика не на `--pg-well`");
 
         // Плитка и колодец — токены CSS-правил, а не утилиты в разметке: список

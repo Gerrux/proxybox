@@ -61,7 +61,7 @@ export function Panel({
           <span className="shrink-0">{title}</span>
           {note != null && <span className="min-w-0 truncate text-xs font-normal text-muted">{note}</span>}
         </h2>
-        {action && <div className="flex shrink-0 items-center gap-0.5">{action}</div>}
+        {action && <div className="flex shrink-0 items-center gap-1">{action}</div>}
       </header>
       {bar}
       <div className={`scroll min-h-0 flex-1 overflow-y-auto ${pad}`}>{children}</div>
@@ -764,12 +764,17 @@ export function SearchField({
   onChange,
   placeholder,
   inputRef,
+  flush = false,
 }: {
   value: string;
   onChange: (value: string) => void;
   placeholder: string;
   /** Кому отдать фокус по Ctrl+F. */
   inputRef?: React.Ref<HTMLInputElement>;
+  /** Поле во всю высоту панели инструментов, без рамки и полей вокруг
+   *  (`.field-flush`): кромкой ему служит линия под панелью, а текст стоит
+   *  вровень с заголовком шапки. Обычное — в формах и плашке. */
+  flush?: boolean;
 }) {
   return (
     <input
@@ -779,7 +784,7 @@ export function SearchField({
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
       spellCheck={false}
-      className={FIELD_SEARCH}
+      className={flush ? "field-flush selectable h-10 w-full min-w-0 px-4 text-sm" : FIELD_SEARCH}
     />
   );
 }

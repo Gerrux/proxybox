@@ -180,6 +180,8 @@ export type Pulse = {
   rx: number;
   tx: number;
   traffic_at: number;
+  rx_rate: number;
+  tx_rate: number;
   retry_in: number | null;
   testing: TestRun | null;
   cold: number;
@@ -195,6 +197,11 @@ export type Status = {
   /** Когда счётчики сняли, миллисекунды с эпохи. Служба ходит за ними реже,
    *  чем окно спрашивает статус: по разнице двух отметок и считается скорость. */
   traffic_at: number;
+  /** Скорость между двумя последними снятиями счётчиков, байт в секунду. Её
+   *  считает служба: окну, открытому на пару секунд (плашке), второго снятия
+   *  не дождаться. */
+  rx_rate: number;
+  tx_rate: number;
   apps: App[];
   /** Кого касается приватный режим. В `all` список `apps` не применяется, в
    *  `whitelist` он же — единственный пропуск в сеть. */

@@ -272,9 +272,9 @@ export function Conns({
       folds="always"
       bar={
         searchable && (
-          <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1">
+          <div className="flex h-[41px] shrink-0 items-center gap-2 border-b border-edge pe-3">
             <div className="min-w-24 flex-[1_0_7rem]" title={s.connsFindHint}>
-              <SearchField value={query} onChange={setQuery} placeholder={s.connsFind} />
+              <SearchField flush value={query} onChange={setQuery} placeholder={s.connsFind} />
             </div>
             {live && conns.length > 0 && (
               <span className="min-w-0 truncate text-xs text-muted" title={s.connsHint}>
@@ -295,7 +295,7 @@ export function Conns({
               // соединения, и слитые в один поток читались бы как соединения без
               // адреса. Свёрнуты по умолчанию: запущенных приложений у человека
               // десятки, а панель открывают ради одного из них.
-              <div className="rounded-md border border-edge">
+              <div className="rounded-md bg-control">
                 <button
                   type="button"
                   title={s.connsFencedHint}
@@ -312,7 +312,7 @@ export function Conns({
                   <span className="min-w-0 flex-1 truncate">{s.connsFenced(locked.length)}</span>
                 </button>
                 {shown && (
-                  <ul className="flex flex-col border-t border-edge px-1.5 py-1">
+                  <ul className="flex flex-col px-1.5 pb-1">
                     {locked.map((path) => (
                       <li
                         key={path}
@@ -333,7 +333,7 @@ export function Conns({
             {live && unreached.length > 0 && (
               // Не поломка окна и не цвет отказа: это сведение, которое снимает
               // с туннеля подозрение, — потому тихая рамка, а не красная.
-              <p className="rounded-md border border-edge px-2.5 py-1.5 text-xs text-muted">
+              <p className="rounded-md bg-control px-2.5 py-1.5 text-xs text-muted">
                 {s.connsUnreached(unreached.join(", "))}
               </p>
             )}

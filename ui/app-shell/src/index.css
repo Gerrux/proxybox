@@ -14,6 +14,7 @@
   --color-faint: var(--pg-faint);
   --color-hover: var(--pg-hover);
   --color-press: var(--pg-press);
+  --color-control: var(--pg-control);
   --color-open: var(--pg-open);
   --color-closed: var(--pg-closed);
   --color-wait: var(--pg-wait);
@@ -316,7 +317,6 @@ body {
   position: relative;
   overflow: hidden;
   container-type: inline-size;
-  border: 1px solid color-mix(in oklch, var(--tone) 22%, var(--pg-border));
   border-radius: var(--pg-r-card);
 }
 
@@ -369,25 +369,25 @@ body {
 }
 
 /* Выбор охвата — чип под подсказкой: точка тона состояния, название, шеврон.
-   Не кнопка Fluent в 32 px: чип стоит на заливке плиты, и заливка кнопки
-   (светлее поверхности) читалась бы на ней отдельной плиткой. */
+   Не кнопка в 32 px, но на той же заливке управления и, как всё управление,
+   без рамки. */
 .st-scope {
-  border: 1px solid color-mix(in oklch, var(--tone) 18%, var(--pg-border));
   border-radius: var(--pg-r-chip);
-  background: var(--pg-sunken);
+  background: var(--pg-control);
 }
 
-/* Блок состояния плашки из трея — такая же карточка, как в главном окне, но
-   вложенная: поле 8 px со всех сторон кроме низа, скругление 10, рамка тона. */
+/* Блок состояния плашки из трея — вплотную к кромкам окна, без полей: по
+   решению владельца плашка начинается картой, а не карточкой в рамке поля.
+   Углы скруглены ровно как угол самого окна — Windows 11 скругляет окна на
+   8 px, — иначе заливка выглядывала бы из-под угла окна или отступала от
+   него; нижние — тем же радиусом, чтобы блок читался одним целым. */
 .st-fly {
-  margin: 8px 8px 0;
   overflow: hidden;
-  border: 1px solid color-mix(in oklch, var(--tone) 22%, var(--pg-border));
-  border-radius: var(--pg-r-cell);
+  border-radius: var(--pg-r-window);
 }
 
 .st-scope:hover:not(:disabled) {
-  background: var(--pg-hover);
+  background: var(--pg-control-hover);
 }
 
 .st-scope-dot {
@@ -524,18 +524,6 @@ body {
   box-shadow: 0 0 0 2px var(--pg-bg);
 }
 
-.rail-item[aria-pressed="true"]::before {
-  content: "";
-  position: absolute;
-  inset-inline-start: 0;
-  top: 50%;
-  translate: 0 -50%;
-  inline-size: 3px;
-  block-size: 16px;
-  border-radius: 9999px;
-  background: var(--pg-accent);
-}
-
 /* Шапка панели — одна строка в 40 px у всех панелей, под ней волосяная линия.
 
    Панель со своей панелью инструментов (`bar` у `Panel`: профили, приложения,
@@ -568,28 +556,29 @@ body {
   }
 }
 
-/* Кнопка Fluent: заливка управления, штрих, нижняя кромка темнее боковых —
-   «свет сверху» у Windows 11 нарисован именно так, одной линией. */
+/* Управление без рамок: от поверхности его отделяет одна заливка
+   (`--pg-control`), общая для кнопок, полей, сегментов и меток. Рамки с
+   тёмной нижней кромкой, как у Fluent, давали в одном ряду три разных
+   серых — подложку сегментов, плитку кнопки и поле — и обводку вокруг
+   каждого; теперь серый один, и отличается только акцентная кнопка. Сторож —
+   `controls_share_one_fill_and_no_border`. */
 .btn {
-  border: 1px solid var(--pg-border);
-  border-bottom-color: var(--pg-border-strong);
-  background: var(--pg-surface-2);
+  border: 0;
+  background: var(--pg-control);
   color: var(--pg-text);
 }
 
 .btn:hover:not(:disabled) {
-  background: color-mix(in oklch, var(--pg-surface-2) 100%, var(--pg-text) 4%);
+  background: var(--pg-control-hover);
 }
 
 .btn:active:not(:disabled) {
-  background: var(--pg-surface);
+  background: var(--pg-hover);
   color: var(--pg-muted);
-  border-bottom-color: var(--pg-border);
 }
 
 .btn-accent {
-  border: 1px solid color-mix(in oklch, var(--pg-accent) 80%, black);
-  border-bottom-color: color-mix(in oklch, var(--pg-accent) 60%, black);
+  border: 0;
   background: var(--pg-accent);
   color: var(--pg-on-accent);
 }
@@ -600,20 +589,18 @@ body {
 
 .btn-accent:active:not(:disabled) {
   background: color-mix(in oklch, var(--pg-accent) 80%, var(--pg-bg));
-  border-bottom-color: color-mix(in oklch, var(--pg-accent) 80%, black);
 }
 
 /* Неактивная акцентная — серая, как в Windows: бледно-синяя читалась бы как
    «почти нажимается». Прозрачность утилиты тут не работает на нас. */
 .btn-accent:disabled {
   opacity: 1;
-  border-color: transparent;
   background: var(--pg-border-strong);
   color: var(--pg-surface);
 }
 
 .btn-subtle {
-  border: 1px solid transparent;
+  border: 0;
   background: transparent;
   color: var(--pg-text);
 }
@@ -627,34 +614,54 @@ body {
   color: var(--pg-muted);
 }
 
-/* Поле ввода Fluent: белое на поверхности, нижняя кромка темнее, а в фокусе —
-   акцентная полоса снизу. Рамка целиком акцентом в Windows не красится. */
+/* Поле ввода — та же заливка управления, без рамки; в фокусе — акцентная
+   черта снизу, как у Windows. */
 .field {
-  border: 1px solid var(--pg-border);
-  border-bottom-color: var(--pg-border-strong);
-  background: var(--pg-surface-2);
+  border: 0;
+  background: var(--pg-control);
 }
 
 .field:focus {
-  border-bottom-color: var(--pg-accent);
-  box-shadow: inset 0 -1px 0 var(--pg-accent);
+  box-shadow: inset 0 -2px 0 var(--pg-accent);
   outline: none;
 }
 
-.field::placeholder {
+.field::placeholder,
+.field-flush::placeholder {
   color: var(--pg-faint);
 }
 
-/* Выбор из двух-трёх — сегменты Fluent: общая подложка, выбранный лежит на
-   ней белой плиткой со штрихом. */
+/* Поиск в панели инструментов — сама панель, а не поле в ней: ни рамки, ни
+   подложки, ни полей вокруг. Кромка — линия под панелью, фокус — акцентная
+   черта по ней же, как у `.field`. */
+.field-flush {
+  background: transparent;
+  border: 0;
+  outline: none;
+}
+
+.field-flush:hover {
+  background: var(--pg-hover);
+}
+
+.field-flush:focus {
+  box-shadow: inset 0 -2px 0 var(--pg-accent);
+}
+
+/* Выбор из двух-трёх: невыбранные — голым текстом, выбранный — той же
+   заливкой управления. Подложки и рамки под всем рядом нет: она была ещё
+   одним серым рядом с кнопками. */
 .segmented {
-  background: var(--pg-sunken);
-  border: 1px solid var(--pg-border);
+  border: 0;
+  background: transparent;
+}
+
+.segmented > button:hover:not([aria-pressed="true"]):not(:disabled) {
+  background: var(--pg-hover);
 }
 
 .segmented > button[aria-pressed="true"] {
-  background: var(--pg-surface-2);
-  box-shadow: 0 0 0 1px var(--pg-border), 0 1px 0 var(--pg-border-strong);
+  background: var(--pg-control-hover);
 }
 
 /* Тумблер Fluent. Ручка ездит сдвигом, а не краем: так дешевле. Размер задан
@@ -824,26 +831,14 @@ body {
   opacity: 0;
 }
 
-/* Плашка: карта — полоса во всю ширину плиты, между словом состояния и
-   строкой точки выхода. */
-/* Полоса карты в плашке растворяется к обоим краям, а не обрывается: обрез
-   по кромке карточки читался вставленной картинкой. Рамки сверху и снизу нет
-   по той же причине — маска её не берёт, и она стояла бы линейкой поверх
-   растворения. Маска симметричная, поэтому справа налево её не зеркалим. */
+/* Плашка: карта — фон всей карточки, от кромки до кромки, под словом
+   состояния, тумблером и строкой точки выхода. Полосой между строками она
+   читалась вставленной картинкой, и по решению владельца заняла контейнер
+   целиком. Маски нет: обрезает её скругление самой карточки, а суша —
+   бледный силуэт, и текст поверх неё читается. */
 .fly-map {
-  position: relative;
-  block-size: 100px;
-  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 20%, #000 80%, transparent 100%);
-  mask-image: linear-gradient(to right, transparent 0, #000 20%, #000 80%, transparent 100%);
-}
-
-/* График скорости в строке плашки: занимает остаток после двух чисел. */
-.fly-chart {
-  position: relative;
-  display: block;
-  flex: 1 1 0;
-  min-inline-size: 0;
-  block-size: 20px;
+  position: absolute;
+  inset: 0;
 }
 
 /* Блоки-измерители: скорость и задержка. Оба — столбец на высоту ряда: строка
@@ -862,7 +857,6 @@ body {
   min-inline-size: 0;
   flex-direction: column;
   padding: 10px 12px;
-  border: 1px solid var(--pg-border);
   border-radius: var(--pg-r-card);
   background: var(--pg-tile);
 }
@@ -912,7 +906,6 @@ body {
   min-block-size: 28px;
   margin-block-start: 6px;
   overflow: hidden;
-  border: 1px solid var(--pg-border);
   border-radius: var(--pg-r-well);
   background-color: var(--pg-well);
   background-image: linear-gradient(to top, color-mix(in oklch, var(--pg-border) 70%, transparent) 1px, transparent 1px);
@@ -1127,7 +1120,6 @@ body {
     align-items: baseline;
     column-gap: 12px;
     padding: 4px 12px;
-    border: 1px solid var(--pg-border);
     border-radius: var(--pg-r-card);
     background: var(--pg-tile);
   }
@@ -1330,7 +1322,6 @@ body {
   position: sticky;
   top: 0;
   z-index: 1;
-  border-bottom: 1px solid var(--pg-border);
   background: linear-gradient(var(--pg-hover), var(--pg-hover)), var(--pg-bg);
 }
 
@@ -1392,30 +1383,29 @@ h3.sub-head:hover {
    лишь там, где ячейки и вправду уезжают за край. Вертикальной прокрутки у
    ряда нет вовсе. */
 .sub-strip {
-  gap: 8px;
-  padding: 2px 12px 6px;
+  padding: 0;
+  border-bottom: 1px solid var(--pg-border);
   overflow-y: hidden;
 }
 
 /* Ячейка — до трёх строк: имя с делениями живых узлов, остаток с полоской,
-   срок. Карточка с рамкой в волосок; выбранная — акцентная рамка и еле
-   заметная акцентная заливка, а не полоска по кромке: у карточки есть
-   контур, и им же отмечается выбор. */
+   срок. Ячейки стоят вплотную, как вкладки, без линий между ними: карточками
+   с полями вокруг полоса съедала у списка ещё полтора десятка пикселей, а
+   скруглённая карточка, вписанная в кромки, читалась бы обрезанной. Выбранная —
+   акцентная заливка и черта по нижней кромке, как у выбранной вкладки. */
 .sub-cell {
   position: relative;
-  border: 1px solid var(--pg-border);
-  border-radius: var(--pg-r-cell);
-  background: var(--pg-tile);
+  background: transparent;
   text-align: start;
 }
 
 .sub-cell:hover {
-  background: linear-gradient(var(--pg-hover), var(--pg-hover)), var(--pg-tile);
+  background: var(--pg-hover);
 }
 
 .sub-cell[aria-pressed="true"] {
-  border-color: color-mix(in oklch, var(--pg-accent) 55%, var(--pg-border));
-  background: color-mix(in oklch, var(--pg-accent) 6%, var(--pg-tile));
+  background: color-mix(in oklch, var(--pg-accent) 8%, transparent);
+  box-shadow: inset 0 -2px 0 var(--pg-accent);
 }
 
 /* Оглавление настроек. Пункт — как пункт рейки: заливка под указателем и у

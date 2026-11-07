@@ -449,7 +449,7 @@ function Editor({
           /* Конструктор личности. Поля не декоративные: каждое попадает в
               строку user-agent, а строка остаётся редактируемой — вписанную
               руками конструктор не переписывает, он её разбирает. */
-          <fieldset className="flex flex-col gap-2.5 rounded-md border border-edge p-2.5">
+          <fieldset className="flex flex-col gap-2.5 rounded-md bg-control p-2.5">
             <legend className="px-1 text-xs font-semibold text-muted">{s.browserIdentity}</legend>
             <div className="flex flex-wrap gap-2">
               <Field icon="screen" label={s.browserPlatform} className="min-w-[9rem] flex-1">
@@ -692,11 +692,39 @@ export function Browsers({
       action={
         // Заводить профиль, когда нет ни одного узла, не во что: под кнопкой
         // открылась бы форма с пустым списком узлов и запертой кнопкой.
-        nodes.length > 0 && (
-          <Button variant="primary" onClick={() => openForm(EMPTY)}>
-            <Icon name="plus" size={14} />
-            {s.browserNew}
-          </Button>
+        <>
+          {tags.length > 0 && (
+            // Метки — в шапке, слева от «Новый профиль»: отбор нужен на любой
+            // глубине списка, а не первой строкой прокрутки. Та же полоска
+            // выбора, что и везде в окне; меток бывает много, и она едет вбок
+            // (`w-max` не даёт ей сжаться и обрезать подписи), а не переносится.
+            // Метка не бывает пустой (`parseTags`), поэтому пустая строка — «все».
+            <div className="scroll min-w-0 max-w-[22rem] overflow-x-auto">
+              <Segmented
+                className="w-max"
+                label={s.browserTags}
+                value={activeTag ?? ""}
+                onPick={(v) => setTag(v === "" ? null : v)}
+                options={[["", s.browserTagsAll], ...tags.map((t): [string, string] => [t, t])]}
+              />
+            </div>
+          )}
+          {nodes.length > 0 && (
+            <Button variant="primary" onClick={() => openForm(EMPTY)}>
+              <Icon name="plus" size={14} />
+              {s.browserNew}
+            </Button>
+          )}
+        </>
+      }
+      bar={
+        // Поиск — панель инструментов под шапкой, как у остальных панелей, и
+        // только когда есть что искать: над тремя профилями поле занимает
+        // больше места, чем сам список.
+        items.length > 5 && (
+          <div className="flex h-[41px] shrink-0 items-center border-b border-edge">
+            <SearchField flush value={query} onChange={setQuery} placeholder={s.browserSearch} />
+          </div>
         )
       }
     >
@@ -704,24 +732,6 @@ export function Browsers({
         {nodes.length === 0 && <Empty>{s.browserNeedsNode}</Empty>}
         {draft && (
           <Editor status={status} act={act} draft={draft} origin={origin} setDraft={(d) => openForm(d, d ? origin : "")} />
-        )}
-        {/* Поиск и метки — только когда есть что отбирать: над тремя
-            профилями поле поиска занимает больше места, чем сам список. */}
-        {items.length > 5 && <SearchField value={query} onChange={setQuery} placeholder={s.browserSearch} />}
-        {tags.length > 0 && (
-          // Та же полоска выбора, что и везде в окне, а не свои плашки: меток
-          // бывает много, и она едет вбок (`w-max` не даёт ей сжаться и
-          // обрезать подписи), а не переносится на второй ряд. Метка не бывает
-          // пустой (`parseTags`), поэтому пустая строка — «все».
-          <div className="scroll overflow-x-auto">
-            <Segmented
-              className="w-max"
-              label={s.browserTags}
-              value={activeTag ?? ""}
-              onPick={(v) => setTag(v === "" ? null : v)}
-              options={[["", s.browserTagsAll], ...tags.map((t): [string, string] => [t, t])]}
-            />
-          </div>
         )}
         {items.length === 0 ? (
           // По центру и с той же кнопкой, что в шапке: пустой список — это
