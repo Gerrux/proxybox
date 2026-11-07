@@ -81,7 +81,15 @@ export function Flyout({
   const subscriptions = status?.subscriptions ?? [];
   const probeOf = new Map(probes.map((p) => [p.name, p]));
   const rates = useRates(status);
-  const last = rates.at(-1) ?? null;
+  // Число — скорость, посчитанная службой (`rx_rate`): плашку открывают на пару
+  // секунд, и своей разницы двух снятий счётчиков (служба снимает их раз в
+  // ~15 с) она не дожидалась — в строке стояли прочерки. График по-прежнему из
+  // своей истории: он копится, пока плашка открыта. Служба прежней сборки
+  // скорости не присылает — тогда остаётся своя разница, как было.
+  const last =
+    status?.traffic_at && typeof status.rx_rate === "number"
+      ? { rx: status.rx_rate, tx: status.tx_rate }
+      : (rates.at(-1) ?? null);
   // Масштаб один на оба направления — по той же причине, что и в шапке окна.
   const peak = Math.max(1, ...rates.map((r) => Math.max(r.rx, r.tx)));
   const [needle, setNeedle] = useState("");

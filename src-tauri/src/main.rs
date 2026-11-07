@@ -86,6 +86,8 @@ fn ipc(req: Request) -> Result<Response, String> {
                 s.rx = p.rx;
                 s.tx = p.tx;
                 s.traffic_at = p.traffic_at;
+                s.rx_rate = p.rx_rate;
+                s.tx_rate = p.tx_rate;
                 s.retry_in = p.retry_in;
                 s.testing = p.testing;
                 *at = Instant::now();

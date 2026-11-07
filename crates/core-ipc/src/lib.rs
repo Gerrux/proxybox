@@ -920,6 +920,15 @@ pub struct Status {
     /// линии. 0 — не снимали ни разу.
     #[serde(default)]
     pub traffic_at: u64,
+    /// Скорость между двумя последними снятиями счётчиков, байт в секунду.
+    /// Считает служба, потому что только у неё оба снятия есть всегда: окно,
+    /// открытое на пару секунд (плашка из трея), второго снятия не дожидается —
+    /// счётчики снимают раз в `TRAFFIC_EVERY` кругов, — и скорости у него не
+    /// было бы никогда. Сторож — `the_speed_is_known_as_soon_as_asked`.
+    #[serde(default)]
+    pub rx_rate: u64,
+    #[serde(default)]
+    pub tx_rate: u64,
     pub apps: Vec<App>,
     /// Кого касается приватный режим. В охвате `All` список `apps` не
     /// применяется, но и не теряется; в `Whitelist` он же — единственный
@@ -1022,6 +1031,10 @@ pub struct Pulse {
     pub rx: u64,
     pub tx: u64,
     pub traffic_at: u64,
+    #[serde(default)]
+    pub rx_rate: u64,
+    #[serde(default)]
+    pub tx_rate: u64,
     pub retry_in: Option<u32>,
     pub testing: Option<TestRun>,
     pub cold: u64,
@@ -1040,6 +1053,8 @@ impl Pulse {
             rx: status.rx,
             tx: status.tx,
             traffic_at: status.traffic_at,
+            rx_rate: status.rx_rate,
+            tx_rate: status.tx_rate,
             retry_in: status.retry_in,
             testing: status.testing,
             cold: cold_hash(status),
@@ -1061,6 +1076,8 @@ pub fn cold_hash(status: &Status) -> u64 {
         rx: 0,
         tx: 0,
         traffic_at: 0,
+        rx_rate: 0,
+        tx_rate: 0,
         retry_in: None,
         testing: None,
         ..status.clone()
@@ -1548,6 +1565,8 @@ mod tests {
                 rx: 1,
                 tx: 2,
                 traffic_at: 1_755_000_000_000,
+                rx_rate: 3,
+                tx_rate: 4,
                 retry_in: None,
                 testing: Some(TestRun { done: 1, total: 2 }),
                 cold: 7,
@@ -1581,6 +1600,8 @@ mod tests {
         hot.rx = 5;
         hot.tx = 6;
         hot.traffic_at = 7;
+        hot.rx_rate = 8;
+        hot.tx_rate = 9;
         hot.retry_in = Some(3);
         hot.testing = Some(TestRun { done: 1, total: 2 });
         assert_eq!(cold_hash(&hot), cold, "горячие поля не двигают отпечаток");
