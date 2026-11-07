@@ -269,7 +269,7 @@ export function Apps({
               </div>
             )}
             <span className={`fold-only min-w-0 truncate text-xs ${searchable ? "" : "flex-1"}`}>{count}</span>
-            <div className="fold-only flex shrink-0 items-center gap-0.5">{actions}</div>
+            <div className="fold-only flex shrink-0 items-center gap-1">{actions}</div>
           </div>
           {/* Заметка одна, а текст в ней по охвату — и то и другое
               переключает «?» в шапке панели. Одной строкой говорит, что
@@ -349,8 +349,8 @@ export function Apps({
                   профилях (`.sub-head`): список после автообнаружения длиннее
                   любого окна, и посреди прокрутки ответить «это выбранные или
                   остальные» было бы нечем. */}
-              <h3 className="sub-head flex h-8 items-center gap-2 ps-3 pe-2 text-sm font-semibold">{group.title}</h3>
-          <ul className="flex flex-col gap-0.5 px-1.5 py-1">
+              <h3 className="sub-head flex h-9 items-center gap-2 ps-4 pe-2 text-sm font-semibold">{group.title}</h3>
+          <ul className="flex flex-col px-2">
             {group.items.map((app) => (
               <li
                 key={app.path}
@@ -358,7 +358,7 @@ export function Apps({
                 // наведению; судьба приложения (`fateHint`) — второй строкой
                 // подсказки, а не вместо пути.
                 title={`${app.path}\n${fateHint(s, wants(app), status?.tunnel, status?.scope)}`}
-                className="row enter smooth group/row flex h-[34px] items-center gap-2.5 ps-2.5 pe-1"
+                className="row enter smooth group/row flex h-[34px] items-center gap-2.5 ps-2 pe-1"
               >
                 <input
                   id={fieldId(app.path)}

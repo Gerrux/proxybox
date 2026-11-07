@@ -1393,7 +1393,7 @@ h3.sub-head:hover {
    ряда нет вовсе. */
 .sub-strip {
   gap: 8px;
-  padding: 2px 12px 6px;
+  padding: 8px;
   overflow-y: hidden;
 }
 

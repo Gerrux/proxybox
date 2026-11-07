@@ -463,7 +463,7 @@ function SubStrip({
           aria-pressed={filter === url}
           title={tip}
           onClick={() => onPick(filter === url ? null : url)}
-          className="sub-cell smooth flex w-full min-w-0 flex-col items-stretch justify-start px-3 py-0.5"
+          className="sub-cell smooth flex w-full min-w-0 flex-col items-stretch justify-center px-2 py-1"
         >
           {inner}
         </button>
@@ -472,7 +472,7 @@ function SubStrip({
             подписки. Рядом с кнопкой-карточкой, а не внутри: вложенных кнопок
             не бывает. */}
         {selected && (
-          <div className="absolute end-1 top-0.5 flex items-center">
+          <div className="absolute end-1 top-1 flex items-center">
             <IconButton
               icon="refresh"
               label={s.refresh}
@@ -1429,7 +1429,7 @@ export function Profiles({
                       commit();
                     }}
                     onContextMenu={(e) => sub !== null && openMenu(e, subMenu(sub))}
-                    className={`sub-head flex h-9 cursor-pointer list-none items-center gap-2 ps-3 pe-2 text-sm font-semibold [&::-webkit-details-marker]:hidden ${
+                    className={`sub-head flex h-9 cursor-pointer list-none items-center gap-2 ps-4 pe-2 text-sm font-semibold [&::-webkit-details-marker]:hidden ${
                       dragged === sub?.url ? "opacity-40" : ""
                     }`}
                   >
@@ -1972,7 +1972,7 @@ function Rows({
     // Отступ строк — на самом списке, а не на прокрутке: скруглённая подсветка
     // строки иначе упирается в кромку плиты. Заголовок группы при этом остаётся
     // во всю ширину — он рубеж списка, а не его строка.
-    <ul className="flex flex-col gap-0.5 px-1.5 py-1">
+    <ul className="flex flex-col px-2">
       {items.map((item) => {
         const name = item.name;
         const active = status?.profile === name;
@@ -2086,7 +2086,7 @@ function Rows({
               data-picked={picked}
               // Одна строка в 34 px: имя, метка, замер. `group/row` нужен
               // адресу, который показывается по наведению и по фокусу.
-              className={`row enter smooth group/row flex h-[34px] items-center gap-2 ps-2.5 pe-1 ${
+              className={`row enter smooth group/row flex h-[34px] items-center gap-2 ps-2 pe-1 ${
                 dragged === name ? "opacity-40" : ""
               }`}
             >

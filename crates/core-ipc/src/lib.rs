@@ -2280,7 +2280,7 @@ mod tests {
         // Что несла шапка, должно стоять и в панели инструментов.
         assert!(profiles.contains("note={note}") && profiles.contains("fold-only"), "счёт профилей пропал вместе с шапкой");
         assert!(
-            apps.contains("fold-only flex shrink-0 items-center gap-0.5\">{actions}"),
+            apps.contains("fold-only flex shrink-0 items-center gap-1\">{actions}"),
             "кнопки приложений пропали вместе с шапкой"
         );
         assert!(apps.contains("action={actions}"), "в широкой шапке приложений нет кнопок");
