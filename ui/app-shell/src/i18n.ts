@@ -360,6 +360,29 @@ const RU = {
   groupStartup: "Запуск",
   groupNodes: "Узлы и подписки",
   groupTunnel: "Туннель",
+  // Исключения: единственное место, где трафик выходит мимо туннеля, — и
+  // только по явному выбору человека. Подписи говорят об этом прямо.
+  bypassTitle: "Исключения",
+  bypassHint:
+    "Адреса IPv4 (одиночные или сетью, например 203.0.113.0/24) и домены, которые идут мимо туннеля, под вашим настоящим адресом, а не с узла. Нужны, когда зарубежный узел не достаёт до отечественного адреса. Работают, только пока туннель поднят, и лишь у приложений, у которых сеть уже есть: белый список действует как прежде. Домен покрывает и его поддомены; адрес — только соединения, открытые по IP, а не по имени. Правка списка перезапускает туннель: живые соединения оборвутся.",
+  bypassPlaceholder: "203.0.113.0/24 или example.ru",
+  bypassAdd: "Добавить",
+  bypassEmpty: "Исключений нет: всё идёт через туннель.",
+  bypassRemove: (rule: string) => `Убрать исключение ${rule}`,
+  connsBypass: "исключение",
+  connsBypassHint:
+    "Соединение ушло мимо туннеля по вашему исключению, под вашим настоящим адресом. Это не утечка: адрес стоит в списке исключений в настройках.",
+  connsSilent: "молчит",
+  connsSilentHint:
+    "Данные в туннель ушли, а обратно за десять секунд не пришло ни байта. Вероятно, узел не может достучаться до этого адреса. Это подсказка, а не диагноз.",
+  connsExcept: "В исключения",
+  connsExceptHint: "Пустить этот адрес мимо туннеля. Спросим подтверждение.",
+  connsExceptTitle: "Пустить мимо туннеля?",
+  connsExceptAsk: (entry: string) =>
+    `Добавить ${entry} в исключения? Трафик на него пойдёт мимо туннеля, под вашим настоящим адресом. Туннель перезапустится, живые соединения оборвутся.`,
+  connsExceptYes: "Добавить в исключения",
+  connsUnreached: (list: string) =>
+    `Напрямую тоже не отвечает: ${list} — дело не в туннеле, исключение тут не поможет`,
   groupAbout: "О программе",
   themeTitle: "Тема",
   themeHint:
@@ -732,6 +755,27 @@ const EN: typeof RU = {
   groupStartup: "Startup",
   groupNodes: "Nodes and subscriptions",
   groupTunnel: "Tunnel",
+  bypassTitle: "Exceptions",
+  bypassHint:
+    "IPv4 addresses (single or as a network, e.g. 203.0.113.0/24) and domains that go past the tunnel, under your own address rather than the node's. Useful when a foreign node cannot reach a domestic address. They only work while the tunnel is up, and only for apps that already have network access: the whitelist still applies. A domain also covers its subdomains; an address only matches connections made by IP, not by name. Editing the list restarts the tunnel: live connections drop.",
+  bypassPlaceholder: "203.0.113.0/24 or example.com",
+  bypassAdd: "Add",
+  bypassEmpty: "No exceptions: everything goes through the tunnel.",
+  bypassRemove: (rule: string) => `Remove exception ${rule}`,
+  connsBypass: "exception",
+  connsBypassHint:
+    "The connection went past the tunnel because of your exception, under your own address. This is not a leak: the address is in the exceptions list in settings.",
+  connsSilent: "silent",
+  connsSilentHint:
+    "Data went into the tunnel, but not a single byte came back in ten seconds. The node probably cannot reach this address. It is a hint, not a diagnosis.",
+  connsExcept: "Add exception",
+  connsExceptHint: "Let this address go past the tunnel. You will be asked to confirm.",
+  connsExceptTitle: "Let it go past the tunnel?",
+  connsExceptAsk: (entry: string) =>
+    `Add ${entry} to the exceptions? Traffic to it will go past the tunnel, under your own address. The tunnel will restart and live connections will drop.`,
+  connsExceptYes: "Add to exceptions",
+  connsUnreached: (list: string) =>
+    `Direct does not answer either: ${list} — it is not the tunnel, an exception will not help here`,
   groupAbout: "About",
   themeTitle: "Theme",
   themeHint:
@@ -1105,6 +1149,27 @@ const FA: typeof RU = {
   groupStartup: "راه‌اندازی",
   groupNodes: "گره‌ها و اشتراک‌ها",
   groupTunnel: "تونل",
+  bypassTitle: "استثناها",
+  bypassHint:
+    "نشانی‌های IPv4 (تکی یا به‌صورت شبکه، مثلاً 203.0.113.0/24) و دامنه‌هایی که بدون عبور از تونل و با نشانی واقعی خودتان می‌روند، نه با نشانی سرور. وقتی لازم است که سرور خارجی به یک نشانی داخلی دسترسی ندارد. فقط تا وقتی تونل بالاست کار می‌کنند و فقط برای برنامه‌هایی که از قبل شبکه دارند: فهرست سفید مثل قبل اعمال می‌شود. دامنه زیر‌دامنه‌هایش را هم پوشش می‌دهد؛ نشانی فقط اتصال‌هایی را که با IP باز شده‌اند، نه با نام. ویرایش فهرست تونل را دوباره راه‌اندازی می‌کند و اتصال‌های جاری قطع می‌شوند.",
+  bypassPlaceholder: "203.0.113.0/24 یا example.ir",
+  bypassAdd: "افزودن",
+  bypassEmpty: "استثنایی نیست: همه‌چیز از تونل می‌گذرد.",
+  bypassRemove: (rule: string) => `حذف استثنا ${rule}`,
+  connsBypass: "استثنا",
+  connsBypassHint:
+    "اتصال بنا به استثنای شما و با نشانی واقعی خودتان از تونل نگذشت. این نشت نیست: نشانی در فهرست استثناها در تنظیمات است.",
+  connsSilent: "بی‌پاسخ",
+  connsSilentHint:
+    "داده وارد تونل شد اما در ده ثانیه حتی یک بایت برنگشت. احتمالاً سرور به این نشانی دسترسی ندارد. این یک نشانه است، نه تشخیص قطعی.",
+  connsExcept: "افزودن به استثناها",
+  connsExceptHint: "این نشانی را بدون تونل ببر. پیش از آن تأیید می‌خواهیم.",
+  connsExceptTitle: "بدون تونل برود؟",
+  connsExceptAsk: (entry: string) =>
+    `${entry} به استثناها افزوده شود؟ ترافیک آن با نشانی واقعی شما و بدون تونل می‌رود. تونل دوباره راه‌اندازی می‌شود و اتصال‌های جاری قطع می‌شوند.`,
+  connsExceptYes: "افزودن به استثناها",
+  connsUnreached: (list: string) =>
+    `مستقیم هم پاسخ نمی‌دهد: ${list} — مشکل از تونل نیست و استثنا اینجا کمکی نمی‌کند`,
   groupAbout: "درباره",
   themeTitle: "پوسته",
   themeHint:
@@ -1479,6 +1544,25 @@ const ZH: typeof RU = {
   groupStartup: "启动",
   groupNodes: "节点与订阅",
   groupTunnel: "隧道",
+  bypassTitle: "例外",
+  bypassHint:
+    "绕过隧道的 IPv4 地址（单个或网段，如 203.0.113.0/24）和域名，使用您自己的真实地址而不是节点的地址。当国外节点无法访问某个国内地址时很有用。仅在隧道已建立时生效，且只对已经有网络的应用生效：白名单照常起作用。域名同时覆盖其子域名；地址只匹配按 IP 发起的连接，不匹配按名称发起的连接。修改列表会重启隧道，现有连接将中断。",
+  bypassPlaceholder: "203.0.113.0/24 或 example.cn",
+  bypassAdd: "添加",
+  bypassEmpty: "没有例外：所有流量都经过隧道。",
+  bypassRemove: (rule: string) => `移除例外 ${rule}`,
+  connsBypass: "例外",
+  connsBypassHint:
+    "该连接按您设置的例外绕过了隧道，使用的是您自己的真实地址。这不是泄漏：该地址在设置的例外列表中。",
+  connsSilent: "无响应",
+  connsSilentHint: "数据已进入隧道，但十秒内没有收到任何返回字节。节点可能无法访问该地址。这只是提示，不是诊断。",
+  connsExcept: "加入例外",
+  connsExceptHint: "让该地址绕过隧道。会先请您确认。",
+  connsExceptTitle: "绕过隧道？",
+  connsExceptAsk: (entry: string) =>
+    `将 ${entry} 加入例外？发往它的流量将绕过隧道，使用您自己的真实地址。隧道会重启，现有连接将中断。`,
+  connsExceptYes: "加入例外",
+  connsUnreached: (list: string) => `直连同样无响应：${list} — 问题不在隧道，例外在这里没有帮助`,
   groupAbout: "关于",
   themeTitle: "主题",
   themeHint:
@@ -1850,6 +1934,27 @@ const TR: typeof RU = {
   groupStartup: "Başlangıç",
   groupNodes: "Düğümler ve abonelikler",
   groupTunnel: "Tünel",
+  bypassTitle: "İstisnalar",
+  bypassHint:
+    "Tünelin dışından, sunucunun değil kendi gerçek adresinizle giden IPv4 adresleri (tek veya ağ olarak, örn. 203.0.113.0/24) ve alan adları. Yurt dışındaki bir sunucu yurt içi bir adrese ulaşamadığında işe yarar. Yalnızca tünel açıkken ve ağı zaten olan uygulamalar için çalışır: beyaz liste eskisi gibi geçerlidir. Alan adı alt alan adlarını da kapsar; adres yalnızca IP ile açılan bağlantılarla eşleşir, adla açılanlarla değil. Listeyi düzenlemek tüneli yeniden başlatır: açık bağlantılar kopar.",
+  bypassPlaceholder: "203.0.113.0/24 veya example.com.tr",
+  bypassAdd: "Ekle",
+  bypassEmpty: "İstisna yok: her şey tünelden geçiyor.",
+  bypassRemove: (rule: string) => `${rule} istisnasını kaldır`,
+  connsBypass: "istisna",
+  connsBypassHint:
+    "Bağlantı, sizin istisnanız nedeniyle tünelin dışından, kendi gerçek adresinizle gitti. Bu bir sızıntı değil: adres ayarlardaki istisna listesinde.",
+  connsSilent: "yanıtsız",
+  connsSilentHint:
+    "Veri tünele girdi, ama on saniyede geriye tek bayt gelmedi. Sunucu bu adrese büyük olasılıkla ulaşamıyor. Bu bir ipucudur, kesin teşhis değil.",
+  connsExcept: "İstisna ekle",
+  connsExceptHint: "Bu adresi tünelin dışından geçir. Önce onay istenecek.",
+  connsExceptTitle: "Tünelin dışından geçsin mi?",
+  connsExceptAsk: (entry: string) =>
+    `${entry} istisnalara eklensin mi? Ona giden trafik tünelin dışından, kendi gerçek adresinizle gidecek. Tünel yeniden başlayacak ve açık bağlantılar kopacak.`,
+  connsExceptYes: "İstisnalara ekle",
+  connsUnreached: (list: string) =>
+    `Doğrudan da yanıt vermiyor: ${list} — sorun tünelde değil, istisna burada yardımcı olmaz`,
   groupAbout: "Hakkında",
   themeTitle: "Tema",
   themeHint:
@@ -2224,6 +2329,27 @@ const ID: typeof RU = {
   groupStartup: "Penyalaan",
   groupNodes: "Node dan langganan",
   groupTunnel: "Terowongan",
+  bypassTitle: "Pengecualian",
+  bypassHint:
+    "Alamat IPv4 (tunggal atau jaringan, mis. 203.0.113.0/24) dan domain yang melewati terowongan, dengan alamat asli Anda sendiri, bukan alamat node. Berguna saat node di luar negeri tidak dapat menjangkau alamat dalam negeri. Hanya berlaku selama terowongan aktif, dan hanya untuk aplikasi yang sudah punya jaringan: daftar putih tetap berlaku seperti biasa. Domain juga mencakup subdomainnya; alamat hanya cocok dengan koneksi yang dibuat lewat IP, bukan lewat nama. Mengubah daftar akan memulai ulang terowongan: koneksi yang sedang berjalan terputus.",
+  bypassPlaceholder: "203.0.113.0/24 atau example.co.id",
+  bypassAdd: "Tambah",
+  bypassEmpty: "Tidak ada pengecualian: semuanya lewat terowongan.",
+  bypassRemove: (rule: string) => `Hapus pengecualian ${rule}`,
+  connsBypass: "pengecualian",
+  connsBypassHint:
+    "Koneksi melewati terowongan karena pengecualian Anda, dengan alamat asli Anda sendiri. Ini bukan kebocoran: alamat tersebut ada di daftar pengecualian di pengaturan.",
+  connsSilent: "diam",
+  connsSilentHint:
+    "Data masuk ke terowongan, tetapi tidak ada satu byte pun yang kembali dalam sepuluh detik. Node kemungkinan tidak dapat menjangkau alamat ini. Ini petunjuk, bukan diagnosis.",
+  connsExcept: "Jadikan pengecualian",
+  connsExceptHint: "Biarkan alamat ini melewati terowongan. Anda akan diminta konfirmasi.",
+  connsExceptTitle: "Lewatkan di luar terowongan?",
+  connsExceptAsk: (entry: string) =>
+    `Tambahkan ${entry} ke pengecualian? Lalu lintas ke sana akan melewati terowongan, dengan alamat asli Anda sendiri. Terowongan akan dimulai ulang dan koneksi yang sedang berjalan akan terputus.`,
+  connsExceptYes: "Tambahkan ke pengecualian",
+  connsUnreached: (list: string) =>
+    `Langsung pun tidak menjawab: ${list} — masalahnya bukan di terowongan, pengecualian tidak akan membantu`,
   groupAbout: "Tentang",
   themeTitle: "Tema",
   themeHint:
