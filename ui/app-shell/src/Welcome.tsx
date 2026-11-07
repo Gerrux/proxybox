@@ -33,7 +33,7 @@ export function Welcome({ status, className = "" }: { status: Status; className?
 
   // В охвате «весь компьютер» список приложений не участвует вовсе, и требовать
   // выбранного там значило бы держать вечно неисполнимый шаг: туда идёт всё.
-  const wholeMachine = status.scope === "all";
+  const wholeMachine = status.scope === "all" || status.scope === "split";
   const steps: Step[] = [
     { title: s.welcomeStep1, hint: s.welcomeStep1Hint, done: status.profiles.length > 0 },
     {

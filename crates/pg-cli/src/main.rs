@@ -16,9 +16,10 @@ const USAGE_RU: &str = "proxybox <команда>
   list-apps              приложения под управлением
   discover               найти установленные приложения и добавить выключенными
   add-app --path <exe>   добавить приложение по пути к .exe
-  enable --path <exe>    пустить приложение в туннель
-  disable --path <exe>   убрать приложение из-под управления
-  scope whitelist|all    охват: сеть только выбранным приложениям и только
+  enable --path <exe>    отметить приложение в белом списке; в охватах «весь
+                         компьютер» и «раздельно» ни на что не влияет
+  disable --path <exe>   снять отметку с приложения в белом списке
+  scope whitelist|all|split    охват: сеть только выбранным приложениям и только
                          через туннель; либо весь трафик машины в туннель
   add-profile --link <l> импортировать share-link (vless/vmess/trojan/ss/hy2/tuic/wg),
                          JSON-конфиг sing-box или подписку по адресу http(s);
@@ -43,7 +44,7 @@ const USAGE_RU: &str = "proxybox <команда>
   browse --stop --profile <имя>  погасить этот сеанс браузера
   lang <код>             язык сообщений службы и окна: ru, en, fa, zh, tr, id
   settings               настройки службы: что действует прямо сейчас
-  settings [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
+  settings [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
            [--singbox <путь>]
                          сверка подписок, запрос страны у внешнего сервиса,
                          цель пробы (пусто — сервер самого узла) и путь к
@@ -58,9 +59,10 @@ const USAGE_EN: &str = "proxybox <command>
   list-apps              apps under control
   discover               find installed apps and add them disabled
   add-app --path <exe>   add an app by path to its .exe
-  enable --path <exe>    let the app into the tunnel
-  disable --path <exe>   take the app out of control
-  scope whitelist|all    scope: network for selected apps only and only
+  enable --path <exe>    tick the app in the whitelist; has no effect in the
+                         'all' and 'split' scopes
+  disable --path <exe>   untick the app in the whitelist
+  scope whitelist|all|split    scope: network for selected apps only and only
                          through the tunnel; or all machine traffic
   add-profile --link <l> import a share-link (vless/vmess/trojan/ss/hy2/tuic/wg),
                          a sing-box JSON config or a subscription http(s) URL;
@@ -85,7 +87,7 @@ const USAGE_EN: &str = "proxybox <command>
   browse --stop --profile <name>  close that browser session
   lang <code>            language of service and window messages: ru, en, fa, zh, tr, id
   settings               service settings: what is in force right now
-  settings [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
+  settings [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
            [--singbox <path>]
                          subscription refresh, exit-country lookup, probe target
                          (empty — the node's own server) and the sing-box path.
@@ -100,9 +102,10 @@ const USAGE_FA: &str = "proxybox <فرمان>
   list-apps              برنامه‌های زیر کنترل
   discover               یافتن برنامه‌های نصب‌شده و افزودن آن‌ها به‌صورت خاموش
   add-app --path <exe>   افزودن برنامه با مسیر فایل .exe
-  enable --path <exe>    راه دادن برنامه به تونل
-  disable --path <exe>   بیرون بردن برنامه از کنترل
-  scope whitelist|all    دامنه: شبکه فقط برای برنامه‌های انتخاب‌شده و فقط از
+  enable --path <exe>    انتخاب برنامه در فهرست سفید؛ در حالت‌های all و
+                         split اثری ندارد
+  disable --path <exe>   برداشتن انتخاب برنامه در فهرست سفید
+  scope whitelist|all|split    دامنه: شبکه فقط برای برنامه‌های انتخاب‌شده و فقط از
                          راه تونل؛ یا همهٔ ترافیک رایانه در تونل
   add-profile --link <l> وارد کردن share-link (vless/vmess/trojan/ss/hy2/tuic/wg)،
                          پیکربندی JSON سینگ‌باکس یا اشتراک با نشانی http(s)؛
@@ -127,7 +130,7 @@ const USAGE_FA: &str = "proxybox <فرمان>
   browse --stop --profile <نام>  بستن این نشست مرورگر
   lang <کد>              زبان پیام‌های سرویس و پنجره: ru, en, fa, zh, tr, id
   settings               تنظیمات سرویس: هم‌اکنون چه چیزی برقرار است
-  settings [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
+  settings [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
            [--singbox <مسیر>]
                          به‌روزرسانی اشتراک‌ها، پرسیدن کشور از سرویس بیرونی،
                          هدف آزمون (خالی — سرور خود گره) و مسیر sing-box.
@@ -142,9 +145,10 @@ const USAGE_ZH: &str = "proxybox <命令>
   list-apps              受管理的应用
   discover               查找已安装的应用并以关闭状态加入
   add-app --path <exe>   按 .exe 路径添加应用
-  enable --path <exe>    放行应用进入隧道
-  disable --path <exe>   将应用移出管理
-  scope whitelist|all    范围：仅所选应用联网且只能走隧道；
+  enable --path <exe>    在白名单中勾选应用；在 all 和 split 范围内
+                         不起作用
+  disable --path <exe>   在白名单中取消勾选应用
+  scope whitelist|all|split    范围：仅所选应用联网且只能走隧道；
                          或整机流量进入隧道
   add-profile --link <l> 导入 share-link（vless/vmess/trojan/ss/hy2/tuic/wg）、
                          sing-box 的 JSON 配置，或 http(s) 订阅地址；
@@ -169,7 +173,7 @@ const USAGE_ZH: &str = "proxybox <命令>
   browse --stop --profile <名称>  关闭该浏览器会话
   lang <代码>            服务与窗口消息的语言：ru, en, fa, zh, tr, id
   settings               服务设置：此刻实际生效的内容
-  settings [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
+  settings [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
            [--singbox <路径>]
                          订阅同步、向外部服务查询国家、探测目标
                          （留空即节点自身的服务器）以及 sing-box 路径。
@@ -184,9 +188,10 @@ const USAGE_TR: &str = "proxybox <komut>
   list-apps              yönetim altındaki uygulamalar
   discover               kurulu uygulamaları bul ve kapalı olarak ekle
   add-app --path <exe>   uygulamayı .exe yoluyla ekle
-  enable --path <exe>    uygulamayı tünele al
-  disable --path <exe>   uygulamayı yönetimden çıkar
-  scope whitelist|all    kapsam: ağ yalnızca seçili uygulamalara ve yalnızca
+  enable --path <exe>    uygulamayı beyaz listede işaretle; 'all' ve 'split'
+                         kapsamlarında etkisi yoktur
+  disable --path <exe>   uygulamanın beyaz listedeki işaretini kaldır
+  scope whitelist|all|split    kapsam: ağ yalnızca seçili uygulamalara ve yalnızca
                          tünel üzerinden; ya da makinenin tüm trafiği tünele
   add-profile --link <l> share-link (vless/vmess/trojan/ss/hy2/tuic/wg),
                          sing-box JSON yapılandırması ya da http(s) abonelik
@@ -211,7 +216,7 @@ const USAGE_TR: &str = "proxybox <komut>
   browse --stop --profile <ad>   bu tarayıcı oturumunu kapat
   lang <kod>             hizmet ve pencere iletilerinin dili: ru, en, fa, zh, tr, id
   settings               hizmet ayarları: şu anda neyin geçerli olduğu
-  settings [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
+  settings [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
            [--singbox <yol>]
                          abonelik eşitlemesi, dış hizmetten çıkış ülkesi sorgusu,
                          ölçüm hedefi (boş — düğümün kendi sunucusu) ve sing-box
@@ -226,9 +231,10 @@ const USAGE_ID: &str = "proxybox <perintah>
   list-apps              aplikasi yang dikelola
   discover               cari aplikasi terpasang dan tambahkan dalam keadaan mati
   add-app --path <exe>   tambahkan aplikasi lewat jalur .exe
-  enable --path <exe>    izinkan aplikasi masuk terowongan
-  disable --path <exe>   keluarkan aplikasi dari pengelolaan
-  scope whitelist|all    cakupan: jaringan hanya untuk aplikasi terpilih dan
+  enable --path <exe>    centang aplikasi di daftar putih; tidak berpengaruh
+                         pada cakupan 'all' dan 'split'
+  disable --path <exe>   hapus centang aplikasi di daftar putih
+  scope whitelist|all|split    cakupan: jaringan hanya untuk aplikasi terpilih dan
                          hanya lewat terowongan; atau seluruh lalu lintas mesin
   add-profile --link <l> impor share-link (vless/vmess/trojan/ss/hy2/tuic/wg),
                          konfigurasi JSON sing-box, atau alamat langganan http(s);
@@ -253,7 +259,7 @@ const USAGE_ID: &str = "proxybox <perintah>
   browse --stop --profile <nama> tutup sesi peramban itu
   lang <kode>            bahasa pesan layanan dan jendela: ru, en, fa, zh, tr, id
   settings               pengaturan layanan: apa yang berlaku sekarang
-  settings [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
+  settings [--direct-apps JSON] [--direct-rule-sets JSON] [--refresh on|off] [--geo on|off] [--failover on|off] [--probe host:port]
            [--singbox <jalur>]
                          penyelarasan langganan, permintaan negara ke layanan
                          luar, sasaran uji (kosong — server node itu sendiri) dan
@@ -341,6 +347,12 @@ fn patch_settings(args: &[String]) -> Result<Request, String> {
     if let Some(v) = flag(args, "--singbox") {
         settings.singbox = v;
     }
+    if let Some(v) = flag(args, "--direct-apps") {
+        settings.direct_apps = serde_json::from_str(&v).map_err(|e| e.to_string())?;
+    }
+    if let Some(v) = flag(args, "--direct-rule-sets") {
+        settings.direct_rule_sets = serde_json::from_str(&v).map_err(|e| e.to_string())?;
+    }
     Ok(Request::SetSettings { settings })
 }
 
@@ -405,6 +417,7 @@ fn parse(args: &[String]) -> Result<Request, String> {
             .ok_or_else(|| t("нужен --link <share-link>")),
         Some("scope") => match args.get(1).map(String::as_str) {
             Some("all") => Ok(Request::SetScope { scope: Scope::All }),
+            Some("split") => Ok(Request::SetScope { scope: Scope::Split }),
             Some("whitelist") => Ok(Request::SetScope { scope: Scope::Whitelist }),
             // `none` в экране помощи не значится намеренно: он диагностический,
             // как `PG_STACK` и `PG_PPROF`, и человеку выбирать в нём нечего.
@@ -613,6 +626,8 @@ fn main() -> std::process::ExitCode {
             println!("{:<10} {}", "refresh", onoff(s.settings.refresh));
             println!("{:<10} {}", "geo", onoff(s.settings.geo));
             println!("{:<10} {}", "failover", onoff(s.settings.failover));
+            println!("{:<10} {}", "direct-apps", serde_json::to_string(&s.settings.direct_apps).unwrap());
+            println!("{:<10} {}", "direct-rule-sets", serde_json::to_string(&s.settings.direct_rule_sets).unwrap());
             println!("{:<10} {}", "probe", or(&s.settings.probe, t("сервер узла")));
             println!("{:<10} {}", "singbox", or(&s.settings.singbox, t("рядом со службой либо PATH")));
             std::process::ExitCode::SUCCESS
@@ -698,6 +713,7 @@ fn main() -> std::process::ExitCode {
                 "{:<11} {}",
                 t("охват:"),
                 match s.scope {
+                    Scope::Split => t("раздельно: выбранные приложения и наборы правил напрямую, остальное через туннель"),
                     Scope::All => t("весь трафик компьютера"),
                     Scope::Whitelist => t("только выбранные приложения, остальным сеть закрыта"),
                     Scope::None => t("никто: туннель поднят, но пропусков нет ни у кого"),

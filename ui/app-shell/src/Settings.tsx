@@ -44,7 +44,8 @@ import {
   type Status,
 } from "./platform";
 import { strings, type Strings } from "./i18n";
-import { Button, CopyButton, FIELD, Icon, Modal, Panel, Segmented, Switch } from "./ui";
+import { Button, CopyButton, FIELD, Icon, Modal, Panel, SearchField, Segmented, Switch } from "./ui";
+import { ruleSets } from "./ruleSets";
 
 const REPO = "Gerrux/proxybox";
 
@@ -225,6 +226,20 @@ export function Settings({
       }
     >
       <div className="mx-auto flex max-w-3xl flex-col gap-6 px-1 pb-4">
+        {settings && (
+          <Group title={s.splitTitle}>
+            <p className="border-b border-edge py-3 text-sm text-muted">{s.splitSitesPointer}</p>
+            <details className="border-b border-edge py-3">
+              <summary className="cursor-pointer text-sm">{s.rulesReady} · {s.rulesSelected(settings.direct_rule_sets?.length ?? 0)}</summary>
+              <div className="pt-3">
+                <h4 className="text-sm">{s.splitRuleSets}</h4>
+                <p className="mb-3 mt-0.5 text-xs text-muted">{s.splitRulesNote}</p>
+                <RuleSets lang={lang} value={settings.direct_rule_sets ?? []} onSubmit={(direct_rule_sets) => patch({ direct_rule_sets })} />
+              </div>
+            </details>
+          </Group>
+        )}
+
         <Group title={s.groupLook}>
           <Row title={s.language} note={s.languageHint}>
             {/* Выпадающий список, а не полоска: шесть двухбуквенных кодов в ряд
@@ -557,6 +572,61 @@ function OnOff({
       <span className="min-w-8 text-end">{value ? s.switchOn : s.switchOff}</span>
       <Switch checked={value} disabled={disabled} label={value ? s.switchOn : s.switchOff} onChange={onPick} />
     </label>
+  );
+}
+
+function RuleSets({ lang, value, onSubmit }: { lang: Lang | undefined; value: string[]; onSubmit: (value: string[]) => void }) {
+  const s = strings(lang);
+  const saved = value.join("\n");
+  const [draft, setDraft] = useState(saved);
+  const [query, setQuery] = useState("");
+  useEffect(() => setDraft(saved), [saved]);
+  const urls = [...new Set(draft.split(/\r?\n/).map((line) => line.trim()).filter(Boolean))];
+  const valid = urls.every((raw) => {
+    try {
+      const url = new URL(raw);
+      return url.protocol === "https:" && !url.username && !url.password && !url.hash
+        && /\.(json|srs)$/.test(url.pathname);
+    } catch { return false; }
+  }) && urls.length <= 64;
+  const catalog = ruleSets(s);
+  const shown = catalog.filter((set) => `${set.name} ${set.source}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  const pick = (url: string, checked: boolean) => {
+    setDraft((checked ? [...urls, url] : urls.filter((item) => item !== url)).join("\n"));
+  };
+  return (
+    <form className="flex w-full min-w-0 flex-col items-end gap-2" onSubmit={(e) => { e.preventDefault(); if (valid) onSubmit(urls); }}>
+      <div className="w-full">
+        <h5 className="mb-2 text-sm font-semibold">{s.rulesReady}</h5>
+        <SearchField value={query} onChange={setQuery} placeholder={s.rulesSearch} />
+        <ul aria-label={s.rulesReady} className="scroll mt-2 max-h-64 overflow-y-auto">
+          {shown.map((set) => (
+            <li key={set.url} className="row flex items-center gap-3 py-2">
+              <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3" title={set.url}>
+                <input type="checkbox" checked={urls.includes(set.url)} onChange={(e) => pick(set.url, e.target.checked)} className="size-4 shrink-0 accent-[var(--pg-accent)]" />
+                <span className="min-w-0">
+                  <span className="block truncate text-sm">{set.name}</span>
+                  <span className="block truncate text-xs text-muted">{set.source}{set.kind === "ip" && ` · ${s.rulesIpTag}`}</span>
+                </span>
+              </label>
+              <Button variant="quiet" onClick={() => void openUrl(`https://github.com/${set.source}`)}>{s.rulesSource}</Button>
+            </li>
+          ))}
+        </ul>
+        {shown.length === 0 && <p className="py-2 text-sm text-muted">{s.noMatches}</p>}
+        {catalog.some((set) => set.kind === "ip" && urls.includes(set.url)) && (
+          <p className="mt-2 text-xs text-muted">{s.rulesIpHint}</p>
+        )}
+        <details className="mt-3" open={urls.some((url) => !catalog.some((set) => set.url === url)) || undefined}>
+          <summary className="cursor-pointer text-sm">{s.rulesCustom}</summary>
+          <textarea aria-label={s.splitRuleSets} aria-invalid={!valid} value={draft} onChange={(e) => setDraft(e.target.value)}
+            placeholder="https://example.com/rules.srs" spellCheck={false} rows={4} className={`${FIELD} mt-2 min-w-0 resize-y font-mono text-xs`} />
+        </details>
+      </div>
+      {!valid && <p role="alert" className="text-xs text-fault">{s.splitRulesInvalid}</p>}
+      <span className="text-xs text-muted">{s.rulesSelected(urls.length)}</span>
+      <Button type="submit" variant="primary" disabled={!valid || urls.join("\n") === saved}>{s.apply}</Button>
+    </form>
   );
 }
 

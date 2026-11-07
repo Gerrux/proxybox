@@ -112,6 +112,7 @@ export function Flyout({
           options={[
             ["whitelist", s.scopeWhitelist, inTunnel === 0 ? s.noAppsAhead : s.scopeHintWhitelist],
             ["all", s.scopeAll, s.scopeHint],
+            ["split", s.scopeSplit, s.splitHint],
           ]}
           value={status?.scope ?? "all"}
           className="w-full"

@@ -4,10 +4,11 @@
 //! занимается sing-box, как в NekoBox, — мы генерируем ему конфиг и следим за
 //! процессом.
 //!
-//! Конфиг один на оба охвата, и это его главное свойство: `final: proxy`, ни
-//! одного правила по `process_path`, тега `direct` нет вовсе. Ни список
-//! приложений, ни охват в конфиг не входят — их держит брандмауэр
-//! (`core-filter`). Отсюда два следствия, ради которых так и сделано.
+//! Конфиг один на «белый список» и «весь компьютер», и это его главное
+//! свойство: `final: proxy`, ни одного правила по `process_path`, тега `direct`
+//! нет вовсе. Ни список приложений, ни охват в конфиг не входят — их держит
+//! брандмауэр (`core-filter`). Отсюда два следствия, ради которых так и
+//! сделано.
 //! Переключение охвата и правка списка конфига не меняют, значит не требуют
 //! перезапуска: живые соединения их переживают. И «уйти напрямую» перестаёт
 //! быть тем, что мы запрещаем правилом, — маршрута с таким тегом просто нет, а
@@ -27,6 +28,17 @@
 //! пустой список даёт тот же конфиг до байта. Нужны они для адресов, до
 //! которых выходной узел не дотягивается: облака и сервисы, закрывающие себя
 //! от чужих стран. Сторож — `a_bypass_never_catches_the_probe`.
+//!
+//! Третий охват, «раздельно» (`Scope::Split`), добавляет к тем же исключениям
+//! ещё два рода правил — по приложению (`Options::direct_apps`, это и есть
+//! `process_path`) и по готовым наборам правил (`Options::direct_rule_sets`).
+//! Маршрут у них тот же самый, `bypass`: второго тега и второго outbound'а нет,
+//! `direct` по-прежнему не возвращается, а `final` остаётся туннелем. Вход
+//! `local` (проба и сеансы) не затрагивается ни одним из них. Цена матчера по
+//! процессу названа в CLAUDE.md: он заставляет sing-box выяснять процесс каждому
+//! соединению, а его промах тих. Сторож — `split_rules_share_the_bypass_outbound`.
+//! Наборы правил — локальные файлы, которые качает служба, а не `remote`
+//! самого sing-box (`add_bypass`), и безусловного `resolve` нет.
 
 use core_ipc::{t, tf, Conn};
 use serde_json::{json, Value};
@@ -159,6 +171,15 @@ pub struct Options {
     /// продублирована намеренно: включённый по недосмотру профилировщик — это
     /// открытый порт в службе, которая ходит от LocalSystem.
     pub pprof: Option<String>,
+    /// Приложения (пути, `process_path`) и наборы правил (ссылки) раздельного
+    /// охвата. Задаёт только основной туннель в режиме Split — не проба и не
+    /// сеансы — и уходят они на тот же маршрут `bypass`, что и исключения.
+    /// Сайтов здесь нет: сайт напрямую — это имя в `bypass`.
+    pub direct_apps: Vec<String>,
+    /// Ссылки на наборы правил. В конфиг входят не они, а скачанные файлы из
+    /// `rule_set_dir` (`rule_set_file`): набор без файла в конфиге нет.
+    pub direct_rule_sets: Vec<String>,
+    pub rule_set_dir: Option<PathBuf>,
     /// Исключения: адреса (`a.b.c.d/n`) и имена, которые идут мимо туннеля, —
     /// уже приведённые `bypass_entry`. Пусто — конфиг тот же, что и без поля,
     /// до байта: ни тега `bypass`, ни правила на него (сторож —
@@ -178,6 +199,9 @@ impl Default for Options {
             tun: true,
             stack: std::env::var("PG_STACK").unwrap_or_else(|_| "mixed".into()),
             pprof: pprof_value(&std::env::var("PG_PPROF").unwrap_or_default()),
+            direct_apps: Vec::new(),
+            direct_rule_sets: Vec::new(),
+            rule_set_dir: None,
             bypass: Vec::new(),
         }
     }
@@ -444,8 +468,12 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
     if wireguard {
         cfg["endpoints"] = json!([node]);
     }
-    if opts.tun && !opts.bypass.is_empty() {
-        add_bypass(&mut cfg, &opts.bypass);
+    // Наборы правил входят в конфиг только готовыми: файла нет — набора нет, и
+    // sing-box не падает на старте из-за скачивания, которое не удалось. Пустой
+    // итог, как и прежде, даёт конфиг без тега `bypass` до байта.
+    let sets = ready_rule_sets(opts);
+    if opts.tun && !(opts.bypass.is_empty() && opts.direct_apps.is_empty() && sets.is_empty()) {
+        add_bypass(&mut cfg, opts, &sets);
     }
     if let Some(listen) = &opts.pprof {
         cfg["experimental"]["debug"] = json!({ "listen": listen });
@@ -460,7 +488,11 @@ pub fn build_config(node: &Value, opts: &Options) -> Value {
 /// соединений отличал исключение от утечки (`Conn::bypass`).
 pub const TAG_BYPASS: &str = "bypass";
 
-/// Исключения в конфиг: свой outbound и правила на него, по одному на род.
+/// Путь мимо туннеля в конфиг: свой outbound и правила на него, по одному на
+/// род. Родов четыре — адреса и имена из исключений (`Options::bypass`), а в
+/// охвате «раздельно» ещё приложения и наборы правил (`Options::direct_apps`,
+/// `Options::direct_rule_sets`), — и маршрут у всех один: outbound `bypass`
+/// заводится ровно один раз, как бы много родов ни набралось.
 ///
 /// Только на `tun-in`, и это главное в этой функции. Вход `local` — путь пробы:
 /// попади её цель под исключение (по умолчанию цель — сам сервер узла, и
@@ -470,11 +502,36 @@ pub const TAG_BYPASS: &str = "bypass";
 /// шлюза, сниффингом и маршрутом пробы, — а `final` остаётся туннелем. Сторож —
 /// `a_bypass_never_catches_the_probe`.
 ///
-/// Без TUN исключений нет вовсе: прогон профилей и сеансы браузера живут без
-/// него, и окно браузера, ушедшее мимо узла, показало бы сайту настоящий адрес
-/// — ровно то, ради чего браузерный профиль и заводят.
-fn add_bypass(cfg: &mut Value, bypass: &[String]) {
-    let (cidrs, names): (Vec<&String>, Vec<&String>) = bypass.iter().partition(|e| e.contains('/'));
+/// Порядок среди своих — от дешёвого к дорогому: адреса и имена, потом
+/// `process_path`, потом наборы правил. Порядок читается, но ничего не
+/// экономит: одно правило по `process_path` где угодно в наборе заставляет
+/// sing-box выяснять процесс **каждому** соединению машины, до разбора правил и
+/// без сокращения ранним совпадением (замер в CLAUDE.md, 1.13.19). Это цена
+/// охвата «раздельно», названная и принятая.
+///
+/// Без TUN этого нет вовсе: прогон профилей и сеансы браузера живут без него, и
+/// окно браузера, ушедшее мимо узла, показало бы сайту настоящий адрес — ровно
+/// то, ради чего браузерный профиль и заводят.
+///
+/// Наборы правил — локальные файлы (`type: local`), а не `remote`. Удалённый
+/// набор sing-box качает сам и на старте, и если скачать не вышло, не
+/// запускается вовсе: при мёртвом узле (качает он через узел) процесс
+/// падал бы на старте, и проба, которая и должна сказать «узла нет», не
+/// получала бы шанса — автопереключение, живущее на её промахах, молчало бы.
+/// Файлы качает служба сквозь поднятый туннель (`pg-service`), а набор без
+/// файла просто не входит в конфиг (`ready_rule_sets`). Сторожа —
+/// `a_missing_rule_set_is_left_out_of_the_config`, `rule_sets_are_never_remote`.
+///
+/// Одно правило на набор целиком, без `resolve` впереди, и это цена, а не
+/// недосмотр. Наборы по IP (`geoip-ru`, `private`) сверяются с адресом, до
+/// которого соединение уже дозвонилось, а имя под FakeIP остаётся именем:
+/// безусловный `resolve` на каждое соединение `tun-in` заставлял бы тратить
+/// поиск через `remote` на то, что всё равно идёт в туннель, и неудача этого
+/// поиска (DoH недоступен с выхода, имя только с AAAA) обрывала бы такое
+/// соединение. Сторож — `a_failed_lookup_never_drops_a_tunnel_bound_connection`.
+/// Доменные наборы ловят имя как есть; IP-наборы — только соединения по адресу.
+fn add_bypass(cfg: &mut Value, opts: &Options, sets: &[(String, PathBuf, &'static str)]) {
+    let (cidrs, names): (Vec<&String>, Vec<&String>) = opts.bypass.iter().partition(|e| e.contains('/'));
     let rules = cfg["route"]["rules"].as_array_mut().expect("правила маршрута");
     if !cidrs.is_empty() {
         rules.push(json!({ "inbound": ["tun-in"], "ip_cidr": cidrs, "action": "route", "outbound": TAG_BYPASS }));
@@ -486,8 +543,63 @@ fn add_bypass(cfg: &mut Value, bypass: &[String]) {
     if !names.is_empty() {
         rules.push(json!({ "inbound": ["tun-in"], "domain_suffix": names, "action": "route", "outbound": TAG_BYPASS }));
     }
+    if !opts.direct_apps.is_empty() {
+        rules.push(json!({ "inbound": ["tun-in"], "process_path": opts.direct_apps, "action": "route", "outbound": TAG_BYPASS }));
+    }
+    if !sets.is_empty() {
+        let tags: Vec<&String> = sets.iter().map(|(tag, _, _)| tag).collect();
+        rules.push(json!({ "inbound": ["tun-in"], "rule_set": tags, "action": "route", "outbound": TAG_BYPASS }));
+        cfg["route"]["rule_set"] = json!(sets.iter().map(|(tag, path, format)| {
+            json!({ "type": "local", "tag": tag, "format": format, "path": path.to_string_lossy() })
+        }).collect::<Vec<_>>());
+    }
     let outbounds = cfg["outbounds"].as_array_mut().expect("список outbounds");
     outbounds.push(json!({ "type": "direct", "tag": TAG_BYPASS }));
+}
+
+/// Имя файла набора правил в кэше службы: отпечаток ссылки (FNV-1a, он стабилен
+/// между сборками, в отличие от `DefaultHasher`) и расширение по формату — sing-box
+/// читает `.srs` двоичным, а всё остальное исходным JSON. Ссылка с `?version=2` и
+/// без него — разные файлы: содержимое по ним может отличаться.
+pub fn rule_set_file(url: &str) -> String {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let ext = if path.ends_with(".srs") { "srs" } else { "json" };
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in url.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}.{ext}")
+}
+
+/// Лежит ли у набора скачанный файл: он есть и не пуст. Пустой файл sing-box не
+/// разберёт и не стартует, а оборванная запись сюда не попадает — служба пишет
+/// файл переименованием (`write_atomic`).
+fn rule_set_ready(dir: &Path, url: &str) -> Option<PathBuf> {
+    let path = dir.join(rule_set_file(url));
+    std::fs::metadata(&path).ok().filter(|m| m.is_file() && m.len() > 0).map(|_| path)
+}
+
+/// Наборы, у которых файла в кэше нет, — для строки журнала и для загрузки.
+/// Без каталога кэша (`Options::rule_set_dir` пуст) не готов никто.
+pub fn missing_rule_sets(dir: Option<&Path>, urls: &[String]) -> Vec<String> {
+    urls.iter().filter(|url| dir.and_then(|d| rule_set_ready(d, url)).is_none()).cloned().collect()
+}
+
+/// Наборы, которые входят в конфиг: тег, путь к файлу, формат. Теги нумеруются
+/// по готовым подряд — тег без набора был бы ссылкой на несуществующее.
+fn ready_rule_sets(opts: &Options) -> Vec<(String, PathBuf, &'static str)> {
+    let Some(dir) = opts.rule_set_dir.as_deref() else { return Vec::new() };
+    opts.direct_rule_sets
+        .iter()
+        .filter_map(|url| {
+            let path = rule_set_ready(dir, url)?;
+            let format = if path.extension().is_some_and(|e| e == "srs") { "binary" } else { "source" };
+            Some((path, format))
+        })
+        .enumerate()
+        .map(|(i, (path, format))| (format!("bypass-set-{i}"), path, format))
+        .collect()
 }
 
 /// Самое узкое исключение по адресу, какое принимаем, — /8. Шире это уже не
@@ -1424,15 +1536,21 @@ mod tests {
         assert!(tunneled.tunneled);
         assert_eq!((tunneled.rx, tunneled.tx), (2048, 512));
 
-        let direct = parse_conn(
+        // Мимо туннеля теперь ведёт один тег, и неважно, что на него отправило —
+        // исключение, выбранное приложение или набор правил раздельного охвата.
+        let aside = parse_conn(
             &json!({
                 "metadata": { "destinationIP": "1.1.1.1", "destinationPort": "53" },
-                "chains": ["direct"],
+                "chains": [TAG_BYPASS],
             }),
             &|_, _, _| None,
         );
-        assert_eq!(direct.host, "1.1.1.1:53", "домена нет — остаётся адрес");
-        assert!(!direct.tunneled);
+        assert_eq!(aside.host, "1.1.1.1:53", "домена нет — остаётся адрес");
+        assert!(!aside.tunneled);
+        assert!(aside.bypass);
+        let internal = parse_conn(&json!({ "chains": [] }), &|_, _, _| None);
+        assert!(!internal.bypass);
+        assert!(!tunneled.bypass);
     }
 
     /// Имя процесса берётся по локальному порту, а не из ответа sing-box.
@@ -1556,6 +1674,341 @@ mod tests {
         json!({ "type": "trojan", "server": "a.com", "server_port": 443, "password": "p" })
     }
 
+    /// Кэш наборов правил в своём каталоге на тест: у каждой ссылки лежит файл
+    /// под тем именем, под которым его ищет конфиг (`rule_set_file`), с
+    /// доменным набором внутри. Тесты бегут в одном процессе, поэтому каталог
+    /// именной.
+    fn rule_set_cache(tag: &str, urls: &[&str]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("pg-rule-sets-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for url in urls {
+            std::fs::write(dir.join(rule_set_file(url)), r#"{"version":2,"rules":[{"domain_suffix":["direct.test"]}]}"#).unwrap();
+        }
+        dir
+    }
+
+    /// Правила раздельного охвата и исключения — один маршрут: outbound `bypass`
+    /// один, как бы много родов ни набралось, а `direct` не возвращается ни с
+    /// приложениями, ни с наборами правил, ни с исключениями вместе.
+    #[test]
+    fn split_rules_share_the_bypass_outbound() {
+        let urls = ["https://example.com/geo.srs?version=1", "https://example.com/site.json"];
+        let cache = rule_set_cache("share", &urls);
+        for node in [node(), wg_node()] {
+            for (apps, sets, sites) in [(true, false, false), (false, true, false), (true, true, false), (false, false, true), (true, false, true), (false, true, true), (true, true, true)] {
+                let opts = Options {
+                    direct_apps: if apps { vec![r"C:\apps\browser.exe".into()] } else { vec![] },
+                    direct_rule_sets: if sets { urls.iter().map(|u| u.to_string()).collect() } else { vec![] },
+                    rule_set_dir: Some(cache.clone()),
+                    bypass: if sites { vec!["example.org".into(), "158.160.0.0/16".into()] } else { vec![] },
+                    ..Default::default()
+                };
+                let cfg = build_config(&node, &opts);
+                assert_eq!(cfg["route"]["final"], TAG_PROXY);
+                let outbounds = cfg["outbounds"].as_array().unwrap();
+                assert_eq!(outbounds.iter().filter(|o| o["tag"] == TAG_BYPASS && o["type"] == "direct").count(), 1, "outbound bypass ровно один: {outbounds:#?}");
+                assert!(!outbounds.iter().any(|o| o["tag"] == "direct"), "тег direct не возвращается: {outbounds:#?}");
+                let rules = cfg["route"]["rules"].as_array().unwrap();
+                let local = rules.iter().position(|r| r["inbound"][0] == "local").unwrap();
+                for (i, rule) in rules.iter().enumerate().filter(|(_, r)| r["outbound"] == TAG_BYPASS) {
+                    assert_eq!(rule["inbound"], json!(["tun-in"]));
+                    assert!(i > local, "проба всегда через proxy");
+                    assert!(i > rules.iter().position(|r| r["action"] == "hijack-dns").unwrap());
+                    assert!(i > rules.iter().position(|r| r["action"] == "sniff").unwrap());
+                }
+                assert!(!rules.iter().any(|r| r["outbound"] == "direct"), "ни одно правило не ведёт на direct: {rules:#?}");
+                if apps {
+                    assert!(rules.iter().any(|r| r["process_path"] == json!(opts.direct_apps) && r["outbound"] == TAG_BYPASS));
+                }
+                if sites {
+                    let site = rules.iter().position(|r| r["domain_suffix"] == json!(["example.org"])).unwrap();
+                    assert_eq!(rules[site]["outbound"], TAG_BYPASS);
+                    if apps {
+                        let process = rules.iter().position(|r| !r["process_path"].is_null()).unwrap();
+                        assert!(site < process, "дешёвые правила — до матчера по процессу");
+                    }
+                }
+                if sets {
+                    assert_eq!(cfg["route"]["rule_set"][0]["format"], "binary");
+                    assert_eq!(cfg["route"]["rule_set"][1]["format"], "source");
+                    assert_eq!(cfg["route"]["rule_set"][0]["type"], "local");
+                    assert_eq!(cfg["route"]["rule_set"][0]["path"], cache.join(rule_set_file(urls[0])).to_string_lossy().to_string());
+                    assert!(!rules.iter().any(|r| r["action"] == "resolve"), "безусловного resolve нет: {rules:#?}");
+                    assert_eq!(rules.iter().filter(|r| !r["rule_set"].is_null()).count(), 1, "одно правило на наборы: {rules:#?}");
+                    if apps {
+                        let process = rules.iter().position(|r| !r["process_path"].is_null()).unwrap();
+                        let set = rules.iter().position(|r| !r["rule_set"].is_null()).unwrap();
+                        assert!(process < set);
+                    }
+                }
+                let bare = build_config(&node, &Options { tun: false, ..opts });
+                assert!(bare["route"]["rule_set"].is_null());
+                assert!(!bare["outbounds"].as_array().unwrap().iter().any(|o| o["tag"] == "direct" || o["tag"] == TAG_BYPASS));
+            }
+        }
+    }
+
+    #[test]
+    fn split_config_passes_singbox_check() {
+        let dir = std::env::temp_dir().join("pg-split-check");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        // Файлы наборов у `check` настоящие (`type: local` читает их при
+        // разборе), поэтому оба — исходный JSON.
+        let urls = ["https://example.com/rules.json", "https://example.com/more.json?version=2"];
+        let cache = rule_set_cache("check", &urls);
+        for node in [node(), wg_node()] {
+            let cfg = build_config(&node, &Options {
+                direct_apps: vec![r"C:\apps\browser.exe".into()],
+                direct_rule_sets: urls.iter().map(|u| u.to_string()).collect(),
+                rule_set_dir: Some(cache.clone()),
+                bypass: vec!["example.org".into(), "158.160.0.0/16".into()],
+                ..Default::default()
+            });
+            std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+            let out = match Command::new(binary()).arg("check").arg("-c").arg(&path).output() {
+                Ok(out) => out,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+                Err(e) => panic!("sing-box check: {e}"),
+            };
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        }
+    }
+
+    /// Доменный набор должен передавать байты даже при недоступном DNS/UDP узла.
+    #[test]
+    fn domain_rule_sets_pass_traffic_without_resolving_through_the_proxy() {
+        if Command::new(binary()).arg("version").output().is_err() {
+            return;
+        }
+        let web = TcpListener::bind("127.0.0.1:0").unwrap();
+        let web_port = web.local_addr().unwrap().port();
+        web.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline {
+                if let Ok((mut conn, _)) = web.accept() {
+                    conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                    let mut request = [0; 1024];
+                    let n = conn.read(&mut request).unwrap();
+                    assert!(request[..n].starts_with(b"GET /"));
+                    conn.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nroute-ok").unwrap();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("доменный ruleset не довёл запрос до сервера");
+        });
+        let local = free_port().unwrap();
+        let test_port = free_port().unwrap();
+        let url = "https://example.com/rules.json";
+        let mut cfg = build_config(&json!({ "type": "http", "server": "127.0.0.1", "server_port": 1 }), &Options {
+            socks_port: local,
+            api_port: free_port().unwrap(),
+            direct_rule_sets: vec![url.into()],
+            rule_set_dir: Some(rule_set_cache("domain", &[url])),
+            ..Default::default()
+        });
+        // Вместо TUN — тот же вход по тегу, но на loopback, без прав администратора.
+        cfg["inbounds"][1] = json!({ "type": "mixed", "tag": "tun-in", "listen": "127.0.0.1", "listen_port": test_port });
+        for rule in cfg["route"]["rules"].as_array_mut().unwrap() {
+            if !rule["rule_set"].is_null() {
+                // Цель теста локальная: DNS не требуется и самому direct-outbound.
+                rule["override_address"] = json!("127.0.0.1");
+            }
+        }
+        cfg["dns"]["servers"][0]["server"] = json!("127.0.0.1");
+        cfg["dns"]["servers"][0]["server_port"] = json!(1);
+        let dir = std::env::temp_dir().join("pg-domain-routing-test");
+        let mut tunnel = Tunnel::start(&cfg, &dir).unwrap();
+        let mut stream = socks5_connect(test_port, ("direct.test", web_port)).unwrap();
+        stream.write_all(b"GET / HTTP/1.1\r\nHost: direct.test\r\nConnection: close\r\n\r\n").unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.ends_with("route-ok"), "SOCKS-ответа мало: должны пройти байты ответа");
+        // Проба на local не имеет права подтвердить мёртвый узел через исключение.
+        assert!(socks5_connect(local, ("direct.test", web_port)).is_err());
+        tunnel.stop();
+        server.join().unwrap();
+    }
+
+    /// Ревью: пустые списки «раздельно» обязаны давать конфиг master до байта, а
+    /// резолвер `remote` у master — `udp`. Смена транспорта DNS для всех охватов
+    /// — отдельное решение, не следствие нового охвата.
+    #[test]
+    fn an_empty_split_keeps_the_master_dns() {
+        for node in [node(), wg_node()] {
+            let cfg = build_config(&node, &Options::default());
+            assert_eq!(
+                cfg["dns"]["servers"][0],
+                json!({ "type": "udp", "tag": "remote", "server": "1.1.1.1", "detour": TAG_PROXY }),
+                "без правил «раздельно» резолвер `remote` обязан остаться тем же, что в master"
+            );
+        }
+    }
+
+    /// Ревью: мёртвый узел не роняет sing-box ни в одном охвате — процесс жив,
+    /// туннель не подтверждает проба, и именно её промахи ведут к
+    /// автопереключению. Набор правил, который качается через тот же мёртвый
+    /// узел, не имеет права превращать это в смерть процесса на старте.
+    #[test]
+    fn a_dead_node_does_not_kill_singbox_in_split() {
+        if Command::new(binary()).arg("version").output().is_err() {
+            return;
+        }
+        let tun_port = free_port().unwrap();
+        let url = "https://example.com/rules.json";
+        let mut cfg = build_config(&json!({ "type": "http", "server": "127.0.0.1", "server_port": 1 }), &Options {
+            socks_port: free_port().unwrap(),
+            api_port: free_port().unwrap(),
+            direct_rule_sets: vec![url.into()],
+            rule_set_dir: Some(rule_set_cache("dead", &[url])),
+            ..Default::default()
+        });
+        assert!(!cfg["route"]["rule_set"].is_null(), "набор из кэша обязан войти в конфиг: {cfg}");
+        // Вместо TUN — тот же вход по тегу, но на loopback, без прав администратора.
+        cfg["inbounds"][1] = json!({ "type": "mixed", "tag": "tun-in", "listen": "127.0.0.1", "listen_port": tun_port });
+        let dir = std::env::temp_dir().join("pg-split-dead-node");
+        let mut tunnel = match Tunnel::start(&cfg, &dir) {
+            Ok(t) => t,
+            Err(e) => panic!("мёртвый узел уронил sing-box на старте: {e}"),
+        };
+        std::thread::sleep(Duration::from_secs(2));
+        let alive = tunnel.alive();
+        tunnel.stop();
+        assert!(alive, "мёртвый узел уронил sing-box после старта");
+    }
+
+    /// Ревью: соединение, которое уходит в туннель (`final: proxy`), не обязано
+    /// ждать и тем более переживать разрешение имени через `remote`. Без наборов
+    /// правил его имя разрешает сервер узла; с наборами это обязано остаться так
+    /// же — безусловного `resolve` на каждое соединение `tun-in` нет, и неудача
+    /// поиска (DoH недоступен с выхода, имя только с AAAA при `ipv4_only`) не
+    /// обрывает соединение, которому адрес не нужен вовсе.
+    #[test]
+    fn a_failed_lookup_never_drops_a_tunnel_bound_connection() {
+        if Command::new(binary()).arg("version").output().is_err() {
+            return;
+        }
+        for sets in [false, true] {
+            let web = TcpListener::bind("127.0.0.1:0").unwrap();
+            let web_port = web.local_addr().unwrap().port();
+            let tun_port = free_port().unwrap();
+            let url = "https://example.com/geoip.json";
+            // Набор — про адреса, которых у цели нет: соединение обязано упасть в `final`.
+            let cache = rule_set_cache("lookup", &[url]);
+            std::fs::write(cache.join(rule_set_file(url)), r#"{"version":2,"rules":[{"ip_cidr":["10.255.255.0/24"]}]}"#).unwrap();
+            let mut cfg = build_config(&node(), &Options {
+                socks_port: free_port().unwrap(),
+                api_port: free_port().unwrap(),
+                direct_rule_sets: if sets { vec![url.into()] } else { vec![] },
+                rule_set_dir: Some(cache),
+                ..Default::default()
+            });
+            assert_eq!(!cfg["route"]["rule_set"].is_null(), sets, "набор из кэша входит в конфиг, пока выбран");
+            cfg["inbounds"][1] = json!({ "type": "mixed", "tag": "tun-in", "listen": "127.0.0.1", "listen_port": tun_port });
+            // `remote` не отвечает. Узел заменён прямым выходом под тем же тегом,
+            // который, как сервер узла, разрешает имя сам.
+            cfg["dns"]["servers"][0]["type"] = json!("udp");
+            cfg["dns"]["servers"][0]["server"] = json!("127.0.0.1");
+            cfg["dns"]["servers"][0]["server_port"] = json!(1);
+            cfg["dns"]["servers"].as_array_mut().unwrap().push(json!({ "type": "hosts", "tag": "test-hosts", "predefined": { "tunnel.test": "127.0.0.1" } }));
+            cfg["outbounds"][0] = json!({ "type": "direct", "tag": TAG_PROXY, "domain_resolver": "test-hosts" });
+            cfg.as_object_mut().unwrap().remove("endpoints");
+            let dir = std::env::temp_dir().join(format!("pg-split-lookup-{sets}"));
+            let mut tunnel = Tunnel::start(&cfg, &dir).unwrap();
+            let server = std::thread::spawn(move || {
+                web.set_nonblocking(true).unwrap();
+                let deadline = Instant::now() + Duration::from_secs(15);
+                while Instant::now() < deadline {
+                    if let Ok((mut conn, _)) = web.accept() {
+                        conn.set_nonblocking(false).unwrap();
+                        conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                        let mut request = [0; 1024];
+                        let _ = conn.read(&mut request);
+                        let _ = conn.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\ntunnel-ok");
+                        return true;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                false
+            });
+            let mut response = String::new();
+            if let Ok(mut stream) = socks5_connect(tun_port, ("tunnel.test", web_port)) {
+                stream.set_read_timeout(Some(Duration::from_secs(12))).unwrap();
+                let _ = stream.write_all(b"GET / HTTP/1.1\r\nHost: tunnel.test\r\nConnection: close\r\n\r\n");
+                let _ = stream.read_to_string(&mut response);
+            }
+            tunnel.stop();
+            let reached = server.join().unwrap();
+            assert!(
+                reached && response.ends_with("tunnel-ok"),
+                "наборы правил: {sets}; соединение в туннель оборвано неудачным разрешением имени (дошло до сервера: {reached}, ответ: {response:?})"
+            );
+        }
+    }
+
+    /// Набор без скачанного файла в конфиг не входит: ни тега, ни правила на него,
+    /// а если не осталось вообще ничего — ни `bypass`. Иначе `type: local` с
+    /// несуществующим путём ронял бы sing-box на старте. Готовые соседи входят.
+    #[test]
+    fn a_missing_rule_set_is_left_out_of_the_config() {
+        let have = "https://example.com/have.json";
+        let lack = "https://example.com/lack.json";
+        let cache = rule_set_cache("missing", &[have]);
+        let urls: Vec<String> = vec![lack.into(), have.into()];
+        assert_eq!(missing_rule_sets(Some(&cache), &urls), [lack], "без файла — только недостающий");
+        assert_eq!(missing_rule_sets(None, &urls), urls, "без каталога кэша не готов никто");
+        std::fs::write(cache.join(rule_set_file(lack)), "").unwrap();
+        assert_eq!(missing_rule_sets(Some(&cache), &urls), [lack], "пустой файл — не файл");
+
+        let cfg = build_config(&node(), &Options { direct_rule_sets: urls.clone(), rule_set_dir: Some(cache.clone()), ..Default::default() });
+        let sets = cfg["route"]["rule_set"].as_array().expect("готовый набор в конфиге");
+        assert_eq!(sets.len(), 1, "{sets:#?}");
+        assert_eq!(sets[0]["tag"], "bypass-set-0", "теги идут подряд по готовым");
+        assert!(sets[0]["path"].as_str().is_some_and(|p| p.ends_with(&rule_set_file(have))));
+        let rules = cfg["route"]["rules"].as_array().unwrap();
+        let used: Vec<&Value> = rules.iter().filter(|r| !r["rule_set"].is_null()).collect();
+        assert_eq!(used.len(), 1);
+        assert_eq!(used[0]["rule_set"], json!(["bypass-set-0"]), "правило ссылается только на тег, которому есть набор");
+
+        // Ни одного готового — конфиг тот же, что без наборов, до байта.
+        for dir in [Some(cache.join("нет")), None] {
+            let none = build_config(&node(), &Options { direct_rule_sets: urls.clone(), rule_set_dir: dir, ..Default::default() });
+            assert_eq!(none, build_config(&node(), &Options::default()), "набор без файла оставил след в конфиге");
+        }
+    }
+
+    /// Наборы правил в конфиге — только локальные файлы. `remote` качается самим
+    /// sing-box на старте, и недоступная ссылка (при мёртвом узле недоступны все)
+    /// не даёт ему подняться; ходить за файлами обязана служба, сквозь
+    /// поднятый туннель.
+    #[test]
+    fn rule_sets_are_never_remote() {
+        let urls = ["https://example.com/a.srs", "https://example.com/b.json"];
+        let cache = rule_set_cache("remote", &urls);
+        let cfg = build_config(&node(), &Options {
+            direct_rule_sets: urls.iter().map(|u| u.to_string()).collect(),
+            rule_set_dir: Some(cache),
+            ..Default::default()
+        });
+        let sets = cfg["route"]["rule_set"].as_array().expect("наборы");
+        assert_eq!(sets.len(), 2);
+        for set in sets {
+            assert_eq!(set["type"], "local", "{set}");
+        }
+        let text = cfg.to_string();
+        for banned in ["download_detour", "update_interval", "example.com"] {
+            assert!(!text.contains(banned), "в конфиге остался след удалённого набора ({banned}): {text}");
+        }
+        // И в исходниках: набор типа remote не пишется нигде, кроме этого сторожа.
+        let src = include_str!("lib.rs").replace("\r\n", "\n");
+        let production = src.split("#[cfg(test)]").next().expect("код");
+        assert!(!production.contains("\"type\": \"remote\""), "набор типа remote вернулся в конфиг");
+        assert!(!production.contains("download_detour"));
+    }
+
     fn wg_node() -> Value {
         core_config::parse(
             "wg://QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNk@a.com:51820\
@@ -1565,36 +2018,28 @@ mod tests {
         .node
     }
 
-    /// Уйти напрямую нельзя, потому что некуда: тега `direct` в конфиге нет
-    /// вовсе, `final` — сам туннель, а правил по `process_path` не осталось ни
-    /// одного.
-    ///
-    /// Одно свойство закрывает три разные вещи. Приватность: тихий промах
-    /// матчера по пути — приложение мимо туннеля под надписью «Защищено» — не
-    /// починен, а перестал существовать как класс, вместе с самим матчером.
-    /// Расход: замер из `docs/wfp.md` показал, что платится за путь `direct`
-    /// через TUN, а не за матчер, и конфиг без `direct` дешевле любого с ним.
-    /// Живучесть соединений: раз конфиг не знает ни охвата, ни списка, ни то ни
-    /// другое его не меняет — значит переключение охвата и правка галочек не
-    /// перезапускают туннель, и открытая SSH-сессия их переживает.
-    ///
-    /// Заменил собой `selected_apps_have_no_fallback`,
-    /// `only_the_whitelist_rejects_anyone`, `all_traffic_takes_the_default_route`
-    /// и `the_whitelist_never_rejects_the_probe`: охвата, о котором говорили
-    /// первые три, в продукте больше нет, а догоняющий отказ, которого боялся
-    /// четвёртый, из конфига ушёл — отсекает брандмауэр, до всякого TUN.
+    /// Без явных исключений конфиг All/Whitelist и сеансы не имеют direct. И
+    /// белый список с охватом в конфиг не входят: единственное, что в нём
+    /// вообще может появиться по воле человека, — собственные списки
+    /// «раздельного» (приложения, наборы), исключения и каталог кэша наборов.
+    /// Заведи кто-нибудь в `Options` поле под список выбранных приложений или
+    /// под сам охват — и «кто ходит» из стены уехало бы в конфиг, то есть
+    /// вернулся бы матчер по процессу и его тихий промах.
     #[test]
     fn nothing_can_go_direct() {
-        // Ни списка, ни охвата на входе — отсюда и равенство конфигов у двух
-        // охватов: их нечем различить. Сверяем текстом, потому что «поля нет»
-        // компилятор проверить не может.
-        let fields = include_str!("lib.rs")
-            .split("pub struct Options {")
-            .nth(1)
-            .and_then(|s| s.split("\n}").next())
-            .expect("настройки конфига");
-        assert!(!fields.contains("apps"), "список приложений в конфиг не входит: {fields}");
-        assert!(!fields.contains("scope"), "охват в конфиг не входит: {fields}");
+        assert!(Options::default().direct_apps.is_empty());
+        assert!(Options::default().direct_rule_sets.is_empty());
+        assert!(Options::default().bypass.is_empty());
+        assert!(Options::default().rule_set_dir.is_none());
+        let src = include_str!("lib.rs").replace("\r\n", "\n");
+        let body = src.split("pub struct Options {").nth(1).and_then(|s| s.split("\n}\n").next()).expect("Options");
+        let fields: Vec<&str> =
+            body.lines().map(str::trim).filter_map(|l| l.strip_prefix("pub ")).filter_map(|l| l.split(':').next()).collect();
+        assert_eq!(
+            fields,
+            ["socks_port", "api_port", "tun", "stack", "pprof", "direct_apps", "direct_rule_sets", "rule_set_dir", "bypass"],
+            "в настройки конфига не входят ни список приложений, ни охват — только собственные списки «раздельного»"
+        );
 
         for node in [node(), wg_node()] {
             for tun in [true, false] {

@@ -221,6 +221,10 @@ export function exitCode(status: Status | null): string | null {
  *  по-разному. */
 export function describe(s: Strings, status: Status | null): { title: string; hint: string } {
   if (!status) return { title: s.serviceDown, hint: s.serviceDownHint };
+  if (status.scope === "split") {
+    const title = { off: s.off, connecting: s.connecting, up: s.upSplit, down: s.down }[status.tunnel];
+    return { title, hint: status.tunnel === "up" ? s.splitHint : status.tunnel === "off" ? s.offHintAll : s.downHintAll };
+  }
   const all = (status.scope ?? "all") === "all";
   const inTunnel = status.apps.filter((a) => a.enabled).length;
   const view = {
@@ -370,6 +374,7 @@ export function StatusBar({
               options={[
                 ["whitelist", s.scopeWhitelist, inTunnel === 0 ? s.noAppsAhead : s.scopeHintWhitelist],
                 ["all", s.scopeAll, s.scopeHint],
+                ["split", s.scopeSplit, s.splitHint],
               ]}
               value={scope}
               disabled={!status || busy}
