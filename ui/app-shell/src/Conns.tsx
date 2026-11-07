@@ -272,9 +272,9 @@ export function Conns({
       folds="always"
       bar={
         searchable && (
-          <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1">
+          <div className="flex h-[41px] shrink-0 items-center gap-2 border-b border-edge pe-3">
             <div className="min-w-24 flex-[1_0_7rem]" title={s.connsFindHint}>
-              <SearchField value={query} onChange={setQuery} placeholder={s.connsFind} />
+              <SearchField flush value={query} onChange={setQuery} placeholder={s.connsFind} />
             </div>
             {live && conns.length > 0 && (
               <span className="min-w-0 truncate text-xs text-muted" title={s.connsHint}>

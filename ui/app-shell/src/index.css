@@ -641,8 +641,26 @@ body {
   outline: none;
 }
 
-.field::placeholder {
+.field::placeholder,
+.field-flush::placeholder {
   color: var(--pg-faint);
+}
+
+/* Поиск в панели инструментов — сама панель, а не поле в ней: ни рамки, ни
+   подложки, ни полей вокруг. Кромка — линия под панелью, фокус — акцентная
+   черта по ней же, как у `.field`. */
+.field-flush {
+  background: transparent;
+  border: 0;
+  outline: none;
+}
+
+.field-flush:hover {
+  background: var(--pg-hover);
+}
+
+.field-flush:focus {
+  box-shadow: inset 0 -2px 0 var(--pg-accent);
 }
 
 /* Выбор из двух-трёх — сегменты Fluent: общая подложка, выбранный лежит на
@@ -1392,30 +1410,30 @@ h3.sub-head:hover {
    лишь там, где ячейки и вправду уезжают за край. Вертикальной прокрутки у
    ряда нет вовсе. */
 .sub-strip {
-  gap: 8px;
-  padding: 8px;
+  padding: 0;
+  border-bottom: 1px solid var(--pg-border);
   overflow-y: hidden;
 }
 
 /* Ячейка — до трёх строк: имя с делениями живых узлов, остаток с полоской,
-   срок. Карточка с рамкой в волосок; выбранная — акцентная рамка и еле
-   заметная акцентная заливка, а не полоска по кромке: у карточки есть
-   контур, и им же отмечается выбор. */
+   срок. Ячейки стоят вплотную, как вкладки, и делит их волосок: карточками
+   с полями вокруг полоса съедала у списка ещё полтора десятка пикселей, а
+   скруглённая карточка, вписанная в кромки, читалась бы обрезанной. Выбранная —
+   акцентная заливка и черта по нижней кромке, как у выбранной вкладки. */
 .sub-cell {
   position: relative;
-  border: 1px solid var(--pg-border);
-  border-radius: var(--pg-r-cell);
-  background: var(--pg-tile);
+  border-inline-end: 1px solid var(--pg-border);
+  background: transparent;
   text-align: start;
 }
 
 .sub-cell:hover {
-  background: linear-gradient(var(--pg-hover), var(--pg-hover)), var(--pg-tile);
+  background: var(--pg-hover);
 }
 
 .sub-cell[aria-pressed="true"] {
-  border-color: color-mix(in oklch, var(--pg-accent) 55%, var(--pg-border));
-  background: color-mix(in oklch, var(--pg-accent) 6%, var(--pg-tile));
+  background: color-mix(in oklch, var(--pg-accent) 8%, transparent);
+  box-shadow: inset 0 -2px 0 var(--pg-accent);
 }
 
 /* Оглавление настроек. Пункт — как пункт рейки: заливка под указателем и у

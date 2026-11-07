@@ -463,7 +463,7 @@ function SubStrip({
           aria-pressed={filter === url}
           title={tip}
           onClick={() => onPick(filter === url ? null : url)}
-          className="sub-cell smooth flex w-full min-w-0 flex-col items-stretch justify-center px-2 py-1"
+          className="sub-cell smooth flex w-full min-w-0 flex-col items-stretch justify-center px-4 py-1.5"
         >
           {inner}
         </button>
@@ -1126,7 +1126,7 @@ export function Profiles({
             // выделения: поиск и «Добавить» в это время не нужны, а те же 41 px
             // высоты держат список там, где он был.
             <div
-              className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1"
+              className="flex h-[41px] shrink-0 items-center gap-2 border-b border-edge ps-4 pe-1"
               role="group"
               aria-label={s.selectedCount(selected.size)}
             >
@@ -1173,10 +1173,10 @@ export function Profiles({
               <IconButton icon="close" label={s.clearSelection} onClick={() => setSelected(new Set())} />
             </div>
           ) : (
-          <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1">
+          <div className="flex h-[41px] shrink-0 items-center gap-2 border-b border-edge pe-1">
             {searchable && (
-              <div className={compact ? "min-w-0 flex-[1_0_8rem]" : "min-w-32 flex-[0_1_18rem]"}>
-                <SearchField inputRef={searchRef} value={query} onChange={setQuery} placeholder={s.searchProfiles} />
+              <div className={compact ? "min-w-0 flex-[1_0_8rem]" : "min-w-32 flex-[1_1_18rem]"}>
+                <SearchField flush inputRef={searchRef} value={query} onChange={setQuery} placeholder={s.searchProfiles} />
               </div>
             )}
             {/* Вид списка — переключатель, а не кнопка «сбросить»: оба порядка

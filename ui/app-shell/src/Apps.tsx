@@ -262,10 +262,10 @@ export function Apps({
           {/* Строка инструментов: поиск, счёт и кнопки. Выше 1100 px счёт и
               кнопки стоят в шапке, и без поиска строка там пуста — тогда её
               нет вовсе, а не пустая полоса с линией. */}
-          <div className={`${searchable ? "" : "fold-only "}flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1`}>
+          <div className={`${searchable ? "" : "fold-only "}flex h-[41px] shrink-0 items-center gap-2 border-b border-edge pe-1`}>
             {searchable && (
               <div className="min-w-24 flex-[1_0_7rem]">
-                <SearchField value={query} onChange={setQuery} placeholder={s.searchApps} />
+                <SearchField flush value={query} onChange={setQuery} placeholder={s.searchApps} />
               </div>
             )}
             <span className={`fold-only min-w-0 truncate text-xs ${searchable ? "" : "flex-1"}`}>{count}</span>
@@ -282,8 +282,8 @@ export function Apps({
               читают его один раз. Судьба конкретной строки остаётся в её
               подсказке (`fateHint`). */}
           {noteShown && (
-            <div className="shrink-0 border-b border-edge p-2">
-              <p className="enter rounded-md bg-hover px-3 py-1.5 text-sm text-muted">
+            <div className="shrink-0 border-b border-edge">
+              <p className="enter bg-hover px-4 py-2 text-sm text-muted">
                 {split ? s.splitAppsNote : all ? s.scopeAllNote : s.whitelistNote}
               </p>
             </div>
