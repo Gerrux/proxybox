@@ -15,7 +15,7 @@ import {
   type Status,
 } from "./platform";
 import { dir, strings } from "./i18n";
-import { Apps } from "./Apps";
+import { Apps, splitEdits, type SplitPending } from "./Apps";
 import { Browsers } from "./Browsers";
 import { Conns } from "./Conns";
 import { Journal } from "./Journal";
@@ -23,7 +23,7 @@ import { Profiles } from "./Profiles";
 import { Settings, useReleases, useTheme } from "./Settings";
 import { StatusBar, tunnelState } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
-import { Welcome } from "./Welcome";
+import { Welcome, useWelcomeDone } from "./Welcome";
 import { Flyout } from "./Flyout";
 import { Button, Icon, IconButton, type IconName } from "./ui";
 
@@ -82,7 +82,27 @@ export function App() {
   // сжата шириной, а вот титульная полоса и вопрос при закрытии ей ни к чему.
   const flyout = isFlyout();
 
-  const send = useCallback(async (req: Request): Promise<Response | null> => {
+  // Накопленные галочки «Раздельно» живут здесь, а не в панели приложений:
+  // `Apps` размонтируется при переходе на браузеры, соединения и в настройки, и
+  // отмеченное, но не применённое пропадало бы молча вместе с полосой
+  // «Применить». Сбрасывает их только настоящая смена охвата — между двумя
+  // известными охватами. Мигнувшая служба обнуляет `status` (и охват вместе с
+  // ним), но это не смена: запомненный охват при этом не трогаем.
+  const [pending, setPending] = useState<SplitPending>({});
+  const scopeWas = useRef<Scope | null>(null);
+  const scopeNow = status?.scope;
+  useEffect(() => {
+    if (!scopeNow) return;
+    if (scopeWas.current && scopeWas.current !== scopeNow) setPending({});
+    scopeWas.current = scopeNow;
+  }, [scopeNow]);
+
+  // Карточка первого запуска уходит навсегда, как только сбылись все три шага, —
+  // и считать это обязано окно целиком, а не сама карточка: она не рисуется в
+  // настройках, и шаги, сбывшиеся там, иначе не запомнились бы.
+  useWelcomeDone(flyout ? null : status);
+
+  const send =useCallback(async (req: Request): Promise<Response | null> => {
     try {
       const r = await call(req);
       // Ошибку баннер только показывает, но никогда не снимает по своей воле:
@@ -261,6 +281,7 @@ export function App() {
   const selectedApps = status?.scope === "split"
     ? status.settings.direct_apps?.length ?? 0
     : status?.apps.filter((a) => a.enabled).length ?? 0;
+  const unapplied = splitEdits(status, pending).length;
   const setScope = (scope: Scope) => void act({ cmd: "set-scope", arg: { scope } });
 
   // Плашка из трея — своя раскладка (`Flyout.tsx`): её открывают глянуть и
@@ -275,7 +296,6 @@ export function App() {
           error={error}
           onError={setError}
           onToggle={toggle}
-          onScope={setScope}
         />
       </div>
     );
@@ -319,24 +339,35 @@ export function App() {
       )}
 
       <div className="flex min-h-0 flex-1">
-        {/* Рейка — NavigationView Windows 11 в компактном виде: значки в
-            столбец, под каждым счётчик строк. Счётчик — не украшение: он
-            единственное, что говорит о закрытой панели хоть что-то. Узкая
-            рейка и широкая «Главная» — одна навигация в двух видах, кто из
-            них показан, решает `index.css` по ширине окна. */}
+        {/* Рейка — NavigationView Windows 11: значки в столбец, под каждым
+            подпись, а бляшка у значка — число или точка внимания, что-то
+            говорящие о закрытой панели. Узкая рейка и широкая «Главная» — одна навигация в двух
+            видах, кто из них показан, решает `index.css` по ширине окна. */}
         <nav className="rail flex shrink-0 flex-col items-center gap-0.5 py-1.5" aria-label={s.tabMain}>
           <RailItem className="rail-narrow" icon="server" active={!settings && tab === "profiles"} onClick={() => pick("profiles")}
-            label={s.profiles} count={status?.profiles.length ?? 0} />
+            label={s.profiles} count={status?.profiles.length || undefined} />
+          {/* Бляшка — это внимание или число, которое что-то значит. «Весь
+              компьютер» список не применяет, и число там врало бы; пустой
+              белый список — запертая машина, и это не «0», а предупреждение.
+              Журнал числа не получает вовсе: лента режется тридцатью строками,
+              и число показывало бы всегда одну и ту же отсечку. Вместо него —
+              точка, когда самая новая строка ленты (она первая) — сбой. */}
           <RailItem className="rail-narrow" icon="screen" active={!settings && tab === "apps"} onClick={() => pick("apps")}
-            label={s.apps} count={`${selectedApps}/${status?.apps.length ?? 0}`} />
+            label={s.apps}
+            count={status?.scope === "all" || selectedApps === 0 ? undefined : selectedApps}
+            full={s.railOf(selectedApps, status?.apps.length ?? 0)}
+            dot={status?.scope === "whitelist" && selectedApps === 0 ? "closed" : undefined}
+            note={s.noAppsAhead}
+            pending={unapplied > 0 ? s.unapplied : undefined} />
           <RailItem className="rail-narrow" icon="lines" active={!settings && tab === "journal"} onClick={() => pick("journal")}
-            label={s.journal} count={status?.log.length ?? 0} />
+            label={s.journal} dot={status?.log[0]?.bad ? "fault" : undefined} note={s.journalBad} />
           {/* Шире 1100 px первые три стоят рядом, и выбирать между ними
               нечего: остаётся развилка «списки или браузерные профили». */}
           <RailItem className="rail-wide" icon="server" active={!settings && !WIDE.includes(tab)} onClick={() => pick("profiles")}
             label={s.tabMain} />
           <RailItem icon="browser" active={!settings && tab === "browsers"} onClick={() => pick("browsers")}
-            label={s.tabBrowsers} count={status?.browser_profiles.length ?? 0} />
+            label={s.tabBrowsers}
+            count={status?.browser_profiles.length ? status.browser_profiles.length : undefined} />
           {/* Счётчика у соединений нет: сколько их, знает только сама
               панель, а спрашивать это ради подписи на закрытой вкладке
               значило бы опрашивать службу всегда — ровно то, чего эта
@@ -373,7 +404,13 @@ export function App() {
                     busy={busy > 0}
                     onError={setError}
                   />
-                  <Apps className={pane(tab, "apps")} status={status} act={act} busy={busy > 0} />
+                  <Apps className={pane(tab, "apps")}
+                    status={status}
+                    act={act}
+                    busy={busy > 0}
+                    pending={pending}
+                    setPending={setPending}
+                  />
                   <Journal className={pane(tab, "journal")} lines={status?.log ?? []} lang={status?.lang} />
                 </div>
               )}
@@ -459,28 +496,53 @@ function CloseDialog({
   );
 }
 
-/** Пункт рейки: значок и счётчик строк под ним. Подпись живёт в подсказке и
- *  в имени для чтения с экрана — вместе со счётчиком, чтобы диктор прочёл
- *  «Профили · 7», а не голое число.
+/** Пункт рейки: значок, под ним подпись, бляшка — у верхнего угла значка.
+ *  Подпись прячется вместе с шириной рейки (`.rail-label` в `index.css`, 470 px),
+ *  и тогда пункт — один значок с бляшкой, как рейка и была.
  *
- *  Строка под счётчик держится и у пунктов без счётчика: иначе значки
- *  соседних пунктов стояли бы на разной высоте, и столбец рассыпался бы. */
+ *  Бляшка — InfoBadge Windows 11: таблетка с заливкой и кольцом цвета рейки
+ *  (`.rail-badge`). Без заливки цифры ложились прямо на штрихи значка и
+ *  читались вместе с ними; кольцо вырезает угол значка, а не пересекается с ним.
+ *  Бляшек два рода, и пункт получает их по смыслу, а не по привычке: число
+ *  (`count`) — когда оно что-то значит, точка (`dot`) — когда нужно внимание.
+ *  Сторож — `the_journal_rail_item_carries_no_count`.
+ *
+ *  В бляшке стоит одно число — «сколько выбрано», а не «41/359»: дробь в 16 px
+ *  не читается. Полная запись («41 из 359») остаётся в имени для чтения с
+ *  экрана и в подсказке — вместе с подписью, чтобы диктор прочёл «Приложения ·
+ *  41 из 359», а не голое число. Точка в имени называет причину (`note`). */
 function RailItem({
   label,
   icon,
   count,
+  full,
+  dot,
+  note,
+  pending,
   active,
   onClick,
   className = "",
 }: {
   label: string;
   icon: IconName;
-  count?: number | string;
+  count?: number;
+  /** Что сказать вместо голого числа, когда оно — числитель дроби. */
+  full?: string;
+  /** Точка внимания: «заперто» (янтарь) или «сбой» (красный). */
+  dot?: "closed" | "fault";
+  /** Что сказать вместо точки — её причина. */
+  note?: string;
+  /** Правка, ещё не уехавшая службе («не применено»): акцентная точка у нижнего
+   *  угла значка и та же фраза в имени пункта. Не заменяет ни число, ни точку
+   *  внимания — стоит рядом с ними. */
+  pending?: string;
   active: boolean;
   onClick: () => void;
   className?: string;
 }) {
-  const name = count != null ? `${label} · ${count}` : label;
+  const base =
+    count != null ? `${label} · ${full ?? count}` : dot && note ? `${label} · ${note}` : label;
+  const name = pending ? `${base} · ${pending}` : base;
   return (
     <button
       type="button"
@@ -488,13 +550,23 @@ function RailItem({
       aria-label={name}
       title={name}
       onClick={onClick}
-      className={`rail-item smooth flex h-12 w-10 flex-col items-center justify-center gap-1 ${
+      className={`rail-item smooth flex flex-col items-center justify-center gap-1 ${
         active ? "text-ink" : "text-muted hover:text-ink"
       } ${className}`}
     >
-      <Icon name={icon} className={active ? "text-accent" : ""} />
-      <span className="h-3 text-xs leading-none tabular-nums text-faint" aria-hidden="true">
-        {count ?? ""}
+      <span className="relative inline-flex">
+        <Icon name={icon} size={20} className={active ? "text-accent" : ""} />
+        {count != null ? (
+          <span className="rail-badge text-xs" aria-hidden="true">
+            {count > 99 ? "99+" : count}
+          </span>
+        ) : (
+          dot && <span className="rail-badge" data-dot={dot} aria-hidden="true" />
+        )}
+        {pending && <span className="rail-pending" aria-hidden="true" />}
+      </span>
+      <span className="rail-label max-w-full truncate px-0.5 text-xs leading-none" aria-hidden="true">
+        {label}
       </span>
     </button>
   );

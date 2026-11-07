@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import { call, type Scope, type Status } from "./platform";
 import { strings, type Strings } from "./i18n";
-import { Button, CopyButton, Icon, type IconName, Modal, Segmented, flag } from "./ui";
+import { CopyButton, Icon, type IconName, Menu, Modal, Switch, flag } from "./ui";
 import { WorldMap } from "./WorldMapView";
 
 /** Длина доезда числа. Заметно меньше периода опроса (2 с), иначе счётчик не
@@ -78,8 +78,21 @@ const SPARK = 40;
 const SPARK_W = 118;
 const SPARK_H = 30;
 
-/** Байты в секунду за один такт. */
-type Rate = { rx: number; tx: number };
+/** Байты в секунду за один такт и отметка службы (`traffic_at`, мс), на которой
+ *  такт закончился: по первой и последней отметке на экране считается, сколько
+ *  времени график держит на самом деле (`spanSeconds`). */
+type Rate = { rx: number; tx: number; at: number };
+
+/** Сколько секунд охватывают отсчёты на экране — от первой отметки до
+ *  последней, а не обещанное число: такт задаёт служба
+ *  (`PROBE_EVERY × TRAFFIC_EVERY`, ~15 с), и сорок отсчётов — это минуты, а
+ *  подпись «90 с» врала бы вдесятеро. Меньше двух отсчётов — промежутка нет,
+ *  и подписи нет (`null`). Сторож —
+ *  `the_speed_history_spans_what_its_label_says`. */
+export function spanSeconds(rates: Rate[]): number | null {
+  if (rates.length < 2) return null;
+  return Math.round((rates[rates.length - 1].at - rates[0].at) / 1000);
+}
 
 /** Скорость канала из тех же счётчиков, что стоят в приборной линейке. Они
  *  идут с запуска sing-box, поэтому разница между двумя снятиями и есть байты
@@ -123,7 +136,7 @@ export function useRates(status: Status | null): Rate[] {
     setRates((r) =>
       [
         ...r,
-        { rx: Math.max(0, status.rx - was.rx) / dt, tx: Math.max(0, status.tx - was.tx) / dt },
+        { rx: Math.max(0, status.rx - was.rx) / dt, tx: Math.max(0, status.tx - was.tx) / dt, at },
       ].slice(-SPARK),
     );
     // Зависимость — сам статус, а не его поля: при молчащем канале счётчики не
@@ -132,6 +145,38 @@ export function useRates(status: Status | null): Rate[] {
   }, [status]);
 
   return rates;
+}
+
+/** Не чаще одного отсчёта задержки за это время. Окно спрашивает пульс каждые
+ *  две секунды, а после каждой команды — ещё раз сразу; задержку служба
+ *  обновляет своей пробой раз в три секунды, и без прореживания один и тот же
+ *  замер ложился бы в историю несколько раз подряд — полоски стояли бы
+ *  ступеньками, а не измерениями. */
+const LATENCY_SPACING_MS = 1500;
+
+/** История задержки для полосок под числом. Та же договорённость, что у
+ *  `useRates`: живёт в памяти окна, умирает с ним и с подъёмом туннеля — нового
+ *  опроса у неё нет, она едет на статусе, который окно и так спрашивает.
+ *  Хранить задержки в службе значило бы вести журнал качества канала, а он
+ *  продукту ни к чему: смотрят на него здесь и сейчас. */
+export function useLatencies(status: Status | null): number[] {
+  const [values, setValues] = useState<number[]>([]);
+  const at = useRef(0);
+
+  useEffect(() => {
+    if (!status || status.tunnel !== "up") {
+      at.current = 0;
+      setValues((v) => (v.length ? [] : v));
+      return;
+    }
+    const ms = status.latency_ms;
+    const now = Date.now();
+    if (ms == null || now - at.current < LATENCY_SPACING_MS) return;
+    at.current = now;
+    setValues((v) => [...v, ms].slice(-SPARK));
+  }, [status]);
+
+  return values;
 }
 
 /** Путь по отсчётам, сверху вниз в координатах SVG. Именно путь, а не
@@ -144,17 +189,17 @@ function path(values: number[], peak: number): string {
     .join(" ");
 }
 
-/** История скорости фоном той ячейки, которая считает эти же байты: график
- *  принятого — под числом принятого, отданного — под отданным.
+/** Одна линия истории скорости. Две таких — принятое и отданное — кладутся
+ *  друг на друга в одном поле — фоне ячейки «Скорость».
  *
  *  Масштаб общий на оба графика (`peak` считается по обоим), иначе молчащая
  *  отдача рисовалась бы такой же горой, что и загруженный приём, — два
- *  графика рядом читаются как один прибор, и разные шкалы у них врут.
+ *  графика в одном поле читаются как один прибор, и разные шкалы у них врут.
  *
  *  Бледный намеренно: это история, а не показание. Число читают, форму
  *  замечают краем глаза. Ровная линия по нижней кромке значит «туннель поднят,
  *  и по нему молчат» — это не то же самое, что замерший график. */
-function CellSpark({ values, peak, id, tone }: { values: number[]; peak: number; id: string; tone: string }) {
+export function CellSpark({ values, peak, id, tone }: { values: number[]; peak: number; id: string; tone: string }) {
   // Одна точка — ещё не линия: рисовать нечего, пока не пришёл второй статус.
   if (values.length < 2) return null;
   const line = path(values, peak);
@@ -184,6 +229,26 @@ function CellSpark({ values, peak, id, tone }: { values: number[]; peak: number;
           </linearGradient>
         </defs>
       </svg>
+    </span>
+  );
+}
+
+/** Последние отсчёты задержки полосками: форма ряда важнее числа, а число
+ *  лежит поверх них, в той же ячейке. Высота — от пика видимого окна, а не от нуля: нулевая
+ *  шкала сделала бы ровный канал в 85 мс одной сплошной полосой. Цвет у
+ *  каждой полоски свой — по тем же порогам, что и у числа. */
+export function LatencyBars({ values, className = "" }: { values: number[]; className?: string }) {
+  if (values.length === 0) return null;
+  const top = Math.max(...values, 1);
+  return (
+    <span className={`lat-bars ${className}`} aria-hidden="true">
+      {values.map((ms, i) => (
+        <i
+          key={i}
+          className={`lat-bar ${latencyTone(ms) || "text-muted"}`}
+          style={{ blockSize: `${Math.max(14, (ms / top) * 100)}%` }}
+        />
+      ))}
     </span>
   );
 }
@@ -302,11 +367,13 @@ export function StatusBar({
 }) {
   const s = strings(status?.lang);
   const [trouble, setTrouble] = useState(false);
+  const [menu, setMenu] = useState<[number, number] | null>(null);
   const scope = status?.scope ?? "all";
   const inTunnel = status?.apps.filter((a) => a.enabled).length ?? 0;
   // Профиль не выбран, но включать есть что: поднимется первый по алфавиту.
   const pending = status != null && !status.profile && status.profiles.length > 0;
   const latency = useCounted(status?.latency_ms ?? null);
+  const latencies = useLatencies(status);
   const rates = useRates(status);
   // Байты не доезжают: между двумя статусами их набегают десятки килобайт, и
   // доезд читался бы не как измерение, а как перебор случайных цифр.
@@ -316,6 +383,7 @@ export function StatusBar({
   // нагрузка при десятикратной разнице. Пик по обоим рядам, не по своему.
   const peak = Math.max(1, ...rates.map((r) => Math.max(r.rx, r.tx)));
   const last = rates.at(-1) ?? null;
+  const span = spanSeconds(rates);
   const scaleHint = s.rateHint(bytes(peak) + s.perSecond);
   const view = describe(s, status);
   const state = tunnelState(status);
@@ -324,135 +392,243 @@ export function StatusBar({
   const code = status?.probes.find((p) => p.name === status.profile)?.code;
   const exitFlag = status?.country ? flag(code) : null;
   const [exitCountry, exitCity] = splitExit(status?.country);
+  // Узел, через который идёт (или пойдёт) канал, и его тип для метки.
+  const nodeName = status?.profile ?? status?.profiles[0]?.name ?? null;
+  const nodeKind = status?.profiles.find((p) => p.name === nodeName)?.kind;
+  // Охваты, которые окно предлагает. `none` диагностический и в списке не
+  // стоит (`the_frontend_knows_the_same_scopes`): показать его как состояние
+  // окно умеет, выбрать — нет.
+  const scopes: [Scope, string, string][] = [
+    ["whitelist", s.scopeWhitelist, inTunnel === 0 ? s.noAppsAhead : s.scopeHintWhitelist],
+    ["all", s.scopeAll, s.scopeHint],
+    ["split", s.scopeSplit, s.splitHint],
+  ];
+  const scopeName = scopes.find(([value]) => value === scope)?.[1] ?? s.scope;
+  const [rxNum, rxUnit] = last ? bytes(last.rx).split(" ") : ["—", ""];
+  const [txNum, txUnit] = last ? bytes(last.tx).split(" ") : ["—", ""];
 
   return (
     <header data-state={state} className="relative shrink-0">
-      <div className="st st-plate smooth">
-        <div className="st-text flex min-w-0 flex-col gap-3 p-4">
-          <div className="min-w-0">
-            {/* key — чтобы React заменил узел: надпись состояния сменяется
-                вплывом, а не подменой символов на месте. Не обрезаем: в
-                узком окне «Туннеля нет — доступ закрыт» обрубалось бы до
-                «Туннел…», а это ровно та надпись, ради которой окно открыли. */}
-            <h1 key={view.title} className="st-word swap flex items-center gap-2.5 text-2xl font-semibold">
-              <StateGlyph state={state} size={22} />
-              <span className="min-w-0">{view.title}</span>
-            </h1>
-            {/* Подсказка целиком остаётся в `title`: в узком окне она
-                обрезается до одной строки (`index.css`), а обрезается как раз
-                хвост — отсчёт до следующей попытки. */}
-            <p key={view.hint} title={view.hint} className="st-hint swap mt-1 text-sm text-muted">
-              {view.hint}
-              {/* Дверь к причине там, где её ищут: «доступ закрыт» читают в
-                  ту секунду, когда пропала сеть. Ссылкой в самой подсказке,
-                  а не кнопкой в ряду: ряд кнопок в 460 px её не вмещал, и
-                  она уезжала на второй ряд одна. */}
-              {status?.tunnel === "down" && (
-                <>
-                  {" · "}
-                  <button type="button" className="text-accent hover:underline" onClick={() => setTrouble(true)}>
-                    {s.whatsWrong}
-                  </button>
-                </>
-              )}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant={on ? "ghost" : "primary"}
-              disabled={!status || (!on && !status.profile && status.profiles.length === 0)}
-              onClick={onToggle}
-              className="min-w-30"
-            >
-              <Icon name="power" />
-              {on ? s.turnOff : s.turnOn}
-            </Button>
-            {/* Охват — «кого касается канал», и переключать его надо глядя на
-                состояние туннеля, а не в настройках через две панели от него. */}
-            <Segmented
-              label={s.scope}
-              options={[
-                ["whitelist", s.scopeWhitelist, inTunnel === 0 ? s.noAppsAhead : s.scopeHintWhitelist],
-                ["all", s.scopeAll, s.scopeHint],
-                ["split", s.scopeSplit, s.splitHint],
-              ]}
-              value={scope}
-              disabled={!status || busy}
-              onPick={(v) => onScope(v as Scope)}
-            />
-          </div>
-        </div>
+      {/* Верх окна — один ряд из трёх блоков на одной поверхности, разделённых
+          волосяными линиями: состояние, скорость, задержка (1.75 : 1 : 0.72 —
+          `.st-hero` в `index.css`). Прежде это были плита в 177 px и отдельная
+          линейка в 89 под ней, и первая группа списка начиналась на 445-м
+          пикселе окна в 705 px. Трёх колонок или ни одной: ниже 768 px блок
+          состояния встаёт во всю ширину, а скорость и задержка — одной строкой
+          под ним (`.st-metrics`), и сторож `the_instrument_row_never_wraps`
+          следит, что строка не переносится. */}
+      <div className="st-hero grid grid-cols-3">
+        <div className="st st-state smooth">
+        {/* Карта — фон конца блока состояния, а не отдельная плита: она
+            уходит под текст маской. Слой абсолютный, поэтому высоту блока
+            задаёт текст. */}
         <div className="st-map-plate smooth">
           <WorldMap className="st-map" code={exitCode(status)} />
         </div>
-      </div>
-
-      {/* Пять колонок или ни одной: промежуточные сетки из двух и трёх колонок
-          уносили счётчики трафика на второй-третий ряд, а его — за нижний край
-          окна. Ниже 768 px линейка целиком уходит в строку (`index.css`). */}
-      <dl className="st-metrics relative grid grid-cols-5 px-4 py-2">
-        {/* «Не выбран» — не то же, что «неизвестен»: `App.tsx` включает первый
-            по алфавиту, и молчание тут уводит в чужую страну без единого слова.
-            Показываем предстоящий профиль приглушённо и с подсказкой. */}
-        <Metric
-          name={s.profile}
-          value={status?.profile ?? status?.profiles[0]?.name ?? s.noProfile}
-          tone={pending ? "text-muted" : ""}
-          hint={pending ? s.profileFirst : undefined}
-        />
-        {/* Прочерк без объяснения читается как поломка. Настоящую страну при
-            выключенном режиме не показываем намеренно: спросить её можно только
-            у стороннего сервиса, а без туннеля запрос ушёл бы с настоящего
-            адреса. */}
-        <Metric name={s.exit} value={status?.country ?? "—"} hint={status?.country ? undefined : s.exitUnknown}>
-          {status?.country ? (
-            <>
-              {exitFlag && (
-                <span className="shrink-0 leading-none" aria-hidden="true">
-                  {exitFlag}
+        <div className="st-text relative flex h-full min-w-0 flex-col gap-1.5 px-4 py-2.5">
+          {/* key — чтобы React заменил узел: надпись состояния сменяется
+              вплывом, а не подменой символов на месте. Не обрезаем: в
+              узком окне «Туннеля нет — доступ закрыт» обрубалось бы до
+              «Туннел…», а это ровно та надпись, ради которой окно открыли. */}
+          <div className="flex min-w-0 items-center gap-3">
+            <h1 key={view.title} className="st-word swap flex min-w-0 flex-1 items-center gap-2.5 text-2xl font-semibold">
+              <StateGlyph state={state} size={22} />
+              <span className="min-w-0">{view.title}</span>
+            </h1>
+            {/* Выключатель продукта — тот же тумблер, что в плашке из трея:
+                одна и та же вещь не должна выглядеть в двух окнах двумя
+                разными кнопками. Надпись и условия запрета — те же, что
+                были у кнопки «Включить». */}
+            <Switch
+              size="lg"
+              checked={on}
+              label={on ? s.turnOff : s.turnOn}
+              disabled={!status || (!on && !status.profile && status.profiles.length === 0)}
+              onChange={() => onToggle()}
+            />
+          </div>
+          {/* Подсказка — одна строка в любой ширине (`.st-hint` в `index.css`),
+              целиком она остаётся в `title`: обрезается как раз хвост —
+              отсчёт до следующей попытки. Дверь к причине стоит рядом с ней,
+              а не внутри: «доступ закрыт» читают в ту секунду, когда пропала
+              сеть, и ссылка в хвосте обрезаемой строки уезжала бы первой.
+              Ряд один на подсказку и ссылку: в низком окне подсказка уходит
+              (`@media (max-height)`), а ссылка остаётся — без неё «доступ
+              закрыт» не говорил бы, где смотреть причину. */}
+          <div className="st-hint-row flex min-w-0 items-baseline gap-2">
+            <p key={view.hint} title={view.hint} className="st-hint swap min-w-0 flex-1 text-sm text-muted">
+              {view.hint}
+            </p>
+            {status?.tunnel === "down" && (
+              <button
+                type="button"
+                className="shrink-0 text-sm text-accent hover:underline"
+                onClick={() => setTrouble(true)}
+              >
+                {s.whatsWrong}
+              </button>
+            )}
+          </div>
+          {/* Охват — «кого касается канал», и переключать его надо глядя на
+              состояние туннеля, а не в настройках через две панели от него.
+              Выпадающим выбором, а не полоской рядом с выключателем: охват
+              меняют редко, а ряд из выключателя и трёх сегментов в 460 px
+              не помещался и уходил на второй ряд. Пояснения — прямо в
+              пунктах меню: по ним охваты и различают. Точка перед названием —
+              тон состояния. */}
+          <button
+            type="button"
+            aria-haspopup="menu"
+            aria-label={`${s.scope}: ${scopeName}`}
+            title={s.scope}
+            disabled={!status || busy}
+            onClick={(e) => {
+              // Начальный край кнопки, а не физический левый: в раскладке
+              // справа налево меню растёт от правого (`fromStart` у `Menu`).
+              const at = e.currentTarget.getBoundingClientRect();
+              setMenu([document.documentElement.dir === "rtl" ? at.right : at.left, at.bottom + 4]);
+            }}
+            className="st-scope smooth inline-flex h-7 max-w-full shrink-0 items-center gap-1.5 self-start px-2 text-sm font-medium disabled:opacity-40"
+          >
+            <span className="st-scope-dot" aria-hidden="true" />
+            <span className="min-w-0 truncate">{scopeName}</span>
+            <Icon name="chevron" size={14} className="rotate-90 text-muted" />
+          </button>
+          {/* Точка выхода и узел — внизу блока состояния, в две строки: куда
+              выходим и через какой узел, а не двумя ячейками линейки. Прочерк
+              без объяснения читается как поломка; настоящую страну при
+              выключенном режиме не показываем намеренно: спросить её можно
+              только у стороннего сервиса, а без туннеля запрос ушёл бы с
+              настоящего адреса. «Не выбран» — не то же, что «неизвестен»:
+              `App.tsx` включает первый по алфавиту, и молчание тут уводило бы в
+              чужую страну без единого слова, поэтому предстоящий узел показан
+              приглушённо и с подсказкой. Ужимается город, потом имя узла;
+              страна и метка типа — последними. */}
+          <div
+            className="st-exit mt-auto flex min-w-0 flex-col gap-0.5 overflow-hidden whitespace-nowrap"
+            title={status?.country ? undefined : pending ? s.profileFirst : s.exitUnknown}
+          >
+            <p className="flex min-w-0 items-baseline gap-x-2 text-base">
+              {status?.country ? (
+                <>
+                  {exitFlag && (
+                    <span className="shrink-0 self-center leading-none" aria-hidden="true">
+                      {exitFlag}
+                    </span>
+                  )}
+                  {/* Название прячется только тогда, когда вместо него
+                      остаётся флаг: без флага пустая строка не значила бы
+                      ничего. */}
+                  <span className={`min-w-0 shrink-[0.1] truncate font-semibold ${exitFlag ? "m-country" : ""}`}>
+                    {exitCountry}
+                  </span>
+                  {exitCity && <span className="m-city min-w-0 shrink-[100] truncate text-muted">{exitCity}</span>}
+                </>
+              ) : (
+                <span className={`min-w-0 truncate ${pending ? "text-muted" : "font-semibold"}`}>
+                  {nodeName ?? s.noProfile}
                 </span>
               )}
-              {/* Название прячется только тогда, когда вместо него остаётся
-                  флаг: без флага пустая ячейка не значила бы ничего. */}
-              <span className={`min-w-0 truncate ${exitFlag ? "m-country" : ""}`}>
-                {exitCountry}
-                {/* Город — приглушённо следом и только если он есть. */}
-                {exitCity && <span className="m-city font-normal text-muted"> · {exitCity}</span>}
+            </p>
+            {(status?.country ? nodeName : null) || nodeKind ? (
+              <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
+                {status?.country && nodeName && (
+                  <span className="min-w-0 shrink-[10] truncate" title={nodeName}>
+                    {s.viaNode(nodeName)}
+                  </span>
+                )}
+                {nodeKind && (
+                  <span className="shrink-0 rounded-sm border border-edge px-1.5 font-mono text-xs">{nodeKind}</span>
+                )}
+              </p>
+            ) : null}
+          </div>
+        </div>
+        </div>
+
+        {/* Два блока-измерителя: подпись и «окно» истории справа от неё, под
+            ними — крупное число, под числом — колодец с графиком на всю
+            оставшуюся высоту ряда и мелкая справка внизу. Колодец — не фон
+            числа, а своё место: графику нужна площадь, а не просвет между
+            цифрами. В узком окне (`.st-metrics` ниже 768 px) блоки
+            складываются в строку чисел, а колодцы и подписи уходят. */}
+        <div className="st-metrics">
+          <section className="m-block" role="group" aria-label={s.speed} title={scaleHint}>
+            <div className="m-legend">
+              <span className="m-label text-xs">{s.speed}</span>
+              {span != null && <span className="m-aside text-xs">{s.histSpan(span)}</span>}
+            </div>
+            <div className="m-rates flex items-baseline gap-x-4 font-mono tabular-nums">
+              <span className="flex items-baseline gap-1 text-open" title={s.received}>
+                <Icon name="down" size={14} className="m-icon-down shrink-0 self-center" />
+                <span className="m-num text-xl font-medium">{rxNum}</span>
+                <span className="text-xs font-normal text-muted">
+                  {rxUnit}
+                  {last ? s.perSecond : ""}
+                </span>
               </span>
-            </>
-          ) : (
-            "—"
-          )}
-        </Metric>
-        {/* Цвет — по настоящей задержке, а не по кадру анимации: порог должен
-            переключаться по факту, а не по тому, докуда доехало число. */}
-        <Metric
-          name={s.latency}
-          value={latency != null ? `${Math.round(latency)} ms` : "—"}
-          tone={latencyTone(status?.latency_ms)}
-          mono
-        />
-        <Metric
-          name={s.received}
-          value={rx != null ? bytes(rx) : "—"}
-          hint={s.trafficHint}
-          icon="down"
-          mono
-          rate={last ? `${bytes(last.rx)}${s.perSecond}` : undefined}
-          rateHint={scaleHint}
-          spark={<CellSpark values={rates.map((r) => r.rx)} peak={peak} id="pg-spark-down" tone="text-open" />}
-        />
-        <Metric
-          name={s.sent}
-          value={tx != null ? bytes(tx) : "—"}
-          hint={s.trafficHint}
-          icon="up"
-          mono
-          rate={last ? `${bytes(last.tx)}${s.perSecond}` : undefined}
-          rateHint={scaleHint}
-          spark={<CellSpark values={rates.map((r) => r.tx)} peak={peak} id="pg-spark-up" tone="text-accent" />}
-        />
-      </dl>
+              <span className="flex items-baseline gap-1 text-accent" title={s.sent}>
+                <Icon name="up" size={14} className="m-icon-up shrink-0 self-center" />
+                <span className="m-num text-xl font-medium">{txNum}</span>
+                <span className="text-xs font-normal text-muted">
+                  {txUnit}
+                  {last ? s.perSecond : ""}
+                </span>
+              </span>
+            </div>
+            {/* Принятое и отданное — одним колодцем и на одной шкале: так
+                видно, какая из двух сторон несёт канал. */}
+            <div className="chart" aria-hidden="true">
+              <CellSpark values={rates.map((r) => r.rx)} peak={peak} id="pg-spark-down" tone="text-open" />
+              <CellSpark values={rates.map((r) => r.tx)} peak={peak} id="pg-spark-up" tone="text-accent" />
+            </div>
+            <div className="m-foot m-session" title={s.trafficHint}>
+              <span className="m-foot-label">{s.sessionTotal}</span>
+              <span className="flex items-center gap-x-2.5 whitespace-nowrap font-mono tabular-nums text-muted">
+                <span className="inline-flex items-center gap-0.5" title={s.received}>
+                  <Icon name="down" size={12} className="shrink-0" />
+                  {rx != null ? bytes(rx) : "—"}
+                </span>
+                <span className="inline-flex items-center gap-0.5" title={s.sent}>
+                  <Icon name="up" size={12} className="shrink-0" />
+                  {tx != null ? bytes(tx) : "—"}
+                </span>
+              </span>
+            </div>
+          </section>
+          {/* Цвет — по настоящей задержке, а не по кадру анимации: порог должен
+              переключаться по факту, а не по тому, докуда доехало число. */}
+          <section className="m-block" role="group" aria-label={s.latency}>
+            <div className="m-legend">
+              <span className="m-label text-xs">{s.latency}</span>
+              <span className="m-aside text-xs">{s.probeEvery}</span>
+            </div>
+            <div
+              className={`m-latency smooth truncate font-mono text-2xl font-medium tabular-nums ${latencyTone(status?.latency_ms)}`}
+            >
+              {latency != null ? Math.round(latency) : "—"}
+              {latency != null && <span className="ms-1 text-sm font-normal text-muted">ms</span>}
+            </div>
+            <div className="chart" aria-hidden="true">
+              <LatencyBars values={latencies} className="m-bars" />
+            </div>
+            <div className="m-foot m-range">
+              <span>
+                {s.minShort}{" "}
+                <span className="font-mono tabular-nums text-muted">
+                  {latencies.length > 0 ? Math.round(Math.min(...latencies)) : "—"}
+                </span>
+              </span>
+              <span>
+                {s.maxShort}{" "}
+                <span className="font-mono tabular-nums text-muted">
+                  {latencies.length > 0 ? Math.round(Math.max(...latencies)) : "—"}
+                </span>
+              </span>
+            </div>
+          </section>
+        </div>
+      </div>
 
       {/* Пока служба не ответила, по нижней кромке плиты идёт бегунок. Прогресса
           у нас нет и быть не может — показываем только сам факт ожидания. */}
@@ -460,6 +636,19 @@ export function StatusBar({
         <div className="bar absolute inset-x-0 bottom-0 h-0.5 overflow-hidden text-[color:var(--tone)]" />
       )}
       {trouble && status && <Trouble s={s} status={status} onClose={() => setTrouble(false)} />}
+      {menu && (
+        <Menu
+          at={menu}
+          onClose={() => setMenu(null)}
+          fromStart
+          items={scopes.map(([value, label, hint]) => ({
+            label,
+            sub: hint,
+            mark: value === scope,
+            onPick: () => onScope(value),
+          }))}
+        />
+      )}
     </header>
   );
 }
@@ -516,77 +705,5 @@ function Trouble({ s, status, onClose }: { s: Strings; status: Status; onClose: 
         </div>
       </div>
     </Modal>
-  );
-}
-
-/** Ячейка приборной линейки: подпись, под ней значение ступенью крупнее —
- *  линейка читается как прибор, а не как подпись к подписи.
- *  Цифры табличные — статус приходит каждые две секунды, и прыгать по ширине
- *  им нельзя.
- *
- *  В узком окне (`@media (max-width: 767px)` в `index.css`) подписи уходят
- *  с глаз, и всё, что ячейка о себе рассказывает, остаётся в подсказке — она
- *  поэтому и собирается из имени, значения и пояснения разом, а не из одного
- *  значения. */
-function Metric({
-  name,
-  value,
-  tone = "",
-  hint,
-  icon,
-  children,
-  spark,
-  rate,
-  rateHint,
-  mono,
-}: {
-  name: string;
-  value: string;
-  /** Число, а не слово: набирается моноширинным — цифры прибора стоят
-   *  столбиком и не дёргаются, когда меняются. */
-  mono?: boolean;
-  tone?: string;
-  /** Что именно измерено, если из подписи это не следует: счётчики трафика
-   *  считают с запуска туннеля, а не с установки приложения. */
-  hint?: string;
-  /** Стрелка вместо подписи там, где подписи не осталось. Только у счётчиков:
-   *  «принято» и «отправлено» — единственная пара, которую рисунок различает
-   *  не хуже слова. */
-  icon?: "down" | "up";
-  /** Значение сложнее строки — точка выхода: флаг и название живут отдельно,
-   *  чтобы в узком окне название могло уйти, а флаг остаться. */
-  children?: ReactNode;
-  /** История скорости фоном ячейки. Только у счётчиков: у профиля и страны
-   *  истории нет, а у задержки она есть, но в байтах её не нарисовать. */
-  spark?: ReactNode;
-  /** Скорость под числом — то же измерение, что и график, только словами. */
-  rate?: string;
-  rateHint?: string;
-}) {
-  return (
-    // Разделители только там, где линейка стоит одной строкой: в две колонки
-    // левая граница второго ряда висела бы посреди пустоты.
-    <div className="m-cell min-w-0 md:border-s md:border-edge md:px-3 md:first:border-s-0 md:first:ps-0">
-      {spark}
-      <dt className="m-label text-xs text-muted">{name}</dt>
-      {/* tabular-nums обязателен именно из-за доезда: цифры разной ширины
-          меняются каждый кадр и дёргали бы линейку по всей строке. */}
-      <dd
-        className={`m-value smooth mt-0.5 flex items-baseline gap-1.5 overflow-hidden text-lg font-semibold tabular-nums ${mono ? "font-mono" : ""} ${tone}`}
-        title={hint ? `${name}: ${value} — ${hint}` : `${name}: ${value}`}
-      >
-        {icon && (
-          <span className="m-icon shrink-0 self-center text-muted">
-            <Icon name={icon} size={12} />
-          </span>
-        )}
-        {children ?? <span className="truncate">{value}</span>}
-      </dd>
-      {rate && (
-        <dd className="rates truncate font-mono" title={rateHint}>
-          {rate}
-        </dd>
-      )}
-    </div>
   );
 }

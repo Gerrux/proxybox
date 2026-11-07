@@ -13,11 +13,30 @@ export function Panel({
   action,
   className = "",
   pad = "",
+  bar,
+  folds,
+  foot,
   children,
 }: {
   title: string;
   note?: ReactNode;
   action?: ReactNode;
+  /** Полоса под шапкой, которая не прокручивается вместе со списком: панель
+   *  инструментов списка профилей и полоса подписок. Вне прокрутки она по
+   *  построению не мешает липкому заголовку группы, который липнет к кромке
+   *  самой прокрутки. */
+  bar?: ReactNode;
+  /** Шапка панели прячется (`.panel-head[data-folds]` в `index.css`): `"narrow"` —
+   *  ниже 1100 px, где панель одна и её называет рейка; `"always"` — на любой
+   *  ширине, для панели, которая не стоит рядом с соседями. Заводится только
+   *  панелью со своей `bar`: счёт из `note` и кнопки из `action` в таком виде
+   *  обязана нести сама панель инструментов (`.fold-only` — виден, пока шапки
+   *  нет), иначе они пропали бы вместе со строкой. */
+  folds?: "narrow" | "always";
+  /** Полоса под прокруткой — зеркало `bar`: панель накопленных правок
+   *  («Применить» у галочек «Раздельно»). Вне прокрутки, чтобы кнопка не
+   *  уезжала вместе со списком и не терялась в его конце. */
+  foot?: ReactNode;
   className?: string;
   /** Отступ содержимого. Панель не даёт его сама: липкое внутри прокрутки
    *  (`.sub-head` в списке профилей) липнет не к её кромке, а к полю за
@@ -28,20 +47,47 @@ export function Panel({
   children: ReactNode;
 }) {
   return (
-    <section className={`flex min-h-0 flex-col overflow-hidden ${className}`}>
+    // Имя панели — и когда шапки нет: читалке с экрана она остаётся областью с
+    // названием, а не безымянным блоком.
+    <section aria-label={title} className={`flex min-h-0 flex-col overflow-hidden ${className}`}>
       {/* Подпись обрезаться не имеет права — по ней и находят панель.
           Ужимается сначала счётчик, потом действия. Высота полосы одна у всех
           панелей (40 px), и кнопки в ней одного размера. */}
-      <header className="panel-head flex h-10 shrink-0 items-center justify-between gap-2 ps-4 pe-2">
+      <header
+        data-folds={folds}
+        className="panel-head flex h-10 shrink-0 items-center justify-between gap-2 ps-4 pe-2"
+      >
         <h2 className="flex min-w-0 flex-1 items-baseline gap-2 text-sm font-semibold text-ink">
           <span className="shrink-0">{title}</span>
           {note != null && <span className="min-w-0 truncate text-xs font-normal text-muted">{note}</span>}
         </h2>
         {action && <div className="flex shrink-0 items-center gap-0.5">{action}</div>}
       </header>
+      {bar}
       <div className={`scroll min-h-0 flex-1 overflow-y-auto ${pad}`}>{children}</div>
+      {foot}
     </section>
   );
+}
+
+/** Ширина самого блока, а не окна. Панель не знает, сколько ей дали: выше
+ *  1100 px три панели стоят рядом и профилям достаётся 300–450 px при любой
+ *  ширине окна, ниже — одна панель во всю ширину. `max-width` на окне про это
+ *  молчит, а ряд кнопок, который ему не хватает места, обязан сворачиваться
+ *  по месту, а не по окну. Замер — `ResizeObserver` на самом блоке: события
+ *  меняет только размер, опроса нет. До первого замера — 0, а ждать его
+ *  нельзя, поэтому он делается синхронно (`useLayoutEffect`). */
+export function useBoxWidth(ref: React.RefObject<HTMLElement | null>): number {
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setWidth(el.getBoundingClientRect().width);
+    const watch = new ResizeObserver(([entry]) => entry && setWidth(entry.contentRect.width));
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [ref]);
+  return width;
 }
 
 /** Порог узкого окна — тот же, по которому сжимается раскладка в `index.css`
@@ -537,6 +583,11 @@ export type MenuItem = {
    *  отдельной кнопке: пункты стоят вплотную. */
   ask?: string;
   hint?: string;
+  /** Пояснение второй строкой, видимое сразу, а не по наведению. Для выбора из
+   *  вариантов, где без пояснения пункты не отличить (охват в шапке): `hint`
+   *  на сенсоре и с клавиатуры недоступен. Показывается в две строки, целиком
+   *  лежит в `title` пункта. */
+  sub?: string;
   danger?: boolean;
   /** Пункт-переключатель во включённом положении. Галочкой слева, а не цветом:
    *  меню читают глазами, а не наводят на него курсор. */
@@ -565,10 +616,16 @@ export function Menu({
   at,
   items,
   onClose,
+  fromStart = false,
 }: {
   at: [number, number];
   items: MenuItem[];
   onClose: () => void;
+  /** `at[0]` — не место курсора, а начальный край кнопки, под которой открыто
+   *  меню (физически правый в раскладке справа налево): меню растёт от него
+   *  внутрь окна. Без этого меню под кнопкой у правого края в фарси вставало
+   *  бы от её правого края вправо — за пределы окна — и упиралось в край. */
+  fromStart?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [armed, setArmed] = useState<string | null>(null);
@@ -576,8 +633,9 @@ export function Menu({
   useLayoutEffect(() => {
     const rect = ref.current?.getBoundingClientRect();
     if (!rect) return;
+    const from = fromStart && document.documentElement.dir === "rtl" ? at[0] - rect.width : at[0];
     setBox({
-      left: Math.max(8, Math.min(at[0], window.innerWidth - rect.width - 8)),
+      left: Math.max(8, Math.min(from, window.innerWidth - rect.width - 8)),
       top: Math.max(8, Math.min(at[1], window.innerHeight - rect.height - 8)),
     });
   }, [at]);
@@ -604,7 +662,7 @@ export function Menu({
       ref={ref}
       role="menu"
       style={{ left: box?.left ?? at[0], top: box?.top ?? at[1], visibility: box ? undefined : "hidden" }}
-      className="enter fixed z-20 min-w-44 rounded-lg border border-edge bg-surface p-1 shadow-[var(--pg-flyout-shadow)]"
+      className="enter fixed z-20 min-w-44 max-w-80 rounded-lg border border-edge bg-surface p-1 shadow-[var(--pg-flyout-shadow)]"
     >
       {items.map((item) => (
         <button
@@ -612,20 +670,25 @@ export function Menu({
           type="button"
           role="menuitem"
           disabled={item.disabled}
-          title={item.hint}
+          title={item.hint ?? item.sub}
           onClick={() => {
             if (item.ask && armed !== item.label) return setArmed(item.label);
             onClose();
             item.onPick();
           }}
-          className={`smooth flex h-8 w-full items-center gap-2 rounded-md px-2 text-start text-sm disabled:opacity-40 hover:bg-hover ${
-            item.danger ? "hover:text-fault" : ""
-          } ${armed === item.label ? "text-fault" : ""}`}
+          className={`smooth flex w-full gap-2 rounded-md px-2 text-start text-sm disabled:opacity-40 hover:bg-hover ${
+            item.sub ? "items-start py-1.5" : "h-8 items-center"
+          } ${item.danger ? "hover:text-fault" : ""} ${armed === item.label ? "text-fault" : ""}`}
         >
-          <span className="grid w-4 shrink-0 place-items-center text-accent">
+          <span className={`grid w-4 shrink-0 place-items-center text-accent ${item.sub ? "mt-0.5" : ""}`}>
             {item.mark && <Icon name="check" size={14} />}
           </span>
-          <span className="min-w-0 flex-1 truncate">{armed === item.label ? item.ask : item.label}</span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate">{armed === item.label ? item.ask : item.label}</span>
+            {/* Две строки, а не весь абзац: пояснение охвата «Весь компьютер» в
+                узком меню занимало пять. Целиком оно лежит в `title` пункта. */}
+            {item.sub && <span className="line-clamp-2 block text-xs text-muted">{item.sub}</span>}
+          </span>
         </button>
       ))}
     </div>

@@ -27,14 +27,12 @@ const SEEN = "pg.welcome";
  *  без объяснения его отметка выглядит чужой. */
 type Step = { title: string; hint: string; done: boolean; always?: boolean };
 
-export function Welcome({ status, className = "" }: { status: Status; className?: string }) {
+function welcomeSteps(status: Status): Step[] {
   const s = strings(status.lang);
-  const [hidden, setHidden] = useState(() => localStorage.getItem(SEEN) === "1");
-
   // В охвате «весь компьютер» список приложений не участвует вовсе, и требовать
   // выбранного там значило бы держать вечно неисполнимый шаг: туда идёт всё.
   const wholeMachine = status.scope === "all" || status.scope === "split";
-  const steps: Step[] = [
+  return [
     { title: s.welcomeStep1, hint: s.welcomeStep1Hint, done: status.profiles.length > 0 },
     {
       title: s.welcomeStep2,
@@ -44,6 +42,25 @@ export function Welcome({ status, className = "" }: { status: Status; className?
     },
     { title: s.welcomeStep3, hint: s.welcomeStep3Hint, done: status.tunnel === "up" },
   ];
+}
+
+/** Запоминает, что все три шага сбылись, — из корня окна, а не из карточки.
+ *  Карточка не рисуется в настройках, и шаги, сбывшиеся пока они открыты, иначе
+ *  не запомнились бы: выключенный на ночь туннель возвращал бы карточку тому,
+ *  кто прошёл весь путь, — третий шаг снова не сбылся бы. Запись одна и та же,
+ *  что у «Скрыть» (`SEEN`): раз сбывшееся навсегда. */
+export function useWelcomeDone(status: Status | null): void {
+  const done = status != null && welcomeSteps(status).every((step) => step.done);
+  useEffect(() => {
+    if (done) localStorage.setItem(SEEN, "1");
+  }, [done]);
+}
+
+export function Welcome({ status, className = "" }: { status: Status; className?: string }) {
+  const s = strings(status.lang);
+  const [hidden, setHidden] = useState(() => localStorage.getItem(SEEN) === "1");
+
+  const steps = welcomeSteps(status);
   const complete = steps.every((step) => step.done);
   // Пояснение — только у того шага, на котором стоят. Висели они у всех трёх, и
   // карточка вырастала на полкартинки: в окне 700 px высотой она отжимала список
@@ -62,7 +79,17 @@ export function Welcome({ status, className = "" }: { status: Status; className?
     }
   }, [complete, hidden]);
 
-  if (hidden) return null;
+  // Сбывшееся не рисуем ни кадра: эффект выше гасит карточку уже после
+  // отрисовки, и на загрузке с тремя отмеченными шагами она вспыхивала на
+  // один кадр, прежде чем уйти. Тот же довод — про отсутствие статуса: пока
+  // он не пришёл, отмечать нечего, и шаги показались бы все три невыполненными
+  // (`App.tsx` не рисует карточку, пока статуса нет).
+  // Туннель, который поднимается прямо сейчас при готовых первых двух шагах, —
+  // тот же случай: так выглядит запуск окна поверх уже настроенной службы, и
+  // третий шаг сбудется раньше, чем его успеют прочесть. Сорвётся подъём —
+  // состояние станет «доступ закрыт», и карточка вернётся.
+  const arriving = status.tunnel === "connecting" && steps[0].done && steps[1].done;
+  if (hidden || complete || arriving) return null;
 
   return (
     <Panel

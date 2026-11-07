@@ -274,7 +274,6 @@ body {
    же тоном: слово и есть индикатор, кружка со значком ему не нужно. */
 .st {
   background: color-mix(in oklch, var(--tone) 9%, var(--pg-bg));
-  border-bottom: 1px solid color-mix(in oklch, var(--tone) 28%, var(--pg-border));
 }
 
 .st-word {
@@ -294,17 +293,71 @@ body {
   color: var(--pg-text);
 }
 
-/* Шапка: текст слева, карта справа, между ними волосяная линия в тон — а не
-   маска-растворение: жёсткая кромка, как у любой панели Windows. */
-.st-plate {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 46%);
+/* Верх окна — один ряд из трёх карточек: состояние (с заливкой тоном и рамкой
+   тона), скорость, задержка, 1.75 : 1 : 0.72. Карточка — рамка в волосок,
+   скругление 12 px, зазор между ними 8 (решение владельца, заменившее
+   прежние блоки на одной поверхности через волосяные линии). Колонки не
+   поровну, и это не вкус: слову состояния с выключателем нужно вдвое больше
+   места, чем числу задержки. Поля — 4 сверху (под титульной полосой) и 12 по
+   бокам и снизу. Ниже 768 px сетки нет вовсе (см. ниже): карточка состояния
+   встаёт во всю ширину, а измерители — строкой-карточкой под ней. */
+.st-hero {
+  grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr) minmax(0, 0.72fr);
+  gap: 8px;
+  padding: 4px 12px 12px;
+  border-bottom: 1px solid var(--pg-border);
 }
 
-.st-map-plate {
+/* Карточка состояния. Она же — контейнер для слова состояния: ширину слову
+   задаёт не окно, а сама карточка (1.75 из 3.47 доли ряда, минус поля), и
+   ступень кегля выбирает запрос по ней (`@container` ниже). Контейнер по
+   ширине, а не по размеру: высоту карточки по-прежнему задаёт текст. */
+.st-state {
   position: relative;
-  min-block-size: 152px;
-  border-inline-start: 1px solid color-mix(in oklch, var(--tone) 20%, var(--pg-border));
+  overflow: hidden;
+  container-type: inline-size;
+  border: 1px solid color-mix(in oklch, var(--tone) 22%, var(--pg-border));
+  border-radius: var(--pg-r-card);
+}
+
+/* Слово состояния не обрезается и не переносится, а ужимается ступенями
+   шкалы: 28 px, пока карточка шире 531 px (самое длинное слово окна, «Туннеля
+   нет — доступ закрыт», — 396 px при 28; прочее в карточке — 132 px: поля,
+   зазор, тумблер, глиф), затем 20 px, пока шире 417 px, иначе 16. Пороги —
+   в пикселях содержимого карточки, как их и меряет запрос. Сторож —
+   `the_state_word_stays_on_one_line_in_the_row_of_three`. */
+@container (max-width: 531px) {
+  .st-word {
+    font-size: var(--text-xl);
+    line-height: var(--text-xl--line-height);
+  }
+}
+
+@container (max-width: 417px) {
+  .st-word {
+    font-size: var(--text-lg);
+    line-height: var(--text-lg--line-height);
+  }
+}
+
+/* Карта — фон конца блока состояния: с 38% его ширины и до края, а к тексту
+   растворяется маской. Высоту блока задаёт текстовая колонка, карта — только
+   абсолютный слой под ней (`.st-map`), и своего минимума у неё нет: пока он
+   был, блок не опускался ниже него, сколько бы строк ни убирали из текста.
+   Направление маски — от текста, поэтому справа налево оно зеркальное (саму
+   карту не зеркалим: это карта, а не раскладка). */
+.st-map-plate {
+  position: absolute;
+  inset-block: 0;
+  inset-inline: 38% 0;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 30%);
+  mask-image: linear-gradient(to right, transparent 0, #000 30%);
+}
+
+[dir="rtl"] .st-map-plate {
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 30%);
+  mask-image: linear-gradient(to left, transparent 0, #000 30%);
 }
 
 .st-map {
@@ -312,18 +365,70 @@ body {
   inset: 0;
 }
 
-/* Рейка навигации — NavigationView Windows 11 в компактном виде: значки в
-   столбец у начала окна, выбранный отмечен акцентной полоской у кромки.
-   Заменила ряд вкладок: рейка не спорит с шапкой панели за ту же строку и
-   не съедает у списка 40 px высоты в узком окне. */
+/* Выбор охвата — чип под подсказкой: точка тона состояния, название, шеврон.
+   Не кнопка Fluent в 32 px: чип стоит на заливке плиты, и заливка кнопки
+   (светлее поверхности) читалась бы на ней отдельной плиткой. */
+.st-scope {
+  border: 1px solid color-mix(in oklch, var(--tone) 18%, var(--pg-border));
+  border-radius: var(--pg-r-chip);
+  background: var(--pg-sunken);
+}
+
+/* Блок состояния плашки из трея — такая же карточка, как в главном окне, но
+   вложенная: поле 8 px со всех сторон кроме низа, скругление 10, рамка тона. */
+.st-fly {
+  margin: 8px 8px 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklch, var(--tone) 22%, var(--pg-border));
+  border-radius: var(--pg-r-cell);
+}
+
+.st-scope:hover:not(:disabled) {
+  background: var(--pg-hover);
+}
+
+.st-scope-dot {
+  inline-size: 6px;
+  block-size: 6px;
+  border-radius: 9999px;
+  background: var(--tone);
+  flex: none;
+}
+
+/* Подсказка состояния — одна строка в любой ширине окна, целиком она остаётся
+   в `title` (`StatusBar.tsx`). Раньше обрезалась только в 470 px, а выше шла в
+   две строки и растила плиту на 18 px ради фразы, которую читают раз. Ряд
+   подсказки в низком окне см. `@media (max-height: 640px)`. */
+.st-hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Рейка навигации — NavigationView Windows 11: значки в столбец у начала
+   окна, под каждым подпись, счётчик — бляшкой у угла значка, выбранный
+   отмечен акцентной полоской у кромки. Заменила ряд вкладок: рейка не спорит
+   с шапкой панели за ту же строку и не съедает у списка 40 px высоты.
+
+   Подпись под значком, а не в подсказке: «Приложения» и «Соединения» без слова
+   различались по значкам и счётчикам хуже, чем по слову. Подписи ужимаются до
+   значков там же, где ужимается шапка (470 px, ниже), — ширина рейки при этом
+   меняется с 88 на 48.
+
+   Прокручивается рейка сама: в окне минимальной высоты пять пунктов с
+   подписями выше полосы, и пункт, ушедший за край, был бы недостижим. */
 .rail {
-  inline-size: 48px;
+  inline-size: 88px;
   border-inline-end: 1px solid var(--pg-border);
+  overflow: hidden auto;
 }
 
 .rail-item {
   position: relative;
   border-radius: 4px;
+  inline-size: 80px;
+  block-size: 52px;
+  flex: none;
 }
 
 .rail-item:hover {
@@ -332,6 +437,88 @@ body {
 
 .rail-item[aria-pressed="true"] {
   background: var(--pg-press);
+}
+
+/* Бляшка — InfoBadge Windows 11: таблетка 16 px с заливкой слоя и кольцом в
+   2 px цвета того, на чём лежит пункт. В широкой рейке (88 px) она стоит
+   рядом со значком, а не на нём: от его края — 4 px, по высоте — в верхней
+   половине значка (20 px). Прежде она заходила на угол значка на 10 px, и
+   цифры лежали у его штрихов даже с кольцом — теперь пересечения нет вовсе.
+   Места хватает: значок стоит по центру пункта в 80 px, справа от него 30 px,
+   а «99+» занимает 28. Левый край — логический, справа налево бляшка встаёт
+   с другой стороны.
+
+   В узкой рейке (48 px, ниже 470 px окна) рядом места нет, и бляшка
+   возвращается на верхний угол значка (правила — в `@media (max-width:
+   470px)`): заходит на него на 10 px вширь и на 8 вниз, середина значка
+   (10, 10) остаётся свободной, а непрозрачная заливка и кольцо закрывают
+   штрихи под цифрами. Двузначное число при этом ещё помещается в рейку
+   (замерено: правый край впритык к кромке); «99+» в такой рейке кольцом чуть
+   обрезается, на читаемость цифр это не влияет.
+
+   Выбранный пункт лежит на прозрачной заливке `--pg-press`, и кольцо цвета
+   рейки вокруг бляшки светилось бы тёмным пятном на нём, — поэтому у
+   выбранного кольцо того же тона, что и заливка поверх рейки (смесь считана
+   теми же 8% и 10%, что и у токена). Точка — то же без числа: 10 px, цвет —
+   состояние (`closed` — заперто, `fault` — сбой). */
+.rail-badge {
+  --ring: var(--pg-bg);
+  position: absolute;
+  inset-block-start: -1px;
+  inset-inline-start: 100%;
+  margin-inline-start: 4px;
+  display: grid;
+  place-items: center;
+  block-size: 16px;
+  min-inline-size: 16px;
+  padding-inline: 4px;
+  border: 1px solid var(--pg-border-strong);
+  border-radius: 9999px;
+  background: var(--pg-surface);
+  box-shadow: 0 0 0 2px var(--ring);
+  color: var(--pg-text);
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.rail-item[aria-pressed="true"] .rail-badge {
+  --ring: light-dark(
+    color-mix(in srgb, var(--pg-bg), black 8%),
+    color-mix(in srgb, var(--pg-bg), white 10%)
+  );
+}
+
+.rail-badge[data-dot] {
+  inset-block-start: 2px;
+  margin-inline-start: 4px;
+  block-size: 10px;
+  min-inline-size: 10px;
+  padding: 0;
+  border: 0;
+}
+
+.rail-badge[data-dot="closed"] {
+  background: var(--pg-closed);
+}
+
+.rail-badge[data-dot="fault"] {
+  background: var(--pg-fault);
+}
+
+/* Правка «Раздельно», ещё не применённая, — акцентная точка у нижнего угла
+   значка (бляшка с числом стоит у верхнего). Цвет — действие оператора, не
+   состояние: тот же акцент, что у точки в строке приложения. Кольцо цвета
+   рейки вырезает угол значка, как у бляшки. */
+.rail-pending {
+  position: absolute;
+  inset-block-end: -2px;
+  inset-inline-end: -4px;
+  inline-size: 10px;
+  block-size: 10px;
+  border-radius: 9999px;
+  background: var(--pg-accent);
+  box-shadow: 0 0 0 2px var(--pg-bg);
 }
 
 .rail-item[aria-pressed="true"]::before {
@@ -346,9 +533,36 @@ body {
   background: var(--pg-accent);
 }
 
-/* Шапка панели — одна строка в 40 px у всех панелей, под ней волосяная линия. */
+/* Шапка панели — одна строка в 40 px у всех панелей, под ней волосяная линия.
+
+   Панель со своей панелью инструментов (`bar` у `Panel`: профили, приложения,
+   соединения) шапки не имеет там, где она ничего не различает: ниже 1100 px
+   панель одна, и рейка уже называет её. Строка в 40 px над строкой
+   инструментов стоила списку профилей лишнюю строку, а значения шапки (счёт,
+   «сверено», кнопки приложений) переезжают в саму панель инструментов
+   (`.fold-only`: виден только пока шапки нет). Выше 1100 px три панели стоят
+   рядом, и заголовок — единственное, что их различает, поэтому шапка там
+   остаётся. Соединения никогда не делят окно с соседом: у них шапки нет на
+   любой ширине (`data-folds="always"`). Правила лежат нелоенным CSS по той же
+   причине, что и `.pane` ниже: они спорят за `display` с утилитами. */
 .panel-head {
   border-bottom: 1px solid var(--pg-border);
+}
+
+.panel-head[data-folds="always"] {
+  display: none;
+}
+
+@media (max-width: 1099px) {
+  .panel-head[data-folds] {
+    display: none;
+  }
+}
+
+@media (min-width: 1100px) {
+  .fold-only {
+    display: none;
+  }
 }
 
 /* Кнопка Fluent: заливка управления, штрих, нижняя кромка темнее боковых —
@@ -533,8 +747,19 @@ body {
   inset: 0;
 }
 
+/* Суша — один путь из силуэтов всех стран, и без обводки соседи сливались в
+   одно пятно: граница между Нидерландами и Германией не читалась вовсе, а по
+   ней страну выхода и узнают. Граница — тёмный зазор цвета поверхности, а не
+   светлая линия: у соседних стран общая кромка рисуется дважды, и
+   полупрозрачная светлая линия на ней вышла бы вдвое ярче побережья. Толщина
+   не тянется с увеличением (`non-scaling-stroke`): при перелёте к Мальте
+   линия в единицах карты стала бы толще самой страны. */
 .world-land {
-  fill: color-mix(in oklch, var(--pg-text) 13%, transparent);
+  fill: color-mix(in oklch, var(--pg-text) 17%, transparent);
+  stroke: color-mix(in oklch, var(--pg-bg) 85%, transparent);
+  stroke-width: 0.9px;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
 }
 
 .world-hatch {
@@ -598,44 +823,114 @@ body {
   border-block: 1px solid color-mix(in oklch, var(--tone) 20%, var(--pg-border));
 }
 
-/* Приборная линейка под плитой: подпись сверху, число под ней, ячейки
-   разделены волосяными линиями. История скорости — фоном тех ячеек, которые
-   считают эти байты: график принятого под числом принятого, отданного под
-   отданным. Бледный намеренно: это история, а не показание. */
-.st-metrics {
-  border-bottom: 1px solid var(--pg-border);
-  /* Колонки не поровну: имя профиля и страна — слова, и им нужно больше,
-     чем трём числам; поровну имя резалось до «Amsterdam · R…» уже на
-     1000 px. Пять колонок при этом остаются пятью (`grid-cols-5` на самой
-     линейке, сторож — `the_instrument_row_never_wraps`). */
-  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.8fr) minmax(0, 0.7fr) minmax(0, 0.9fr) minmax(0, 0.9fr);
+/* График скорости в строке плашки: занимает остаток после двух чисел. */
+.fly-chart {
+  position: relative;
+  display: block;
+  flex: 1 1 0;
+  min-inline-size: 0;
+  block-size: 20px;
 }
 
-.m-cell {
+/* Блоки-измерители: скорость и задержка. Оба — столбец на высоту ряда: строка
+   подписи («Скорость … 90 с»), крупное число, колодец с историей на всю
+   оставшуюся высоту и мелкая справка внизу. `.st-metrics` на широком окне —
+   `display: contents`: блоки становятся колонками самой сетки `.st-hero`, а
+   не вложенной второй сеткой (две сетки разъехались бы по пропорции). Высоту
+   ряда задаёт блок состояния, а у колодца высоты нет — он растягивается: график
+   не двигает ряд на каждом перерисованном статусе. */
+.st-metrics {
+  display: contents;
+}
+
+.m-block {
+  display: flex;
+  min-inline-size: 0;
+  flex-direction: column;
+  padding: 10px 12px;
+  border: 1px solid var(--pg-border);
+  border-radius: var(--pg-r-card);
+  background: var(--pg-tile);
+}
+
+.m-legend {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  line-height: 16px;
+}
+
+.m-label {
+  color: var(--pg-muted);
+}
+
+.m-aside {
+  color: var(--pg-faint);
+}
+
+.m-rates {
+  margin-block-start: 2px;
+  line-height: 26px;
+}
+
+.m-latency {
+  margin-block-start: 2px;
+  line-height: 34px;
+}
+
+.m-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-block-start: 6px;
+  color: var(--pg-faint);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+/* Колодец: врезан в карточку (темнее неё, `--pg-well`), скругление 8, с тремя
+   бледными линиями шкалы. Высота — остаток ряда (`flex: 1`), минимум — чтобы
+   график оставался графиком при самом низком окне. */
+.chart {
   position: relative;
+  flex: 1 1 0;
+  min-block-size: 28px;
+  margin-block-start: 6px;
+  overflow: hidden;
+  border: 1px solid var(--pg-border);
+  border-radius: var(--pg-r-well);
+  background-color: var(--pg-well);
+  background-image: linear-gradient(to top, color-mix(in oklch, var(--pg-border) 70%, transparent) 1px, transparent 1px);
+  background-size: 100% 33.34%;
 }
 
 .spark {
   position: absolute;
-  inset: auto 8px 0 12px;
-  block-size: 20px;
+  inset: 0;
   line-height: 0;
-  opacity: 0.3;
+  opacity: 0.85;
   pointer-events: none;
 }
 
-/* Подпись, число и скорость — поверх графика. */
-.m-label,
-.m-value,
-.rates {
-  position: relative;
+.m-bars {
+  position: absolute;
+  inset: 3px 3px 0;
 }
 
-.rates {
-  font-size: 12px;
-  line-height: 16px;
-  font-variant-numeric: tabular-nums;
-  color: var(--pg-muted);
+/* Полоски задержки: каждая — один замер, высота — от пика видимого окна. */
+.lat-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+}
+
+.lat-bar {
+  flex: 1 1 0;
+  min-inline-size: 1px;
+  max-inline-size: 6px;
+  border-radius: 1px;
+  background: currentColor;
 }
 
 /* Движение. Служба отвечает не мгновенно — перезапуск sing-box держит её мьютекс
@@ -796,53 +1091,70 @@ body {
   }
 }
 
-/* Приборная линейка сжимается в строку везде, где её колонки не встают в ряд:
-   подписи уходят в подсказки, счётчики — в стрелки. Порог тот же, что у
-   `md:grid-cols-5` на самой линейке (768 px): пятиколоночный ряд помещается
-   ровно с него, а ниже сетка складывалась в два-три ряда и уносила счётчики
-   трафика за нижний край окна — их-то и не видел человек.
+/* Верх окна сжимается везде, где три колонки не встают в ряд: блок состояния —
+   во всю ширину, измерители — одной строкой под ним, колодцы и подписи уходят,
+   остаются числа. Порог тот же, что у `.st-hero` в `index.css` (768 px): ряд с
+   колодцами помещается ровно с него, а ниже блоки складывались бы в два ряда
+   и уносили счётчики трафика за нижний край окна — их-то и не видел человек.
 
-   Строка не переносится вовсе: длинное имя профиля обязано ужиматься, а не
-   выталкивать «отправлено» на второй ряд. Ужимаются только два текстовых
-   поля, числа стоят как вкопанные. Сторож — `the_instrument_row_never_wraps`. */
-.m-icon {
-  display: none;
-}
-
+   Строка не переносится вовсе: ужимается только итог сеанса — он справочный,
+   а скорость и задержку обязано быть видно целиком. Сторож —
+   `the_instrument_row_never_wraps`. */
 @media (max-width: 767px) {
+  .st-hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Измерители — одна карточка-строка под карточкой состояния: две карточки
+     по одному числу в ней были бы двумя пустыми плитками. */
   .st-metrics {
     display: flex;
     flex-wrap: nowrap;
     align-items: baseline;
     column-gap: 12px;
+    padding: 4px 12px;
+    border: 1px solid var(--pg-border);
+    border-radius: var(--pg-r-card);
+    background: var(--pg-tile);
   }
 
-  .m-cell {
-    display: flex;
+  .m-block {
     flex: none;
+    flex-direction: row;
     align-items: baseline;
     gap: 5px;
     border: 0;
+    border-radius: 0;
+    background: none;
     padding: 0;
   }
 
-  /* Имя профиля забирает остаток строки и первым же его отдаёт: остальные
-     четыре ячейки — короткие. */
-  .m-cell:first-child {
-    min-width: 60px;
-    flex: 1 1 90px;
+  /* Скорость вместе с итогом сеанса занимает остаток строки, а ужимается в ней
+     итог сеанса: обрезанный хвост справки хуже, чем второй ряд, но лучше, чем
+     обрезанная скорость. */
+  .m-block:first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
   }
 
-  /* Страна ужимается второй и только после профиля: флаг остаётся при любой
-     ширине, название обрезается многоточием. */
-  .m-cell:nth-child(2) {
+  .m-rates {
+    flex: none;
+    column-gap: 10px;
+    margin: 0;
+  }
+
+  .m-session {
     flex: 0 1 auto;
     min-width: 0;
+    margin: 0;
+    overflow: hidden;
   }
 
-  /* Подпись уходит с глаз, но не из разметки: display:none унёс бы её и от
-     чтения с экрана, а «399 MB» без «принято» не значит ничего. */
-  .m-label {
+  /* Подписи уходят с глаз, но не из разметки: display:none унёс бы их и от
+     чтения с экрана, а «399 MB» без «скорость» не значит ничего (имя у блока
+     есть и в `aria-label`). */
+  .m-legend {
     position: absolute;
     inline-size: 1px;
     block-size: 1px;
@@ -850,40 +1162,22 @@ body {
     clip-path: inset(50%);
   }
 
-  .m-icon {
-    display: inline-flex;
+  .m-foot-label,
+  .m-range {
+    display: none;
   }
 
-  .m-value {
-    margin-top: 0;
+  /* Числа ступенью ниже: в одну строку их пять, и крупными они не встают. */
+  .m-num,
+  .m-latency {
+    margin: 0;
     font-size: 13px;
     line-height: 18px;
   }
 
-  /* Город уходит первым и раньше названия страны: линейка тут одна строка, а
-     вторая строка в ячейке — это перенос всей линейки, то есть счётчики за
-     нижним краем окна. */
-  .m-city {
+  /* Строка встала одной — колодцам графиков в ней места нет. */
+  .st-metrics .chart {
     display: none;
-  }
-
-  /* Линейка встала одной строкой — фону графика и скорости в ней места нет. */
-  .spark,
-  .rates {
-    display: none;
-  }
-
-  /* Карте в узкой шапке места справа нет — она встаёт полосой под текстом,
-     как в плашке. */
-  .st-plate {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .st-map-plate {
-    min-block-size: 0;
-    block-size: 88px;
-    border-inline-start: 0;
-    border-top: 1px solid color-mix(in oklch, var(--tone) 20%, var(--pg-border));
   }
 }
 
@@ -892,37 +1186,111 @@ body {
    (`Flyout.tsx`), а здесь ужимается шапка главного окна. */
 @media (max-width: 470px) {
   .st-text {
-    padding: 10px 12px 12px;
-    gap: 8px;
+    padding: 8px 12px 10px;
+    gap: 4px;
   }
 
-  /* Слово состояния — ступенью ниже: «Туннеля нет — доступ закрыт» на 28 px
-     в 330 px занимает три строки. */
-  .st-word {
-    font-size: 20px;
-    line-height: 26px;
+  /* Поля верха уже: в 380 px каждый пиксель ширины идёт числам строки
+     измерителей. Слово состояния ужимается само — запросом по карточке
+     (`@container` выше), а не по окну. */
+  .st-hero {
+    gap: 6px;
+    padding: 2px 8px 8px;
   }
 
-  /* Подсказка — одна строка и не больше; целиком она осталась в `title`
-     (`StatusBar.tsx`). Именно обрезка, а не `display: none`: первая строка
-     называет, кого касается состояние, — «весь компьютер» или «выбранные
-     приложения», — и это ровно то, чего заголовок не говорит. */
-  .st-hint {
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 1;
+  /* Подсказка в одну строку — не только здесь (`.st-hint` выше), и именно
+     обрезка, а не `display: none`: первая строка называет, кого касается
+     состояние, — «весь компьютер» или «выбранные приложения», — и это ровно
+     то, чего заголовок не говорит. Строки выхода не переносятся — ужимаются
+     имена. */
+  .st-exit {
+    white-space: nowrap;
     overflow: hidden;
   }
 
-  /* Название страны прячется только здесь: обрезанное «Нидер…» на 380 px
-     говорит меньше, чем один флаг, который на его месте и остаётся. */
-  .m-country {
+  /* Строка измерителей в 380 px: числа в 346 px (поля верха 8, рамка и поле
+     карточки 8 + 1) встают только с полями поуже и справкой помельче — иначе
+     обрезается хвост итога сеанса. */
+  .st-metrics {
+    padding-inline: 8px;
+    column-gap: 10px;
+  }
+
+  .m-rates {
+    column-gap: 8px;
+  }
+
+  .m-session {
+    font-size: var(--text-xs);
+    line-height: var(--text-xs--line-height);
+  }
+
+  /* Город уходит: строка страны одна и не переносится, а страна — то, что
+     читают, город к ней приписка. */
+  .m-city {
     display: none;
+  }
+
+  /* Рейка — снова одни значки: подпись в 48 px не встаёт, а счётчик остаётся
+     бляшкой у угла значка. Имя пункта — в подсказке и для чтения с экрана. */
+  .rail {
+    inline-size: 48px;
+  }
+
+  .rail-item {
+    inline-size: 40px;
+    block-size: 44px;
+  }
+
+  .rail-label {
+    display: none;
+  }
+
+  /* Рядом со значком в 48 px места нет — бляшка на его верхнем угле (см.
+     `.rail-badge`): 10 px вширь и 8 вниз за край значка, середина свободна. */
+  .rail-badge {
+    inset-block-start: -8px;
+    margin-inline-start: -10px;
+  }
+
+  .rail-badge[data-dot] {
+    inset-block-start: -4px;
+    margin-inline-start: -5px;
   }
 
   .tb-name,
   .tb-version {
     display: none;
+  }
+}
+
+/* Низкое окно — 520 px минимум (`minHeight` в `tauri.conf.json`) и до 640 px.
+   Плита с линейкой и полосами списка тут съедали бы больше половины высоты, и
+   на список оставалось две-три строки, поэтому уходит то, что читается один
+   раз: строка подсказки и подписи линейки. Числа и слово состояния остаются, а
+   подписи — в подсказках ячеек и для чтения с экрана (как в узкой линейке выше:
+   `display: none` унёс бы и их). Ряд подсказки не исчезает, если в нём ссылка
+   «что не так»: без неё «доступ закрыт» не говорил бы, где смотреть причину. */
+@media (max-height: 640px) {
+  .st-hint {
+    display: none;
+  }
+
+  .st-hint-row:not(:has(button)) {
+    display: none;
+  }
+
+  /* Строка подписи измерителя (`.m-label` с «90 с» и «проба 3 с») — так же. */
+  .m-legend {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .st-text {
+    padding-block: 8px;
   }
 }
 
@@ -956,15 +1324,152 @@ body {
   background: linear-gradient(var(--pg-press), var(--pg-press)), var(--pg-bg);
 }
 
+/* Заголовок, на который не нажимают (группы списка приложений), под указателем
+   не меняется: подсветка обещала бы действие. */
+h3.sub-head:hover {
+  background: linear-gradient(var(--pg-hover), var(--pg-hover)), var(--pg-bg);
+}
+
+/* Таблица соединений: шапка и строки делят одну сетку колонок — путь,
+   приложение, адрес (на остаток), принято, отправлено. Одна сетка, а не
+   две похожих: колонки обязаны стоять друг под другом при любом наборе слов
+   в строке. Шапка липнет к кромке прокрутки так же, как `.sub-head`, но под
+   указателем не меняется: на неё не нажимают.
+
+   Ниже 768 px адрес уходит второй строкой под приложение: четыре колонки
+   помещаются, пять — съедали бы у адреса последнее место. */
+.conn-row {
+  display: grid;
+  grid-template-columns: 5rem 8rem minmax(0, 1fr) 4.5rem 4.5rem;
+  column-gap: 12px;
+  align-items: center;
+}
+
+.tbl-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-bottom: 1px solid var(--pg-border);
+  background: linear-gradient(var(--pg-hover), var(--pg-hover)), var(--pg-bg);
+}
+
+@media (max-width: 767px) {
+  .conn-row {
+    grid-template-columns: 4.5rem minmax(0, 1fr) 4rem 4rem;
+  }
+
+  .conn-row > .conn-addr {
+    grid-column: 2 / -1;
+    grid-row: 2;
+    padding-block-end: 4px;
+  }
+
+  .conn-row > .conn-addr-head {
+    display: none;
+  }
+}
+
+/* Полоса подписок под панелью инструментов списка профилей: ряд маленьких
+   карточек-ячеек (скругление 10, зазор 8; ~64 px вместе с полями — выше
+   ряд стоил бы списку строку). Прокручивается вбок, когда подписок больше,
+   чем помещается. Полоса прокрутки — та же тихая, что у всех списков
+   (`.scroll`: тонкая, ползунок прозрачен, пока над рядом нет указателя или
+   фокуса) и появляется только при переполнении, так что высоту ряда она растит
+   лишь там, где ячейки и вправду уезжают за край. Вертикальной прокрутки у
+   ряда нет вовсе. */
+.sub-strip {
+  gap: 8px;
+  padding: 2px 12px 6px;
+  overflow-y: hidden;
+}
+
+/* Ячейка — до трёх строк: имя с делениями живых узлов, остаток с полоской,
+   срок. Карточка с рамкой в волосок; выбранная — акцентная рамка и еле
+   заметная акцентная заливка, а не полоска по кромке: у карточки есть
+   контур, и им же отмечается выбор. */
+.sub-cell {
+  position: relative;
+  border: 1px solid var(--pg-border);
+  border-radius: var(--pg-r-cell);
+  background: var(--pg-tile);
+  text-align: start;
+}
+
+.sub-cell:hover {
+  background: linear-gradient(var(--pg-hover), var(--pg-hover)), var(--pg-tile);
+}
+
+.sub-cell[aria-pressed="true"] {
+  border-color: color-mix(in oklch, var(--pg-accent) 55%, var(--pg-border));
+  background: color-mix(in oklch, var(--pg-accent) 6%, var(--pg-tile));
+}
+
+/* Оглавление настроек. Пункт — как пункт рейки: заливка под указателем и у
+   текущего, акцентная полоска у начала. В узком виде оглавление — полоса
+   сверху, липнущая к кромке прокрутки (она же и держит липкое, отступа у
+   панели нет — см. `.sub-head`), и полоска у пункта ложится снизу. Разделам в таком виде нужен запас под полосу, иначе заголовок
+   после нажатия остался бы под ней. */
+.set-item {
+  position: relative;
+  border-radius: 4px;
+}
+
+.set-item:hover {
+  background: var(--pg-hover);
+}
+
+.set-item[aria-current="true"] {
+  background: var(--pg-press);
+}
+
+.set-item[aria-current="true"]::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: 0;
+  top: 50%;
+  translate: 0 -50%;
+  inline-size: 3px;
+  block-size: 16px;
+  border-radius: 9999px;
+  background: var(--pg-accent);
+}
+
+.set-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  border-bottom: 1px solid var(--pg-border);
+  background: var(--pg-bg);
+}
+
+.set-bar .set-item[aria-current="true"]::before {
+  inset-inline: 8px;
+  inset-block: auto 0;
+  top: auto;
+  translate: none;
+  inline-size: auto;
+  block-size: 2px;
+  border-radius: 0;
+}
+
+[data-section] {
+  scroll-margin-top: 16px;
+}
+
+.set-narrow [data-section] {
+  scroll-margin-top: 60px;
+}
+
 /* Строка списка профилей под прокруткой раскладывается и рисуется, только
-   когда видна. Подписка в сотни узлов — сотни двухэтажных строк, и раскладка
-   каждой на каждый опрос статуса и была тем, что подвешивало прокрутку.
-   Размер-заглушка — высота такой строки; `auto` подставляет настоящий, как
-   только строку один раз показали, так что полоса прокрутки не прыгает.
+   когда видна. Подписка в сотни узлов — сотни строк, и раскладка каждой на
+   каждый опрос статуса и была тем, что подвешивало прокрутку.
+   Размер-заглушка — высота такой строки (34 px плюс зазор); `auto` подставляет
+   настоящий, как только строку один раз показали, так что полоса прокрутки
+   не прыгает.
    Виртуализации списком нет намеренно: перетаскивание, липкие заголовки групп
    и меню по правой кнопке живут на настоящих узлах DOM, и подменять их окном
    из десяти строк значило бы переписать все три. */
 .cv-row {
   content-visibility: auto;
-  contain-intrinsic-size: auto 44px;
+  contain-intrinsic-size: auto 34px;
 }

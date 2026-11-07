@@ -15,6 +15,7 @@ import {
   Panel,
   profileColor,
   SearchField,
+  Segmented,
   spot,
   type IconName,
 } from "./ui";
@@ -692,13 +693,14 @@ export function Browsers({
         // Заводить профиль, когда нет ни одного узла, не во что: под кнопкой
         // открылась бы форма с пустым списком узлов и запертой кнопкой.
         nodes.length > 0 && (
-          <Button variant="quiet" onClick={() => openForm(EMPTY)}>
+          <Button variant="primary" onClick={() => openForm(EMPTY)}>
+            <Icon name="plus" size={14} />
             {s.browserNew}
           </Button>
         )
       }
     >
-      <div className="flex flex-col gap-4">
+      <div className="flex min-h-full flex-col gap-4">
         {nodes.length === 0 && <Empty>{s.browserNeedsNode}</Empty>}
         {draft && (
           <Editor status={status} act={act} draft={draft} origin={origin} setDraft={(d) => openForm(d, d ? origin : "")} />
@@ -707,24 +709,34 @@ export function Browsers({
             профилями поле поиска занимает больше места, чем сам список. */}
         {items.length > 5 && <SearchField value={query} onChange={setQuery} placeholder={s.browserSearch} />}
         {tags.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {[null, ...tags].map((t) => (
-              <button
-                key={t ?? ""}
-                type="button"
-                aria-pressed={activeTag === t}
-                onClick={() => setTag(t)}
-                className={`smooth h-7 rounded-full border px-3 text-xs ${
-                  activeTag === t ? "border-accent bg-accent text-on-accent" : "border-edge text-muted hover:bg-hover hover:text-ink"
-                }`}
-              >
-                {t ?? s.browserTagsAll}
-              </button>
-            ))}
+          // Та же полоска выбора, что и везде в окне, а не свои плашки: меток
+          // бывает много, и она едет вбок (`w-max` не даёт ей сжаться и
+          // обрезать подписи), а не переносится на второй ряд. Метка не бывает
+          // пустой (`parseTags`), поэтому пустая строка — «все».
+          <div className="scroll overflow-x-auto">
+            <Segmented
+              className="w-max"
+              label={s.browserTags}
+              value={activeTag ?? ""}
+              onPick={(v) => setTag(v === "" ? null : v)}
+              options={[["", s.browserTagsAll], ...tags.map((t): [string, string] => [t, t])]}
+            />
           </div>
         )}
         {items.length === 0 ? (
-          <Empty>{s.browserEmpty}</Empty>
+          // По центру и с той же кнопкой, что в шапке: пустой список — это
+          // единственное место, где «Новый профиль» читается как первый шаг, а
+          // не как ещё одна кнопка. Без узла заводить не из чего — слово об этом
+          // уже стоит выше, и кнопки здесь нет.
+          <div className="my-auto flex flex-col items-center gap-3 py-6">
+            <Empty>{s.browserEmpty}</Empty>
+            {nodes.length > 0 && (
+              <Button variant="primary" onClick={() => openForm(EMPTY)}>
+                <Icon name="plus" size={14} />
+                {s.browserNew}
+              </Button>
+            )}
+          </div>
         ) : shown.length === 0 ? (
           <Empty>{s.browserNoMatch}</Empty>
         ) : (

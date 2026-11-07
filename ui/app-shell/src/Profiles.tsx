@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import qrcode from "qrcode-generator";
-import type { Act, Lang, ProfileInfo, Probe, Quota, Response, Status, Subscription } from "./platform";
+import type { Act, Lang, ProfileInfo, Probe, Response, Status, Subscription } from "./platform";
 import type { Strings } from "./i18n";
 import { measuredAgo, strings, syncedAgo } from "./i18n";
+import { aliveCount, fastestProbe, groupProfiles, quotaFacts, subTitle, type Group, type QuotaFacts } from "./groups";
 import { bytes, latencyTone } from "./StatusBar";
 import {
   AddField,
@@ -20,7 +21,7 @@ import {
   Segmented,
   nodeFlag,
   spot,
-  useNarrow,
+  useBoxWidth,
 } from "./ui";
 
 /** Чем окажется набранное в поле импорта — по одному лишь префиксу и до
@@ -105,41 +106,302 @@ function previewed(s: Strings, r: Response | null, apply: () => Promise<Outcome>
   };
 }
 
-/** Остаток по подписке: сколько израсходовано из лимита и до какого числа.
+/** Остаток по подписке словами: сколько израсходовано и до какого числа.
  *
- *  Ноль в поле значит «панель не прислала», и то же значение стоит у
- *  безлимитных с бессрочными, — поэтому про непришедшее просто молчим, а не
+ *  Считает `quotaFacts`: ноль в поле значит «панель не прислала», и то же
+ *  значение стоит у безлимитных с бессрочными, — про непришедшее молчим, а не
  *  пишем «0 B из 0 B». Понять нечего вовсе — не рисуем ничего.
  *
- *  Израсходовано — это `upload + download`: панели считают их вместе, и два
- *  числа порознь тут никому не нужны.
+ *  У подписки без лимита (`total == 0`) число — это то, что израсходовано, и
+ *  так оно и подписано. Голое «284 GB» читалось остатком — ровно наоборот:
+ *  человек видел «осталось много» там, где лимита нет вовсе.
  *
- *  Тревога двойная и по разным осям: осталось меньше десятой части лимита или
+ *  Срок — словами, а не числом суток: «до 12.03.2027» читается без
+ *  вычитания в уме, «подписка кончилась» — без вычитания и вовсе. */
+function quotaParts(s: Strings, f: QuotaFacts, lang: Lang | undefined): { amount: string | null; expiry: string | null } {
+  return {
+    amount:
+      f.total > 0
+        ? s.quotaOf(bytes(f.used), bytes(f.total))
+        : f.used > 0
+          ? s.quotaUsedNoLimit(bytes(f.used))
+          : null,
+    expiry:
+      f.days == null
+        ? null
+        : f.expired
+          ? s.quotaExpired
+          : s.quotaUntil(new Date(f.expire * 1000).toLocaleDateString(lang ?? "ru")),
+  };
+}
+
+/** Тревога двойная и по разным осям: осталось меньше десятой части лимита или
  *  меньше трёх суток до срока. Тон при этом `wait`, а не `fault`: это
  *  предупреждение, а не поломка, и красный тут обещал бы сработавшую защиту.
  *  Красный остаётся истёкшему сроку — он уже объясняет, почему узлы молчат. */
-function Remaining({ s, quota, lang }: { s: Strings; quota: Quota; lang: Lang | undefined }) {
-  const used = quota.upload + quota.download;
-  const parts: string[] = [];
-  if (quota.total > 0) parts.push(s.quotaOf(bytes(used), bytes(quota.total)));
-  else if (used > 0) parts.push(bytes(used));
-  const days = quota.expire > 0 ? (quota.expire * 1000 - Date.now()) / 86_400_000 : null;
-  if (days != null) {
-    parts.push(
-      days < 0 ? s.quotaExpired : s.quotaUntil(new Date(quota.expire * 1000).toLocaleDateString(lang ?? "ru")),
-    );
-  }
+function quotaTone(f: QuotaFacts): string {
+  return f.expired ? "text-fault" : f.low || (f.days != null && f.days < 3) ? "text-wait" : "text-muted";
+}
+
+/** Остаток одной строкой в заголовке группы — когда полосы подписок нет (одна
+ *  подписка). С полосой остаток живёт в её ячейке, а заголовок остаётся
+ *  именем, счётом и действиями. */
+function Remaining({ s, quota, lang }: { s: Strings; quota: Subscription["quota"]; lang: Lang | undefined }) {
+  const f = quotaFacts(quota);
+  if (!f) return null;
+  const { amount, expiry } = quotaParts(s, f, lang);
+  const parts = [amount, expiry].filter((x): x is string => x != null);
   if (parts.length === 0) return null;
-  const low = quota.total > 0 && quota.total - used < quota.total / 10;
-  const tone =
-    days != null && days < 0 ? "text-fault" : low || (days != null && days < 3) ? "text-wait" : "text-muted";
   return (
-    <span
-      title={s.quotaHint}
-      className={`shrink-0 text-xs font-normal ${tone}`}
-    >
+    <span title={s.quotaHint} className={`shrink-0 text-xs font-normal ${quotaTone(f)}`}>
       {parts.join(" · ")}
     </span>
+  );
+}
+
+/** Деления «сколько узлов отвечает»: не больше восьми, закрашены живые — доля,
+ *  а не счёт (счёт стоит числом рядом). Узлов в подписке бывает сотня, и сотня
+ *  делений не читается. */
+function Ticks({ alive, total }: { alive: number; total: number }) {
+  const n = Math.min(total, 8);
+  const lit = alive === 0 ? 0 : Math.max(1, Math.round((alive / total) * n));
+  return (
+    <span className="flex shrink-0 gap-0.5" aria-hidden="true">
+      {Array.from({ length: n }, (_, i) => (
+        <i key={i} className={`block h-2.5 w-1.5 rounded-sm ${i < lit ? "bg-open" : "bg-edge-strong"}`} />
+      ))}
+    </span>
+  );
+}
+
+/** Поле переименования подписки. Стоит на месте подписи — в заголовке группы или,
+ *  пока список отобран одной подпиской и заголовка нет, в её карточке полосы:
+ *  один компонент на оба места, иначе форма в них разошлась бы. Нажатие
+ *  внутри не сворачивает группу (форма живёт в `<summary>`). */
+function SubRename({ s, sub, act, onDone }: { s: Strings; sub: Subscription; act: Act; onDone: () => void }) {
+  return (
+    <form
+      className="flex min-w-0 flex-1 items-center gap-2"
+      onClick={(e) => e.stopPropagation()}
+      onSubmit={(e) => {
+        e.preventDefault();
+        const name = new FormData(e.currentTarget).get("name");
+        void act({ cmd: "rename-subscription", arg: { url: sub.url, name: String(name ?? "") } }).then(onDone);
+      }}
+    >
+      <input
+        name="name"
+        autoFocus
+        defaultValue={sub.name}
+        placeholder={s.subName}
+        spellCheck={false}
+        onKeyDown={(e) => e.key === "Escape" && onDone()}
+        className={`${FIELD} h-7 font-normal`}
+      />
+      <Button type="submit" variant="quiet">
+        {s.save}
+      </Button>
+    </form>
+  );
+}
+
+/** Полоса подписок под панелью инструментов: ряд карточек-ячеек; много подписок —
+ *  прокручивается вбок. Первая ячейка — «Все», дальше по ячейке на подписку:
+ *  имя, сколько узлов отвечает, остаток и срок. Нажатие отбирает список до
+ *  этой подписки (состояние окна, как и поиск); повторное — снимает.
+ *
+ *  Отобранная карточка — заголовок группы: самого заголовка под отбором нет
+ *  (он повторил бы её имя строкой ниже), и её действия — обновить и «⋯» с тем
+ *  же меню подписки — стоят в ней. Меню открывает и правая кнопка по любой
+ *  карточке: отписаться иначе можно было только из заголовка, которого под
+ *  отбором нет. Подписки переставляются перетаскиванием карточки — тем же
+ *  порядком и той же командой, что за заголовок группы (`reorder` внутри
+ *  `Profiles`): пока тащат, порядок живёт в окне, остальные карточки
+ *  сдвигаются, перетаскиваемая тускнеет. «Все» не тащится и всегда первая.
+ *
+ *  Заводится только с двумя подписками и больше: у одной полосе нечем
+ *  отличаться от заголовка группы под ней, и остаток тогда стоит в нём. */
+function SubStrip({
+  s,
+  lang,
+  groups,
+  probeOf,
+  filter,
+  onPick,
+  note,
+  act,
+  busy,
+  renaming,
+  onRenamed,
+  onRefresh,
+  onMenu,
+  draggable,
+  dragged,
+  onDragStart,
+  onDragOver,
+  onDragEnd,
+}: {
+  s: Strings;
+  lang: Lang | undefined;
+  groups: Group[];
+  probeOf: ReadonlyMap<string, Probe>;
+  filter: string | null;
+  onPick: (url: string | null) => void;
+  /** Что сказала бы шапка панели помимо счёта — в ячейке «Все», пока шапки нет. */
+  note: ReactNode;
+  act: Act;
+  busy: boolean;
+  /** Подписка, чьё имя правят. Поле встаёт в карточку только под отбором: без
+   *  него оно стоит в заголовке группы. */
+  renaming: string | null;
+  onRenamed: () => void;
+  onRefresh: (sub: Subscription) => void;
+  onMenu: (e: React.MouseEvent<HTMLElement>, sub: Subscription) => void;
+  draggable: boolean;
+  dragged: string | null;
+  onDragStart: (url: string) => void;
+  onDragOver: (url: string) => void;
+  onDragEnd: () => void;
+}) {
+  const subs = groups.filter((g): g is Group & { sub: Subscription } => g.sub !== null);
+  // Отобранная карточка несёт действия заголовка, и стоять за краем ряда ей
+  // нельзя: подвозим её в видимую часть, как только отбор сменился.
+  const ul = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    ul.current?.querySelector('[aria-pressed="true"]')?.scrollIntoView({ inline: "nearest", block: "nearest" });
+  }, [filter]);
+  // «Все» — вся машина, включая свои узлы: ячейка про список целиком.
+  const every = groups.flatMap((g) => g.all);
+  const measured = (all: ProfileInfo[]) => all.some((p) => probeOf.has(p.name));
+  // Ячейка — до трёх строк (~63 px с рамкой): имя с делениями «живых узлов»,
+  // остаток с полоской, срок. Прежние 62 px вернулись не случайно: ниже ячейка
+  // не читалась как ячейка, а выше стоила списку строку. Тонкая полоска остатка
+  // — единственное место, где доля видна глазом, а не числом.
+  const cell = (
+    key: string,
+    url: string | null,
+    title: string,
+    all: ProfileInfo[],
+    quota: Subscription["quota"] | null,
+    sub: Subscription | null,
+  ) => {
+    const selected = sub !== null && filter === url;
+    // Правка имени — в карточке, только когда заголовка группы нет (отбор).
+    const renamingHere = sub !== null && filter !== null && renaming === url;
+    const alive = aliveCount(all, probeOf);
+    const f = quotaFacts(quota);
+    const q = f && quotaParts(s, f, lang);
+    const tail = q ? [q.amount, q.expiry].filter((x): x is string => x != null).join(" · ") : "";
+    const tip = [
+      url === null ? s.allSubs : `${s.subFilter}: ${title}`,
+      measured(all) ? s.groupAlive(alive, all.length) : "",
+      tail,
+    ]
+      .filter((x) => x !== "")
+      .join("\n");
+    const inner = (
+      <>
+          <span className={`flex min-w-0 items-center gap-2 ${selected ? "pe-14" : ""}`}>
+            <span className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</span>
+            {measured(all) && all.length > 0 && <Ticks alive={alive} total={all.length} />}
+            <span
+              className="shrink-0 font-mono text-xs font-normal tabular-nums text-muted"
+              title={s.groupAlive(alive, all.length)}
+            >
+              {alive}/{all.length}
+            </span>
+          </span>
+          {f && q?.amount && (
+            <span className="flex min-w-0 items-center gap-2 text-xs">
+              {f.total > 0 && (
+                <span className="block h-1 min-w-6 flex-1 overflow-hidden rounded-full bg-[var(--pg-sunken)]">
+                  <span
+                    className={`block h-full rounded-full ${f.low ? "bg-wait" : "bg-muted"}`}
+                    style={{ inlineSize: `${Math.round(Math.min(1, Math.max(0, f.used / f.total)) * 100)}%` }}
+                  />
+                </span>
+              )}
+              <span className={`min-w-0 truncate ${f.total > 0 ? "shrink-0" : "flex-1"} ${quotaTone(f)}`}>
+                {q.amount}
+              </span>
+            </span>
+          )}
+          {f && q?.expiry && <span className={`truncate text-xs ${quotaTone(f)}`}>{q.expiry}</span>}
+          {url === null && <span className="fold-only truncate text-xs text-muted">{note}</span>}
+      </>
+    );
+    return (
+      <li
+        key={key}
+        // Тащат за всю карточку, «Все» — нет. Перетаскивание не кликает: отбор
+        // от него не меняется.
+        draggable={draggable && sub !== null}
+        onDragStart={(e) => {
+          if (sub === null) return;
+          onDragStart(sub.url);
+          e.dataTransfer.effectAllowed = "move";
+          // Без полезной нагрузки Firefox не начинает перетаскивание вовсе.
+          e.dataTransfer.setData("text/plain", sub.url);
+        }}
+        onDragOver={(e) => {
+          if (sub === null || dragged === null || dragged === sub.url) return;
+          // Без preventDefault браузер считает, что бросать сюда нельзя.
+          e.preventDefault();
+          onDragOver(sub.url);
+        }}
+        onDrop={(e) => e.preventDefault()}
+        onDragEnd={onDragEnd}
+        onContextMenu={(e) => sub !== null && onMenu(e, sub)}
+        className={`relative flex min-w-0 ${selected ? "flex-[1_0_16rem]" : "flex-[1_0_13rem]"} ${
+          sub !== null && dragged === sub.url ? "opacity-40" : ""
+        }`}
+      >
+        {renamingHere ? (
+          <div className="sub-cell flex w-full min-w-0 items-center px-3 py-0.5">
+            <SubRename s={s} sub={sub} act={act} onDone={onRenamed} />
+          </div>
+        ) : (
+          <button
+            type="button"
+            aria-pressed={filter === url}
+            title={tip}
+            onClick={() => onPick(filter === url ? null : url)}
+            className="sub-cell smooth flex w-full min-w-0 flex-col items-stretch justify-start px-3 py-0.5"
+          >
+            {inner}
+          </button>
+        )}
+        {/* Отобранная карточка несёт действия заголовка, которого под отбором
+            нет: обновить (та же команда, что у пункта меню) и «⋯» с меню
+            подписки. Рядом с кнопкой-карточкой, а не внутри: вложенных кнопок
+            не бывает. */}
+        {selected && !renamingHere && (
+          <div className="absolute end-1 top-0.5 flex items-center">
+            <IconButton
+              icon="refresh"
+              label={s.refresh}
+              title={s.refreshSubscription(sub.url)}
+              disabled={busy}
+              className="size-6"
+              onClick={() => onRefresh(sub)}
+            />
+            <IconButton
+              icon="more"
+              label={s.actions}
+              aria-haspopup="menu"
+              className="size-6"
+              onClick={(e) => onMenu(e, sub)}
+            />
+          </div>
+        )}
+      </li>
+    );
+  };
+  return (
+    <ul ref={ul} className="sub-strip scroll flex shrink-0 overflow-x-auto" aria-label={s.subFilter}>
+      {cell("", null, s.allSubs, every, null, null)}
+      {subs.map((g) => cell(g.key, g.key, subTitle(g.sub), g.all, g.sub.quota, g.sub))}
+    </ul>
   );
 }
 
@@ -147,6 +409,12 @@ function Remaining({ s, quota, lang }: { s: Strings; quota: Quota; lang: Lang | 
  *  приложений: одна подписка приносит десятки узлов, а подписок бывает
  *  несколько. */
 const SEARCH_FROM = 8;
+
+/** С какой ширины панели панель инструментов стоит целиком: поиск, переключатель
+ *  порядка, «Проверить все», «Быстрейший», «Добавить» и «⋯» в одну строку.
+ *  Меньше — только поиск, «⋯» со всеми действиями и «+». Число — сумма самих
+ *  кнопок с минимальным полем поиска, а не вкус: пересчитайте, добавляя кнопку. */
+const ROOMY = 760;
 
 /** Итог прогона рядом с именем: задержка либо причина отказа. Отказ приезжает
  *  строкой от службы, поэтому он уже на нужном языке — и виден целиком по
@@ -176,11 +444,11 @@ function Verdict({ probe, failed, measured }: { probe: Probe | undefined; failed
 
 /** Цвет полоски выбранной строки — тон туннеля, пока узел несёт трафик. */
 const TONE = {
-  up: { rail: "bg-open" },
-  connecting: { rail: "bg-wait" },
-  down: { rail: "bg-closed" },
+  up: { rail: "bg-open", word: "text-open" },
+  connecting: { rail: "bg-wait", word: "text-wait" },
+  down: { rail: "bg-closed", word: "text-closed" },
   // Выключено — и «профиль просто выбран» тоже: это не сигнал, цвета нет.
-  off: { rail: "bg-accent" },
+  off: { rail: "bg-accent", word: "text-muted" },
 } as const;
 
 /** Где окно помнит порядок по задержке. Он остаётся способом посмотреть, а не
@@ -284,6 +552,11 @@ export function Profiles({
   // секунду, и открытое состояние, живущее только в DOM, спорило бы с каждой
   // перерисовкой. Имя группы — её адрес, поэтому переживает и подмену узлов.
   const [collapsed, setCollapsed] = useState<string[]>([]);
+  // Отбор по подписке с полосы под панелью инструментов. Состояние окна, как и
+  // поиск: служба о нём не знает и не должна — это способ смотреть, а не
+  // свойство списка. Читается через `filter` ниже, который сверяет его с
+  // тем, что в списке сейчас есть.
+  const [subFilter, setSubFilter] = useState<string | null>(null);
   // Какую подписку сейчас переименовывают. Адресом, а не флагом: подписок
   // несколько, и открытых полей должно быть не больше одного.
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -318,9 +591,15 @@ export function Profiles({
       if (!data.link) return onError?.(s.noLink);
       setQr(data.link);
     });
-  // В 380 px действия списка уходят под «⋯»: шапка плиты обязана остаться
-  // одной строкой, иначе её второй ряд съедает строку профиля.
-  const narrow = useNarrow();
+  // Тесно — по ширине самой панели, а не окна: выше 1100 px три панели стоят
+  // рядом, и профилям достаётся 300–450 px при любом окне. В тесноте действия
+  // списка уходят под «⋯»: панель инструментов обязана остаться одной
+  // строкой, иначе её второй ряд съедает строки профилей.
+  const width = useBoxWidth(bodyRef);
+  const compact = width < ROOMY;
+  // Совсем тесно (плашка в 380 px): из строки уходят и метка типа с полоской
+  // задержки, остаются флаг, имя и число.
+  const tight = width < 440;
   // Открытое меню — одно на панель: второе, оставшееся от прошлой строки,
   // делало бы вид, что относится к этой.
   const [menu, setMenu] = useState<{ at: [number, number]; items: MenuItem[] } | null>(null);
@@ -360,9 +639,19 @@ export function Profiles({
   // Что тащат прямо сейчас: подписку — здесь, профиль — внутри своего списка.
   const [dragged, setDragged] = useState<string | null>(null);
   const probes = status?.probes ?? [];
+  const probeOf = new Map(probes.map((p) => [p.name, p] as const));
   const measured = probes.some((p) => p.latency_ms != null);
+  // Порядок по задержке без единого замера — это «звёздочка и порядок панели»,
+  // а переключателя, который его снял бы, нет: он показывается только при
+  // замерах. Поэтому включённым он считается лишь пока есть что упорядочивать.
+  const byLat = byLatency && measured;
   const testing = status?.testing ?? null;
-  const latency = (name: string) => probes.find((p) => p.name === name)?.latency_ms ?? Infinity;
+  const latency = (name: string) => probeOf.get(name)?.latency_ms ?? Infinity;
+  // Полоса подписок — только с двумя и больше; без неё отбирать не по чему, и
+  // отбор, оставшийся от прошлого набора подписок, не должен прятать строки
+  // молча.
+  const stripped = subscriptions.length > 1;
+  const filter = stripped && subscriptions.some((sub) => sub.url === subFilter) ? subFilter : null;
   // Порядков три, и они не складываются друг с другом.
   //
   // По задержке — пока включён переключатель; там звёздочка по-прежнему
@@ -378,7 +667,7 @@ export function Profiles({
   // Не мерили и не тащат прямо сейчас — как отдала служба: она же и держит
   // порядок, расставленный руками, и звёздочку.
   const arrange = (items: ProfileInfo[]): ProfileInfo[] => {
-    if (byLatency)
+    if (byLat)
       return [...items].sort(
         (a, b) => Number(b.favorite) - Number(a.favorite) || latency(a.name) - latency(b.name),
       );
@@ -387,34 +676,34 @@ export function Profiles({
   // Тащить можно, только когда порядок и вправду принадлежит человеку. По
   // задержке список переставляет число, и перенесённая строка уехала бы
   // обратно тем же кадром. Под поиском видна половина списка, и записанный
-  // порядок из половины имён смёл бы вторую половину в хвост.
-  const draggable = !byLatency && needle === "";
+  // порядок из половины имён смёл бы вторую половину в хвост. Тем же — под
+  // отбором полосы подписок: он прячет остальные группы целиком, и порядок,
+  // собранный из одной группы, оставил бы чужие без места.
+  const draggable = !byLat && needle === "" && filter === null;
+  // Подписки в полосе тащатся и под отбором: перенос карточки меняет только
+  // порядок самих подписок (`pendingSubs`), а полоса показывает их все, —
+  // порядка профилей он не трогает, и пустой список профилей служба понимает
+  // как «не трогать». Под порядком по задержке и под поиском — нельзя, как и за
+  // заголовок: там порядок расставляет не человек.
+  const stripDraggable = !byLat && needle === "";
   // Заведённое руками и пришедшее с панели — разные вещи, и в одном списке
-  // десяток своих узлов тонет в сотне чужих. Своё — то, чего нет ни в одной
-  // подписке: связь знает служба, окно её только показывает.
-  const fromSubs = new Set(subscriptions.flatMap((sub) => sub.nodes));
-  const byName = new Map(profiles.map((p) => [p.name, p]));
-  // Подписки тоже переставляются, а своя группа остаётся первой: она не
-  // подписка, и меняться местами ей не с кем.
+  // десяток своих узлов тонет в сотне чужих. Деление считает `groupProfiles`,
+  // тот же, что у плашки из трея: связь знает служба, окно её только
+  // показывает. Подписки тоже переставляются, а своя группа остаётся первой:
+  // она не подписка, и меняться местами ей не с кем.
   const subs = pendingSubs ? seated(subscriptions, (sub) => sub.url, pendingSubs) : subscriptions;
-  const groups = [
-    { sub: null, items: arrange(profiles.filter((p) => !fromSubs.has(p.name) && match(p))) },
-    ...subs.map((sub) => ({
-      sub,
-      items: arrange(
-        sub.nodes.flatMap((name) => {
-          const p = byName.get(name);
-          return p && match(p) ? [p] : [];
-        }),
-      ),
-    })),
-  ];
+  const members = groupProfiles(profiles, subs);
+  const groups = members.map((g) => ({
+    ...g,
+    // Отобранная подписка прячет остальные группы, и свои тоже.
+    items: filter !== null && g.key !== filter ? [] : arrange(g.all.filter(match)),
+  }));
   const shown = groups.reduce((n, g) => n + g.items.length, 0);
   // Перенос внутри группы — это новый порядок всего списка: службе он уезжает
   // одной строкой имён, а группы в ней лежат подряд, поэтому чужие остаются
   // как есть.
   const reorder = (key: string, names: string[]) =>
-    setPending(groups.flatMap((g) => ((g.sub?.url ?? "") === key ? names : g.items.map((i) => i.name))));
+    setPending(groups.flatMap((g) => (g.key === key ? names : g.items.map((i) => i.name))));
   // Строку отпустили — служба узнаёт порядок. Уезжает только то, что и вправду
   // переставляли: пустой список служба понимает как «этот порядок не трогать»,
   // и перенос подписки не замораживает в ручной порядок расстановку по
@@ -433,22 +722,21 @@ export function Profiles({
   // Группы заводит только подписка: с одними своими узлами заголовок «Свои»
   // говорил бы о делении, которого нет.
   const grouped = subscriptions.length > 0;
-  // Самый быстрый из измеренных и всё ещё живущих в списке. Прогон затевают
-  // ради этого выбора, а делать его глазами по сотне строк — то же самое, что
-  // не делать вовсе.
-  const fastest = probes
-    .filter((p) => p.latency_ms != null && byName.has(p.name))
-    .sort((a, b) => (a.latency_ms ?? 0) - (b.latency_ms ?? 0))[0];
+  // Самый быстрый из измеренных и всё ещё живущих в списке — выбор один на
+  // окно и плашку (`fastestProbe`).
+  const fastest = fastestProbe(probes, profiles);
+  // Обновление подписки — тот же импорт: служба сама узнаёт адрес и заменяет
+  // пришедшие с него профили. Одна функция на кнопку в заголовке группы и
+  // пункт меню: два места, где написано одно и то же, разошлись бы молча.
+  const refreshSub = (sub: Subscription) => void act({ cmd: "add-profile", arg: { link: sub.url } });
   // Действия подписки — тем же меню, что и у профиля: у неё их три, и три
   // значка в заголовке группы съедали ту самую ширину, в которой не помещался
-  // адрес.
+  // адрес. Обновление при этом стоит и значком — оно нужно чаще остальных.
   const subMenu = (sub: Subscription): MenuItem[] => [
     {
       label: s.refresh,
       hint: s.refreshSubscription(sub.url),
-      // Обновление — тот же импорт: служба сама узнаёт адрес и заменяет
-      // пришедшие с него профили.
-      onPick: () => void act({ cmd: "add-profile", arg: { link: sub.url } }),
+      onPick: () => refreshSub(sub),
     },
     { label: s.renameSubscription, onPick: () => setRenaming(sub.url) },
     {
@@ -461,97 +749,154 @@ export function Profiles({
       onPick: () => void act({ cmd: "remove-subscription", arg: { url: sub.url } }),
     },
   ];
-  // Действия списка — одним набором на оба вида шапки. В широком окне они
-  // стоят кнопками, в плашке из трея уходят под «⋯»: четыре подписи в 380 px
-  // не вставали в строку и разворачивали шапку плиты во второй ряд, а это
-  // 40 px — почти строка профиля, ради которой плашку и открывают.
+  // Строки группы — одни и те же с заголовком и без него (под отбором одной
+  // подпиской заголовка нет).
+  const rowsOf = (sub: Subscription | null, items: ProfileInfo[]) => (
+    <Rows
+      items={items}
+      status={status}
+      act={act}
+      s={s}
+      busy={busy}
+      editing={editing}
+      onEdit={openEditor}
+      onCopy={copyLink}
+      onQr={showQr}
+      onDone={() => setEditing(null)}
+      onMenu={openMenu}
+      onReorder={draggable ? (names) => reorder(sub?.url ?? "", names) : undefined}
+      onCommit={commit}
+      fromSub={sub !== null}
+      probeOf={probeOf}
+      tight={tight}
+    />
+  );
+  // Действия списка. В широкой панели инструментов они кнопки: «Проверить все»
+  // и «Быстрейший» — на виду, «Обновить все» — под «⋯» в конце, порядок — свой
+  // переключатель. В тесной панели (плашка в 380 px, одна из трёх панелей)
+  // они не встают в строку и разворачивали бы её во второй ряд, а это 40 px —
+  // почти строка профиля, ради которой список и открывают: там все они уходят
+  // под один «⋯».
   //
-  // Набором, а не двумя разметками: одно и то же действие, написанное дважды,
-  // разъезжается на первой же правке — и разъехалось бы молча.
-  const tools: (MenuItem & { pressed?: boolean })[] = [
+  // Каждое действие описано один раз, а раскладка выбирает, кнопкой оно или
+  // пунктом: одно и то же, написанное дважды, разъезжается на первой же правке —
+  // и разъехалось бы молча.
+  const toggleOrder: MenuItem = {
     // Включённый порядок по задержке снимается тем же пунктом, и он об этом
-    // говорит прямо: «сбросить» вместо «по задержке». Пока он об этом молчал,
-    // порядок выглядел свойством списка, а не включённым переключателем, — и
-    // вернуть свой человек не мог.
-    ...(measured
-      ? [
-          {
-            label: byLatency ? s.byLatencyOff : s.byLatency,
-            hint: s.byLatencyHint,
-            pressed: byLatency,
-            mark: byLatency,
-            onPick: () => setByLatency((v) => !v),
-          },
-        ]
-      : []),
-    ...(fastest && status?.profile !== fastest.name
-      ? [
-          {
-            label: s.fastest,
-            hint: s.fastestHint,
-            disabled: busy,
-            onPick: () => void act({ cmd: "on", arg: { profile: fastest.name } }),
-          },
-        ]
-      : []),
-    ...(subscriptions.length > 1
-      ? [
-          {
-            label: s.refreshAll,
-            hint: s.refreshAllHint,
-            disabled: busy,
-            // По одной, а не залпом: каждая — поход в сеть до двадцати секунд,
-            // и пять параллельных закачек под общим замком службы означали бы
-            // окно без статуса всё это время.
-            onPick: () =>
-              void (async () => {
-                for (const sub of subscriptions) {
-                  await act({ cmd: "add-profile", arg: { link: sub.url } });
-                }
-              })(),
-          },
-        ]
-      : []),
-    ...(profiles.length > 0
-      ? [
-          {
-            // Пока прогон идёт, пункт заперт: второй прогон добил бы sing-box
-            // первого — они делят каталог проверки. Счёт пройденного стоит на
-            // самой подписи: узел стоит секунд, и на сотне это минуты, за
-            // которые панель обязана отличаться от зависшей.
-            label: testing
-              ? s.testingProgress(testing.done, testing.total)
-              : busy
-                ? s.testing
-                : s.testProfiles,
-            hint: s.testProfilesHint,
-            disabled: busy,
-            onPick: () => void act({ cmd: "test-profiles", arg: { only: null } }),
-          },
-        ]
-      : []),
-  ];
+    // говорит прямо: «сбросить» вместо «по задержке». В широком виде то же
+    // самое делает переключатель «Мой порядок | По задержке».
+    label: byLat ? s.byLatencyOff : s.byLatency,
+    hint: s.byLatencyHint,
+    mark: byLat,
+    onPick: () => setByLatency(!byLat),
+  };
+  const turnFastest: MenuItem | null =
+    fastest && status?.profile !== fastest.name
+      ? {
+          label: s.fastest,
+          hint: s.fastestHint,
+          disabled: busy,
+          onPick: () => void act({ cmd: "on", arg: { profile: fastest.name } }),
+        }
+      : null;
+  const refreshAll: MenuItem | null =
+    subscriptions.length > 1
+      ? {
+          label: s.refreshAll,
+          hint: s.refreshAllHint,
+          disabled: busy,
+          // По одной, а не залпом: каждая — поход в сеть до двадцати секунд,
+          // и пять параллельных закачек под общим замком службы означали бы
+          // окно без статуса всё это время.
+          onPick: () =>
+            void (async () => {
+              for (const sub of subscriptions) {
+                await act({ cmd: "add-profile", arg: { link: sub.url } });
+              }
+            })(),
+        }
+      : null;
+  const testAll: MenuItem | null =
+    profiles.length > 0
+      ? {
+          // Пока прогон идёт, пункт заперт: второй прогон добил бы sing-box
+          // первого — они делят каталог проверки. Счёт пройденного стоит на
+          // самой подписи: узел стоит секунд, и на сотне это минуты, за
+          // которые панель обязана отличаться от зависшей.
+          label: testing ? s.testingProgress(testing.done, testing.total) : busy ? s.testing : s.testProfiles,
+          hint: s.testProfilesHint,
+          disabled: busy,
+          onPick: () => void act({ cmd: "test-profiles", arg: { only: null } }),
+        }
+      : null;
+  const present = <T,>(...items: (T | null | false)[]): T[] => items.filter((x): x is T => !!x);
+  // Всё разом — для тесной раскладки.
+  const tools = present<MenuItem>(measured && toggleOrder, turnFastest, refreshAll, testAll);
+  // Хвост широкой: то, чему в строке кнопки не нашлось.
+  const overflow = present<MenuItem>(refreshAll);
+  // Счёт и возраст списка. Живут в шапке панели (она ≥1100 px) и, пока шапки
+  // нет (`folds`), в панели инструментов: в ячейке «Все» полосы подписок, а без
+  // полосы — на месте распорки. Один узел, а не две копии текста: разойдясь,
+  // они показывали бы разное в двух состояниях окна.
+  const note =
+    profiles.length > 0 ? (
+      <span className="text-muted">
+        {profiles.length}
+        {query !== "" && ` · ${s.appsShown(shown)}`}
+        {/* Возраст списка, а не адреса: узлы в подписке меняет панель, и по
+            одному адресу не видно, пришли они час назад или лежат тут с
+            прошлого месяца. Отметка одна на все подписки — сверяются они
+            вместе, и повторять её над каждой было бы шумом. */}
+        {grouped && ` · ${syncedAgo(s, status?.refreshed_at ?? null)}`}
+      </span>
+    ) : null;
   return (
     <Panel
       className={className}
       title={s.profiles}
-      note={
-        profiles.length > 0 && (
-          <span className="text-muted">
-            {profiles.length}
-            {query !== "" && ` · ${s.appsShown(shown)}`}
-            {/* Возраст списка, а не адреса: узлы в подписке меняет панель, и по
-                одному адресу не видно, пришли они час назад или лежат тут с
-                прошлого месяца. Отметка одна на все подписки — сверяются они
-                вместе, и повторять её над каждой было бы шумом. */}
-            {grouped && ` · ${syncedAgo(s, status?.refreshed_at ?? null)}`}
-          </span>
-        )
-      }
-      action={
+      folds="narrow"
+      note={note}
+      bar={
         <>
-          {narrow
-            ? tools.length > 0 && (
+          {/* Панель инструментов стоит вне прокрутки: поиск и «Добавить» нужны
+              на любой глубине списка, а липкому заголовку группы она не
+              мешает — он липнет к кромке самой прокрутки, которая начинается
+              под ней. Высота — 41 px: поле в 32 и по 4 сверху и снизу. */}
+          <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1">
+            {searchable && (
+              <div className={compact ? "min-w-0 flex-[1_0_8rem]" : "min-w-32 flex-[0_1_18rem]"}>
+                <SearchField inputRef={searchRef} value={query} onChange={setQuery} placeholder={s.searchProfiles} />
+              </div>
+            )}
+            {/* Вид списка — переключатель, а не кнопка «сбросить»: оба порядка
+                названы, и видно, какой включён. Только когда есть что
+                упорядочивать: без замеров он не сделал бы ничего. В тесном виде
+                тот же выбор — пункт меню. */}
+            {!compact && measured && (
+              <Segmented
+                label={s.viewOrder}
+                options={[
+                  ["mine", s.viewMine],
+                  ["latency", s.byLatency, s.byLatencyHint],
+                ]}
+                value={byLat ? "latency" : "mine"}
+                onPick={(v) => setByLatency(v === "latency")}
+              />
+            )}
+            {/* Распорка несёт счёт, когда шапки нет, а полосы подписок (где он
+                стоит в ячейке «Все») тоже нет; места ему нет — обрезается.
+                В тесной раскладке с полем поиска распорка раньше пропадала
+                вовсе, и счёт с «сверено» исчезали вместе с ней: теперь она
+                остаётся мелким бледным текстом справа от поля, а поле держит
+                своё минимальное место (`flex-[1_0_8rem]` выше) и обрезает не
+                себя, а подпись. */}
+            {(!compact || !searchable || !stripped) && (
+              <span className={`min-w-0 truncate text-xs ${compact && searchable ? "shrink" : "flex-1"}`}>
+                {!stripped && <span className="fold-only">{note}</span>}
+              </span>
+            )}
+            {compact ? (
+              tools.length > 0 && (
                 <IconButton
                   icon="more"
                   label={s.actions}
@@ -559,29 +904,80 @@ export function Profiles({
                   onClick={(e) => openMenu(e, tools)}
                 />
               )
-            : tools.map((t) => (
-                <Button
-                  key={t.label}
-                  variant="quiet"
-                  aria-pressed={t.pressed}
-                  disabled={t.disabled}
-                  title={t.hint}
-                  onClick={t.onPick}
-                >
-                  {t.label}
-                </Button>
-              ))}
-          {/* «+» остаётся кнопкой в любой ширине и не уезжает в меню: пустой
-              список заводят только им, и прятать единственную дверь под «⋯»
-              значило бы не показать её тому, кому она и нужна. */}
-          <IconButton
-            icon="plus"
-            variant="ghost"
-            aria-haspopup="dialog"
-            label={s.importLink}
-            title={s.linkPlaceholder}
-            onClick={() => setAdding(true)}
-          />
+            ) : (
+              <>
+                {testAll && (
+                  <Button disabled={testAll.disabled} title={testAll.hint} onClick={testAll.onPick}>
+                    {testAll.label}
+                  </Button>
+                )}
+                {turnFastest && (
+                  <Button disabled={turnFastest.disabled} title={turnFastest.hint} onClick={turnFastest.onPick}>
+                    {/* Молния — акцентом, как у той же строки в плашке: это
+                        единственное действие ряда, которое сразу включает узел,
+                        и его ищут взглядом, а не читают подпись. */}
+                    <Icon name="bolt" size={14} className="text-accent" />
+                    {s.fastestShort}
+                  </Button>
+                )}
+                {overflow.length > 0 && (
+                  <IconButton
+                    icon="more"
+                    label={s.actions}
+                    aria-haspopup="menu"
+                    onClick={(e) => openMenu(e, overflow)}
+                  />
+                )}
+              </>
+            )}
+            {/* «Добавить» остаётся кнопкой в любой ширине и не уезжает в меню:
+                пустой список заводят только им, и прятать единственную дверь
+                под «⋯» значило бы не показать её тому, кому она и нужна. */}
+            {compact ? (
+              <IconButton
+                icon="plus"
+                variant="primary"
+                aria-haspopup="dialog"
+                label={s.importLink}
+                title={s.linkPlaceholder}
+                onClick={() => setAdding(true)}
+              />
+            ) : (
+              <Button variant="primary" aria-haspopup="dialog" title={s.linkPlaceholder} onClick={() => setAdding(true)}>
+                <Icon name="plus" size={14} />
+                {s.addProfile}
+              </Button>
+            )}
+          </div>
+          {stripped && (
+            <SubStrip
+              s={s}
+              lang={status?.lang}
+              groups={members}
+              probeOf={probeOf}
+              filter={filter}
+              onPick={setSubFilter}
+              // Счёт у ячейки «Все» уже есть (8/11), поэтому ей — только то, чего
+              // в ней нет: отбор поиском и возраст списка.
+              note={[query !== "" ? s.appsShown(shown) : "", syncedAgo(s, status?.refreshed_at ?? null)]
+                .filter((x) => x !== "")
+                .join(" · ")}
+              act={act}
+              busy={busy ?? false}
+              renaming={renaming}
+              onRenamed={() => setRenaming(null)}
+              onRefresh={refreshSub}
+              onMenu={(e, sub) => openMenu(e, subMenu(sub))}
+              draggable={stripDraggable}
+              dragged={dragged}
+              onDragStart={setDragged}
+              onDragOver={(url) => dragged !== null && setPendingSubs(moved(subs.map((x) => x.url), dragged, url))}
+              onDragEnd={() => {
+                setDragged(null);
+                commit();
+              }}
+            />
+          )}
         </>
       }
     >
@@ -624,11 +1020,6 @@ export function Profiles({
             />
           </Modal>
         )}
-        {searchable && (
-          <div className="p-3 pb-1.5">
-            <SearchField inputRef={searchRef} value={query} onChange={setQuery} placeholder={s.searchProfiles} />
-          </div>
-        )}
         {!grouped && profiles.length === 0 ? (
           // Пустому списку нужна не подпись, а дверь: поле импорта больше не
           // открыто само, и «+» в шапке — единственное, чем этот список
@@ -658,14 +1049,25 @@ export function Profiles({
             onMenu={openMenu}
             onReorder={draggable ? (names) => reorder("", names) : undefined}
             onCommit={commit}
+            probeOf={probeOf}
+            tight={tight}
           />
         ) : (
           // Подписка показывается даже пустой: она могла не отдать ни одного
           // понятного нам узла, а отписаться больше неоткуда. Прячет группу
-          // только поиск.
+          // только поиск, а отобранная полосой подписка прячет остальные.
           groups.map(
             ({ sub, items }) =>
-              (items.length > 0 || (sub !== null && needle === "")) && (
+              (filter === null || sub?.url === filter) &&
+              (items.length > 0 || (sub !== null && needle === "")) &&
+              (filter !== null ? (
+                // Список отобран одной подпиской: её карточка в полосе и есть
+                // заголовок — с обновлением, «⋯» и правкой имени, — а второй
+                // заголовок с тем же именем строкой ниже только повторил бы её.
+                // Здесь заголовка нет вовсе; он живёт в ветке без отбора.
+                // Сторож — `a_selected_subscription_has_no_second_header`.
+                <div key={sub?.url ?? ""}>{rowsOf(sub, items)}</div>
+              ) : (
                 // Сворачивается родным <details>: подписка на сотню узлов иначе
                 // уводит все остальные группы за нижний край окна.
                 <details
@@ -728,31 +1130,7 @@ export function Profiles({
                       // Поле стоит на месте подписи и по любому клику внутри
                       // себя не сворачивает группу: <summary> переключает
                       // <details> по всему, что в него попало.
-                      <form
-                        className="flex min-w-0 flex-1 items-center gap-2"
-                        onClick={(e) => e.stopPropagation()}
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          const name = new FormData(e.currentTarget).get("name");
-                          void act({
-                            cmd: "rename-subscription",
-                            arg: { url: sub.url, name: String(name ?? "") },
-                          }).then(() => setRenaming(null));
-                        }}
-                      >
-                        <input
-                          name="name"
-                          autoFocus
-                          defaultValue={sub.name}
-                          placeholder={s.subName}
-                          spellCheck={false}
-                          onKeyDown={(e) => e.key === "Escape" && setRenaming(null)}
-                          className={`${FIELD} h-7 font-normal`}
-                        />
-                        <Button type="submit" variant="quiet">
-                          {s.save}
-                        </Button>
-                      </form>
+                      <SubRename s={s} sub={sub} act={act} onDone={() => setRenaming(null)} />
                     ) : (
                       // `https://` съедает начало строки, а обрезается как раз
                       // хвост — то единственное, чем адреса и различаются.
@@ -765,48 +1143,55 @@ export function Profiles({
                         className={`selectable min-w-0 flex-1 truncate ${sub.name ? "" : "font-normal"}`}
                         title={sub.url}
                       >
-                        {sub.name || sub.url.replace(/^https:\/\//, "")}
+                        {subTitle(sub)}
                       </span>
                     )}
-                    {/* Остаток стоит `shrink-0`, а обрезается имя с адресом:
-                        остаток короткий и постоянной длины, а схема с хвостом
-                        адреса — длинная. Живёт он в <summary>, а не под ним: в
-                        свёрнутом виде это единственное место, где его вообще
-                        видно, а свёрнуты подписки как раз чаще всего. Пока
-                        подписку переименовывают, его не видно — поле занимает
-                        ту же строку, и два поля рядом не помещаются. */}
-                    {sub?.quota && renaming !== sub.url && (
+                    {/* Остаток в заголовке — только когда полосы подписок нет
+                        (подписка одна): с полосой он стоит в её ячейке, вместе
+                        со сроком и долей узлов. Стоит `shrink-0`, а
+                        обрезается имя с адресом: остаток короткий и постоянной
+                        длины, а схема с хвостом адреса — длинная. Живёт он в
+                        <summary>, а не под ним: в свёрнутом виде это единственное
+                        место, где его вообще видно, а свёрнуты подписки как раз
+                        чаще всего. Пока подписку переименовывают, его не видно —
+                        поле занимает ту же строку, и два поля рядом не
+                        помещаются. */}
+                    {!stripped && sub?.quota && renaming !== sub.url && (
                       <Remaining s={s} quota={sub.quota} lang={status?.lang} />
                     )}
                     <span className="shrink-0 text-xs font-normal text-muted">{items.length}</span>
                     {sub !== null && renaming !== sub.url && (
-                      <IconButton
-                        icon="more"
-                        label={s.actions}
-                        aria-haspopup="menu"
-                        className="-me-1 size-7"
-                        onClick={(e) => openMenu(e, subMenu(sub))}
-                      />
+                      <>
+                        {/* Обновление — значком: оно нужно чаще остального меню, а
+                            идти за ним под «⋯» ради одной подписки — три нажатия.
+                            Та же команда, что и у пункта меню (`refreshSub`).
+                            Нажатие по значку внутри <summary> не должно
+                            сворачивать группу. */}
+                        <IconButton
+                          icon="refresh"
+                          label={s.refresh}
+                          title={s.refreshSubscription(sub.url)}
+                          disabled={busy}
+                          className="size-7"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            refreshSub(sub);
+                          }}
+                        />
+                        <IconButton
+                          icon="more"
+                          label={s.actions}
+                          aria-haspopup="menu"
+                          className="-me-1 size-7"
+                          onClick={(e) => openMenu(e, subMenu(sub))}
+                        />
+                      </>
                     )}
                   </summary>
-                  <Rows
-                    items={items}
-                    status={status}
-                    act={act}
-                    s={s}
-                    busy={busy}
-                    editing={editing}
-                    onEdit={openEditor}
-                    onCopy={copyLink}
-                    onQr={showQr}
-                    onDone={() => setEditing(null)}
-                    onMenu={openMenu}
-                    onReorder={draggable ? (names) => reorder(sub?.url ?? "", names) : undefined}
-                    onCommit={commit}
-                    fromSub={sub !== null}
-                  />
+                  {rowsOf(sub, items)}
                 </details>
-              ),
+              )),
           )
         )}
       </div>
@@ -1184,8 +1569,16 @@ function Rows({
   onReorder,
   onCommit,
   fromSub,
+  probeOf,
+  tight,
 }: {
   items: ProfileInfo[];
+  /** Замеры по имени узла: одна карта на панель, а не поиск по списку в каждой
+   *  из сотни строк на каждый опрос статуса. */
+  probeOf: ReadonlyMap<string, Probe>;
+  /** Панель тесная: метка типа и полоска задержки уходят из строки, остаются
+   *  флаг, имя и число. */
+  tight: boolean;
   status: Status | null;
   act: Act;
   s: Strings;
@@ -1212,7 +1605,6 @@ function Rows({
    *  сверкой, и меню об этом говорит прямо. */
   fromSub?: boolean;
 }) {
-  const probes = status?.probes ?? [];
   // Что тащат прямо сейчас. Своё на каждый список: строку из чужой группы
   // сюда не переносят — узел подписки в «Свои» не переезжает.
   const [dragged, setDragged] = useState<string | null>(null);
@@ -1221,11 +1613,11 @@ function Rows({
     // Отступ строк — на самом списке, а не на прокрутке: скруглённая подсветка
     // строки иначе упирается в кромку плиты. Заголовок группы при этом остаётся
     // во всю ширину — он рубеж списка, а не его строка.
-    <ul className="flex flex-col gap-1 px-1.5 py-1">
+    <ul className="flex flex-col gap-0.5 px-1.5 py-1">
       {items.map((item) => {
         const name = item.name;
         const active = status?.profile === name;
-        const probe = probes.find((p) => p.name === name);
+        const probe = probeOf.get(name);
         // У активного профиля точка выхода известна и без прогона —
         // её спросил сам туннель.
         const country = probe?.country ?? (active && status?.tunnel === "up" ? status.country : null);
@@ -1321,7 +1713,9 @@ function Rows({
               // значки: целиться в «⋯» ради этого не нужно.
               onContextMenu={(e) => onMenu(e, rowMenu())}
               data-selected={active}
-              className={`row enter smooth flex min-h-11 items-center gap-2.5 ps-2.5 pe-1 ${
+              // Одна строка в 34 px: имя, метка, замер. `group/row` нужен
+              // адресу, который показывается по наведению и по фокусу.
+              className={`row enter smooth group/row flex h-[34px] items-center gap-2 ps-2.5 pe-1 ${
                 dragged === name ? "opacity-40" : ""
               }`}
             >
@@ -1341,32 +1735,49 @@ function Rows({
               </span>
               {/* Само поле строки и есть кнопка «включить»: настоящий <button>,
                   а не строка с ролью, — иначе клавиатура до профиля не
-                  добирается, а кнопка меню внутри роли ей же и мешает. Имя
-                  сверху, всё измеренное — строкой ниже: в одну строку имя,
-                  состояние, адрес и задержка не помещаются даже в окне
-                  минимальной ширины, и первым обрубается имя. */}
+                  добирается, а кнопка меню внутри роли ей же и мешает.
+
+                  Строка одна: имя, а у включённого — слово «подключён» тоном
+                  туннеля. Адрес `host:port` из строки ушёл: он в подсказке и
+                  проступает бледным справа от имени по наведению и по фокусу.
+                  Имя профиля пишет чужая панель, и два одинаково названных
+                  узла различаются только им — потому он не пропал, а прячется
+                  до первого взгляда. Обрезается он первым (`shrink-[8]`), имя
+                  — последним. Пароля и ключа тут нет — их в окно не привозят
+                  вовсе. */}
               <button
                 type="button"
                 aria-pressed={active}
                 onClick={pick}
-                className={`min-w-0 flex-1 py-1 text-start ${live ? "" : "cursor-pointer"}`}
+                title={item.server ? `${name} · ${item.kind} → ${item.server}` : name}
+                className={`flex min-w-0 flex-1 items-baseline gap-2 py-1 text-start ${live ? "" : "cursor-pointer"}`}
               >
-                <span className={`block truncate text-sm ${active ? "font-semibold" : ""}`} title={name}>
+                <span className={`min-w-0 truncate text-sm ${active ? "font-semibold" : ""}`}>
                   {label}
                   {live && <span className="sr-only"> — {s.active}</span>}
                 </span>
-                <span className="flex items-center gap-2 overflow-hidden font-mono text-xs text-muted">
-                  {/* Куда ведёт узел. Обрезается первым: имя профиля пишет
-                      чужая панель, и два одинаково названных узла различаются
-                      только этим. Пароля и ключа тут нет — их в окно не
-                      привозят вовсе. */}
-                  {item.server && (
-                    <span className="min-w-0 truncate" title={`${item.kind} → ${item.server}`}>
-                      {item.server}
-                    </span>
-                  )}
-                </span>
+                {active && status?.tunnel === "up" && (
+                  <span className={`shrink-0 text-xs font-normal ${tone.word}`} aria-hidden="true">
+                    {s.rowConnected}
+                  </span>
+                )}
+                {active && status?.tunnel === "connecting" && (
+                  <span className={`shrink-0 text-xs font-normal ${tone.word}`} aria-hidden="true">
+                    {s.connecting}
+                  </span>
+                )}
+                {item.server && (
+                  <span className="hidden min-w-0 shrink-[8] truncate font-mono text-xs font-normal text-faint group-hover/row:inline group-focus-within/row:inline">
+                    {item.server}
+                  </span>
+                )}
               </button>
+              {/* Тип узла меткой, моноширинно: по нему на глаз отличают vless от
+                  wireguard, и это единственное, что в одной строке не
+                  повторяет имя. В тесной панели её нет — остаётся в подсказке. */}
+              {!tight && item.kind && (
+                <span className="shrink-0 rounded-sm bg-hover px-1.5 font-mono text-xs text-muted">{item.kind}</span>
+              )}
               {/* Пометки — значками, а не словами: слово «без шифрования»
                   заглавными в каждой строке кричало громче имени узла. Смысл
                   остался в подсказке и для чтения с экрана, а жёлтый замок
@@ -1403,8 +1814,20 @@ function Rows({
                   сравнением — значит, сказать об этом обязано само число. */}
               {probe && (
                 <span
-                  className={`flex w-16 shrink-0 justify-end font-mono text-xs ${latencyTone(probe.latency_ms) || "text-muted"}`}
+                  className={`flex shrink-0 items-center justify-end gap-2 font-mono text-xs ${
+                    tight ? "w-16" : "w-24"
+                  } ${latencyTone(probe.latency_ms) || "text-muted"}`}
                 >
+                  {/* Полоска — длина задержки на шкале до 500 мс, цветом числа:
+                      столбец полосок читается раньше столбца чисел. */}
+                  {!tight && probe.latency_ms != null && (
+                    <span className="block h-1 w-8 shrink-0 overflow-hidden rounded-full bg-edge" aria-hidden="true">
+                      <span
+                        className="block h-full rounded-full bg-current"
+                        style={{ inlineSize: `${Math.min(100, Math.max(8, probe.latency_ms / 5))}%` }}
+                      />
+                    </span>
+                  )}
                   <Verdict
                     probe={probe}
                     failed={s.probeFailed}

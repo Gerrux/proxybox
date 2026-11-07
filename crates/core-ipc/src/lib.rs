@@ -2080,10 +2080,14 @@ mod tests {
         assert!(!rates.contains("performance.now()"), "часы окна не знают, когда служба сняла счётчики");
     }
 
-    /// Приборная линейка обязана стоять одной строкой везде, где её колонки не
-    /// встают в ряд: перенос уносил счётчики трафика на второй ряд, а его — за
-    /// нижний край окна, и человек их просто не видел. Порог у сжатия и у
-    /// пятиколоночной сетки один (768 px), промежуточных сеток нет.
+    /// Верх окна — один ряд из трёх блоков (состояние, скорость, задержка) и
+    /// обязан стоять так везде, где колонки встают в ряд; ниже 768 px блок
+    /// состояния — во всю ширину, а измерители — одной строкой под ним, и эта
+    /// строка не переносится: перенос уносил счётчики трафика на второй ряд, а
+    /// его — за нижний край окна, и человек их просто не видел. Порог у сжатия
+    /// и у трёхколоночной сетки один (768 px), промежуточных сеток нет. Строки
+    /// точки выхода в блоке состояния обязаны так же не переноситься в узком
+    /// окне, иначе перенос просто переехал бы выше.
     #[test]
     fn the_instrument_row_never_wraps() {
         let css = include_str!("../../../ui/app-shell/src/index.css");
@@ -2092,15 +2096,163 @@ mod tests {
             .nth(1)
             .expect("сжатие линейки в строку живёт под своим порогом");
         assert!(narrow.contains("flex-wrap: nowrap;"), "линейка переносится: счётчики уедут на второй ряд");
-        // Вторая строка внутри ячейки — тот же перенос, только другим способом:
-        // строка линейки станет вдвое выше, и нижний её край уйдёт за окно.
-        // Город тут не помещается — остаётся страна, ради которой ячейка и есть.
-        assert!(narrow.contains(".m-city"), "город остаётся в узкой линейке и растит её в две строки");
+        // Графики — второй этаж ячейки: в строке им места нет, и оставшись,
+        // они растили бы линейку вдвое.
+        assert!(narrow.contains(".st-metrics .chart"), "графики остаются в узкой линейке и растят её в две строки");
+        // Вторая строка в плите — тот же перенос, только выше: город и название
+        // страны в самом узком окне уходят, а сама строка не переносится.
+        assert!(narrow.contains(".m-city"), "город остаётся в узкой строке выхода и растит плиту");
+        let exit = narrow
+            .split(".st-exit {")
+            .nth(1)
+            .and_then(|s| s.split('}').next())
+            .expect("строка выхода в узком окне размечена .st-exit");
+        assert!(exit.contains("white-space: nowrap;"), "строка точки выхода переносится в узком окне");
 
         let bar = include_str!("../../../ui/app-shell/src/StatusBar.tsx");
-        let row = bar.lines().find(|l| l.contains("st-metrics")).expect("линейка размечена классом st-metrics");
-        assert!(row.contains("grid-cols-5"), "сетка линейки не пятиколоночная");
-        assert!(!row.contains(":grid-cols"), "промежуточная сетка складывает линейку в два-три ряда");
+        let row = bar
+            .lines()
+            .find(|l| l.contains("className=\"st-hero"))
+            .expect("верх окна размечен классом st-hero");
+        assert!(row.contains("grid-cols-3"), "сетка верха не трёхколоночная");
+        assert!(!row.contains(":grid-cols"), "промежуточная сетка складывает верх в два ряда");
+        // Измерители на широком окне — колонки самой сетки, а не вторая сетка.
+        let metrics = css
+            .split(".st-metrics {")
+            .nth(1)
+            .and_then(|s| s.split('}').next())
+            .expect("измерители размечены .st-metrics");
+        assert!(metrics.contains("display: contents;"), "измерители — вложенная сетка: пропорции разойдутся");
+    }
+
+    /// Плита и линейка не вправе отнимать у списка профилей больше, чем им
+    /// нужно: в окне 1007×705 плита в 177 px, линейка в 89, шапка панели в 40 и
+    /// две полосы по ~50 уводили первую группу списка на 445-й пиксель — шесть
+    /// строк из ста. Держится это на пяти вещах, и каждую молча вернёт любая
+    /// «мелкая» правка:
+    ///
+    /// - подсказка состояния — одна строка в любой ширине, а ссылка «что не
+    ///   так» стоит рядом с ней, а не внутри: обрезается хвост строки, и ссылка
+    ///   в хвосте уехала бы первой;
+    /// - в низком окне (до 640 px) уходит подсказка и подписи линейки, а ряд с
+    ///   ссылкой остаётся, пока ссылка есть;
+    /// - три блока верха стоят в одном ряду (состояние, скорость, задержка), а
+    ///   колодец графика берёт остаток высоты ряда и своей не имеет;
+    /// - карта — абсолютный фон конца блока состояния: высоту ряда задаёт
+    ///   текстовая колонка, а не карта;
+    /// - бляшка рейки стоит рядом со значком и только в узкой рейке — на его
+    ///   углу.
+    #[test]
+    fn the_plate_and_the_row_leave_the_list_its_height() {
+        let css = include_str!("../../../ui/app-shell/src/index.css");
+        let bar = include_str!("../../../ui/app-shell/src/StatusBar.tsx");
+        let block = |head: &str| -> String {
+            css.split(head)
+                .nth(1)
+                .and_then(|s| s.split('}').next())
+                .unwrap_or_else(|| panic!("в index.css нет правила {head}"))
+                .to_string()
+        };
+
+        // Подсказка: правило вне любого @media и обе строки обрезки.
+        let hint = block(".st-hint {");
+        assert!(hint.contains("white-space: nowrap;"), "подсказка состояния переносится на вторую строку");
+        assert!(hint.contains("text-overflow: ellipsis;"), "подсказка обрезается без многоточия");
+        // Правило вне @media стоит с нулевым отступом, внутри — с отступом.
+        assert!(
+            css.contains("\n.st-hint {"),
+            "обрезка подсказки снова под условием по ширине: выше него она идёт в две строки"
+        );
+        let paragraph = bar
+            .split("className=\"st-hint ")
+            .nth(1)
+            .and_then(|s| s.split("</p>").next())
+            .expect("подсказка размечена классом st-hint");
+        assert!(!paragraph.contains("setTrouble"), "ссылка «что не так» снова в обрезаемой строке");
+        assert!(bar.contains("st-hint-row"), "у подсказки и ссылки нет общего ряда");
+
+        // Низкое окно.
+        let short = css
+            .split("@media (max-height: 640px) {")
+            .nth(1)
+            .expect("у низкого окна нет своего правила");
+        assert!(short.contains(".st-hint {"), "в низком окне подсказка остаётся");
+        assert!(short.contains(".m-legend {"), "в низком окне остаются подписи измерителей");
+        assert!(short.contains(":not(:has(button))"), "в низком окне ряд со ссылкой уйдёт вместе с подсказкой");
+
+        // Колодец графика растягивается на остаток высоты ряда, а не задаёт её:
+        // с фиксированной высотой он растил бы ряд на каждом перерисованном
+        // статусе и делал бы его выше блока состояния.
+        let chart = block(".chart {");
+        assert!(chart.contains("flex: 1 1 0;"), "колодец графика не берёт остаток высоты ряда");
+        assert!(
+            !chart.lines().any(|l| l.trim_start().starts_with("block-size:") || l.trim_start().starts_with("height:")),
+            "у колодца снова своя высота: он растит ряд"
+        );
+        assert!(
+            block(".st-hero {").contains("1.75fr") && block(".st-hero {").contains("0.72fr"),
+            "ряд из трёх блоков разошёлся с пропорциями макета"
+        );
+        assert!(bar.contains("st-hero grid grid-cols-3"), "три блока верха не в одном ряду");
+
+        // Карта — фон конца блока состояния, а не отдельная плита, и высоту
+        // блока задаёт текст.
+        let map = block(".st-map-plate {");
+        assert!(map.contains("position: absolute;"), "карта снова отдельная плита: она растит блок состояния");
+        assert!(map.contains("inset-inline: 38% 0;"), "карта не занимает конец блока состояния");
+        assert!(map.contains("mask-image"), "карта не уходит под текст маской");
+        assert!(css.contains("[dir=\"rtl\"] .st-map-plate"), "маска карты не зеркалится справа налево");
+
+        // Рейка: рядом со значком, на углу — только в узкой.
+        let badge = block(".rail-badge {");
+        assert!(badge.contains("margin-inline-start: 4px;"), "бляшка заходит на значок");
+        let narrow = css.split("@media (max-width: 470px) {").nth(1).expect("есть узкое окно");
+        let corner = narrow
+            .split(".rail-badge {")
+            .nth(1)
+            .and_then(|s| s.split('}').next())
+            .expect("в узкой рейке бляшка не возвращена на угол");
+        assert!(corner.contains("margin-inline-start: -10px;"), "в узкой рейке бляшка не на углу значка");
+    }
+
+    /// Шапка панели с панелью инструментов прячется там, где она ничего не
+    /// различает, — иначе строка в 40 px стоит над строкой инструментов в 41 и
+    /// съедает у списка ту самую строку. Прячет её CSS (`data-folds`), а то,
+    /// что шапка несла, — счёт и кнопки — обязано переехать в панель
+    /// инструментов: пропавшие вместе со строкой «найти приложения» и «?» —
+    /// это недоступная возможность, а не экономия.
+    #[test]
+    fn a_folded_head_hands_its_content_to_the_toolbar() {
+        let css = include_str!("../../../ui/app-shell/src/index.css");
+        let narrow = css
+            .split("@media (max-width: 1099px) {")
+            .nth(1)
+            .and_then(|s| s.split("\n}").next())
+            .expect("шапка прячется ниже 1100 px");
+        assert!(narrow.contains(".panel-head[data-folds]"), "шапка не прячется в одной панели");
+        let wide = css
+            .split("@media (min-width: 1100px) {")
+            .nth(1)
+            .and_then(|s| s.split("\n}").next())
+            .expect("у широкого окна есть правило");
+        assert!(wide.contains(".fold-only"), "перенесённое в панель инструментов остаётся и рядом с шапкой");
+        assert!(css.contains(".panel-head[data-folds=\"always\"]"), "у соединений шапка снова есть");
+
+        let profiles = include_str!("../../../ui/app-shell/src/Profiles.tsx");
+        let apps = include_str!("../../../ui/app-shell/src/Apps.tsx");
+        let conns = include_str!("../../../ui/app-shell/src/Conns.tsx");
+        assert!(profiles.contains("folds=\"narrow\""), "шапка профилей не прячется");
+        assert!(apps.contains("folds=\"narrow\""), "шапка приложений не прячется");
+        assert!(conns.contains("folds=\"always\""), "шапка соединений не прячется");
+
+        // Что несла шапка, должно стоять и в панели инструментов.
+        assert!(profiles.contains("note={note}") && profiles.contains("fold-only"), "счёт профилей пропал вместе с шапкой");
+        assert!(
+            apps.contains("fold-only flex shrink-0 items-center gap-0.5\">{actions}"),
+            "кнопки приложений пропали вместе с шапкой"
+        );
+        assert!(apps.contains("action={actions}"), "в широкой шапке приложений нет кнопок");
+        assert!(conns.contains("s.connsNote(") && !conns.contains("note={"), "счёт соединений не в строке поиска");
     }
 
     /// Значки титульной полосы обязаны быть одной семьёй: одна сетка, одна
@@ -2237,15 +2389,21 @@ mod tests {
             .any(|c| c.starts_with("p-") || c.starts_with("pt-") || c.starts_with("py-"));
         assert!(!padded, "отступ снова стоит на самой прокрутке: липкий заголовок встанет ниже кромки");
 
-        // Список профилей — единственный, кто отступа не просит: липкое живёт
-        // только у него.
-        let profiles = include_str!("../../../ui/app-shell/src/Profiles.tsx");
-        let opening = profiles
-            .split("<Panel")
-            .nth(1)
-            .and_then(|s| s.split(">").next())
-            .expect("список живёт в плите");
-        assert!(!opening.contains("pad="), "список профилей просит отступ у прокрутки");
+        // Списки профилей и приложений не просят отступа: липкое живёт только у
+        // них. Читаем открывающий тег плиты до её `bar={` — первая плита файла
+        // стоит там, где её свойства кончаются полосой под шапкой, а не
+        // первым попавшимся `>` внутри стрелки или сравнения.
+        for (name, text) in [
+            ("Profiles.tsx", include_str!("../../../ui/app-shell/src/Profiles.tsx")),
+            ("Apps.tsx", include_str!("../../../ui/app-shell/src/Apps.tsx")),
+        ] {
+            let opening = text
+                .split("<Panel")
+                .nth(1)
+                .and_then(|s| s.split("bar={").next())
+                .unwrap_or_else(|| panic!("{name}: список живёт в плите с полосой под шапкой"));
+            assert!(!opening.contains("pad="), "{name}: список просит отступ у прокрутки");
+        }
 
         let css = include_str!("../../../ui/app-shell/src/index.css");
         let head = css
@@ -2274,6 +2432,216 @@ mod tests {
             !apps.contains("noteOpen ||"),
             "у заметки снова два условия: одно из них кнопке неподвластно"
         );
+        // `null` — «человек не решал», и тогда решает срочность; охват
+        // сбрасывает решение обратно. Булево состояние с эффектом
+        // `setNoteOpen(split)` решало за человека при каждой смене охвата и
+        // не открывало заметку «весь компьютер» и пустого белого списка вовсе.
+        assert!(apps.contains("useState<boolean | null>(null)"), "у решения человека нет значения «не решал»");
+        assert!(apps.contains("noteOpen ?? urgent"), "за человека, не решавшего, решает не срочность");
+        assert!(apps.contains("setNoteOpen(null)"), "смена охвата не сбрасывает решение о заметке");
+        assert!(!apps.contains("setNoteOpen(split)"), "заметка снова решается за человека при смене охвата");
+    }
+
+    /// Галочки «Раздельно» не уходят службе по одной. Каждая правка
+    /// `direct_apps` перезапускает туннель, а пока он не подтверждён, машина
+    /// заперта: десять галочек подряд — десять запертых машин. Они копятся в
+    /// окне (`pending`) и уезжают одной командой по «Применить»; белый список
+    /// туннель не трогает (`editing_the_list_never_restarts_the_tunnel`) и
+    /// остаётся мгновенным. Сторож смотрит текстом на три вещи: обработчик
+    /// галочки не зовёт `set-settings`; команда в файле одна; и накопленное
+    /// сбрасывается со сменой охвата — иначе правка уехала бы в другой охват.
+    #[test]
+    fn a_split_edit_is_applied_once() {
+        let apps = include_str!("../../../ui/app-shell/src/Apps.tsx");
+        let checkbox = apps
+            .split("type=\"checkbox\"")
+            .nth(1)
+            .and_then(|s| s.split("className=\"size-4").next())
+            .expect("в строке приложения есть галочка");
+        assert!(!checkbox.contains("set-settings"), "галочка «Раздельно» снова шлёт службе каждую правку сама");
+        assert!(checkbox.contains("toggle("), "в «Раздельно» галочка не копит правку в окне");
+        assert!(checkbox.contains("set-app"), "белый список перестал быть мгновенным");
+        assert_eq!(apps.matches("cmd: \"set-settings\"").count(), 1, "правка списка напрямую уходит не одним местом");
+        let apply = apps.find("const apply = ").expect("есть применение накопленного");
+        let send = apps.find("cmd: \"set-settings\"").expect("есть команда");
+        let render = apps.find("<Panel").expect("есть разметка панели");
+        assert!(apply < send && send < render, "команда не в «Применить»");
+        // Накопленное теперь живёт в `App.tsx` (см. `split_edits_outlive_a_tab_switch`),
+        // и сбрасывает его там же смена охвата: без этого правка уехала бы в
+        // другой охват.
+        let app = include_str!("../../../ui/app-shell/src/App.tsx");
+        assert!(app.contains("setPending({});") && app.contains("[scopeNow]"), "охват не сбрасывает накопленное");
+        assert!(apps.contains("foot={"), "у накопленных правок нет полосы «Применить»");
+    }
+
+    /// Соединения — таблица, а не лента: шапка и строки на одной сетке колонок,
+    /// и слово пути стоит у каждой строки. Слово перед именем только у части
+    /// строк сдвигало всё, что правее, и числа не вставали в столбец.
+    #[test]
+    fn the_connections_are_a_table() {
+        let conns = include_str!("../../../ui/app-shell/src/Conns.tsx");
+        let css = include_str!("../../../ui/app-shell/src/index.css");
+        assert!(conns.contains("role=\"table\"") && conns.contains("role=\"columnheader\""), "у соединений нет шапки");
+        assert!(conns.matches("conn-row").count() >= 2, "шапка и строки не делят одну сетку колонок");
+        let grid = css
+            .split(".conn-row {")
+            .nth(1)
+            .and_then(|s| s.split('}').next())
+            .expect("сетка колонок живёт в .conn-row");
+        assert!(grid.contains("display: grid") && grid.contains("grid-template-columns"), "колонки не заданы сеткой");
+        for word in ["connsTunnel", "connsBypass", "connsSilent", "connsLeak", "connsDirect"] {
+            assert!(conns.contains(&format!("s.{word}")), "в таблице нет слова пути {word}");
+        }
+        assert!(!conns.contains("{route === \"bypass\" && ("), "слово пути снова пишется только у части строк");
+        // Правая кнопка работает во всех охватах, а не молчит в «Раздельно».
+        assert!(!conns.contains("c.process === \"\" || status?.scope === \"split\""), "в «Раздельно» меню снова отключено");
+        assert!(conns.contains("connsDirectApp") && conns.contains("connsBackToTunnel"), "«Раздельно» без своих пунктов меню");
+    }
+
+    /// Журнал фильтрует по признаку службы, а не по словам в тексте, и подпись
+    /// дня липнет к кромке прокрутки: у панели отступа на самой прокрутке нет,
+    /// иначе липкое встало бы ниже кромки (см. `the_sticky_head_sits_on_the_scroll_edge`).
+    #[test]
+    fn the_journal_filters_by_the_flag_from_the_service() {
+        let journal = include_str!("../../../ui/app-shell/src/Journal.tsx");
+        assert!(journal.contains("lines.filter((line) => line.bad)"), "отбор «Сбои» идёт не по признаку службы");
+        assert!(journal.contains("sticky top-0"), "подпись дня не липкая");
+        assert!(journal.contains("line-clamp-2"), "сбойная строка не ужата до двух строк");
+        let opening = journal
+            .split("<Panel")
+            .nth(1)
+            .and_then(|s| s.split("title={").next())
+            .expect("журнал живёт в плите");
+        assert!(!opening.contains("pad="), "у журнала снова отступ на прокрутке: липкая подпись встанет ниже кромки");
+    }
+
+    /// Остаток подписки без лимита обязан читаться как «израсходовано», а не
+    /// остаток. Панели шлют `total == 0` и безлимитным, и когда лимита не
+    /// прислали, а `upload + download` при этом — то, что уже потрачено: голое
+    /// «284 GB» читалось «осталось много» там, где лимита нет вовсе.
+    ///
+    /// Подпись обязана быть во всех шести словарях окна (`tsc` и так не даст
+    /// завести словарь с дыркой, но имя ключа держим здесь: переименуют в одном
+    /// месте — разойдётся молча), а разбор остатка не вправе складывать
+    /// использованное в строку голым числом.
+    #[test]
+    fn the_quota_never_reads_as_a_remainder() {
+        let i18n = include_str!("../../../ui/app-shell/src/i18n.ts");
+        assert_eq!(
+            i18n.matches("quotaUsedNoLimit: (used: string)").count(),
+            6,
+            "подпись «израсходовано · без лимита» есть не во всех шести словарях окна"
+        );
+        let profiles = include_str!("../../../ui/app-shell/src/Profiles.tsx");
+        assert!(profiles.contains("s.quotaUsedNoLimit(bytes(f.used))"), "безлимитная подписка снова без подписи");
+        assert!(
+            !profiles.contains(": bytes(f.used)") && !profiles.contains("push(bytes("),
+            "использованное снова показано голым числом — читается остатком"
+        );
+    }
+
+    /// Под отбором полосы подписок тащить строки нельзя: отбор прячет остальные
+    /// группы, и порядок, собранный из одной, оставил бы чужие без места — тот
+    /// же тихий промах, что у поиска. Условие переноса обязано читать и поиск,
+    /// и отбор, и порядок по задержке.
+    #[test]
+    fn a_filtered_strip_never_lets_the_list_be_dragged() {
+        let profiles = include_str!("../../../ui/app-shell/src/Profiles.tsx");
+        let line = profiles
+            .lines()
+            .find(|l| l.trim_start().starts_with("const draggable ="))
+            .expect("условие переноса живёт в `draggable`");
+        for part in ["!byLat", "needle === \"\"", "filter === null"] {
+            assert!(line.contains(part), "перенос разрешён без условия `{part}`: порядок уедет службе неполным");
+        }
+    }
+
+    /// Список, отобранный одной подпиской, обходится без её заголовка: карточка
+    /// в полосе и есть заголовок, а второй с тем же именем строкой ниже только
+    /// повторял бы её. Действия заголовка — обновить и «⋯» с меню подписки —
+    /// переезжают в отобранную карточку, меню открывает и правая кнопка по
+    /// любой карточке (иначе отписаться, не сняв отбор, было бы нечем), а
+    /// правка имени встаёт в карточку, потому что заголовка с полем нет.
+    #[test]
+    fn a_selected_subscription_has_no_second_header() {
+        let profiles = include_str!("../../../ui/app-shell/src/Profiles.tsx").replace("\r\n", "\n");
+        let branch = profiles
+            .split("(filter !== null ? (")
+            .nth(1)
+            .expect("отбор одной подпиской рисует группу своей веткой");
+        let (filtered, rest) = branch.split_once("<details").expect("без отбора группа — <details>");
+        assert!(!filtered.contains("<summary") && !filtered.contains("sub-head"), "под отбором снова есть заголовок группы");
+        assert!(rest.contains("sub-head flex h-9"), "заголовок группы без отбора пропал");
+        let strip = profiles
+            .split("function SubStrip(")
+            .nth(1)
+            .and_then(|s| s.split("\n/** Со скольких профилей").next())
+            .expect("полоса подписок — SubStrip");
+        assert!(strip.contains("selected && !renamingHere"), "действия заголовка не переехали в отобранную карточку");
+        assert!(strip.contains("icon=\"refresh\"") && strip.contains("icon=\"more\""), "у карточки нет обновления или «⋯»");
+        assert!(strip.contains("onContextMenu={(e) => sub !== null && onMenu(e, sub)}"), "правая кнопка по карточке не открывает меню");
+        assert!(strip.contains("<SubRename"), "правка имени под отбором негде показать");
+    }
+
+    /// Подписки переставляются перетаскиванием и за карточку полосы, и за
+    /// заголовок группы — одним порядком (`pendingSubs`, `moved`) и одной
+    /// командой на отпускание (`commit`): временный порядок живёт в окне, а
+    /// `SetOrder` уходит один раз; пустой список профилей служба понимает как
+    /// «не трогать». «Все» не тащится. Под порядком по задержке и под поиском
+    /// нельзя — как за заголовок. Тихая полоса прокрутки: тонкая, прозрачная,
+    /// пока над рядом нет указателя (то есть `.scroll` без своих переопределений),
+    /// и без вертикальной.
+    #[test]
+    fn a_strip_card_reorders_like_a_header() {
+        let profiles = include_str!("../../../ui/app-shell/src/Profiles.tsx").replace("\r\n", "\n");
+        assert_eq!(
+            profiles.matches("draggable={draggable && sub !== null}").count(),
+            2,
+            "перетаскиваются не оба места: заголовок группы и карточка полосы"
+        );
+        assert!(profiles.contains("const stripDraggable = !byLat && needle === \"\";"), "условие переноса карточки разошлось с заголовком");
+        assert!(profiles.contains("draggable={stripDraggable}"), "полоса не получила условие переноса");
+        let at = profiles.find("draggable={stripDraggable}").unwrap();
+        let hooks = &profiles[at..(at + 700).min(profiles.len())];
+        assert!(hooks.contains("setPendingSubs(moved("), "карточка переставляет не тем порядком, что заголовок");
+        assert!(hooks.contains("commit();"), "карточку отпускают, а порядок не уезжает службе");
+        assert_eq!(profiles.matches("cmd: \"set-order\"").count(), 1, "порядок уходит службе не одним местом");
+
+        let css = include_str!("../../../ui/app-shell/src/index.css").replace("\r\n", "\n");
+        let strip = css
+            .split("\n.sub-strip {")
+            .nth(1)
+            .and_then(|s| s.split("\n}").next())
+            .expect("полоса подписок — .sub-strip");
+        assert!(
+            !strip.contains("scrollbar-width: none") && !strip.contains("scrollbar-color"),
+            "полоса прокрутки ряда подписок снова спрятана или всегда на виду"
+        );
+        assert!(strip.contains("overflow-y: hidden;"), "у ряда подписок появилась вертикальная прокрутка");
+    }
+
+    /// Главное окно и плашка из трея строят один и тот же список — свои узлы
+    /// первыми, затем подписки — и выбирают один и тот же «быстрейший». Делит и
+    /// выбирает их `groups.ts`: написанные дважды, они разошлись бы, и один и
+    /// тот же узел оказывался бы в разных группах в двух окнах.
+    #[test]
+    fn both_windows_group_profiles_the_same_way() {
+        let groups = include_str!("../../../ui/app-shell/src/groups.ts");
+        for own in ["export function groupProfiles(", "export function fastestProbe(", "export function aliveCount("] {
+            assert!(groups.contains(own), "общего помощника больше нет: {own}");
+        }
+        for (name, text) in [
+            ("Profiles.tsx", include_str!("../../../ui/app-shell/src/Profiles.tsx")),
+            ("Flyout.tsx", include_str!("../../../ui/app-shell/src/Flyout.tsx")),
+        ] {
+            for used in ["groupProfiles(", "fastestProbe(", "aliveCount("] {
+                assert!(text.contains(used), "{name} считает мимо общего помощника: {used}");
+            }
+            assert!(
+                !text.contains("new Set(subscriptions.flatMap"),
+                "{name} снова делит узлы на свои и подписочные сам"
+            );
+        }
     }
 
     /// Пульс точки выхода обязан жить вне карты. Он идёт всё время, пока
@@ -2384,6 +2752,87 @@ mod tests {
         }
     }
 
+    /// Карточки в окне — ровно в трёх местах (верхний ряд, полоса подписок,
+    /// блок состояния плашки), у них скругления из одной лестницы и нет тени:
+    /// тень в окне только у всплывающих слоёв (меню и диалога). Решение
+    /// владельца заменило прежнее «плоское окно без карточек», и граница
+    /// осталась границей: плитка (`--pg-tile`) в разметке не вставляется
+    /// классами, а лишь в этих правилах, иначе карточками обросли бы списки.
+    /// Лестница: 12 карточки верха, 10 ячейки полосы и блока плашки, 8 колодца
+    /// графика, 6 чипа охвата; 4 — всё управление (`--radius-*` в `@theme`).
+    #[test]
+    fn cards_have_radii_and_no_shadow() {
+        let css = include_str!("../../../ui/app-shell/src/index.css").replace("\r\n", "\n");
+        let tokens = include_str!("../../../ui/app-shell/src/tokens.css").replace("\r\n", "\n");
+        let token = |name: &str| -> String {
+            tokens
+                .split(&format!("{name}:"))
+                .nth(1)
+                .and_then(|s| s.split(';').next())
+                .unwrap_or_else(|| panic!("в tokens.css нет {name}"))
+                .trim()
+                .to_string()
+        };
+        for (name, px) in [("--pg-r-card", "12px"), ("--pg-r-cell", "10px"), ("--pg-r-well", "8px"), ("--pg-r-chip", "6px")] {
+            assert_eq!(token(name), px, "скругление {name} разошлось с лестницей");
+        }
+        for name in ["--pg-tile", "--pg-well"] {
+            assert!(token(name).starts_with("light-dark("), "{name} — не пара «светлое, тёмное»");
+        }
+
+        // Правило — от первого вхождения селектора с фигурной скобкой до первой
+        // закрывающей: вложенных блоков в этих правилах нет.
+        let rule = |selector: &str| -> String {
+            css.split(&format!("\n{selector} {{"))
+                .nth(1)
+                .and_then(|s| s.split("\n}").next())
+                .unwrap_or_else(|| panic!("в index.css нет правила {selector}"))
+                .to_string()
+        };
+        for (selector, radius) in [
+            (".st-state", "var(--pg-r-card)"),
+            (".m-block", "var(--pg-r-card)"),
+            (".sub-cell", "var(--pg-r-cell)"),
+            (".st-fly", "var(--pg-r-cell)"),
+            (".chart", "var(--pg-r-well)"),
+            (".st-scope", "var(--pg-r-chip)"),
+        ] {
+            let body = rule(selector);
+            assert!(!body.contains("box-shadow"), "у {selector} тень: тень в окне только у всплывающих слоёв");
+            assert!(body.contains(&format!("border-radius: {radius};")), "у {selector} скругление не {radius}");
+        }
+        assert!(rule(".m-block").contains("background: var(--pg-tile);"), "карточка верха не на плитке");
+        assert!(rule(".sub-cell").contains("var(--pg-tile)"), "ячейка полосы не на плитке");
+        assert!(rule(".chart").contains("background-color: var(--pg-well);"), "колодец графика не на `--pg-well`");
+
+        // Плитка и колодец — токены CSS-правил, а не утилиты в разметке: список
+        // профилей, приложений или журнал карточками не станут.
+        for (name, text) in [
+            ("StatusBar.tsx", include_str!("../../../ui/app-shell/src/StatusBar.tsx")),
+            ("Profiles.tsx", include_str!("../../../ui/app-shell/src/Profiles.tsx")),
+            ("Apps.tsx", include_str!("../../../ui/app-shell/src/Apps.tsx")),
+            ("Journal.tsx", include_str!("../../../ui/app-shell/src/Journal.tsx")),
+            ("Conns.tsx", include_str!("../../../ui/app-shell/src/Conns.tsx")),
+            ("Browsers.tsx", include_str!("../../../ui/app-shell/src/Browsers.tsx")),
+            ("Settings.tsx", include_str!("../../../ui/app-shell/src/Settings.tsx")),
+            ("Flyout.tsx", include_str!("../../../ui/app-shell/src/Flyout.tsx")),
+        ] {
+            assert!(
+                !text.contains("--pg-tile") && !text.contains("--pg-well"),
+                "{name}: плитка карточки в разметке — карточки заводит CSS, и только трём блокам"
+            );
+        }
+        // Тень у карточки в разметке — те же самые «парящие» карточки: единственные
+        // тени в окне идут от токена всплывающего слоя.
+        for (name, text) in [
+            ("StatusBar.tsx", include_str!("../../../ui/app-shell/src/StatusBar.tsx")),
+            ("Profiles.tsx", include_str!("../../../ui/app-shell/src/Profiles.tsx")),
+            ("Flyout.tsx", include_str!("../../../ui/app-shell/src/Flyout.tsx")),
+        ] {
+            assert!(!text.contains("shadow-"), "{name}: тень в разметке главного экрана — карточки не парят");
+        }
+    }
+
     /// Плашка из трея обязана называть состояние теми же словами, что шапка
     /// окна: заголовок и подсказку для обеих считает `describe`. Своя развилка
     /// в плашке разошлась бы с шапкой на первой же правке подсказки — и одно и
@@ -2402,6 +2851,279 @@ mod tests {
             });
             assert!(!used, "плашка называет состояние сама ({own}): разойдётся с шапкой");
         }
+    }
+
+    /// В плашке из трея нет охвата, и это не недосмотр: одно касание из трея
+    /// не должно уметь запереть машину. Белый список без галочек и «Раздельно»
+    /// выглядят со стороны как «интернет отвалился», а плашку открывают
+    /// мимоходом. Состояние называет подсказка под словом — выбор остаётся за
+    /// главным окном. Компилятора у фронтенда нет — сверяем текстом.
+    #[test]
+    fn the_flyout_never_offers_a_scope() {
+        let flyout = include_str!("../../../ui/app-shell/src/Flyout.tsx");
+        for forbidden in ["set-scope", "onScope", "Segmented", "scopeWhitelist", "scopeAll", "scopeSplit"] {
+            assert!(!flyout.contains(forbidden), "в плашке снова выбор охвата ({forbidden}): касание из трея запирает машину");
+        }
+    }
+
+    /// Пункт рейки «Журнал» не получает числа. Лента режется тридцатью строками,
+    /// и число в бляшке показывало бы всегда одну и ту же отсечку — то есть
+    /// ничего, но на самом видном месте окна. Бляшка журнала — только точка
+    /// внимания, когда самая новая строка (она первая в `status.log`) — сбой.
+    /// Компилятора у фронтенда нет — сверяем текстом.
+    #[test]
+    fn the_journal_rail_item_carries_no_count() {
+        let app = include_str!("../../../ui/app-shell/src/App.tsx");
+        let item = app
+            .split("icon=\"lines\"")
+            .nth(1)
+            .and_then(|s| s.split("/>").next())
+            .expect("пункт журнала в рейке");
+        assert!(!item.contains("count="), "у пункта «Журнал» снова число: оно всегда равно отсечке ленты");
+        assert!(item.contains("dot="), "у пункта «Журнал» нет точки сбоя");
+        assert!(item.contains("log[0]?.bad"), "точка журнала смотрит не на самую новую строку ленты");
+    }
+
+    /// Оглавление настроек и разделы обязаны совпадать: пункт без раздела
+    /// прокручивал бы в никуда, раздел без пункта до него нельзя было бы
+    /// домотать, а подсветка не знала бы о нём вовсе. Порядок — по частоте
+    /// обращений (`docs/interface.md`). Компилятора у фронтенда нет — сверяем
+    /// текстом.
+    #[test]
+    fn the_settings_index_matches_its_sections() {
+        let settings = include_str!("../../../ui/app-shell/src/Settings.tsx");
+        let index = settings
+            .split("const sections")
+            .nth(1)
+            .and_then(|s| s.split("];").next())
+            .expect("оглавление настроек живёт в `sections`");
+        let in_index: Vec<&str> = index
+            .split("key: \"")
+            .skip(1)
+            .filter_map(|s| s.split('"').next())
+            .collect();
+        let order = ["look", "subs", "tunnel", "split", "bypass", "startup", "diag", "about"];
+        assert_eq!(in_index, order, "порядок разделов настроек разошёлся с принятым");
+        // Разделы в разметке идут в том же порядке.
+        let mut at = 0;
+        for key in order {
+            let needle = format!("<Group id=\"{key}\"");
+            let found = settings[at..]
+                .find(&needle)
+                .unwrap_or_else(|| panic!("раздел «{key}» отсутствует или стоит не на своём месте"));
+            at += found + needle.len();
+        }
+    }
+
+    /// Карточка первого запуска не рисуется ни кадра, когда все шаги сбылись:
+    /// гасил её эффект уже после отрисовки, и на загрузке она вспыхивала на
+    /// один кадр. Условие обязано стоять в самом рендере, а не в эффекте.
+    #[test]
+    fn the_welcome_card_never_flashes_once_done() {
+        let welcome = include_str!("../../../ui/app-shell/src/Welcome.tsx");
+        assert!(
+            welcome.contains("if (hidden || complete || arriving) return null;"),
+            "сбывшаяся карточка гаснет эффектом, после отрисовки: на загрузке она вспыхивает"
+        );
+    }
+
+    /// Карточка первого запуска уходит навсегда, как только сбылись все три
+    /// шага, — и запоминает это корень окна, а не сама карточка: она не
+    /// рисуется в настройках, и шаги, сбывшиеся там, иначе забылись бы, а
+    /// выключенный на ночь туннель вернул бы её тому, кто прошёл весь путь.
+    #[test]
+    fn the_welcome_card_is_remembered_by_the_window_root() {
+        let welcome = include_str!("../../../ui/app-shell/src/Welcome.tsx").replace("\r\n", "\n");
+        let app = include_str!("../../../ui/app-shell/src/App.tsx").replace("\r\n", "\n");
+        let hook = welcome
+            .split("export function useWelcomeDone(")
+            .nth(1)
+            .and_then(|s| s.split("\n}").next())
+            .expect("запоминает сбывшееся useWelcomeDone");
+        assert!(hook.contains("every((step) => step.done)"), "запоминается не «все три шага сбылись»");
+        assert!(hook.contains("localStorage.setItem(SEEN, \"1\")"), "сбывшееся не пишется в ту же запись, что «Скрыть»");
+        assert!(app.contains("useWelcomeDone("), "корень окна не запоминает сбывшиеся шаги: в настройках они забудутся");
+    }
+
+    /// Слово состояния обязано вставать в одну строку в любой ширине окна: вторая
+    /// строка слова растит весь ряд на 34 px, и в окне 1007×705 первая группа
+    /// списка уезжает за принятую черту в 300. Обрезать слово нельзя («Не
+    /// обрезаем» в `StatusBar.tsx`), поэтому оно ужимается ступенями шкалы
+    /// (28, 20, 16) запросом по ширине самой карточки состояния (`@container`
+    /// у `.st-word`, контейнер — `.st-state`), а не по ширине окна: карточка
+    /// стала уже окна на поля и зазоры верха, и порог по окну разъезжался бы с
+    /// ней при каждой правке отступов.
+    ///
+    /// Модель — геометрия карточки, как её считает браузер: колонка — доля ряда
+    /// (`fr` из `.st-hero`) от ширины окна без полей и зазоров, содержимое — без
+    /// рамки в 2 px, слову остаётся содержимое минус 132 px (поля 32, зазор 12,
+    /// тумблер 56 и глиф с зазором 32; замер в живом окне: карточка 487.7 → 486
+    /// содержимого → заголовок 397.8 при 28 px) — в узком окне (до 470 px) поля
+    /// карточки по 12, то есть 124. Ширина слова — замер Geist 600 с трекингом
+    /// −0.025em при 28 px: «Приватный режим выключен» — 394 px, «Туннеля нет —
+    /// доступ закрыт» — 396, английское «No tunnel — access is closed» — 370;
+    /// пересчитайте, меняя шрифт или слова. Ниже 768 px сетки нет: карточка
+    /// во всю ширину окна.
+    #[test]
+    fn the_state_word_stays_on_one_line_in_the_row_of_three() {
+        let css = include_str!("../../../ui/app-shell/src/index.css").replace("\r\n", "\n");
+        let hero = css
+            .split(".st-hero {")
+            .nth(1)
+            .and_then(|s| s.split('}').next())
+            .expect("верх размечен .st-hero");
+        let fr: Vec<f64> = hero
+            .split("minmax(0, ")
+            .skip(1)
+            .filter_map(|s| s.split("fr").next()?.trim().parse().ok())
+            .collect();
+        assert_eq!(fr.len(), 3, "у верха не три колонки: {hero}");
+        let share = fr[0] / fr.iter().sum::<f64>();
+        let px = |src: &str, key: &str| -> Vec<f64> {
+            src.split(key)
+                .nth(1)
+                .and_then(|s| s.split(';').next())
+                .unwrap_or_else(|| panic!("нет {key}"))
+                .split_whitespace()
+                .filter_map(|v| v.strip_suffix("px")?.parse().ok())
+                .collect()
+        };
+        // Зазор и боковые поля верха — из самого CSS, а не копией: поправили
+        // отступ — модель поехала за ним. Padding — «сверху бока снизу».
+        let gap = px(hero, "gap:")[0];
+        let side = px(hero, "padding:")[1];
+        let narrow_side = {
+            let block = css.split("@media (max-width: 470px) {").nth(1).expect("узкое окно");
+            let rule = block.split(".st-hero {").nth(1).and_then(|s| s.split('}').next()).expect("поля верха в узком окне");
+            px(rule, "padding:")[1]
+        };
+        // Ступени слова: порог (содержимое карточки не шире него) → кегль.
+        let sizes = |value: &str| match value.trim() {
+            "var(--text-xl);" | "var(--text-xl)" => 20.0,
+            "var(--text-lg);" | "var(--text-lg)" => 16.0,
+            other => panic!("ступень слова не из шкалы: {other}"),
+        };
+        let mut steps: Vec<(f64, f64)> = css
+            .split("@container (max-width: ")
+            .skip(1)
+            .filter_map(|block| {
+                let width: f64 = block.split("px)").next()?.parse().ok()?;
+                let rule = block.split(".st-word {").nth(1)?.split('}').next()?;
+                let size = rule.split("font-size:").nth(1)?.split(';').next()?;
+                Some((width, sizes(size)))
+            })
+            .collect();
+        assert!(steps.len() >= 2, "у слова состояния нет ступеней по ширине карточки");
+        steps.sort_by(|a, b| b.0.total_cmp(&a.0));
+        assert!(
+            css.contains("container-type: inline-size;"),
+            "карточка состояния не контейнер: ступени слова не сработают"
+        );
+
+        const WIDEST_AT_28: f64 = 396.0;
+        const BORDER: f64 = 2.0;
+        const AROUND_THE_WORD: f64 = 132.0;
+        const AROUND_NARROW: f64 = 124.0;
+        let mut wraps = Vec::new();
+        for w in 380..=1400u32 {
+            let w = f64::from(w);
+            let card = if w >= 768.0 {
+                (w - 2.0 * side - 2.0 * gap) * share
+            } else if w <= 470.0 {
+                w - 2.0 * narrow_side
+            } else {
+                w - 2.0 * side
+            };
+            let inner = card - BORDER;
+            // Ступень — самая узкая из подходящих: запросы идут от широкого к
+            // узкому, и последний сработавший перебивает прежние.
+            let size = steps.iter().filter(|(t, _)| inner <= *t).map(|(_, s)| *s).fold(28.0, f64::min);
+            let around = if w <= 470.0 { AROUND_NARROW } else { AROUND_THE_WORD };
+            if WIDEST_AT_28 * size / 28.0 + around > inner {
+                wraps.push(w as u32);
+            }
+        }
+        assert!(
+            wraps.is_empty(),
+            "слово состояния уходит во вторую строку в {} ширинах окна из [380, 1400], от {} до {} px",
+            wraps.len(),
+            wraps.first().unwrap_or(&0),
+            wraps.last().unwrap_or(&0)
+        );
+    }
+
+    /// Подпись над графиком скорости обязана говорить правду о том, сколько
+    /// времени он держит. Отсчёт графика — одно снятие счётчиков службой, а
+    /// снимает она их раз в `TRAFFIC_EVERY` кругов надзора по `PROBE_EVERY`
+    /// (замер на живой службе: `traffic_at` двигается раз в ~15.8 с), то есть
+    /// сорок отсчётов — десять минут, а не прежние «90 с» из словаря.
+    ///
+    /// Модель сменилась вместе с механизмом: фиксированная строка в словаре
+    /// врала бы при любой правке такта, поэтому подписи-числа в словаре нет
+    /// вовсе — это функция от секунд, а секунды считаются по первой и последней
+    /// отметке `traffic_at` отсчётов на экране (`spanSeconds` в
+    /// `StatusBar.tsx`). Сторож проверяет это текстом: функция во всех шести
+    /// словарях, ни одной строки-числа, отсчёт хранит отметку, а подпись
+    /// молчит, пока отсчётов меньше двух.
+    #[test]
+    fn the_speed_history_spans_what_its_label_says() {
+        let i18n = include_str!("../../../ui/app-shell/src/i18n.ts").replace("\r\n", "\n");
+        assert_eq!(
+            i18n.matches("histSpan: (sec: number)").count(),
+            6,
+            "подпись истории скорости есть не функцией во всех шести словарях"
+        );
+        assert!(!i18n.contains("histSpan: \""), "в словаре снова подпись истории числом: она соврёт при смене такта");
+        let bar = include_str!("../../../ui/app-shell/src/StatusBar.tsx").replace("\r\n", "\n");
+        assert!(bar.contains("type Rate = { rx: number; tx: number; at: number };"), "отсчёт не хранит отметку службы");
+        let span = bar
+            .split("export function spanSeconds(")
+            .nth(1)
+            .and_then(|s| s.split("\n}").next())
+            .expect("промежуток считает spanSeconds");
+        assert!(span.contains("rates.length < 2"), "подпись рисуется по одному отсчёту");
+        assert!(
+            span.contains("rates[rates.length - 1].at") && span.contains("rates[0].at"),
+            "промежуток считается не по первой и последней отметке отсчётов"
+        );
+        assert!(bar.contains("s.histSpan(span)"), "подпись над графиком — не от посчитанного промежутка");
+    }
+
+    /// Накопленные галочки «Раздельно» обязаны пережить переход на другой пункт
+    /// рейки и открытые настройки. Пока они жили в `Apps`, а `App.tsx` рисует
+    /// `Apps` только вне настроек и вне браузеров с соединениями, любой такой
+    /// переход размонтировал панель — и десять отмеченных, но не применённых
+    /// галочек молча пропадали вместе с полосой «Применить». Теперь они живут в
+    /// `App.tsx`; сбрасывает их только смена охвата между двумя известными
+    /// охватами — мигнувшая служба обнуляет статус, но это не смена. Пункт
+    /// рейки «Приложения» при этом несёт точку «не применено».
+    #[test]
+    fn split_edits_outlive_a_tab_switch() {
+        let apps = include_str!("../../../ui/app-shell/src/Apps.tsx").replace("\r\n", "\n");
+        let app = include_str!("../../../ui/app-shell/src/App.tsx").replace("\r\n", "\n");
+        let owns = apps.contains("const [pending, setPending] = useState<Record<string, boolean>>")
+            || apps.contains("useState<SplitPending>");
+        let render = app.split("const pick = ").nth(1).expect("разметка окна после `pick`");
+        let mounted_at = render.find("<Apps ").expect("окно рисует панель приложений");
+        let unmounts = ["settings ? (", "tab === \"conns\" ? ("]
+            .iter()
+            .any(|cond| render.find(cond).is_some_and(|at| at < mounted_at));
+        assert!(
+            !(owns && unmounts),
+            "накопленные правки «Раздельно» живут в панели, которую переход по рейке размонтирует"
+        );
+        assert!(app.contains("useState<SplitPending>({})"), "накопленные правки живут не в App.tsx");
+        let reset = app
+            .split("const scopeNow = ")
+            .nth(1)
+            .and_then(|s| s.split("}, [scopeNow]);").next())
+            .expect("сброс накопленного — эффект по охвату");
+        assert!(reset.contains("if (!scopeNow) return;"), "мигнувшая служба сбросит накопленные правки");
+        assert!(
+            reset.contains("scopeWas.current && scopeWas.current !== scopeNow"),
+            "сбрасывается не смена одного известного охвата на другой"
+        );
+        assert!(app.contains("pending={unapplied > 0 ? s.unapplied : undefined}"), "у рейки нет точки «не применено»");
     }
 
     /// Оболочка — такой же клиент канала, но живёт вне воркспейса: компилятор
