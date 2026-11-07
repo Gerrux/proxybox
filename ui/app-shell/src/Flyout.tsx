@@ -35,7 +35,6 @@ import { strings } from "./i18n";
 import { aliveCount, fastestProbe, groupProfiles, quotaExpired, subTitle } from "./groups";
 import {
   bytes,
-  CellSpark,
   describe,
   exitCode,
   latencyTone,
@@ -83,15 +82,13 @@ export function Flyout({
   const rates = useRates(status);
   // Число — скорость, посчитанная службой (`rx_rate`): плашку открывают на пару
   // секунд, и своей разницы двух снятий счётчиков (служба снимает их раз в
-  // ~15 с) она не дожидалась — в строке стояли прочерки. График по-прежнему из
-  // своей истории: он копится, пока плашка открыта. Служба прежней сборки
-  // скорости не присылает — тогда остаётся своя разница, как было.
+  // ~15 с) она не дожидалась — в строке стояли прочерки. Графика в плашке нет:
+  // за пару секунд он не успевал накопить ни одной точки. Служба прежней
+  // сборки скорости не присылает — тогда остаётся своя разница, как было.
   const last =
     status?.traffic_at && typeof status.rx_rate === "number"
       ? { rx: status.rx_rate, tx: status.tx_rate }
       : (rates.at(-1) ?? null);
-  // Масштаб один на оба направления — по той же причине, что и в шапке окна.
-  const peak = Math.max(1, ...rates.map((r) => Math.max(r.rx, r.tx)));
   const [needle, setNeedle] = useState("");
   // Разовый отклик на включение (`.sw-sweep` в `switch.css`), только от нажатия.
   const [swept, setSwept] = useState(0);
@@ -237,10 +234,6 @@ export function Flyout({
               <span className="inline-flex shrink-0 items-center gap-0.5 text-accent" title={s.sent}>
                 <Icon name="up" size={12} />
                 {last ? `${bytes(last.tx)}${s.perSecond}` : "—"}
-              </span>
-              <span className="fly-chart" aria-hidden="true">
-                <CellSpark values={rates.map((r) => r.rx)} peak={peak} id="pg-spark-down" tone="text-open" />
-                <CellSpark values={rates.map((r) => r.tx)} peak={peak} id="pg-spark-up" tone="text-accent" />
               </span>
             </p>
           )}
