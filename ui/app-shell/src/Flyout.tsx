@@ -171,7 +171,12 @@ export function Flyout({
       <section data-state={state} className="st st-fly smooth relative shrink-0">
         {/* Отыграла — ушла из разметки (`will-change` не живёт вечно). */}
         {swept > 0 && <span key={swept} className="sw-sweep" aria-hidden="true" onAnimationEnd={() => setSwept(0)} />}
-        <div className="flex items-start gap-3 px-3 pt-2.5 pb-2">
+        {/* Карта — фон всей карточки, а не полоса между строками: так просил
+            владелец. Стоит первой и под текстом (`.fly-map` — абсолютный слой,
+            строки поверх — `relative`), а место под страну выхода держит
+            пустой промежуток той же высоты, что была у полосы. */}
+        <WorldMap className="fly-map" code={code} fit={0.5} />
+        <div className="relative flex items-start gap-3 px-3 pt-2.5 pb-2">
           <div className="min-w-0 flex-1">
             <h1 key={view.title} className="st-word swap flex items-center gap-2 text-xl font-semibold">
               <StateGlyph state={state} size={18} />
@@ -192,10 +197,10 @@ export function Flyout({
             }}
           />
         </div>
-        <WorldMap className="fly-map" code={code} fit={0.5} />
+        <div className="h-[100px]" aria-hidden="true" />
         {/* Точка выхода — строкой, числа — строкой ниже: в 356 px «Нидерланды ·
             Амстердам» и три числа рядом резались до «Нидерла… Амстер…». */}
-        <div className="px-3 pt-1.5 pb-2 text-sm">
+        <div className="relative px-3 pt-1.5 pb-2 text-sm">
           {status?.country ? (
             <p className="flex min-w-0 items-baseline gap-1.5 font-semibold">
               {flag(code) && <span aria-hidden="true">{flag(code)}</span>}
