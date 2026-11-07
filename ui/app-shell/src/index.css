@@ -522,18 +522,6 @@ body {
   box-shadow: 0 0 0 2px var(--pg-bg);
 }
 
-.rail-item[aria-pressed="true"]::before {
-  content: "";
-  position: absolute;
-  inset-inline-start: 0;
-  top: 50%;
-  translate: 0 -50%;
-  inline-size: 3px;
-  block-size: 16px;
-  border-radius: 9999px;
-  background: var(--pg-accent);
-}
-
 /* Шапка панели — одна строка в 40 px у всех панелей, под ней волосяная линия.
 
    Панель со своей панелью инструментов (`bar` у `Panel`: профили, приложения,
