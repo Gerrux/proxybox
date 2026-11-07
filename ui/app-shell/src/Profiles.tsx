@@ -174,35 +174,147 @@ function Ticks({ alive, total }: { alive: number; total: number }) {
   );
 }
 
-/** Поле переименования подписки. Стоит на месте подписи — в заголовке группы или,
- *  пока список отобран одной подпиской и заголовка нет, в её карточке полосы:
- *  один компонент на оба места, иначе форма в них разошлась бы. Нажатие
- *  внутри не сворачивает группу (форма живёт в `<summary>`). */
-function SubRename({ s, sub, act, onDone }: { s: Strings; sub: Subscription; act: Act; onDone: () => void }) {
+/** Правка подписки: подпись и адрес в небольшом окне поверх панели. Стояло полем
+ *  на месте подписи, пока править можно было только имя; с адресом полю тесно
+ *  (адрес длинный, и ошибку скачивания негде показать), а окно и заголовок
+ *  группы, и карточка полосы открывают одинаково — из меню подписки.
+ *
+ *  Новый адрес служба качает первой и без общего замка; не скачался — ответ
+ *  ошибкой и подписка прежняя, поэтому окно не закрывается, а показывает
+ *  причину рядом с полем, которое править. */
+function SubEdit({ s, sub, act, onDone }: { s: Strings; sub: Subscription; act: Act; onDone: () => void }) {
+  const [name, setName] = useState(sub.name);
+  const [url, setUrl] = useState(sub.url);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const changed = name.trim() !== sub.name.trim() || url.trim() !== sub.url;
   return (
-    <form
-      className="flex min-w-0 flex-1 items-center gap-2"
-      onClick={(e) => e.stopPropagation()}
-      onSubmit={(e) => {
-        e.preventDefault();
-        const name = new FormData(e.currentTarget).get("name");
-        void act({ cmd: "rename-subscription", arg: { url: sub.url, name: String(name ?? "") } }).then(onDone);
-      }}
-    >
-      <input
-        name="name"
-        autoFocus
-        defaultValue={sub.name}
-        placeholder={s.subName}
-        spellCheck={false}
-        onKeyDown={(e) => e.key === "Escape" && onDone()}
-        className={`${FIELD} h-7 font-normal`}
-      />
-      <Button type="submit" variant="quiet">
-        {s.save}
-      </Button>
-    </form>
+    <Modal title={s.editSubscription} onClose={onDone}>
+      <form
+        className="flex flex-col gap-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setBusy(true);
+          setError(null);
+          // `local`: причину показывает строка под полем, общая рамка её не дублирует.
+          void act({ cmd: "edit-subscription", arg: { url: sub.url, new_url: url.trim(), name: name.trim() } }, { local: true })
+            .then((r) => (r?.reply === "error" ? setError(r.data.message) : r && onDone()))
+            .finally(() => setBusy(false));
+        }}
+      >
+        <label className="flex flex-col gap-1 text-sm">
+          {s.subName}
+          <input
+            value={name}
+            autoFocus
+            onChange={(e) => setName(e.target.value)}
+            placeholder={s.subName}
+            spellCheck={false}
+            className={FIELD}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          {s.subAddress}
+          <input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            spellCheck={false}
+            dir="ltr"
+            className={`${FIELD} font-mono text-xs`}
+          />
+        </label>
+        <span className={`text-xs ${error ? "text-fault" : "text-muted"}`}>{error ?? s.subAddressHint}</span>
+        <div className="flex justify-end gap-2">
+          <Button onClick={onDone}>{s.cancel}</Button>
+          <Button type="submit" variant="primary" disabled={busy || !changed || !url.trim()}>
+            {s.save}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
+}
+
+/** Подтверждение удаления пачки: число в заголовке и то, что произойдёт кроме
+ *  удаления самих строк. Окно, а не «спросить дважды» в меню: у пачки есть что
+ *  прочесть (туннель погаснет, узлы подписок вернутся), а меню для текста мало. */
+function ConfirmRemove({
+  s,
+  title,
+  notes,
+  onCancel,
+  onConfirm,
+}: {
+  s: Strings;
+  title: string;
+  notes: string[];
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal title={title} onClose={onCancel}>
+      {notes.length > 0 && (
+        <ul className="flex flex-col gap-1 text-sm text-muted">
+          {notes.map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
+      )}
+      <div className="flex justify-end gap-2">
+        <Button onClick={onCancel}>{s.cancel}</Button>
+        <Button variant="primary" onClick={onConfirm}>
+          {s.remove}
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Куда деть клик по строке, когда выделение в игре. Ctrl/⌘ переключает строку,
+ *  Shift берёт диапазон от последней нажатой, а пока что-то выделено, обычный
+ *  клик тоже переключает: «включить узел» посреди выделения было бы промахом,
+ *  который включает туннель. */
+type Pick = (name: string, e: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => boolean;
+
+/** Печатное ли место: набирать в нём — значит не командовать списком. */
+function typing(t: EventTarget | null): boolean {
+  return t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
+}
+
+/** vmess-ссылка в base64 несёт имя внутри — это поле `ps` вложенного JSON, а
+ *  фрагмент ей не добавишь (служба читает именно `ps`). Раскрываем, ставим имя,
+ *  собираем обратно; не раскрылась — `null`, и ссылка уходит как есть. */
+function vmessWithName(link: string, want: string): string | null {
+  try {
+    const blob = link.slice("vmess://".length).trim().replace(/-/g, "+").replace(/_/g, "/");
+    const bytes = Uint8Array.from(atob(blob), (c) => c.charCodeAt(0));
+    const obj: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+    const out = new TextEncoder().encode(JSON.stringify({ ...obj, ps: want }));
+    return `vmess://${btoa(Array.from(out, (b) => String.fromCharCode(b)).join(""))}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Узел подписки, переименованный для «Изменить как свой»: имя ведёт тот же
+ *  разбор, что и импорт (фрагмент ссылки, `tag` в JSON, `ps` в base64-vmess). */
+function withName(text: string, want: string, was: string): string {
+  if (text.startsWith("{")) {
+    if (want === was) return text;
+    try {
+      const obj: unknown = JSON.parse(text);
+      if (obj && typeof obj === "object" && !Array.isArray(obj) && !("outbounds" in obj)) {
+        return JSON.stringify({ ...obj, tag: want });
+      }
+    } catch {
+      // Битый JSON уходит как есть: ошибку скажет служба своим разбором.
+    }
+    return text;
+  }
+  const head = text.split("#")[0];
+  if (/^vmess:\/\/[^@]*$/i.test(head)) return vmessWithName(head, want) ?? text;
+  return `${head}#${encodeURIComponent(want)}`;
 }
 
 /** Полоса подписок под панелью инструментов: ряд карточек-ячеек; много подписок —
@@ -229,10 +341,7 @@ function SubStrip({
   filter,
   onPick,
   note,
-  act,
   busy,
-  renaming,
-  onRenamed,
   onRefresh,
   onMenu,
   draggable,
@@ -249,12 +358,7 @@ function SubStrip({
   onPick: (url: string | null) => void;
   /** Что сказала бы шапка панели помимо счёта — в ячейке «Все», пока шапки нет. */
   note: ReactNode;
-  act: Act;
   busy: boolean;
-  /** Подписка, чьё имя правят. Поле встаёт в карточку только под отбором: без
-   *  него оно стоит в заголовке группы. */
-  renaming: string | null;
-  onRenamed: () => void;
   onRefresh: (sub: Subscription) => void;
   onMenu: (e: React.MouseEvent<HTMLElement>, sub: Subscription) => void;
   draggable: boolean;
@@ -286,8 +390,6 @@ function SubStrip({
     sub: Subscription | null,
   ) => {
     const selected = sub !== null && filter === url;
-    // Правка имени — в карточке, только когда заголовка группы нет (отбор).
-    const renamingHere = sub !== null && filter !== null && renaming === url;
     const alive = aliveCount(all, probeOf);
     const f = quotaFacts(quota);
     const q = f && quotaParts(s, f, lang);
@@ -356,26 +458,20 @@ function SubStrip({
           sub !== null && dragged === sub.url ? "opacity-40" : ""
         }`}
       >
-        {renamingHere ? (
-          <div className="sub-cell flex w-full min-w-0 items-center px-3 py-0.5">
-            <SubRename s={s} sub={sub} act={act} onDone={onRenamed} />
-          </div>
-        ) : (
-          <button
-            type="button"
-            aria-pressed={filter === url}
-            title={tip}
-            onClick={() => onPick(filter === url ? null : url)}
-            className="sub-cell smooth flex w-full min-w-0 flex-col items-stretch justify-start px-3 py-0.5"
-          >
-            {inner}
-          </button>
-        )}
+        <button
+          type="button"
+          aria-pressed={filter === url}
+          title={tip}
+          onClick={() => onPick(filter === url ? null : url)}
+          className="sub-cell smooth flex w-full min-w-0 flex-col items-stretch justify-start px-3 py-0.5"
+        >
+          {inner}
+        </button>
         {/* Отобранная карточка несёт действия заголовка, которого под отбором
             нет: обновить (та же команда, что у пункта меню) и «⋯» с меню
             подписки. Рядом с кнопкой-карточкой, а не внутри: вложенных кнопок
             не бывает. */}
-        {selected && !renamingHere && (
+        {selected && (
           <div className="absolute end-1 top-0.5 flex items-center">
             <IconButton
               icon="refresh"
@@ -530,8 +626,14 @@ export function Profiles({
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.code !== "KeyF" || !visible()) return;
       e.preventDefault();
+      // Пока что-то выделено, поля поиска на экране нет — его место занимает
+      // панель выделения, и фокусу было бы некуда идти. Поиск важнее выделения
+      // (сам Ctrl+F — это «хочу искать»), поэтому выделение снимается.
+      setSelected(new Set());
       setSearchOpen(true);
-      requestAnimationFrame(() => searchRef.current?.focus());
+      // Два кадра: первый перерисовывает панель инструментов вместо панели
+      // выделения, второй застаёт поле уже на месте.
+      requestAnimationFrame(() => requestAnimationFrame(() => searchRef.current?.focus()));
     };
     window.addEventListener("paste", onPaste);
     window.addEventListener("keydown", onKey);
@@ -557,13 +659,29 @@ export function Profiles({
   // свойство списка. Читается через `filter` ниже, который сверяет его с
   // тем, что в списке сейчас есть.
   const [subFilter, setSubFilter] = useState<string | null>(null);
-  // Какую подписку сейчас переименовывают. Адресом, а не флагом: подписок
-  // несколько, и открытых полей должно быть не больше одного.
-  const [renaming, setRenaming] = useState<string | null>(null);
+  // Какую подписку сейчас правят (окно имени и адреса). Адресом, а не флагом:
+  // подписок несколько, и открытых окон должно быть не больше одного.
+  const [editingSub, setEditingSub] = useState<string | null>(null);
+  // Выделенные строки — состояние окна и только окна: служба о нём не знает, а
+  // исчезнувшие профили выпадают отсюда сами (эффект ниже). Якорь — последняя
+  // нажатая строка, от неё Shift берёт диапазон.
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const anchor = useRef<string | null>(null);
+  // Удаление пачки ждёт подтверждения здесь, пока окно читают.
+  const [confirm, setConfirm] = useState<{ title: string; notes: string[]; names: string[] } | null>(null);
+  // Итог экспорта: «Скопировано N, пропущено M». Гаснет сам — это ответ на
+  // нажатие, а не состояние списка.
+  const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (notice === null) return;
+    const id = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(id);
+  }, [notice]);
   // Какой профиль правят и каким текстом. Узел приезжает отдельным запросом:
   // в статусе его нет намеренно — окно спрашивает статус каждые две секунды, а
   // подписка приносит сотни узлов с ключами и паролями внутри.
-  const [editing, setEditing] = useState<{ name: string; text: string } | null>(null);
+  // `own` — узел подписки правят «как свой»: сохранение заводит копию профилем.
+  const [editing, setEditing] = useState<{ name: string; text: string; own?: boolean } | null>(null);
   // Правка и «скопировать ссылку» спрашивают одно и то же — узел целиком.
   const nodeOf = (name: string) =>
     act({ cmd: "profile-node", arg: { name } }).then((r) => (r?.reply === "profile-node" ? r.data : null));
@@ -571,8 +689,8 @@ export function Profiles({
   // это правка одной строки, а тем же JSON человек до сих пор платил за неё
   // чтением всего узла. Ссылки нет — узел в неё не перекладывается без потерь,
   // и тогда JSON остаётся единственным честным видом.
-  const openEditor = (name: string) =>
-    void nodeOf(name).then((data) => data && setEditing({ name, text: data.link || data.json }));
+  const openEditor = (name: string, own = false) =>
+    void nodeOf(name).then((data) => data && setEditing({ name, text: data.link || data.json, own }));
   // Успех молчит: в буфере обмена лежит ссылка, и это и есть ответ. Говорить
   // приходится только об отказе — их два, и они про разное.
   const copyLink = (name: string) =>
@@ -679,13 +797,16 @@ export function Profiles({
   // порядок из половины имён смёл бы вторую половину в хвост. Тем же — под
   // отбором полосы подписок: он прячет остальные группы целиком, и порядок,
   // собранный из одной группы, оставил бы чужие без места.
-  const draggable = !byLat && needle === "" && filter === null;
+  //
+  // Пока что-то выделено, строки не тащатся вовсе: нажатие и движение у
+  // выделения значат своё, и перенос начинался бы от промаха.
+  const draggable = !byLat && needle === "" && filter === null && selected.size === 0;
   // Подписки в полосе тащатся и под отбором: перенос карточки меняет только
   // порядок самих подписок (`pendingSubs`), а полоса показывает их все, —
   // порядка профилей он не трогает, и пустой список профилей служба понимает
   // как «не трогать». Под порядком по задержке и под поиском — нельзя, как и за
   // заголовок: там порядок расставляет не человек.
-  const stripDraggable = !byLat && needle === "";
+  const stripDraggable = !byLat && needle === "" && selected.size === 0;
   // Заведённое руками и пришедшее с панели — разные вещи, и в одном списке
   // десяток своих узлов тонет в сотне чужих. Деление считает `groupProfiles`,
   // тот же, что у плашки из трея: связь знает служба, окно её только
@@ -699,6 +820,68 @@ export function Profiles({
     items: filter !== null && g.key !== filter ? [] : arrange(g.all.filter(match)),
   }));
   const shown = groups.reduce((n, g) => n + g.items.length, 0);
+  // Видимые строки подряд, как на экране: по ним берётся диапазон Shift и
+  // «выделить всё». Свёрнутая группа не видна, и выделять её вслепую нельзя.
+  const visibleNames = groups.flatMap((g) =>
+    filter === null && collapsed.includes(g.key) ? [] : g.items.map((i) => i.name),
+  );
+  // Выделение держится только на видимых строках. Профиль исчез (сверка,
+  // удаление из другого места), строку спрятал поиск, отбор полосы подписок
+  // или свёрнутая группа — она выпадает из выделения: пачка («Удалить»,
+  // «Измерить», экспорт) обязана действовать на то, что человек видит, а не на
+  // строки, которых на экране нет. Исчезнувший профиль — частный случай:
+  // видимые строки берутся из текущего списка. Ключ — состав и порядок
+  // видимых имён: пересчитывать на каждый статус, не поменявший список, нечего.
+  const visibleKey = JSON.stringify(visibleNames);
+  useEffect(() => {
+    setSelected((was) => {
+      if (was.size === 0) return was;
+      const live = new Set<string>(JSON.parse(visibleKey) as string[]);
+      const kept = [...was].filter((n) => live.has(n));
+      return kept.length === was.size ? was : new Set(kept);
+    });
+  }, [visibleKey]);
+  const toggleRow = (name: string) =>
+    setSelected((was) => {
+      const next = new Set(was);
+      if (!next.delete(name)) next.add(name);
+      return next;
+    });
+  const rangeTo = (name: string) => {
+    const from = anchor.current === null ? -1 : visibleNames.indexOf(anchor.current);
+    const to = visibleNames.indexOf(name);
+    if (from < 0 || to < 0) return setSelected(new Set([name]));
+    setSelected(new Set(visibleNames.slice(Math.min(from, to), Math.max(from, to) + 1)));
+  };
+  // Правда о том, что нажатие значило, живёт здесь одним местом: строка и
+  // флажок в ней спрашивают его же.
+  const pickRow: Pick = (name, e) => {
+    const handled = e.shiftKey || e.ctrlKey || e.metaKey || selected.size > 0;
+    if (e.shiftKey) rangeTo(name);
+    else if (handled) toggleRow(name);
+    if (!e.shiftKey) anchor.current = name;
+    return handled;
+  };
+  // Клавиши выделения смотрят свежее состояние через ссылку: слушатель на окне
+  // заводится один раз, а перевешивать его на каждое нажатие строки незачем.
+  const latest = useRef({ visibleNames, count: selected.size });
+  latest.current = { visibleNames, count: selected.size };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const body = bodyRef.current;
+      if (body?.offsetParent == null || typing(e.target)) return;
+      // Esc у открытого окна или меню закрывает их, а не выделение под ними.
+      if (document.querySelector("dialog[open], [role=menu]") != null) return;
+      if (e.key === "Escape" && latest.current.count > 0) {
+        setSelected(new Set());
+      } else if ((e.ctrlKey || e.metaKey) && e.code === "KeyA" && body.contains(document.activeElement)) {
+        e.preventDefault();
+        setSelected(new Set(latest.current.visibleNames));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   // Перенос внутри группы — это новый порядок всего списка: службе он уезжает
   // одной строкой имён, а группы в ней лежат подряд, поэтому чужие остаются
   // как есть.
@@ -729,6 +912,64 @@ export function Profiles({
   // пришедшие с него профили. Одна функция на кнопку в заголовке группы и
   // пункт меню: два места, где написано одно и то же, разошлись бы молча.
   const refreshSub = (sub: Subscription) => void act({ cmd: "add-profile", arg: { link: sub.url } });
+  // Экспорт: ссылки собирает служба (только сверенные), в буфер их кладёт окно.
+  // Ссылки везут пароли и ключи, поэтому окно нигде их не хранит — они лежат в
+  // буфере обмена и больше нигде.
+  const exportLinks = async (names: string[]) => {
+    const r = await act({ cmd: "export-links", arg: { names } });
+    if (r?.reply !== "links") return;
+    try {
+      if (r.data.links.length > 0) await navigator.clipboard.writeText(r.data.links.join("\n"));
+      setNotice(s.exported(r.data.links.length, r.data.skipped));
+    } catch {
+      onError?.(s.copyFailed);
+    }
+  };
+  // Мёртвый — измеренный и не ответивший: задержки нет, а причина отказа есть.
+  // Неизмеренный мёртвым не считается никогда — «не проверяли» не значит «не
+  // работает».
+  const deadOf = (names: string[]) =>
+    names.filter((n) => {
+      const p = probeOf.get(n);
+      return p != null && p.latency_ms == null && (p.error != null || p.brief != null);
+    });
+  // Всё, что стоит сказать перед удалением пачки: туннель погаснет, окно
+  // браузера закроется, узлы подписок вернутся со сверкой.
+  // Одиночное удаление спрашивает, только когда есть что прочесть. Пачка из
+  // двух и больше спрашивает всегда, с числом в заголовке: вернуть её вставкой
+  // за секунду нельзя, а промах по Shift-диапазону стоит десятка строк.
+  // «Нерабочие» спрашивают всегда (`always`) по той же причине: число заранее
+  // никто не знает, и удалять его вслепую нельзя.
+  const askRemove = (names: string[], title: (n: number) => string, always = false) => {
+    const fromSubs = new Set(members.filter((g) => g.sub !== null).flatMap((g) => g.all.map((p) => p.name)));
+    const notes: string[] = [];
+    if (status?.profile != null && names.includes(status.profile)) notes.push(s.confirmActiveNote);
+    if (status?.browser_profiles.some((b) => names.includes(b.node) && status.browsers.includes(b.name)))
+      notes.push(s.confirmBrowserNote);
+    if (names.some((n) => fromSubs.has(n))) notes.push(s.confirmSubNote);
+    if (notes.length === 0 && !always && names.length < 2) return removeProfiles(names);
+    setConfirm({ title: title(names.length), notes, names });
+  };
+  function removeProfiles(names: string[]) {
+    setConfirm(null);
+    setSelected(new Set());
+    void act({ cmd: "remove-profiles", arg: { names } });
+  }
+  // Удалить нерабочие: из выделенного, а без выделения — из всех профилей.
+  const askRemoveDead = (scope: string[]) => {
+    const names = deadOf(scope);
+    if (names.length > 0) askRemove(names, s.removeDeadTitle, true);
+  };
+  const deadScope = selected.size > 0 ? [...selected] : profiles.map((p) => p.name);
+  const removeDead: MenuItem = {
+    label: s.removeDead,
+    hint: s.removeDeadHint,
+    // Пока идёт прогон, цифры ещё меняются; а пока ничего не измерено, удалять
+    // нечего по определению.
+    disabled: busy || testing != null || deadOf(deadScope).length === 0,
+    danger: true,
+    onPick: () => askRemoveDead(deadScope),
+  };
   // Действия подписки — тем же меню, что и у профиля: у неё их три, и три
   // значка в заголовке группы съедали ту самую ширину, в которой не помещался
   // адрес. Обновление при этом стоит и значком — оно нужно чаще остальных.
@@ -738,13 +979,19 @@ export function Profiles({
       hint: s.refreshSubscription(sub.url),
       onPick: () => refreshSub(sub),
     },
-    { label: s.renameSubscription, onPick: () => setRenaming(sub.url) },
+    { label: s.editSubscription, onPick: () => setEditingSub(sub.url) },
+    {
+      label: s.exportLinks,
+      hint: s.exportLinksHint,
+      disabled: sub.nodes.length === 0,
+      onPick: () => void exportLinks(sub.nodes),
+    },
     {
       label: s.unsubscribe,
       hint: s.removeSubscription(sub.url),
       danger: true,
-      // Отписка уносит с собой десятки профилей разом — по одному клику мимо
-      // такое случаться не должно.
+      // Удаление подписки уносит с собой десятки профилей разом — по одному
+      // клику мимо такое случаться не должно.
       ask: s.confirmRemove,
       onPick: () => void act({ cmd: "remove-subscription", arg: { url: sub.url } }),
     },
@@ -769,6 +1016,8 @@ export function Profiles({
       fromSub={sub !== null}
       probeOf={probeOf}
       tight={tight}
+      selected={selected}
+      onPickRow={pickRow}
     />
   );
   // Действия списка. В широкой панели инструментов они кнопки: «Проверить все»
@@ -829,11 +1078,21 @@ export function Profiles({
           onPick: () => void act({ cmd: "test-profiles", arg: { only: null } }),
         }
       : null;
+  const exportAll: MenuItem | null =
+    profiles.length > 0
+      ? {
+          label: s.exportLinks,
+          hint: s.exportLinksHint,
+          onPick: () => void exportLinks(profiles.map((p) => p.name)),
+        }
+      : null;
+  // «Удалить нерабочие» стоит, только когда есть что мерить.
+  const deadItem: MenuItem | null = profiles.length > 0 ? removeDead : null;
   const present = <T,>(...items: (T | null | false)[]): T[] => items.filter((x): x is T => !!x);
   // Всё разом — для тесной раскладки.
-  const tools = present<MenuItem>(measured && toggleOrder, turnFastest, refreshAll, testAll);
+  const tools = present<MenuItem>(measured && toggleOrder, turnFastest, refreshAll, testAll, exportAll, deadItem);
   // Хвост широкой: то, чему в строке кнопки не нашлось.
-  const overflow = present<MenuItem>(refreshAll);
+  const overflow = present<MenuItem>(refreshAll, exportAll, deadItem);
   // Счёт и возраст списка. Живут в шапке панели (она ≥1100 px) и, пока шапки
   // нет (`folds`), в панели инструментов: в ячейке «Все» полосы подписок, а без
   // полосы — на месте распорки. Один узел, а не две копии текста: разойдясь,
@@ -862,6 +1121,58 @@ export function Profiles({
               на любой глубине списка, а липкому заголовку группы она не
               мешает — он липнет к кромке самой прокрутки, которая начинается
               под ней. Высота — 41 px: поле в 32 и по 4 сверху и снизу. */}
+          {selected.size > 0 ? (
+            // Пока что-то выделено, панель инструментов уступает место панели
+            // выделения: поиск и «Добавить» в это время не нужны, а те же 41 px
+            // высоты держат список там, где он был.
+            <div
+              className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1"
+              role="group"
+              aria-label={s.selectedCount(selected.size)}
+            >
+              <span className="min-w-0 flex-1 truncate text-sm font-semibold" aria-live="polite">
+                {s.selectedCount(selected.size)}
+              </span>
+              {!compact && (
+                <Button
+                  disabled={busy}
+                  onClick={() => void act({ cmd: "test-profiles", arg: { only: [...selected] } })}
+                >
+                  {s.testOne}
+                </Button>
+              )}
+              {!compact && (
+                <Button onClick={() => void exportLinks([...selected])}>{s.exportShort}</Button>
+              )}
+              <Button
+                variant="danger"
+                disabled={busy}
+                onClick={() => askRemove([...selected], s.removeMany)}
+              >
+                {s.remove}
+              </Button>
+              <IconButton
+                icon="more"
+                label={s.actions}
+                aria-haspopup="menu"
+                onClick={(e) =>
+                  openMenu(
+                    e,
+                    present<MenuItem>(
+                      compact && {
+                        label: s.testOne,
+                        disabled: busy,
+                        onPick: () => void act({ cmd: "test-profiles", arg: { only: [...selected] } }),
+                      },
+                      compact && { label: s.exportShort, onPick: () => void exportLinks([...selected]) },
+                      removeDead,
+                    ),
+                  )
+                }
+              />
+              <IconButton icon="close" label={s.clearSelection} onClick={() => setSelected(new Set())} />
+            </div>
+          ) : (
           <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1">
             {searchable && (
               <div className={compact ? "min-w-0 flex-[1_0_8rem]" : "min-w-32 flex-[0_1_18rem]"}>
@@ -949,6 +1260,12 @@ export function Profiles({
               </Button>
             )}
           </div>
+          )}
+          {notice !== null && (
+            <div role="status" className="shrink-0 border-b border-edge px-3 py-1 text-xs text-muted">
+              {notice}
+            </div>
+          )}
           {stripped && (
             <SubStrip
               s={s}
@@ -962,10 +1279,7 @@ export function Profiles({
               note={[query !== "" ? s.appsShown(shown) : "", syncedAgo(s, status?.refreshed_at ?? null)]
                 .filter((x) => x !== "")
                 .join(" · ")}
-              act={act}
               busy={busy ?? false}
-              renaming={renaming}
-              onRenamed={() => setRenaming(null)}
               onRefresh={refreshSub}
               onMenu={(e, sub) => openMenu(e, subMenu(sub))}
               draggable={stripDraggable}
@@ -1051,6 +1365,8 @@ export function Profiles({
             onCommit={commit}
             probeOf={probeOf}
             tight={tight}
+            selected={selected}
+            onPickRow={pickRow}
           />
         ) : (
           // Подписка показывается даже пустой: она могла не отдать ни одного
@@ -1126,11 +1442,6 @@ export function Profiles({
                     />
                     {sub === null ? (
                       <span className="min-w-0 flex-1 truncate">{s.ownProfiles}</span>
-                    ) : renaming === sub.url ? (
-                      // Поле стоит на месте подписи и по любому клику внутри
-                      // себя не сворачивает группу: <summary> переключает
-                      // <details> по всему, что в него попало.
-                      <SubRename s={s} sub={sub} act={act} onDone={() => setRenaming(null)} />
                     ) : (
                       // `https://` съедает начало строки, а обрезается как раз
                       // хвост — то единственное, чем адреса и различаются.
@@ -1153,14 +1464,12 @@ export function Profiles({
                         длины, а схема с хвостом адреса — длинная. Живёт он в
                         <summary>, а не под ним: в свёрнутом виде это единственное
                         место, где его вообще видно, а свёрнуты подписки как раз
-                        чаще всего. Пока подписку переименовывают, его не видно —
-                        поле занимает ту же строку, и два поля рядом не
-                        помещаются. */}
-                    {!stripped && sub?.quota && renaming !== sub.url && (
+                        чаще всего. */}
+                    {!stripped && sub?.quota && (
                       <Remaining s={s} quota={sub.quota} lang={status?.lang} />
                     )}
                     <span className="shrink-0 text-xs font-normal text-muted">{items.length}</span>
-                    {sub !== null && renaming !== sub.url && (
+                    {sub !== null && (
                       <>
                         {/* Обновление — значком: оно нужно чаще остального меню, а
                             идти за ним под «⋯» ради одной подписки — три нажатия.
@@ -1196,6 +1505,23 @@ export function Profiles({
         )}
       </div>
       {menu && <Menu at={menu.at} items={menu.items} onClose={() => setMenu(null)} />}
+      {editingSub !== null && subscriptions.some((sub) => sub.url === editingSub) && (
+        <SubEdit
+          s={s}
+          sub={subscriptions.find((sub) => sub.url === editingSub) as Subscription}
+          act={act}
+          onDone={() => setEditingSub(null)}
+        />
+      )}
+      {confirm && (
+        <ConfirmRemove
+          s={s}
+          title={confirm.title}
+          notes={confirm.notes}
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => removeProfiles(confirm.names)}
+        />
+      )}
       {qr != null && (
         <Modal title={s.showQr} onClose={() => setQr(null)}>
           <div className="flex flex-col items-center gap-2">
@@ -1268,12 +1594,18 @@ function Editor({
   text,
   act,
   onDone,
+  own = false,
 }: {
   s: Strings;
   name: string;
   text: string;
   act: Act;
   onDone: () => void;
+  /** Узел подписки правят «как свой»: сохранение идёт обычным импортом и
+   *  заводит новый профиль с этим именем. Не изменили — служба откажет
+   *  (тот же узел вторым профилем не заводится), и окно говорит об этом
+   *  словами, а не молчит. */
+  own?: boolean;
 }) {
   const [want, setWant] = useState(name);
   const [node, setNode] = useState(text);
@@ -1291,13 +1623,31 @@ function Editor({
         e.preventDefault();
         setBusy(true);
         setError(null);
-        void act({
-          cmd: "edit-profile",
-          // Нетронутый узел не отправляем вовсе: разбор вернул бы тот же самый,
-          // но лишний повод перезапустить туннель на активном профиле здесь ни
-          // к чему.
-          arg: { name, rename: want.trim(), node: node.trim() === text.trim() ? "" : node.trim() },
-        })
+        if (own) {
+          // `local`: отказ (в том числе «узел уже есть») читают в форме, а не в рамке наверху.
+          void act({ cmd: "add-profile", arg: { link: withName(node.trim(), want.trim(), name) } }, { local: true })
+            .then((r) => {
+              if (r?.reply === "error") return setError(r.data.message);
+              if (r?.reply !== "imported") return;
+              // Ничего нового при «уже есть» — это отказ дедупликации, а не
+              // успех: закрыть форму молча значило бы сделать вид, что копия
+              // появилась.
+              if (r.data.added === 0) return setError(r.data.kept > 0 ? s.nodeExists : (r.data.skipped[0] ?? s.nodeExists));
+              onDone();
+            })
+            .finally(() => setBusy(false));
+          return;
+        }
+        void act(
+          {
+            cmd: "edit-profile",
+            // Нетронутый узел не отправляем вовсе: разбор вернул бы тот же самый,
+            // но лишний повод перезапустить туннель на активном профиле здесь ни
+            // к чему.
+            arg: { name, rename: want.trim(), node: node.trim() === text.trim() ? "" : node.trim() },
+          },
+          { local: true },
+        )
           .then((r) => (r?.reply === "error" ? setError(r.data.message) : onDone()))
           .finally(() => setBusy(false));
       }}
@@ -1365,7 +1715,9 @@ function Editor({
           className={`${FIELD.replace("h-8", "h-auto")} resize-none py-[5px] font-mono text-xs`}
         />
       )}
-      <span className={`text-xs ${error ? "text-fault" : "text-muted"}`}>{error ?? s.editNodeHint}</span>
+      <span className={`text-xs ${error ? "text-fault" : "text-muted"}`}>
+        {error ?? (own ? s.editAsOwnHint : s.editNodeHint)}
+      </span>
     </form>
   );
 }
@@ -1571,8 +1923,14 @@ function Rows({
   fromSub,
   probeOf,
   tight,
+  selected,
+  onPickRow,
 }: {
   items: ProfileInfo[];
+  /** Выделенные строки (окно, не служба) и обработчик нажатия по строке:
+   *  возвращает `true`, если нажатие ушло на выделение и узел включать не надо. */
+  selected: ReadonlySet<string>;
+  onPickRow: Pick;
   /** Замеры по имени узла: одна карта на панель, а не поиск по списку в каждой
    *  из сотни строк на каждый опрос статуса. */
   probeOf: ReadonlyMap<string, Probe>;
@@ -1583,8 +1941,9 @@ function Rows({
   act: Act;
   s: Strings;
   busy?: boolean;
-  editing: { name: string; text: string } | null;
-  onEdit: (name: string) => void;
+  editing: { name: string; text: string; own?: boolean } | null;
+  /** `own` — узел подписки правят как свой: сохранение заводит копию. */
+  onEdit: (name: string, own?: boolean) => void;
   /** Ссылку узла — кодом на экран: перенос на телефон без буфера и мессенджера.
    *  Как и «скопировать», есть у любой строки. */
   onQr: (name: string) => void;
@@ -1641,6 +2000,13 @@ function Rows({
         // отдельная кнопка под него означала лишь то, что попасть по строке
         // мало.
         const pick = () => !live && void act({ cmd: "on", arg: { profile: name } });
+        // Нажатие сперва спрашивает выделение (Ctrl/Shift или уже что-то
+        // выделено) и только потом включает узел.
+        const picked = selected.has(name);
+        const anyPicked = selected.size > 0;
+        const click = (e: React.MouseEvent) => {
+          if (!onPickRow(name, e)) pick();
+        };
         // Всё, что строка умеет, — в меню по правой кнопке и по «⋯». Пять
         // кнопок в строке не помещались даже в широком окне: первым
         // обрубалось имя, единственное, чем строки и различаются.
@@ -1653,7 +2019,7 @@ function Rows({
             label: s.testOne,
             hint: s.testOneHint,
             disabled: busy,
-            onPick: () => void act({ cmd: "test-profiles", arg: { only: name } }),
+            onPick: () => void act({ cmd: "test-profiles", arg: { only: [name] } }),
           },
           {
             // Звёздочка есть и у узла подписки: сверка заменяет её набор
@@ -1666,7 +2032,11 @@ function Rows({
           },
           { label: s.copyLink, hint: s.copyLinkHint, onPick: () => onCopy(name) },
           { label: s.showQr, hint: s.showQrHint, onPick: () => onQr(name) },
-          ...(fromSub ? [] : [{ label: s.edit, hint: s.editProfile(name), onPick: () => onEdit(name) }]),
+          ...(fromSub
+            ? // Узел подписки на месте не правится — сверка вернёт своё. Но
+              // поправить копию можно: она станет обычным своим профилем.
+              [{ label: s.editAsOwn, hint: s.editAsOwnHint, onPick: () => onEdit(name, true) }]
+            : [{ label: s.edit, hint: s.editProfile(name), onPick: () => onEdit(name) }]),
           {
             label: s.remove,
             // У узла подписки удаление честное, но недолгое: ближайшая сверка
@@ -1713,6 +2083,7 @@ function Rows({
               // значки: целиться в «⋯» ради этого не нужно.
               onContextMenu={(e) => onMenu(e, rowMenu())}
               data-selected={active}
+              data-picked={picked}
               // Одна строка в 34 px: имя, метка, замер. `group/row` нужен
               // адресу, который показывается по наведению и по фокусу.
               className={`row enter smooth group/row flex h-[34px] items-center gap-2 ps-2.5 pe-1 ${
@@ -1726,12 +2097,33 @@ function Rows({
                   страну по левому краю, а не в хвосте строки. Флаг из имени
                   («🇳🇱 Amsterdam») переезжает сюда же, а не повторяется рядом
                   с флагом замера. */}
-              <span
-                className="grid w-5 shrink-0 place-items-center text-base leading-none text-faint"
-                title={country ?? undefined}
-                aria-label={country ?? undefined}
-              >
-                {mark ?? <Icon name="server" size={14} />}
+              {/* Флажок выбора встаёт на место флага по наведению и по фокусу и
+                  остаётся, пока что-то выделено. Обе вещи лежат в одной ячейке
+                  и меняются прозрачностью, без перехода: пока список
+                  простаивает, в нём ничего не движется. */}
+              <span className="relative grid w-5 shrink-0 place-items-center">
+                <span
+                  className={`grid place-items-center text-base leading-none text-faint group-hover/row:opacity-0 group-focus-within/row:opacity-0 ${
+                    anyPicked ? "opacity-0" : ""
+                  }`}
+                  title={country ?? undefined}
+                  aria-label={country ?? undefined}
+                >
+                  {mark ?? <Icon name="server" size={14} />}
+                </span>
+                <input
+                  type="checkbox"
+                  checked={picked}
+                  aria-label={s.selectRow(name)}
+                  onChange={(e) => {
+                    // Shift на самом флажке берёт диапазон, как и на строке.
+                    const native = e.nativeEvent as MouseEvent;
+                    onPickRow(name, { ctrlKey: true, metaKey: false, shiftKey: native.shiftKey === true });
+                  }}
+                  className={`absolute inset-0 m-auto size-4 cursor-pointer accent-[var(--pg-accent)] group-hover/row:opacity-100 group-focus-within/row:opacity-100 ${
+                    anyPicked ? "" : "opacity-0"
+                  }`}
+                />
               </span>
               {/* Само поле строки и есть кнопка «включить»: настоящий <button>,
                   а не строка с ролью, — иначе клавиатура до профиля не
@@ -1748,7 +2140,7 @@ function Rows({
               <button
                 type="button"
                 aria-pressed={active}
-                onClick={pick}
+                onClick={click}
                 title={item.server ? `${name} · ${item.kind} → ${item.server}` : name}
                 className={`flex min-w-0 flex-1 items-baseline gap-2 py-1 text-start ${live ? "" : "cursor-pointer"}`}
               >
@@ -1847,7 +2239,7 @@ function Rows({
               />
             </div>
             {editing?.name === name && (
-              <Editor s={s} name={name} text={editing.text} act={act} onDone={onDone} />
+              <Editor s={s} name={name} text={editing.text} act={act} onDone={onDone} own={editing.own} />
             )}
           </li>
         );

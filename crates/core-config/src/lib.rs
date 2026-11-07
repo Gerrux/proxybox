@@ -242,6 +242,19 @@ pub fn describe(node: &Value) -> (String, String) {
     (kind, server)
 }
 
+/// Один и тот же узел, имя не в счёт. Узел из JSON несёт имя в `tag`, а узел из
+/// ссылки — нигде (имя ссылки живёт в `Profile::name`), поэтому сравнение «до
+/// поля» считало бы переименованную копию другим узлом, и дедупликация зависела
+/// бы от того, чем узел завели. Других полей-имён разбор в узел не кладёт:
+/// `ps` у vmess уходит в `Profile::name`. Сторож — `a_node_is_the_same_under_another_name`.
+pub fn same_node(a: &Value, b: &Value) -> bool {
+    let (Some(x), Some(y)) = (a.as_object(), b.as_object()) else {
+        return a == b;
+    };
+    let nameless = |m: &Map<String, Value>| m.keys().filter(|k| k.as_str() != "tag").count();
+    nameless(x) == nameless(y) && x.iter().filter(|(k, _)| k.as_str() != "tag").all(|(k, v)| y.get(k) == Some(v))
+}
+
 fn is_node(value: &Value) -> bool {
     value["type"].as_str().is_some_and(|kind| NODES.contains(&kind))
 }
@@ -1694,6 +1707,18 @@ mod tests {
         assert_eq!(p.node["peers"][0]["port"], 51820);
         assert_eq!(p.node["address"][0], "10.0.0.2/32");
         assert_eq!(p.node["mtu"], 1408);
+    }
+
+    /// Имя узла — не часть узла: `tag` у JSON не различает тот же сервер, а
+    /// ссылка с другим фрагментом и подавно. Чужое поле различает по-прежнему.
+    #[test]
+    fn a_node_is_the_same_under_another_name() {
+        let a = parse(r#"{"type":"vless","tag":"NL","server":"a.com","server_port":443,"uuid":"u"}"#).unwrap().node;
+        let b = parse(r#"{"type":"vless","tag":"мой NL","server":"a.com","server_port":443,"uuid":"u"}"#).unwrap().node;
+        let c = parse(r#"{"type":"vless","server":"a.com","server_port":443,"uuid":"u"}"#).unwrap().node;
+        let d = parse(r#"{"type":"vless","tag":"NL","server":"b.com","server_port":443,"uuid":"u"}"#).unwrap().node;
+        assert!(same_node(&a, &b) && same_node(&a, &c) && same_node(&c, &a));
+        assert!(!same_node(&a, &d), "другой сервер — другой узел");
     }
 
     #[test]

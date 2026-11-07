@@ -351,13 +351,16 @@ body {
   inset-block: 0;
   inset-inline: 38% 0;
   pointer-events: none;
-  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 30%);
-  mask-image: linear-gradient(to right, transparent 0, #000 30%);
+  /* Растворение длинное, на половину карты: на 30% граница читалась
+     обрезом, а не переходом, и суша стояла плотной плашкой прямо под
+     подсказкой. Так карта и была устроена до перехода на карточки. */
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 55%);
+  mask-image: linear-gradient(to right, transparent 0, #000 55%);
 }
 
 [dir="rtl"] .st-map-plate {
-  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 30%);
-  mask-image: linear-gradient(to left, transparent 0, #000 30%);
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 55%);
+  mask-image: linear-gradient(to left, transparent 0, #000 55%);
 }
 
 .st-map {
@@ -721,6 +724,12 @@ body {
   background: var(--pg-press);
 }
 
+/* Выделенная для пакетных действий строка — заливка в тон акцента, отличная
+   от «выбран узел» выше: это два разных смысла, и путать их нельзя. */
+.row[data-picked="true"] {
+  background: color-mix(in srgb, var(--pg-accent) 16%, transparent);
+}
+
 .row-pill {
   position: absolute;
   inset-inline-start: 0;
@@ -817,10 +826,15 @@ body {
 
 /* Плашка: карта — полоса во всю ширину плиты, между словом состояния и
    строкой точки выхода. */
+/* Полоса карты в плашке растворяется к обоим краям, а не обрывается: обрез
+   по кромке карточки читался вставленной картинкой. Рамки сверху и снизу нет
+   по той же причине — маска её не берёт, и она стояла бы линейкой поверх
+   растворения. Маска симметричная, поэтому справа налево её не зеркалим. */
 .fly-map {
   position: relative;
   block-size: 100px;
-  border-block: 1px solid color-mix(in oklch, var(--tone) 20%, var(--pg-border));
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 20%, #000 80%, transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 20%, #000 80%, transparent 100%);
 }
 
 /* График скорости в строке плашки: занимает остаток после двух чисел. */

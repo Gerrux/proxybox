@@ -7,12 +7,13 @@
  *  плита состояния со словом, тумблером и картой, текущая скорость и список
  *  узлов. Всё остальное — одна кнопка до главного окна.
  *
- *  Охвата в плашке нет, и это решение, а не недосмотр: одно касание из трея не
- *  должно уметь запереть машину. Белый список без галочек и «Раздельно» с
- *  неготовыми правилами выглядят со стороны как «интернет отвалился», а
- *  плашка открывается мимоходом, не глядя — на неё охват и не выбирают. Вместо
- *  переключателя состояние называет подсказка под словом (`describe`): в ней
- *  охват есть, менять его — в главном окне.
+ *  Охват в плашке — полоской из трёх сегментов под карточкой состояния, по
+ *  решению владельца: из трея его меняют мимоходом, и все три варианта должны
+ *  быть видны сразу. Список и пояснения — общие с кнопкой в шапке окна
+ *  (`scopeOptions` из `StatusBar.tsx`). Одним касанием машину это не запирает:
+ *  белый список без единой отмеченной программы — единственный выбор, после
+ *  которого сети нет ни у кого, — переспрашивает строкой под полоской
+ *  (`scopeLocks`).
  *
  *  Выключатель — тумблер, а не круглая кнопка питания: круглая кнопка есть в
  *  каждом VPN-клиенте, а тумблер стоит у любого переключателя «Параметров»
@@ -28,7 +29,7 @@
  *  состояния считает `describe` из шапки, страну — `exitCode` оттуда же: одно
  *  и то же состояние не имеет права называться в двух окнах по-разному. */
 import { Fragment, useState } from "react";
-import type { Act, ProfileInfo, Status } from "./platform";
+import type { Act, ProfileInfo, Scope, Status } from "./platform";
 import { openMain } from "./platform";
 import { strings } from "./i18n";
 import { aliveCount, fastestProbe, groupProfiles, quotaExpired, subTitle } from "./groups";
@@ -38,12 +39,14 @@ import {
   describe,
   exitCode,
   latencyTone,
+  scopeLocks,
+  scopeOptions,
   splitExit,
   StateGlyph,
   tunnelState,
   useRates,
 } from "./StatusBar";
-import { Button, Icon, IconButton, SearchField, Switch, flag, nodeFlag } from "./ui";
+import { Button, Icon, IconButton, SearchField, Segmented, Switch, flag, nodeFlag } from "./ui";
 import { WorldMap } from "./WorldMapView";
 
 /** Со скольких профилей над списком появляется поиск. Порог тот же, что у
@@ -57,6 +60,7 @@ export function Flyout({
   error,
   onError,
   onToggle,
+  onScope,
 }: {
   status: Status | null;
   act: Act;
@@ -64,6 +68,7 @@ export function Flyout({
   error: string | null;
   onError: (message: string | null) => void;
   onToggle: () => void;
+  onScope: (scope: Scope) => void;
 }) {
   const s = strings(status?.lang);
   const state = tunnelState(status);
@@ -80,6 +85,10 @@ export function Flyout({
   // Масштаб один на оба направления — по той же причине, что и в шапке окна.
   const peak = Math.max(1, ...rates.map((r) => Math.max(r.rx, r.tx)));
   const [needle, setNeedle] = useState("");
+  // Разовый отклик на включение (`.sw-sweep` в `switch.css`), только от нажатия.
+  const [swept, setSwept] = useState(0);
+  // Переспрос перед белым списком без единой программы (`scopeLocks`).
+  const [lockAsk, setLockAsk] = useState(false);
   // Что человек раскрыл или свернул сам; нетронутые группы решает умолчание.
   const [toggled, setToggled] = useState<Record<string, boolean>>({});
 
@@ -160,6 +169,8 @@ export function Flyout({
   return (
     <div className="flex h-full flex-col" data-state={state}>
       <section data-state={state} className="st st-fly smooth relative shrink-0">
+        {/* Отыграла — ушла из разметки (`will-change` не живёт вечно). */}
+        {swept > 0 && <span key={swept} className="sw-sweep" aria-hidden="true" onAnimationEnd={() => setSwept(0)} />}
         <div className="flex items-start gap-3 px-3 pt-2.5 pb-2">
           <div className="min-w-0 flex-1">
             <h1 key={view.title} className="st-word swap flex items-center gap-2 text-xl font-semibold">
@@ -175,7 +186,10 @@ export function Flyout({
             checked={on}
             label={on ? s.turnOff : s.turnOn}
             disabled={!status || (!on && !status.profile && profiles.length === 0)}
-            onChange={() => onToggle()}
+            onChange={(next) => {
+              if (next) setSwept((n) => n + 1);
+              onToggle();
+            }}
           />
         </div>
         <WorldMap className="fly-map" code={code} fit={0.5} />
@@ -221,6 +235,46 @@ export function Flyout({
         </div>
         {busy && <div className="bar absolute inset-x-0 bottom-0 h-0.5 overflow-hidden text-[color:var(--tone)]" />}
       </section>
+
+      {/* Охват — полоской сегментов, все три видны сразу: из трея его меняют
+          мимоходом, и лишнее нажатие до меню здесь мешало бы. Список и
+          пояснения — те же, что у кнопки в шапке (`scopeOptions`). */}
+      <div className="shrink-0 px-2 pt-2">
+        <Segmented
+          label={s.scope}
+          options={scopeOptions(s, status)}
+          value={status?.scope ?? "all"}
+          className="w-full"
+          disabled={!status || busy}
+          onPick={(v) => {
+            const next = v as Scope;
+            if (next === (status?.scope ?? "all")) return;
+            if (scopeLocks(status, next)) return setLockAsk(true);
+            setLockAsk(false);
+            onScope(next);
+          }}
+        />
+        {/* Белый список без единой отмеченной программы — ноль пропусков,
+            то есть машина без сети. Одним касанием из трея этого не делаем:
+            выбор переспрашивает строкой под полоской. */}
+        {lockAsk && (
+          <div role="alert" className="enter mt-1.5 flex items-center gap-2 rounded bg-closed-soft py-1 ps-2.5 pe-1 text-xs">
+            <span className="min-w-0 flex-1">{s.scopeLockAsk}</span>
+            <Button
+              variant="quiet"
+              onClick={() => {
+                setLockAsk(false);
+                onScope("whitelist");
+              }}
+            >
+              {s.scopeWhitelist}
+            </Button>
+            <Button variant="quiet" onClick={() => setLockAsk(false)}>
+              {s.cancel}
+            </Button>
+          </div>
+        )}
+      </div>
 
       {error && (
         <div className="enter flex shrink-0 items-start gap-2 border-b border-edge bg-fault-soft py-1.5 ps-3 pe-1 text-xs text-fault">

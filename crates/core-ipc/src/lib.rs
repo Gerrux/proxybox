@@ -542,8 +542,26 @@ pub enum Request {
     /// продукт не держит. Сторож — `a_subscription_node_is_never_edited`.
     EditProfile { name: String, rename: String, node: String },
     RemoveProfile { name: String },
-    /// Отписаться: уходит и адрес, и все профили, которые с него пришли.
+    /// Убрать пачку профилей разом: одна запись на диск и одна строка в
+    /// журнале с числом, а не десятки команд `RemoveProfile` подряд, каждая со
+    /// своей записью. Судьба активного узла и браузерных сеансов — ровно та же,
+    /// что у одиночного удаления (`Service::forget_profile`). Неизвестные имена
+    /// молча пропускаются: список собирало окно, а за это время сверка подписки
+    /// могла часть узлов уже убрать.
+    RemoveProfiles { names: Vec<String> },
+    /// Ссылки профилей для «Экспорта»: по одной сверенной ссылке на каждое имя
+    /// (`core_config::share_link`) и число тех, для кого точной ссылки нет.
+    /// Служба ничего не пишет и ничего не логирует — ссылка с паролем в журнал
+    /// не попадает.
+    ExportLinks { names: Vec<String> },
+    /// Удалить подписку: уходит и адрес, и все профили, которые с него пришли.
     RemoveSubscription { url: String },
+    /// Правка подписки: подпись и/или адрес. Новый адрес качается ПЕРВЫМ и без
+    /// общего замка; только удачный ответ заменяет запись на месте (то же место
+    /// в порядке, то же имя, если его не меняли), а узлы заменяются тем же путём,
+    /// что и сверка. Не скачалось, не нашлось узлов, адрес уже занят — ответ
+    /// ошибкой, и ничего не изменилось. Пустое имя возвращает показ адреса.
+    EditSubscription { url: String, new_url: String, name: String },
     /// Назвать подписку по-человечески. Адрес остаётся ключом — меняется только
     /// подпись группы в окне: у панелей адрес отличается одним токеном в хвосте,
     /// а обрезается как раз хвост. Пустое имя возвращает показ адреса.
@@ -574,10 +592,12 @@ pub enum Request {
     /// пробуется. Живой туннель при этом не трогается — прогон ничего не
     /// переключает, только меряет.
     ///
-    /// `only` — прогнать один профиль. Прогон идёт по узлу за раз и стоит
-    /// секунд на каждый, так что на подписке в сотню узлов «проверить вот этот»
-    /// — это минуты разницы.
-    TestProfiles { only: Option<String> },
+    /// `only` — прогнать только названные профили (один, или выделенные в
+    /// списке). Прогон стоит секунд на каждый узел, так что на подписке в сотню
+    /// узлов «проверить вот эти» — это минуты разницы. Ни одного названного
+    /// профиля, который есть, — ошибка, а не прогон по всем: молчаливое
+    /// «проверить всё» вместо выделенных трёх было бы неприятным сюрпризом.
+    TestProfiles { only: Option<Vec<String>> },
     /// Поднять под профиль отдельный локальный прокси и вернуть его порт
     /// (`Response::Proxy`). Нужен окну браузера: одно окно ходит в выбранный
     /// туннель мимо общего режима. Живой туннель не трогается — у инстанса свои
@@ -1120,6 +1140,10 @@ pub enum Response {
     /// поля везут пароль и ключ, поэтому и едут отдельным запросом, а не в
     /// статусе.
     ProfileNode { json: String, link: String },
+    /// Ответ на `Request::ExportLinks`: сверенные ссылки (по порядку запроса) и
+    /// число профилей, для которых точной ссылки нет. Пароли и ключи едут в
+    /// теле, поэтому окно кладёт их в буфер обмена и нигде не хранит.
+    Links { links: Vec<String>, skipped: usize },
     /// Хвост журнала sing-box строками, от старых к новым и уже без ANSI.
     /// Пусто — файла нет вовсе: sing-box ни разу не запускался.
     SingboxLog { lines: Vec<String> },
@@ -1382,6 +1406,13 @@ mod tests {
             Request::SingboxLog,
             Request::EditProfile { name: "myvpn".into(), rename: "дом".into(), node: "{\"type\":\"vless\"}".into() },
             Request::RemoveProfile { name: "myvpn".into() },
+            Request::RemoveProfiles { names: vec!["myvpn".into(), "дом".into()] },
+            Request::ExportLinks { names: vec!["myvpn".into()] },
+            Request::EditSubscription {
+                url: "https://panel.example/sub?token=1".into(),
+                new_url: "https://panel.example/sub?token=2".into(),
+                name: "рабочая".into(),
+            },
             Request::RemoveSubscription { url: "https://panel.example/sub?token=1".into() },
             Request::RenameSubscription { url: "https://panel.example/sub?token=1".into(), name: "рабочая".into() },
             Request::SetScope { scope: Scope::Whitelist },
@@ -1392,7 +1423,7 @@ mod tests {
             },
             Request::SetLang { lang: Lang::En },
             Request::TestProfiles { only: None },
-            Request::TestProfiles { only: Some("myvpn".into()) },
+            Request::TestProfiles { only: Some(vec!["myvpn".into(), "дом".into()]) },
             Request::Browse { profile: "myvpn".into() },
             Request::BrowseStop { profile: "myvpn".into() },
             Request::SetBrowserProfile {
@@ -1506,6 +1537,7 @@ mod tests {
             },
             Response::ProfileNode { json: "{}".into(), link: "vless://u@a.com:443#дом".into() },
             Response::ProfileNode { json: "{}".into(), link: String::new() },
+            Response::Links { links: vec!["vless://u@a.com:443#дом".into()], skipped: 2 },
             Response::SingboxLog { lines: vec!["INFO[0000] router: started".into()] },
             Response::SingboxLog { lines: Vec::new() },
             Response::Pulse(Pulse {
@@ -2577,10 +2609,41 @@ mod tests {
             .nth(1)
             .and_then(|s| s.split("\n/** Со скольких профилей").next())
             .expect("полоса подписок — SubStrip");
-        assert!(strip.contains("selected && !renamingHere"), "действия заголовка не переехали в отобранную карточку");
+        assert!(strip.contains("selected && ("), "действия заголовка не переехали в отобранную карточку");
         assert!(strip.contains("icon=\"refresh\"") && strip.contains("icon=\"more\""), "у карточки нет обновления или «⋯»");
         assert!(strip.contains("onContextMenu={(e) => sub !== null && onMenu(e, sub)}"), "правая кнопка по карточке не открывает меню");
-        assert!(strip.contains("<SubRename"), "правка имени под отбором негде показать");
+        // Правка имени и адреса — окно поверх панели, одно на карточку и на
+        // заголовок: оба открывают его из одного меню подписки.
+        assert!(profiles.contains("<SubEdit"), "окну правки подписки негде показаться");
+        assert!(!profiles.contains("<SubRename"), "поле имени в строке вернулось: адрес в нём не править");
+    }
+
+    /// Выделение строк (Ctrl/Shift/флажок) — состояние окна, и у него три
+    /// обязательства. Нажатие по строке сперва спрашивает выделение и только
+    /// потом включает узел: наоборот, и Ctrl+клик посреди выделения включал бы
+    /// туннель. Пока что-то выделено, строки и карточки подписок не тащатся.
+    /// И удаление пачки — одной командой `RemoveProfiles`, а не сотней
+    /// `RemoveProfile` подряд: одна запись на диск и одна строка в журнале.
+    #[test]
+    fn a_selection_outranks_turning_a_node_on() {
+        let profiles = include_str!("../../../ui/app-shell/src/Profiles.tsx").replace("\r\n", "\n");
+        assert!(
+            profiles.contains("if (!onPickRow(name, e)) pick();"),
+            "строка включает узел, не спросив выделение"
+        );
+        let drag = profiles
+            .lines()
+            .find(|l| l.contains("const draggable ="))
+            .expect("условие переноса живёт в `draggable`");
+        assert!(drag.contains("selected.size === 0"), "выделенное тащится: {drag}");
+        let strip = profiles.lines().find(|l| l.contains("const stripDraggable =")).expect("перенос карточек");
+        assert!(strip.contains("selected.size === 0"), "карточки тащатся при выделении: {strip}");
+        assert!(profiles.contains("cmd: \"remove-profiles\""), "пачка удаляется не одной командой");
+        assert_eq!(
+            profiles.matches("cmd: \"remove-profile\"").count(),
+            1,
+            "удаление по одной строке — ровно одно место (меню строки)"
+        );
     }
 
     /// Подписки переставляются перетаскиванием и за карточку полосы, и за
@@ -2599,7 +2662,10 @@ mod tests {
             2,
             "перетаскиваются не оба места: заголовок группы и карточка полосы"
         );
-        assert!(profiles.contains("const stripDraggable = !byLat && needle === \"\";"), "условие переноса карточки разошлось с заголовком");
+        assert!(
+            profiles.contains("const stripDraggable = !byLat && needle === \"\" && selected.size === 0;"),
+            "условие переноса карточки разошлось с заголовком"
+        );
         assert!(profiles.contains("draggable={stripDraggable}"), "полоса не получила условие переноса");
         let at = profiles.find("draggable={stripDraggable}").unwrap();
         let hooks = &profiles[at..(at + 700).min(profiles.len())];
@@ -2752,6 +2818,40 @@ mod tests {
         }
     }
 
+    /// Отклик тумблера — ответ на нажатие, а не украшение: он обязан сыграть
+    /// один раз и затихнуть. Вечная анимация в продукте, который сутками висит
+    /// в трее, — это расход без события, ровно то, от чего пульс точки выхода
+    /// вынесен из SVG. Слои отклика лежат над картой и обязаны не трогать её
+    /// отрисовку, а при `prefers-reduced-motion` — не двигаться вовсе.
+    #[test]
+    fn the_switch_feedback_is_one_shot() {
+        let css = include_str!("../../../ui/app-shell/src/switch.css").replace("\r\n", "\n");
+        assert!(!css.contains("infinite"), "отклик тумблера не должен быть вечным");
+        // Каждая анимация слоёв играет ровно один раз.
+        for rule in ["animation: sw-ring", "animation: sw-sweep"] {
+            let at = css.find(rule).unwrap_or_else(|| panic!("нет правила {rule}"));
+            let line = css[at..].lines().next().unwrap();
+            assert!(line.contains(" 1 both"), "{line}");
+        }
+        // Слои над картой не перерисовывают её и не ловят мышь.
+        assert!(css.matches("contain: paint").count() >= 2);
+        assert!(css.matches("pointer-events: none").count() >= 2);
+        // При prefers-reduced-motion: reduce слои скрыты, переходы сняты.
+        let reduce = css
+            .split("@media (prefers-reduced-motion: reduce)")
+            .nth(1)
+            .expect("нет блока reduced-motion");
+        assert!(reduce.contains(".sw-ring") && reduce.contains(".sw-sweep"));
+        assert!(reduce.contains("display: none"));
+        assert!(reduce.contains("transition: none"));
+        // Всё движущееся объявлено только для тех, кто движения не отключал.
+        let motion = css
+            .split("@media (prefers-reduced-motion: no-preference)")
+            .nth(1)
+            .expect("нет блока no-preference");
+        assert!(motion.contains("@keyframes sw-ring") && motion.contains("@keyframes sw-sweep"));
+    }
+
     /// Карточки в окне — ровно в трёх местах (верхний ряд, полоса подписок,
     /// блок состояния плашки), у них скругления из одной лестницы и нет тени:
     /// тень в окне только у всплывающих слоёв (меню и диалога). Решение
@@ -2853,17 +2953,36 @@ mod tests {
         }
     }
 
-    /// В плашке из трея нет охвата, и это не недосмотр: одно касание из трея
-    /// не должно уметь запереть машину. Белый список без галочек и «Раздельно»
-    /// выглядят со стороны как «интернет отвалился», а плашку открывают
-    /// мимоходом. Состояние называет подсказка под словом — выбор остаётся за
-    /// главным окном. Компилятора у фронтенда нет — сверяем текстом.
+    /// Охват в шапке окна (кнопка с меню) и в плашке из трея (полоска
+    /// сегментов) берут один список с пояснениями — `scopeOptions`: написанные
+    /// дважды, пояснения разошлись бы на первой правке. И белый список без
+    /// единой отмеченной программы — выбор, после которого сети нет ни у кого,
+    /// — обязан переспрашивать в обоих окнах (`scopeLocks`): из трея иначе
+    /// машину запирало бы одно случайное касание. Компилятора у фронтенда нет
+    /// — сверяем текстом.
     #[test]
-    fn the_flyout_never_offers_a_scope() {
+    fn both_windows_pick_the_scope_the_same_way() {
         let flyout = include_str!("../../../ui/app-shell/src/Flyout.tsx");
-        for forbidden in ["set-scope", "onScope", "Segmented", "scopeWhitelist", "scopeAll", "scopeSplit"] {
-            assert!(!flyout.contains(forbidden), "в плашке снова выбор охвата ({forbidden}): касание из трея запирает машину");
+        let bar = include_str!("../../../ui/app-shell/src/StatusBar.tsx").replace("\r\n", "\n");
+        assert!(bar.contains("<ScopePicker"), "шапка выбирает охват мимо ScopePicker");
+        let picker = bar
+            .split("export function ScopePicker(")
+            .nth(1)
+            .and_then(|rest| rest.split("\nexport function ").next())
+            .expect("ScopePicker в StatusBar.tsx");
+        for (name, text) in [("ScopePicker", picker), ("Flyout.tsx", flyout)] {
+            assert!(text.contains("scopeOptions(s, status)"), "{name} собирает охваты сам: разойдётся с соседом");
+            assert!(text.contains("scopeLocks(status,"), "{name} выбирает пустой белый список без переспроса");
         }
+        for own in ["\"set-scope\"", "s.scopeAll", "s.scopeSplit"] {
+            assert!(!flyout.contains(own), "плашка выбирает охват сама ({own}): разойдётся с шапкой");
+        }
+        let locks = bar
+            .split("export function scopeLocks(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("scopeLocks в StatusBar.tsx");
+        assert!(locks.contains("inTunnel === 0") && locks.contains("\"whitelist\""), "{locks}");
     }
 
     /// Пункт рейки «Журнал» не получает числа. Лента режется тридцатью строками,

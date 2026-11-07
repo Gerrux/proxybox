@@ -428,7 +428,7 @@ fn parse(args: &[String]) -> Result<Request, String> {
         Some("profiles") => Ok(Request::Status),
         Some("settings") => Ok(Request::Status),
         Some("bypass") => Ok(Request::Status),
-        Some("test") => Ok(Request::TestProfiles { only: flag(args, "--profile") }),
+        Some("test") => Ok(Request::TestProfiles { only: flag(args, "--profile").map(|name| vec![name]) }),
         // Отбор уходит в службу, а не режется здесь: список приезжает обрезанным
         // по громкости, и `grep` по выводу нашёл бы только среди показанных.
         Some("conns") => Ok(Request::Connections { filter: flag(args, "--find").unwrap_or_default() }),
@@ -555,6 +555,7 @@ fn main() -> std::process::ExitCode {
         Ok(Response::Done
         | Response::Icon(_)
         | Response::ProfileNode { .. }
+        | Response::Links { .. }
         | Response::SingboxLog { .. }
         | Response::Fenced { .. }
         | Response::Pulse(_)) => {
