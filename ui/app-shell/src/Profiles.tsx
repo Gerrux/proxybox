@@ -159,21 +159,6 @@ function Remaining({ s, quota, lang }: { s: Strings; quota: Subscription["quota"
   );
 }
 
-/** Деления «сколько узлов отвечает»: не больше восьми, закрашены живые — доля,
- *  а не счёт (счёт стоит числом рядом). Узлов в подписке бывает сотня, и сотня
- *  делений не читается. */
-function Ticks({ alive, total }: { alive: number; total: number }) {
-  const n = Math.min(total, 8);
-  const lit = alive === 0 ? 0 : Math.max(1, Math.round((alive / total) * n));
-  return (
-    <span className="flex shrink-0 gap-0.5" aria-hidden="true">
-      {Array.from({ length: n }, (_, i) => (
-        <i key={i} className={`block h-2.5 w-1.5 rounded-sm ${i < lit ? "bg-open" : "bg-edge-strong"}`} />
-      ))}
-    </span>
-  );
-}
-
 /** Правка подписки: подпись и адрес в небольшом окне поверх панели. Стояло полем
  *  на месте подписи, пока править можно было только имя; с адресом полю тесно
  *  (адрес длинный, и ошибку скачивания негде показать), а окно и заголовок
@@ -377,10 +362,11 @@ function SubStrip({
   // «Все» — вся машина, включая свои узлы: ячейка про список целиком.
   const every = groups.flatMap((g) => g.all);
   const measured = (all: ProfileInfo[]) => all.some((p) => probeOf.has(p.name));
-  // Ячейка — до трёх строк (~63 px с рамкой): имя с делениями «живых узлов»,
-  // остаток с полоской, срок. Прежние 62 px вернулись не случайно: ниже ячейка
-  // не читалась как ячейка, а выше стоила списку строку. Тонкая полоска остатка
-  // — единственное место, где доля видна глазом, а не числом.
+  // Ячейка — строка: имя и «живых из всех» числом. Вторая строка появляется,
+  // только когда есть о чём предупредить: у подписки лимит (остаток с полоской
+  // — единственное место, где доля видна глазом) или срок. Израсходованное у
+  // безлимитной и деления живых узлов рядом с тем же числом ушли в подсказку:
+  // по владельцу полоса была перегружена тем, что читают раз в месяц.
   const cell = (
     key: string,
     url: string | null,
@@ -403,17 +389,23 @@ function SubStrip({
       .join("\n");
     const inner = (
       <>
-          <span className={`flex min-w-0 items-center gap-2 ${selected ? "pe-14" : ""}`}>
-            <span className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</span>
-            {measured(all) && all.length > 0 && <Ticks alive={alive} total={all.length} />}
+          <span className={`flex min-w-0 items-baseline gap-2 ${selected ? "pe-14" : ""}`}>
+            <span className={`min-w-0 truncate text-sm font-semibold ${url === null ? "shrink-0" : "flex-1"}`}>
+              {title}
+            </span>
+            {/* Возраст списка — в той же строке, что «Все», бледно: второй
+                строкой он один растил всю полосу на этаж. */}
+            {url === null && <span className="fold-only min-w-0 flex-1 truncate text-xs text-faint">{note}</span>}
             <span
-              className="shrink-0 font-mono text-xs font-normal tabular-nums text-muted"
+              className={`shrink-0 font-mono text-xs font-normal tabular-nums ${
+                measured(all) && alive === 0 ? "text-fault" : "text-muted"
+              }`}
               title={s.groupAlive(alive, all.length)}
             >
-              {alive}/{all.length}
+              {measured(all) ? `${alive}/${all.length}` : all.length}
             </span>
           </span>
-          {f && q?.amount && (
+          {f && q?.amount && f.total > 0 && (
             <span className="flex min-w-0 items-center gap-2 text-xs">
               {f.total > 0 && (
                 <span className="block h-1 min-w-6 flex-1 overflow-hidden rounded-full bg-[var(--pg-sunken)]">
@@ -429,7 +421,6 @@ function SubStrip({
             </span>
           )}
           {f && q?.expiry && <span className={`truncate text-xs ${quotaTone(f)}`}>{q.expiry}</span>}
-          {url === null && <span className="fold-only truncate text-xs text-muted">{note}</span>}
       </>
     );
     return (
@@ -454,7 +445,7 @@ function SubStrip({
         onDrop={(e) => e.preventDefault()}
         onDragEnd={onDragEnd}
         onContextMenu={(e) => sub !== null && onMenu(e, sub)}
-        className={`relative flex min-w-0 ${selected ? "flex-[1_0_16rem]" : "flex-[1_0_13rem]"} ${
+        className={`relative flex min-w-0 ${selected ? "flex-[1_0_14rem]" : "flex-[1_0_10rem]"} ${
           sub !== null && dragged === sub.url ? "opacity-40" : ""
         }`}
       >
