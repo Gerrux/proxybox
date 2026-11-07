@@ -200,19 +200,16 @@ export function Flyout({
         <div className="h-[100px]" aria-hidden="true" />
         {/* Точка выхода — строкой, числа — строкой ниже: в 356 px «Нидерланды ·
             Амстердам» и три числа рядом резались до «Нидерла… Амстер…». */}
-        <div className="relative px-3 pt-1.5 pb-2 text-sm">
+        {/* Задержка — своим блоком справа на высоту обеих строк (страна и
+            скорость), крупным числом: мелким хвостом строки страны она
+            терялась, а это второе, за чем открывают плашку. */}
+        <div className="relative flex items-center gap-3 px-3 pt-1.5 pb-2 text-sm">
+          <div className="min-w-0 flex-1">
           {status?.country ? (
             <p className="flex min-w-0 items-baseline gap-1.5 font-semibold">
               {flag(code) && <span aria-hidden="true">{flag(code)}</span>}
               <span className="truncate">{country}</span>
               {city && <span className="truncate font-normal text-muted">{city}</span>}
-              {status.tunnel === "up" && status.latency_ms != null && (
-                <span
-                  className={`ms-auto shrink-0 ps-2 font-mono text-xs font-normal tabular-nums ${latencyTone(status.latency_ms)}`}
-                >
-                  {status.latency_ms} ms
-                </span>
-              )}
             </p>
           ) : (
             <p className="truncate text-muted" title={s.exitUnknown}>
@@ -235,6 +232,16 @@ export function Flyout({
                 <CellSpark values={rates.map((r) => r.rx)} peak={peak} id="pg-spark-down" tone="text-open" />
                 <CellSpark values={rates.map((r) => r.tx)} peak={peak} id="pg-spark-up" tone="text-accent" />
               </span>
+            </p>
+          )}
+          </div>
+          {status?.tunnel === "up" && status.latency_ms != null && (
+            <p
+              className={`shrink-0 font-mono text-2xl font-medium leading-none tabular-nums ${latencyTone(status.latency_ms)}`}
+              title={s.latency}
+            >
+              {status.latency_ms}
+              <span className="ms-1 text-sm font-normal text-muted">ms</span>
             </p>
           )}
         </div>
