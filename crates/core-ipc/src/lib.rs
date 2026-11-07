@@ -2603,7 +2603,7 @@ mod tests {
             .expect("отбор одной подпиской рисует группу своей веткой");
         let (filtered, rest) = branch.split_once("<details").expect("без отбора группа — <details>");
         assert!(!filtered.contains("<summary") && !filtered.contains("sub-head"), "под отбором снова есть заголовок группы");
-        assert!(rest.contains("sub-head flex h-9"), "заголовок группы без отбора пропал");
+        assert!(rest.contains("sub-head group/head flex h-9"), "заголовок группы без отбора пропал");
         let strip = profiles
             .split("function SubStrip(")
             .nth(1)
@@ -2850,6 +2850,28 @@ mod tests {
             .nth(1)
             .expect("нет блока no-preference");
         assert!(motion.contains("@keyframes sw-ring") && motion.contains("@keyframes sw-sweep"));
+    }
+
+    /// Действия строки профиля и заголовка группы проступают по наведению, а не
+    /// стоят столбцом в каждой строке: одиннадцать одинаковых «⋯» и меток типа
+    /// узла читались шумом. Но прятать их обязаны прозрачностью и с
+    /// `focus-within`: `hidden` или одно `hover` отрезали бы клавиатуру от меню
+    /// строки, а строка под указателем прыгала бы.
+    #[test]
+    fn row_actions_show_on_hover() {
+        let profiles = include_str!("../../../ui/app-shell/src/Profiles.tsx").replace("\r\n", "\n");
+        for (name, group) in [("REVEAL_ROW", "row"), ("REVEAL_HEAD", "head")] {
+            let line = profiles
+                .lines()
+                .find(|l| l.starts_with(&format!("const {name} = ")))
+                .unwrap_or_else(|| panic!("нет {name}"));
+            assert!(line.contains("opacity-0"), "{name} прячет не прозрачностью");
+            assert!(line.contains(&format!("group-focus-within/{group}:opacity-100")), "{name} не видно с клавиатуры");
+        }
+        assert!(profiles.contains("className={REVEAL_ROW}"), "«⋯» строки снова стоит всегда");
+        assert_eq!(profiles.matches("${REVEAL_HEAD}").count(), 2, "действия заголовка группы снова стоят всегда");
+        assert!(profiles.contains("sub-head group/head"), "заголовку группы не на что проступать");
+        assert!(!profiles.contains("bg-control px-1.5 font-mono"), "метка типа узла снова в каждой строке");
     }
 
     /// Управление — кнопки, поля, сегменты — без рамок и на одной заливке

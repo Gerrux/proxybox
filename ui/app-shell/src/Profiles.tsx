@@ -501,6 +501,14 @@ function SubStrip({
   );
 }
 
+/** Действия, которые проступают по наведению и по фокусу, а не стоят столбцом в
+ *  каждой строке. Прозрачностью, а не `hidden`: место держится, и строка под
+ *  указателем не прыгает; клавиатура до них добирается как прежде, и тогда
+ *  они видны (`focus-within`). Меню строки есть и по правой кнопке. Сторож —
+ *  `row_actions_show_on_hover`. */
+const REVEAL_ROW = "opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100";
+const REVEAL_HEAD = "opacity-0 group-hover/head:opacity-100 group-focus-within/head:opacity-100";
+
 /** Со скольких профилей список перестаёт читаться глазом. Порог тот же, что у
  *  приложений: одна подписка приносит десятки узлов, а подписок бывает
  *  несколько. */
@@ -1092,7 +1100,9 @@ export function Profiles({
   // Всё разом — для тесной раскладки.
   const tools = present<MenuItem>(measured && toggleOrder, turnFastest, refreshAll, testAll, exportAll, deadItem);
   // Хвост широкой: то, чему в строке кнопки не нашлось.
-  const overflow = present<MenuItem>(refreshAll, exportAll, deadItem);
+  // Порядок списка — тоже сюда: переключают его редко, а полоской сегментов он
+  // был третьим серым блоком в ряду из шести.
+  const overflow = present<MenuItem>(measured && toggleOrder, refreshAll, exportAll, deadItem);
   // Счёт и возраст списка. Живут в шапке панели (она ≥1100 px) и, пока шапки
   // нет (`folds`), в панели инструментов: в ячейке «Все» полосы подписок, а без
   // полосы — на месте распорки. Один узел, а не две копии текста: разойдясь,
@@ -1179,21 +1189,6 @@ export function Profiles({
                 <SearchField flush inputRef={searchRef} value={query} onChange={setQuery} placeholder={s.searchProfiles} />
               </div>
             )}
-            {/* Вид списка — переключатель, а не кнопка «сбросить»: оба порядка
-                названы, и видно, какой включён. Только когда есть что
-                упорядочивать: без замеров он не сделал бы ничего. В тесном виде
-                тот же выбор — пункт меню. */}
-            {!compact && measured && (
-              <Segmented
-                label={s.viewOrder}
-                options={[
-                  ["mine", s.viewMine],
-                  ["latency", s.byLatency, s.byLatencyHint],
-                ]}
-                value={byLat ? "latency" : "mine"}
-                onPick={(v) => setByLatency(v === "latency")}
-              />
-            )}
             {/* Распорка несёт счёт, когда шапки нет, а полосы подписок (где он
                 стоит в ячейке «Все») тоже нет; места ему нет — обрезается.
                 В тесной раскладке с полем поиска распорка раньше пропадала
@@ -1217,13 +1212,21 @@ export function Profiles({
               )
             ) : (
               <>
+                {/* Без заливки: залитой в ряду остаётся одна кнопка —
+                    «Добавить», — и ряд читается как поиск и одно действие, а не
+                    как стопка серых плиток. */}
                 {testAll && (
-                  <Button disabled={testAll.disabled} title={testAll.hint} onClick={testAll.onPick}>
+                  <Button variant="quiet" disabled={testAll.disabled} title={testAll.hint} onClick={testAll.onPick}>
                     {testAll.label}
                   </Button>
                 )}
                 {turnFastest && (
-                  <Button disabled={turnFastest.disabled} title={turnFastest.hint} onClick={turnFastest.onPick}>
+                  <Button
+                    variant="quiet"
+                    disabled={turnFastest.disabled}
+                    title={turnFastest.hint}
+                    onClick={turnFastest.onPick}
+                  >
                     {/* Молния — акцентом, как у той же строки в плашке: это
                         единственное действие ряда, которое сразу включает узел,
                         и его ищут взглядом, а не читают подпись. */}
@@ -1429,7 +1432,7 @@ export function Profiles({
                       commit();
                     }}
                     onContextMenu={(e) => sub !== null && openMenu(e, subMenu(sub))}
-                    className={`sub-head flex h-9 cursor-pointer list-none items-center gap-2 ps-4 pe-2 text-sm font-semibold [&::-webkit-details-marker]:hidden ${
+                    className={`sub-head group/head flex h-9 cursor-pointer list-none items-center gap-2 ps-4 pe-2 text-sm font-semibold [&::-webkit-details-marker]:hidden ${
                       dragged === sub?.url ? "opacity-40" : ""
                     }`}
                   >
@@ -1481,7 +1484,7 @@ export function Profiles({
                           label={s.refresh}
                           title={s.refreshSubscription(sub.url)}
                           disabled={busy}
-                          className="size-7"
+                          className={`size-7 ${REVEAL_HEAD}`}
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
@@ -1492,7 +1495,7 @@ export function Profiles({
                           icon="more"
                           label={s.actions}
                           aria-haspopup="menu"
-                          className="-me-1 size-7"
+                          className={`-me-1 size-7 ${REVEAL_HEAD}`}
                           onClick={(e) => openMenu(e, subMenu(sub))}
                         />
                       </>
@@ -2158,18 +2161,16 @@ function Rows({
                     {s.connecting}
                   </span>
                 )}
-                {item.server && (
+                {/* Тип узла проступает вместе с адресом — по наведению и по
+                    фокусу, бледным моноширинным текстом, а не меткой в каждой
+                    строке: метка на всех строках разом была самым громким
+                    повтором списка, а нужна она при выборе одного узла. */}
+                {(item.kind || item.server) && (
                   <span className="hidden min-w-0 shrink-[8] truncate font-mono text-xs font-normal text-faint group-hover/row:inline group-focus-within/row:inline">
-                    {item.server}
+                    {[item.kind, item.server].filter(Boolean).join(" · ")}
                   </span>
                 )}
               </button>
-              {/* Тип узла меткой, моноширинно: по нему на глаз отличают vless от
-                  wireguard, и это единственное, что в одной строке не
-                  повторяет имя. В тесной панели её нет — остаётся в подсказке. */}
-              {!tight && item.kind && (
-                <span className="shrink-0 rounded-sm bg-control px-1.5 font-mono text-xs text-muted">{item.kind}</span>
-              )}
               {/* Пометки — значками, а не словами: слово «без шифрования»
                   заглавными в каждой строке кричало громче имени узла. Смысл
                   остался в подсказке и для чтения с экрана, а жёлтый замок
@@ -2206,20 +2207,12 @@ function Rows({
                   сравнением — значит, сказать об этом обязано само число. */}
               {probe && (
                 <span
-                  className={`flex shrink-0 items-center justify-end gap-2 font-mono text-xs ${
+                  className={`flex shrink-0 items-center justify-end font-mono text-xs ${
                     tight ? "w-16" : "w-24"
                   } ${latencyTone(probe.latency_ms) || "text-muted"}`}
                 >
-                  {/* Полоска — длина задержки на шкале до 500 мс, цветом числа:
-                      столбец полосок читается раньше столбца чисел. */}
-                  {!tight && probe.latency_ms != null && (
-                    <span className="block h-1 w-8 shrink-0 overflow-hidden rounded-full bg-edge" aria-hidden="true">
-                      <span
-                        className="block h-full rounded-full bg-current"
-                        style={{ inlineSize: `${Math.min(100, Math.max(8, probe.latency_ms / 5))}%` }}
-                      />
-                    </span>
-                  )}
+                  {/* Только число, тоном задержки: полоска рядом повторяла его
+                      же длиной, и в столбце стояли две шкалы одного замера. */}
                   <Verdict
                     probe={probe}
                     failed={s.probeFailed}
@@ -2231,10 +2224,14 @@ function Rows({
                   />
                 </span>
               )}
+              {/* «⋯» проступает по наведению и по фокусу (место держит всегда,
+                  строка не прыгает): одиннадцать одинаковых значков столбцом
+                  читались шумом, а меню есть и по правой кнопке. */}
               <IconButton
                 icon="more"
                 label={s.actions}
                 aria-haspopup="menu"
+                className={REVEAL_ROW}
                 onClick={(e) => onMenu(e, rowMenu())}
               />
             </div>
