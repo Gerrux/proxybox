@@ -49,16 +49,15 @@ fn status(state: ServiceState, controls: ServiceControlAccept) -> ServiceStatus 
 
 fn run_service() -> windows_service::Result<()> {
     let (tx, rx) = mpsc::channel();
-    let handle = service_control_handler::register(NAME, move |control| match control {
-        // Остановка — сознательное действие администратора: туннель гасим и
-        // правила снимаем. Падение службы (без Stop) правила НЕ снимает — там
-        // fail-closed важнее удобства.
-        ServiceControl::Stop | ServiceControl::Shutdown => {
-            let _ = tx.send(());
-            ServiceControlHandlerResult::NoError
-        }
-        ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-        _ => ServiceControlHandlerResult::NotImplemented,
+    let handle = service_control_handler::register(NAME, move |control| {
+        let reason = match control {
+            ServiceControl::Stop => crate::ServiceStop::Requested,
+            ServiceControl::Shutdown => crate::ServiceStop::SystemShutdown,
+            ServiceControl::Interrogate => return ServiceControlHandlerResult::NoError,
+            _ => return ServiceControlHandlerResult::NotImplemented,
+        };
+        let _ = tx.send(reason);
+        ServiceControlHandlerResult::NoError
     })?;
 
     handle.set_service_status(status(ServiceState::Running, ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN))?;

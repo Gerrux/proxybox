@@ -2377,32 +2377,26 @@ mod tests {
 
     /// Упавший на старте sing-box — это ошибка запуска, а не «подключение».
     ///
-    /// Уронить его надо надёжно, и занятый порт — единственный способ, который
-    /// не зависит от прав. Стоял тут порт 1, в расчёте на «привилегированный
-    /// занять нельзя»: под администратором он занимается прекрасно, sing-box
-    /// спокойно стартовал, и тест падал на собственной посылке — а заодно
-    /// оставлял живой mixed-прокси на общем номере, в который упирался сосед.
-    /// Поэтому порт занимаем сами и держим занятым до конца проверки: отказ
-    /// «уже занято» одинаков и под администратором, и без него.
+    /// Неизвестный тип входа заставляет процесс завершиться без прав на TUN.
+    /// Если держать порт открытым, проверка готовности успевает подключиться
+    /// к слушателю самого теста, пока sing-box ещё завершается.
     #[test]
     fn start_reports_immediate_death() {
         if Command::new(binary()).arg("version").output().is_err() {
             return; // sing-box не установлен
         }
-        let busy = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = busy.local_addr().unwrap().port();
+        let port = free_port().unwrap();
         let dir = std::env::temp_dir().join("pg-start-fail");
         let broken = json!({
-            "inbounds": [{ "type": "mixed", "tag": "local", "listen": "127.0.0.1", "listen_port": port }],
+            "inbounds": [{ "type": "invalid-test-inbound", "tag": "local", "listen": "127.0.0.1", "listen_port": port }],
             "outbounds": [{ "type": "direct", "tag": "direct" }],
             "route": { "final": "direct" },
         });
         let err = match Tunnel::start(&broken, &dir) {
             Err(e) => e.to_string(),
-            Ok(_) => panic!("занятый порт обязан уронить sing-box, а он поднялся"),
+            Ok(_) => panic!("неизвестный тип входа обязан уронить sing-box, а он поднялся"),
         };
         assert!(err.contains("завершился сразу"), "{err}");
-        drop(busy);
     }
 
     /// Занятый порт — не мёртвый узел.

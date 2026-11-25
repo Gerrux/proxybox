@@ -1167,6 +1167,20 @@ impl Service {
         self.log(t("приватный режим выключен: правила сняты"));
     }
 
+    fn stop_service(&mut self, reason: ServiceStop) {
+        self.browsers.clear();
+        match reason {
+            ServiceStop::Requested => self.stop(),
+            #[cfg(any(windows, test))]
+            ServiceStop::SystemShutdown => {
+                // Режим и профиль уже сохранены. Закрываем сеть перед остановкой
+                // туннеля, чтобы постоянные фильтры защищали и при следующей загрузке.
+                self.guard(true);
+                self.tunnel = None;
+            }
+        }
+    }
+
     /// Отдельный прокси под окно браузера. Тот же браузерный профиль второй раз
     /// — тот же порт: окно уже открыто, поднимать ему второй sing-box незачем.
     ///
@@ -1398,7 +1412,7 @@ fn nft_found() -> bool {
 ///
 /// Сторож — `the_service_gives_the_machine_back`.
 #[cfg(not(windows))]
-fn watch_for_signals() -> mpsc::Receiver<()> {
+fn watch_for_signals() -> mpsc::Receiver<ServiceStop> {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     static STOPPING: AtomicBool = AtomicBool::new(false);
@@ -1420,7 +1434,7 @@ fn watch_for_signals() -> mpsc::Receiver<()> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || loop {
         if STOPPING.load(Ordering::SeqCst) {
-            let _ = tx.send(());
+            let _ = tx.send(ServiceStop::Requested);
             return;
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -5533,7 +5547,18 @@ mod tests {
         assert_eq!(restored.status.rx, 0, "счётчики трафика не переносятся");
 
         let mut s = restored;
-        s.stop();
+        let (fence, killswitch) = fencing(s.status.scope, true, s.private);
+        s.applied = Some(Applied {
+            fence,
+            killswitch,
+            apps: Service::selected(&s.status),
+        });
+        s.stop_service(ServiceStop::SystemShutdown);
+        assert!(s.private, "завершение работы Windows сохраняет приватный режим");
+        let mut s = Service::load();
+        assert!(s.private);
+        assert_eq!(s.status.profile.as_deref(), Some("p"));
+        s.stop_service(ServiceStop::Requested);
         assert!(!Service::load().private, "выключение — тоже решение, и оно тоже запоминается");
     }
 
@@ -5928,9 +5953,15 @@ fn serve(svc: &Mutex<Service>, mut conn: Stream) {
     }
 }
 
+enum ServiceStop {
+    Requested,
+    #[cfg(any(windows, test))]
+    SystemShutdown,
+}
+
 /// Тело службы. `stop` приходит от SCM; в консольном режиме его нет, и тогда
 /// функция не возвращается — работу заканчивает Ctrl+C.
-fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
+fn run(stop: Option<mpsc::Receiver<ServiceStop>>) -> std::io::Result<()> {
     // Права каталога — впереди всего, что в него пишет, и потому впереди
     // `Service::load()`: первую же строку журнала служба положит на диск сама.
     // Отказ не останавливает запуск: непрочитанный чужими `state.json` дороже
@@ -6009,12 +6040,8 @@ fn run(stop: Option<mpsc::Receiver<()>>) -> std::io::Result<()> {
 
     match stop {
         Some(rx) => {
-            let _ = rx.recv();
-            // Остановка по команде — гасим туннель и снимаем правила. Инстансы
-            // под окна браузера тоже наши процессы: сиротами они бы остались жить.
-            let mut s = lock(&svc);
-            s.browsers.clear();
-            s.stop();
+            let reason = rx.recv().unwrap_or(ServiceStop::Requested);
+            lock(&svc).stop_service(reason);
         }
         None => loop {
             std::thread::park();
