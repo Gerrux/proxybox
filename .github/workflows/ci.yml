@@ -25,14 +25,16 @@ jobs:
       # `tun_config_passes_singbox_check`) молча выходят: «sing-box не
       # установлен — проверять нечем». Ровно так фатальный конфиг и уехал в
       # 0.3.1 — тесты прошли, не проверив ничего. Версия берётся из
-      # get-singbox.ps1: закреплённая обязана быть одна на установщик и на CI,
+      # installer/sing-box.env и совпадает с версией в установщике,
       # иначе CI зеленеет на той, которой нет у людей.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.6'
+          cache: false
       - name: sing-box для сторожей запуска
         run: |
-          v=$(grep -oP '\$Version = "\K[^"]+' installer/get-singbox.ps1)
-          echo "sing-box $v"
-          curl -sL "https://github.com/SagerNet/sing-box/releases/download/v$v/sing-box-$v-linux-amd64.tar.gz" | tar xz
-          echo "PG_SINGBOX=$PWD/sing-box-$v-linux-amd64/sing-box" >> "$GITHUB_ENV"
+          bash installer/get-singbox.sh
+          echo "PG_SINGBOX=$PWD/src-tauri/binaries/sing-box" >> "$GITHUB_ENV"
       # tsc --noEmit + vite build + cargo test --workspace
       - run: pnpm validate
       # Ветки под Windows компилятор здесь иначе не увидит вовсе: половина
@@ -68,7 +70,6 @@ jobs:
           for f in pg-service proxybox sing-box; do
             : > "src-tauri/binaries/$f-x86_64-pc-windows-msvc.exe"
           done
-          : > src-tauri/binaries/LICENSE-sing-box.txt
       - run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
 
   # Отдельный job, а не шаг в `validate`: здесь нужен root — без него не
@@ -85,14 +86,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.6'
+          cache: false
       # Версия sing-box закреплена в установщике, и она обязана быть одна на
       # установщик и на CI: иначе CI зеленеет на версии, которой нет ни у кого.
       # Ровно так фатальный конфиг и уехал в 0.3.1.
       - name: sing-box
         run: |
-          VER=$(grep -oP '\$Version = "\K[^"]+' installer/get-singbox.ps1)
-          curl -sL "https://github.com/SagerNet/sing-box/releases/download/v$VER/sing-box-$VER-linux-amd64.tar.gz" | tar xz
-          sudo install "sing-box-$VER-linux-amd64/sing-box" /usr/local/bin/sing-box
+          bash installer/get-singbox.sh
+          sudo install src-tauri/binaries/sing-box /usr/local/bin/sing-box
+          cp src-tauri/binaries/sing-box src-tauri/binaries/sing-box-x86_64-unknown-linux-gnu
       - run: sudo apt-get update -qq && sudo apt-get install -y nftables
       - run: cargo build
       # Оболочка вне воркспейса, и под Linux её до сих пор не собирал никто —
@@ -111,10 +116,9 @@ jobs:
       - name: пустышки вложенных бинарников
         run: |
           mkdir -p src-tauri/binaries
-          for f in pg-service proxybox sing-box; do
+          for f in pg-service proxybox; do
             : > "src-tauri/binaries/$f-x86_64-unknown-linux-gnu"
           done
-          : > src-tauri/binaries/LICENSE-sing-box.txt
       - run: cargo check --manifest-path src-tauri/Cargo.toml
       # Под root — то есть с настоящим замком и настоящим TUN. e2e.sh сам
       # решает, что ему доступно (`FULL`), а PG_E2E_FULL=1 требует, чтобы

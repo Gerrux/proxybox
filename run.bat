@@ -49,19 +49,9 @@ if defined MISSING (
 echo [2/3] Подготовка...
 echo.
 set "SINGBOX=%CD%\src-tauri\binaries\sing-box.exe"
-if not exist "%SINGBOX%" (
-  echo   - sing-box не найден. Без него туннель не поднимется.
-  set "GET="
-  set /p "GET=    Скачать с github.com/SagerNet/sing-box сейчас? [Y/n]: "
-  if /i not "!GET!"=="n" (
-    powershell -NoProfile -ExecutionPolicy Bypass -File "installer\get-singbox.ps1"
-    if errorlevel 1 ( echo   ОШИБКА загрузки sing-box. & echo. & pause & exit /b 1 )
-  ) else (
-    echo   Положите sing-box.exe в src-tauri\binaries\ вручную.
-  )
-) else (
-  echo   - sing-box на месте.
-)
+echo   - sing-box...
+powershell -NoProfile -ExecutionPolicy Bypass -File "installer\get-singbox.ps1"
+if errorlevel 1 ( echo   ОШИБКА сборки sing-box. & echo. & pause & exit /b 1 )
 echo   - зависимости ^(pnpm install^)...
 call pnpm install
 if errorlevel 1 ( echo   ОШИБКА pnpm install. & echo. & pause & exit /b 1 )

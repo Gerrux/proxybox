@@ -17,6 +17,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.6'
+          cache: false
 
       # Версию окно берёт из tauri.conf.json и по ней же сравнивает себя со
       # списком релизов. Разъедься тег и версия — установленное приложение
@@ -30,7 +34,7 @@ jobs:
 
       # Тот же сторож, что и в ci.yml: без бинарника проверка старта конфига
       # молча пропускается, и релиз уезжает с конфигом, на котором служба
-      # падает. Скачанное переиспользует sidecars.ps1 — лишней закачки нет.
+      # падает. Собранное ядро переиспользует sidecars.ps1.
       - name: sing-box для сторожей запуска
         run: pwsh installer/get-singbox.ps1
 
@@ -45,7 +49,7 @@ jobs:
       # собирается по тегу, а не на каждый пуш.
       - run: cargo install tauri-cli --version "^2" --locked
 
-      # sing-box скачает сам sidecars.ps1 — секретов сборке не нужно вовсе.
+      # sidecars.ps1 использует то же ядро, которое прошло тесты.
       # Без -Thumbprint установщик выходит неподписанным: сертификата у проекта
       # нет, а класть в секреты пока нечего.
       - run: pwsh installer/build.ps1
@@ -90,6 +94,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.6'
+          cache: false
 
       # Тот же смысл, что и в windows-job, тем же способом: версия
       # tauri.conf.json обязана совпадать с тегом, иначе окно на этой
@@ -113,17 +121,12 @@ jobs:
       - run: sudo apt-get update -qq && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev pkg-config xvfb dbus-x11
 
       # Тот же сторож запуска конфига, что и в ci.yml (validate, linux):
-      # версия закреплена в get-singbox.ps1, и CI обязан собирать на той же,
+      # версия закреплена в installer/sing-box.env, и CI обязан собирать на той же,
       # что и установщик, иначе он зеленеет на версии, которой ни у кого нет.
-      # Скачанное здесь же переиспользует installer/sidecars.sh — он видит
-      # готовый бинарник в src-tauri/binaries и не тянет его второй раз.
+      # Собранное ядро переиспользует installer/sidecars.sh.
       - name: sing-box для тестов и сборки
         run: |
-          VER=$(grep -oP '\$Version = "\K[^"]+' installer/get-singbox.ps1)
-          curl -sL "https://github.com/SagerNet/sing-box/releases/download/v$VER/sing-box-$VER-linux-amd64.tar.gz" | tar xz
-          mkdir -p src-tauri/binaries
-          install "sing-box-$VER-linux-amd64/sing-box" src-tauri/binaries/sing-box
-          cp "sing-box-$VER-linux-amd64/LICENSE" src-tauri/binaries/LICENSE-sing-box.txt
+          bash installer/get-singbox.sh
           echo "PG_SINGBOX=$PWD/src-tauri/binaries/sing-box" >> "$GITHUB_ENV"
 
       - run: cargo test --workspace
@@ -188,7 +191,7 @@ jobs:
             exit 1
           fi
 
-          VER=$(grep -oP '\$Version = "\K[^"]+' installer/get-singbox.ps1)
+          VER=1.13.21
           mkdir -p /tmp/pkgs
           cp "$deb" /tmp/pkgs/proxybox.deb
           # Официальный .deb SagerNet — прямая проверка C1: если наш пакет
