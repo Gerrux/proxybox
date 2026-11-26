@@ -785,6 +785,9 @@ impl Tunnel {
             .unwrap_or(0);
         std::fs::create_dir_all(dir)?;
         reap_orphan(dir);
+        // Чужой слушатель мог принять пробу раньше, чем sing-box успел
+        // завершиться с ошибкой bind. В этом случае ждём ответ процесса.
+        let occupied = socks_port != 0 && TcpListener::bind(("127.0.0.1", socks_port)).is_err();
         let path = dir.join("singbox.json");
         std::fs::write(&path, serde_json::to_vec_pretty(config).map_err(io::Error::other)?)?;
         let log_path = dir.join("singbox.log");
@@ -813,7 +816,7 @@ impl Tunnel {
                 return Err(io::Error::other(tf!("sing-box завершился сразу: {}", last_line(&log_path))));
             }
             let waited = began.elapsed();
-            if waited >= STARTUP_LIMIT || (waited >= STARTUP_FLOOR && ready(socks_port, tun)) {
+            if waited >= STARTUP_LIMIT || (!occupied && waited >= STARTUP_FLOOR && ready(socks_port, tun)) {
                 break;
             }
             std::thread::sleep(STARTUP_STEP);

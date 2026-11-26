@@ -17,23 +17,11 @@ mkdir -p "$BIN"
 TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 
 # sing-box в комплекте обязателен: без него приватный режим не включается.
-# Версия закреплена в get-singbox.ps1 и обязана быть одна на установщик и на
-# CI (см. её же шапку и ci.yml) — тянем тем же grep, что и там, а не второй
-# копией номера.
-VER=$(grep -oP '\$Version = "\K[^"]+' "$ROOT/installer/get-singbox.ps1")
+bash "$ROOT/installer/get-singbox.sh"
 SB="$BIN/sing-box"
-# GPL-3.0: текст лицензии обязан ехать вместе с бинарником.
-if [ ! -f "$SB" ] || [ ! -f "$BIN/LICENSE-sing-box.txt" ]; then
-  TMP=$(mktemp -d)
-  curl -sL "https://github.com/SagerNet/sing-box/releases/download/v$VER/sing-box-$VER-linux-amd64.tar.gz" | tar xz -C "$TMP"
-  cp "$TMP/sing-box-$VER-linux-amd64/sing-box" "$SB"
-  cp "$TMP/sing-box-$VER-linux-amd64/LICENSE" "$BIN/LICENSE-sing-box.txt"
-  rm -rf "$TMP"
-fi
-# Копируется только когда действительно изменился — то же правило, что и в
-# sidecars.ps1, ради тех же полусотни мегабайт.
+# Бинарник копируется только при изменении содержимого.
 SB_TARGET="$BIN/sing-box-$TRIPLE"
-if [ ! -f "$SB_TARGET" ] || [ "$(stat -c%s "$SB_TARGET")" != "$(stat -c%s "$SB")" ]; then
+if ! cmp -s "$SB" "$SB_TARGET"; then
   cp "$SB" "$SB_TARGET"
 fi
 

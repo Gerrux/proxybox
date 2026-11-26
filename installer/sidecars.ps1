@@ -24,16 +24,17 @@ $exe = if ($env:OS -eq "Windows_NT") { ".exe" } else { "" }
 
 # sing-box в комплекте обязателен: без него приватный режим не включается.
 # GPL-3.0: текст лицензии обязан ехать вместе с бинарником.
-# sing-box всегда .exe: это windows-бинарник из релиза, а не наша сборка.
 $sb = Join-Path $bin "sing-box.exe"
-if ($SingBox) { Copy-Item $SingBox $sb -Force }
-if (-not (Test-Path $sb) -or -not (Test-Path (Join-Path $bin "LICENSE-sing-box.txt"))) {
-  $arch = if ($Triple -like "aarch64*") { "arm64" } else { "amd64" }
+$arch = if ($Triple -like "aarch64*") { "arm64" } else { "amd64" }
+if ($SingBox -and (Test-Path (Join-Path $bin "LICENSE-sing-box.txt"))) {
+  Copy-Item $SingBox $sb -Force
+} else {
   & (Join-Path $PSScriptRoot "get-singbox.ps1") -Arch $arch
+  if ($SingBox) { Copy-Item $SingBox $sb -Force }
 }
-# 45 МБ копируются только когда действительно изменились.
+# Бинарник копируется только при изменении содержимого.
 $sbTarget = Join-Path $bin "sing-box-$Triple.exe"
-if (-not (Test-Path $sbTarget) -or (Get-Item $sbTarget).Length -ne (Get-Item $sb).Length) {
+if (-not (Test-Path $sbTarget) -or (Get-FileHash $sbTarget).Hash -ne (Get-FileHash $sb).Hash) {
   Copy-Item $sb $sbTarget -Force
 }
 
