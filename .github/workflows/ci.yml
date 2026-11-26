@@ -97,6 +97,7 @@ jobs:
         run: |
           bash installer/get-singbox.sh
           sudo install src-tauri/binaries/sing-box /usr/local/bin/sing-box
+          cp src-tauri/binaries/sing-box src-tauri/binaries/sing-box-x86_64-unknown-linux-gnu
       - run: sudo apt-get update -qq && sudo apt-get install -y nftables
       - run: cargo build
       # Оболочка вне воркспейса, и под Linux её до сих пор не собирал никто —
