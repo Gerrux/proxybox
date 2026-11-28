@@ -94,10 +94,10 @@ fn elevated() -> bool {
 }
 
 /// Полный путь к sing-box: переменная → рядом с бинарником → PATH.
-/// `core_tunnel::binary()` отдаёт голое имя, когда рядом ничего нет, — PATH за
+/// `core_tunnel_settings::binary()` отдаёт голое имя, когда рядом ничего нет, — PATH за
 /// него досматриваем здесь, иначе «не найден» не отличить от «найден в PATH».
 fn singbox() -> Option<PathBuf> {
-    let p = core_tunnel::binary();
+    let p = core_tunnel_settings::binary();
     if p.exists() {
         return Some(p);
     }
@@ -154,8 +154,7 @@ fn platform_checks() -> Vec<Check> {
         _ => check(&t("системный прокси"), Level::Ok, t("выключен")),
     });
 
-    // Разбор и запуск — в core-filter: тем же списком пользуется служба.
-    let foreign = core_filter::foreign_tunnels(core_tunnel::TUN_NAME);
+    let foreign = core_adapters::foreign_tunnels(core_tunnel_settings::TUN_NAME);
     v.push(if foreign.is_empty() {
         check(&t("чужие туннели"), Level::Ok, t("поднятых TUN/VPN-адаптеров нет"))
     } else {
@@ -200,8 +199,7 @@ fn platform_checks() -> Vec<Check> {
         check(&t("TUN"), Level::Fail, t("/dev/net/tun нет — включите модуль ядра tun"))
     });
 
-    // Разбор и запуск — в core-filter: тем же списком пользуется служба.
-    let foreign = core_filter::foreign_tunnels(core_tunnel::TUN_NAME);
+    let foreign = core_adapters::foreign_tunnels(core_tunnel_settings::TUN_NAME);
     v.push(if foreign.is_empty() {
         check(&t("чужие туннели"), Level::Ok, t("поднятых TUN/VPN-адаптеров нет"))
     } else {

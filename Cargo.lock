@@ -73,6 +73,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
+name = "core-adapters"
+version = "0.1.0"
+
+[[package]]
 name = "core-apps"
 version = "0.1.0"
 dependencies = [
@@ -99,6 +103,7 @@ dependencies = [
 name = "core-filter"
 version = "0.1.0"
 dependencies = [
+ "core-adapters",
  "windows",
 ]
 
@@ -132,7 +137,15 @@ version = "0.1.0"
 dependencies = [
  "core-config",
  "core-ipc",
+ "core-tunnel-settings",
  "serde_json",
+]
+
+[[package]]
+name = "core-tunnel-settings"
+version = "0.1.0"
+dependencies = [
+ "core-ipc",
 ]
 
 [[package]]
@@ -530,9 +543,9 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 name = "pg-cli"
 version = "0.1.0"
 dependencies = [
- "core-filter",
+ "core-adapters",
  "core-ipc",
- "core-tunnel",
+ "core-tunnel-settings",
  "serde_json",
 ]
 

@@ -359,7 +359,7 @@ fn patch_settings(args: &[String]) -> Result<Request, String> {
 /// `bypass add|rm <адрес или имя>…` — правка поверх нынешнего списка. Команда у
 /// службы одна и берёт список целиком (`Request::SetBypass`), поэтому список
 /// спрашивается заранее, как у `settings`. Приводит и сверяет строки служба;
-/// консоль для `rm` зовёт ту же `core_tunnel::bypass_entry`, а не свою — две
+/// консоль для `rm` зовёт ту же `core_tunnel_settings::bypass_entry`, а не свою — две
 /// сверки разошлись бы на первой правке.
 fn patch_bypass(args: &[String]) -> Result<Request, String> {
     let Ok(Response::Status(status)) = call(&Request::Status) else {
@@ -384,7 +384,7 @@ fn edit_bypass(mut rules: Vec<String>, args: &[String]) -> Result<Request, Strin
         // уверенным, что трафик больше не идёт мимо туннеля.
         Some("rm") => {
             for e in &entries {
-                let entry = core_tunnel::bypass_entry(e)?;
+                let entry = core_tunnel_settings::bypass_entry(e)?;
                 if !rules.contains(&entry) {
                     return Err(tf!("исключения «{}» нет", e.trim()));
                 }

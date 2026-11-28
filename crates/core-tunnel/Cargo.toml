@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 core-ipc.workspace = true
+core-tunnel-settings.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

@@ -11,5 +11,5 @@ path = "src/main.rs"
 [dependencies]
 core-ipc.workspace = true
 serde_json.workspace = true
-core-filter.workspace = true
-core-tunnel.workspace = true
+core-adapters.workspace = true
+core-tunnel-settings.workspace = true

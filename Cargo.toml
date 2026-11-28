@@ -6,6 +6,8 @@ members = [
     "crates/core-apps",
     "crates/core-tunnel",
     "crates/core-filter",
+    "crates/core-adapters",
+    "crates/core-tunnel-settings",
     "crates/pg-service",
     "crates/pg-cli",
 ]
@@ -27,6 +29,8 @@ core-config = { path = "crates/core-config" }
 core-apps = { path = "crates/core-apps" }
 core-tunnel = { path = "crates/core-tunnel" }
 core-filter = { path = "crates/core-filter" }
+core-adapters = { path = "crates/core-adapters" }
+core-tunnel-settings = { path = "crates/core-tunnel-settings" }
 url = "2"
 base64 = "0.22"
 percent-encoding = "2"

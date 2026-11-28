@@ -1732,6 +1732,8 @@ mod tests {
             ("core-config/src/lib.rs", include_str!("../../core-config/src/lib.rs")),
             ("core-filter/src/lib.rs", include_str!("../../core-filter/src/lib.rs")),
             ("core-tunnel/src/lib.rs", include_str!("../../core-tunnel/src/lib.rs")),
+            ("core-tunnel-settings/src/lib.rs", include_str!("../../core-tunnel-settings/src/lib.rs")),
+            ("core-adapters/src/lib.rs", include_str!("../../core-adapters/src/lib.rs")),
             ("core-wfp/src/lib.rs", include_str!("../../core-wfp/src/lib.rs")),
             ("pg-cli/src/main.rs", include_str!("../../pg-cli/src/main.rs")),
             ("pg-cli/src/doctor.rs", include_str!("../../pg-cli/src/doctor.rs")),
@@ -3507,9 +3509,13 @@ mod tests {
     #[test]
     fn the_clients_stay_thin() {
         let clients: [(&str, &str, &[&str]); 2] = [
-            // core-tunnel и core-filter — ради `doctor`: где sing-box и нет ли
-            // рядом чужого туннеля, надо уметь ответить и при мёртвой службе.
-            ("pg-cli", include_str!("../../pg-cli/Cargo.toml"), &["core-ipc", "core-tunnel", "core-filter"]),
+            // Поиск sing-box и адаптеров нужен и при недоступной службе,
+            // а команда `bypass rm` приводит запись к тому же виду, что и служба.
+            (
+                "pg-cli",
+                include_str!("../../pg-cli/Cargo.toml"),
+                &["core-ipc", "core-adapters", "core-tunnel-settings"],
+            ),
             // core-apps — иконки и значок окна браузерного сеанса.
             ("src-tauri", include_str!("../../../src-tauri/Cargo.toml"), &["core-ipc", "core-apps"]),
         ];
@@ -3633,9 +3639,9 @@ mod tests {
         // была видна `proxybox doctor`, запущенному руками.
         let build_sh = include_str!("../../../installer/build.sh");
         let sb_path = "/usr/lib/proxybox/sing-box";
-        let core_tunnel = include_str!("../../core-tunnel/src/lib.rs");
+        let tunnel_settings = include_str!("../../core-tunnel-settings/src/lib.rs");
         assert!(
-            core_tunnel.contains(&format!("\"{sb_path}\"")),
+            tunnel_settings.contains(&format!("\"{sb_path}\"")),
             "core_tunnel::binary() не знает запасной путь {sb_path}"
         );
         assert!(

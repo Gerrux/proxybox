@@ -81,24 +81,6 @@ pub fn apply(script: &str) -> io::Result<()> {
     }
 }
 
-/// Поднятые интерфейсы, похожие на чужой туннель. Два TUN в системе спорят за
-/// маршрут по умолчанию, и человеку об этом надо сказать.
-///
-/// Читается `/sys/class/net`, а не вывод чужой программы: тот же смысл, что у
-/// разбора PowerShell на Windows, но без подпроцесса и без локализации.
-pub fn tunnels(ours: &str) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir("/sys/class/net") else { return Vec::new() };
-    entries
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|name| name != ours)
-        // Свой тип интерфейс называет сам: 65534 — это TUN/TAP.
-        .filter(|name| {
-            std::fs::read_to_string(format!("/sys/class/net/{name}/type")).is_ok_and(|t| t.trim() == "65534")
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

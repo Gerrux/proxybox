@@ -9,14 +9,17 @@ crates/
                      пакеты MSIX, запущенные процессы) и их иконки
   core-config/       share-link (vless/vmess/trojan/ss/hy2/tuic/wg) и тело подписки
                      → узел sing-box
+  core-tunnel-settings/ адрес и имя TUN, поиск sing-box, нормализация исключений
   core-tunnel/       генерация конфига sing-box, запуск и присмотр, проба, трафик
-  core-filter/       политика fail-closed + стена WFP (запрет и пропуска выбранным .exe)
+  core-adapters/     поиск чужих туннелей для службы и CLI
+  core-filter/       правила fail-closed (WFP на Windows, nftables на Linux)
+  core-wfp/          каркас драйвера Windows (отдельный Cargo-проект с WDK)
   pg-service/        служба: состояние, процесс sing-box, надзор раз в 3 с;
                      на Windows — служба SCM (install/uninstall в ней же),
                      на Linux — systemd-юнит (installer/proxybox.service)
   pg-cli/            бинарник proxybox — headless-клиент контракта
-src-tauri/           Tauri 2.x оболочка (отдельный Cargo-проект, сборка только
-                     на Windows); пробрасывает запросы фронтенда в core-ipc
+src-tauri/           Tauri 2.x оболочка (отдельный Cargo-проект для Windows
+                     и Linux); пробрасывает запросы фронтенда в core-ipc
 ui/app-shell/        Vite+React+TS+Tailwind: статус, профили, приложения, журнал
 resources/apps/      каталог-дополнение к реестру: консольные инструменты и то,
                      что не регистрируется (catalog.v1.json, вшит в core-apps)
@@ -37,9 +40,11 @@ scripts/bench-cores.sh  сравнение ядер (sing-box / mihomo / Xray) �
   (`crates/core-filter/src/linux.rs`). Без него служба поднимет туннель без
   замка и предупредит об этом в журнале, а `installer/proxybox.service` вообще
   не даст стартовать юниту без `nft`.
-- Для десктоп-сборки (только Windows) — Tauri CLI 2.x
-  (`cargo install tauri-cli --version "^2"`), MSVC/VS Build Tools, WebView2.
-  На Linux нет webkit2gtk — `src-tauri` не собирается, ядро и фронтенд собираются.
+- Для сборки десктопа нужен Tauri CLI 2.x
+  (`cargo install tauri-cli --version "^2"`). На Windows нужны MSVC Build Tools
+  и WebView2, на Linux — dev-пакеты WebKitGTK 4.1, GTK 3 и librsvg.
+- [Сборка драйвера](../crates/core-wfp/BUILD-WINDOWS.md) требует отдельной
+  среды Windows с WDK.
 
 ## Команды
 
@@ -72,7 +77,7 @@ cargo run -p pg-cli -- doctor                  # почему не работа�
 pnpm --filter app-shell dev                   # фронтенд на :5173; дев-сервер
                                               # сам ходит в службу (см. vite.config.ts),
                                               # так интерфейс живой и без Tauri
-cargo tauri dev                               # окно с фронтендом (Windows)
+cargo tauri dev                               # окно с фронтендом (Windows и Linux)
 
 pnpm validate                                 # lint + build + cargo test
 cargo check --workspace --target x86_64-pc-windows-msvc   # проверка windows-веток

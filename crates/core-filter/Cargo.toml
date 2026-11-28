@@ -4,6 +4,9 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[dependencies]
+core-adapters.workspace = true
+
 # Крейт был без зависимостей намеренно, и это место, где цена платится. Пока
 # стену ставил netsh, она стоила дорого и ещё и протекала (замеры на живой
 # машине): метла `Get-NetFirewallRule | Remove-NetFirewallRule` — ~1.6 с на
